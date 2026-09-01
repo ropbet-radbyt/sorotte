@@ -4,6 +4,7 @@ import copy
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -12,6 +13,7 @@ import playback_lifecycle_model as lifecycle  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MODEL_PATH = REPO_ROOT / "coverage" / "playback-lifecycle.toml"
+SYSTEM_COVERAGE_PATH = REPO_ROOT / "coverage" / "playback-lifecycle-system.toml"
 
 
 class PlaybackLifecycleModelTests(unittest.TestCase):
@@ -33,10 +35,13 @@ class PlaybackLifecycleModelTests(unittest.TestCase):
         self.assertEqual(summary["transition_count"], 78)
         self.assertEqual(summary["invariant_count"], 15)
         self.assertEqual(summary["gap_count"], 8)
-        self.assertIn("GAP-SYSTEM-001", summary["open_gaps"])
-        self.assertIn("APP-RUN-001", summary["transitions_missing_tiers"])
+        self.assertEqual(summary["system_suite_count"], 8)
+        self.assertEqual(summary["system_covered_transition_count"], 75)
+        self.assertEqual(summary["open_gaps"], [])
+        self.assertEqual(summary["transitions_missing_tiers"], {})
 
     def test_release_gate_rejects_open_gaps(self) -> None:
+        self.model["gap"][0]["status"] = "open"
         with self.assertRaisesRegex(
             lifecycle.ModelError,
             "open lifecycle gaps remain",
@@ -81,11 +86,13 @@ class PlaybackLifecycleModelTests(unittest.TestCase):
             self.validate()
 
     def test_missing_proof_tier_requires_an_open_gap(self) -> None:
-        transition = self.model["machine"][0]["transition"][0]
-        self.assertNotEqual(
-            set(transition["covered_tiers"]),
-            set(transition["required_tiers"]),
+        transition = next(
+            transition
+            for machine in self.model["machine"]
+            for transition in machine["transition"]
+            if transition["id"] == "MEDIA-RESOLVE-001"
         )
+        transition["covered_tiers"] = ["model"]
         transition["gaps"] = []
 
         with self.assertRaisesRegex(
@@ -93,6 +100,47 @@ class PlaybackLifecycleModelTests(unittest.TestCase):
             "missing tiers .* without an open gap",
         ):
             self.validate()
+
+    def test_system_registry_transition_must_be_emitted_by_a_named_suite(self) -> None:
+        registry = lifecycle.load_toml(SYSTEM_COVERAGE_PATH, "test system registry")
+        mutated = copy.deepcopy(registry)
+        for suite in mutated["suite"]:
+            suite["transitions"] = [
+                transition
+                for transition in suite["transitions"]
+                if transition != "PLAYER-LOSS-001"
+            ]
+        original_load = lifecycle.load_toml
+
+        def load(path: pathlib.Path, label: str) -> dict:
+            if label == "system coverage registry":
+                return mutated
+            return original_load(path, label)
+
+        with mock.patch.object(lifecycle, "load_toml", side_effect=load):
+            with self.assertRaisesRegex(
+                lifecycle.ModelError,
+                "PLAYER-LOSS-001.*missing tiers.*system",
+            ):
+                self.validate(require_closed=True)
+
+    def test_system_registry_rejects_unknown_transition(self) -> None:
+        registry = lifecycle.load_toml(SYSTEM_COVERAGE_PATH, "test system registry")
+        mutated = copy.deepcopy(registry)
+        mutated["suite"][0]["transitions"].append("UNKNOWN-SYSTEM-999")
+        original_load = lifecycle.load_toml
+
+        def load(path: pathlib.Path, label: str) -> dict:
+            if label == "system coverage registry":
+                return mutated
+            return original_load(path, label)
+
+        with mock.patch.object(lifecycle, "load_toml", side_effect=load):
+            with self.assertRaisesRegex(
+                lifecycle.ModelError,
+                "references unknown transitions.*UNKNOWN-SYSTEM-999",
+            ):
+                self.validate()
 
     def test_unreachable_state_is_rejected(self) -> None:
         machine = self.model["machine"][0]

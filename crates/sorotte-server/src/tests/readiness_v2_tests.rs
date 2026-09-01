@@ -1893,6 +1893,63 @@ fn accepted_user_pause_retires_committed_barrier_before_every_started_ack() {
             actor: "alice".to_owned(),
         }
     );
+    assert_eq!(
+        runtime.room_readiness["room"].start_gate_phase,
+        RoomStartGatePhase::Inactive,
+        "retiring a committed barrier for a user pause must not leave a stale committed gate"
+    );
+}
+
+#[test]
+fn every_started_ack_clears_the_committed_readiness_gate() {
+    let mut runtime = ServerRuntime::default();
+    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime
+        .handle_line("alice-client", &readiness_hello("alice", "room"))
+        .expect("readiness hello should succeed");
+    let epoch = runtime.room_readiness["room"].participants["alice"]
+        .record
+        .membership_epoch;
+    send_intent(
+        &mut runtime,
+        "alice-client",
+        "alice-complete-ready",
+        1,
+        epoch,
+        UserReadinessIntent::Ready,
+    );
+    start_barrier(&mut runtime, "alice-client");
+    send_technical(
+        &mut runtime,
+        "alice-client",
+        unscoped_technical_report(1, TechnicalPlayabilityPhase::Playable),
+    );
+    send_barrier_ready(&mut runtime, "alice-client", 1, true);
+    let state_revision = runtime.room_playback_barriers["room"]
+        .state_revision
+        .expect("the coordinated start should commit");
+    assert!(matches!(
+        runtime.room_readiness["room"].start_gate_phase,
+        RoomStartGatePhase::Committed { .. }
+    ));
+
+    let completed = send_started(&mut runtime, "alice-client", 1, state_revision, 12.0);
+
+    assert_eq!(
+        runtime.room_playback_barriers["room"].phase,
+        PlaybackBarrierPhase::Complete
+    );
+    assert_eq!(
+        runtime.room_readiness["room"].start_gate_phase,
+        RoomStartGatePhase::Inactive
+    );
+    assert!(
+        decode_directed_lines(&completed)
+            .into_iter()
+            .any(|(_, message)| readiness_extension(&message)
+                .and_then(|extension| extension.snapshot)
+                .is_some_and(|snapshot| snapshot.start_gate_phase == RoomStartGatePhase::Inactive))
+    );
 }
 
 #[test]

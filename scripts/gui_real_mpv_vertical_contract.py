@@ -19,6 +19,8 @@ MENU_INTERACTIONS_KIND = "sorotte-gui-real-mpv-menu-interactions"
 RECOVERY_KIND = "sorotte-gui-real-mpv-owned-process-recovery"
 HTTP_FAULT_KIND = "sorotte-gui-real-mpv-faulting-http-recovery"
 HTTP_FAULT_ROUTE = "/generated-fault.au"
+MEDIA_FAILURE_KIND = "sorotte-gui-real-mpv-media-failure-recovery"
+MEDIA_FAILURE_ROUTE = "/hard-media-failure.au"
 HTTP_FAULT_DURATION_SECONDS = 45
 HTTP_FAULT_DISCONNECT_AFTER_BYTES = 720_000
 HTTP_STALL_KIND = "sorotte-gui-real-mpv-stalled-http"
@@ -58,6 +60,7 @@ SESSION_EXCHANGE_KEYS = {
 }
 PLAYSTATE_EXCHANGE_KEYS = {
     "action",
+    "mutation_kind",
     "expected_paused",
     "request",
     "authoritative_echo",
@@ -150,8 +153,11 @@ HTTP_FAULT_REQUIRED_ASSERTIONS = (
     "gui-pause-command-observed-by-real-mpv",
     "gui-projected-paused-after-real-mpv-observation",
     "fault-evidence-retained-before-cleanup",
+    "authoritative-http-404-produced-media-failure",
+    "same-owned-mpv-recovered-from-hard-media-failure",
+    "hard-media-failure-evidence-retained",
     "native-success-screenshot",
-    "gui-exit-reaped-owned-mpv-and-released-fault-server",
+    "gui-exit-reaped-owned-mpv-and-released-fault-servers",
 )
 HTTP_STALL_REQUIRED_ASSERTIONS = (
     "supported-mpv-version-and-digest",
@@ -180,6 +186,7 @@ REQUIRED_ARTIFACTS = (
     "mpv_observation",
     "mpv_log",
     "gui_lifecycle",
+    "shared_lifecycle",
     "session_exchange",
     "menu_interactions",
     "success_screenshot",
@@ -194,6 +201,7 @@ RECOVERY_REQUIRED_ARTIFACTS = (
 HTTP_FAULT_REQUIRED_ARTIFACTS = (
     *REQUIRED_ARTIFACTS,
     "faulting_http_recovery",
+    "hard_media_failure",
 )
 HTTP_STALL_REQUIRED_ARTIFACTS = (
     *REQUIRED_ARTIFACTS,
@@ -245,13 +253,14 @@ HTTP_FAULT_KEYS = {
     "generated_media_bytes",
     "generated_media_sha256",
     "duration_seconds",
-    "disconnect_after_body_bytes",
+    "minimum_body_bytes_before_fault",
     "request_count",
     "premature_disconnect_count",
     "complete_response_count",
     "requests",
     "initial_file_loaded_index",
     "pre_fault_progress_index",
+    "fault_triggered_after_progress",
     "premature_eof_index",
     "recovered_file_loaded_index",
     "recovered_progress_index",
@@ -292,6 +301,47 @@ HTTP_REQUEST_KEYS = {
     "framing_fault_injected",
     "disconnected_early",
     "write_error",
+}
+MEDIA_FAILURE_KEYS = {
+    "schema_version",
+    "kind",
+    "result",
+    "failure_mode",
+    "recovery_mode",
+    "listener_endpoint",
+    "listener_ipv4_loopback",
+    "media_url",
+    "route",
+    "request_count",
+    "requests",
+    "failure_end_file_index",
+    "failure_reason",
+    "media_fail_event_id",
+    "media_fail_emitter",
+    "media_fail_process_role",
+    "restored_file_loaded_index",
+    "media_playable_event_id",
+    "media_playable_emitter",
+    "media_playable_process_role",
+    "initial_pid",
+    "failure_pid",
+    "recovered_pid",
+    "parent_pid",
+    "process_image_path",
+    "process_sha256",
+    "initial_ipc_endpoint",
+    "failure_ipc_endpoint",
+    "recovered_ipc_endpoint",
+    "same_process_identity",
+    "same_ipc_endpoint",
+    "restored_media_path",
+    "restored_media_sha256",
+    "manual_retry_invoked",
+    "evidence_retained_before_cleanup",
+    "server_thread_released",
+    "socket_released",
+    "owned_mpv_terminated_after_gui_exit",
+    "error",
 }
 HTTP_STALL_KEYS = {
     "schema_version",
@@ -374,6 +424,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def lifecycle_summary_binding(path: Path) -> tuple[str, list[str]]:
+    summary = load_json(path, "shared lifecycle summary")
+    require(
+        summary.get("schema_version") == 1
+        and summary.get("kind") == "sorotte-playback-lifecycle-evidence-validation"
+        and summary.get("result") == "passed",
+        "shared lifecycle summary is not a validated pass",
+    )
+    transitions = summary.get("transitions")
+    require(
+        isinstance(transitions, dict) and bool(transitions),
+        "shared lifecycle summary has no transition inventory",
+    )
+    for transition_id, count in transitions.items():
+        require(
+            isinstance(transition_id, str)
+            and transition_id
+            and is_json_integer(count)
+            and count > 0,
+            "shared lifecycle summary transition inventory is malformed",
+        )
+    return sha256_file(path), sorted(transitions)
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
@@ -443,6 +517,7 @@ def validate_playstate_exchange(
     *,
     expected_action: str,
     expected_paused: bool,
+    expected_mutation_kind: str,
 ) -> None:
     require(isinstance(row, dict), "session playstate exchange must be an object")
     require(
@@ -450,6 +525,10 @@ def validate_playstate_exchange(
         "session playstate exchange field inventory drifted",
     )
     require(row.get("action") == expected_action, "session playstate action order drifted")
+    require(
+        row.get("mutation_kind") == expected_mutation_kind,
+        f"{expected_action} mutation kind drifted",
+    )
     require(
         row.get("expected_paused") is expected_paused,
         f"{expected_action} expected pause level drifted",
@@ -467,32 +546,42 @@ def validate_playstate_exchange(
         f"{expected_action} request envelope drifted",
     )
     request_state = request.get("State")
+    expected_state_keys = (
+        {"playstate"} if expected_mutation_kind == "seek" else {"playstate", "ping"}
+    )
     require(
-        isinstance(request_state, dict)
-        and set(request_state) == {"playstate", "ping"},
+        isinstance(request_state, dict) and set(request_state) == expected_state_keys,
         f"{expected_action} request State schema drifted",
     )
     request_playstate = request_state.get("playstate")
     request_ping = request_state.get("ping")
+    expected_playstate_keys = (
+        {"position", "paused", "doSeek"}
+        if expected_mutation_kind == "seek"
+        else {"position", "paused"}
+    )
     require(
         isinstance(request_playstate, dict)
-        and set(request_playstate) == {"position", "paused"},
+        and set(request_playstate) == expected_playstate_keys,
         f"{expected_action} request playstate schema drifted",
     )
     require(
         request_playstate.get("paused") is expected_paused
+        and request_playstate.get("doSeek", False)
+        is (expected_mutation_kind == "seek")
         and is_json_number(request_playstate.get("position"))
         and float(request_playstate["position"]) >= 0.0,
         f"{expected_action} request pause or position was invalid",
     )
-    require(
-        isinstance(request_ping, dict)
-        and set(request_ping) == {"clientLatencyCalculation", "clientRtt"}
-        and is_json_number(request_ping.get("clientLatencyCalculation"))
-        and is_json_number(request_ping.get("clientRtt"))
-        and float(request_ping["clientRtt"]) >= 0.0,
-        f"{expected_action} request ping schema drifted",
-    )
+    if expected_mutation_kind == "pause":
+        require(
+            isinstance(request_ping, dict)
+            and set(request_ping) == {"clientLatencyCalculation", "clientRtt"}
+            and is_json_number(request_ping.get("clientLatencyCalculation"))
+            and is_json_number(request_ping.get("clientRtt"))
+            and float(request_ping["clientRtt"]) >= 0.0,
+            f"{expected_action} request ping schema drifted",
+        )
 
     require(
         isinstance(echo, dict) and set(echo) == {"State"},
@@ -511,7 +600,7 @@ def validate_playstate_exchange(
     )
     require(
         echo_playstate.get("paused") is expected_paused
-        and echo_playstate.get("doSeek") is False
+        and echo_playstate.get("doSeek") is (expected_mutation_kind == "seek")
         and echo_playstate.get("setBy") == "real-mpv-user"
         and is_json_number(echo_playstate.get("position"))
         and float(echo_playstate["position"])
@@ -603,8 +692,12 @@ def validate_http_fault_evidence(
     require(evidence.get("result") == "passed", "HTTP fault recovery did not pass")
     require(
         evidence.get("fault")
-        == "first-response-malformed-chunk-after-paced-au-prefix-once",
+        == "first-response-malformed-chunk-after-observed-progress-and-playable-prefix-once",
         "HTTP fault shape drifted",
+    )
+    require(
+        evidence.get("fault_triggered_after_progress") is True,
+        "HTTP fault was not causally released after observed playback progress",
     )
     require(
         evidence.get("recovery_mode")
@@ -636,9 +729,9 @@ def validate_http_fault_evidence(
         "HTTP media duration contract drifted",
     )
     require(
-        evidence.get("disconnect_after_body_bytes")
+        evidence.get("minimum_body_bytes_before_fault")
         == HTTP_FAULT_DISCONNECT_AFTER_BYTES,
-        "HTTP short-response boundary drifted",
+        "HTTP minimum playable-prefix boundary drifted",
     )
     require(
         evidence.get("initial_pid") == mpv["pid"]
@@ -855,7 +948,7 @@ def validate_http_fault_evidence(
         and first_get.get("content_length_header") is None
         and first_get.get("transfer_encoding") == "chunked"
         and first_get.get("transmitted_body_bytes")
-        == HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        >= HTTP_FAULT_DISCONNECT_AFTER_BYTES
         < evidence["generated_media_bytes"]
         and first_get.get("framing_fault_injected") is True,
         "first HTTP GET was not the exact malformed chunked response",
@@ -874,6 +967,179 @@ def validate_http_fault_evidence(
         evidence.get("premature_disconnect_count") == 1
         and evidence.get("complete_response_count") == 1,
         "HTTP response aggregate accounting drifted",
+    )
+
+
+def validate_media_failure_evidence(
+    evidence: Any,
+    *,
+    artifact_evidence: dict[str, Any],
+    observations: list[dict[str, Any]],
+    expected_media: Path,
+    expected_mpv: Path,
+    expected_mpv_sha256: str,
+    mpv: dict[str, Any],
+    ipc_endpoint: str,
+) -> None:
+    require(isinstance(evidence, dict), "hard media-failure contract missing")
+    require(
+        set(evidence) == MEDIA_FAILURE_KEYS,
+        "hard media-failure field inventory drifted",
+    )
+    require(
+        artifact_evidence == evidence,
+        "report/artifact hard media-failure evidence diverged",
+    )
+    require(
+        evidence.get("schema_version") == SCHEMA_VERSION,
+        "hard media-failure schema mismatch",
+    )
+    require(evidence.get("kind") == MEDIA_FAILURE_KIND, "hard media-failure kind mismatch")
+    require(evidence.get("result") == "passed", "hard media-failure recovery did not pass")
+    require(
+        evidence.get("failure_mode") == "authoritative-loopback-http-404",
+        "hard media-failure mode drifted",
+    )
+    require(
+        evidence.get("recovery_mode") == "authoritative-local-media-restore",
+        "hard media-failure recovery mode drifted",
+    )
+    listener_endpoint = evidence.get("listener_endpoint")
+    validate_ipv4_loopback_endpoint(listener_endpoint, "hard media-failure HTTP listener")
+    require(
+        evidence.get("listener_ipv4_loopback") is True,
+        "hard media-failure listener loopback attestation missing",
+    )
+    media_url = f"http://{listener_endpoint}{MEDIA_FAILURE_ROUTE}"
+    require(evidence.get("media_url") == media_url, "hard media-failure URL drifted")
+    require(evidence.get("route") == MEDIA_FAILURE_ROUTE, "hard media-failure route drifted")
+
+    requests = evidence.get("requests")
+    require(isinstance(requests, list) and len(requests) >= 1, "hard media-failure request evidence missing")
+    require(
+        evidence.get("request_count") == len(requests),
+        "hard media-failure request count drifted",
+    )
+    require(
+        any(request.get("method") == "GET" for request in requests if isinstance(request, dict)),
+        "hard media-failure evidence omitted a media GET",
+    )
+    for index, request in enumerate(requests):
+        require(isinstance(request, dict), f"hard media-failure request {index} was not an object")
+        require(set(request) == HTTP_REQUEST_KEYS, "hard media-failure request fields drifted")
+        require(request.get("ordinal") == index + 1, "hard media-failure request ordering drifted")
+        require(request.get("method") in ("GET", "HEAD"), "hard media-failure method drifted")
+        require(request.get("path") == MEDIA_FAILURE_ROUTE, "hard media-failure request route drifted")
+        validate_ipv4_loopback_endpoint(
+            request.get("peer_endpoint"), "hard media-failure request peer"
+        )
+        require(
+            request.get("peer_ipv4_loopback") is True
+            and request.get("status_code") == 404
+            and request.get("content_length_header") == 0
+            and request.get("transfer_encoding") is None
+            and request.get("transmitted_body_bytes") == 0
+            and request.get("framing_fault_injected") is False
+            and request.get("disconnected_early") is False
+            and request.get("write_error") is None,
+            "hard media-failure request did not retain the exact bodyless 404 contract",
+        )
+        require(
+            request.get("range_header") is None
+            or isinstance(request.get("range_header"), str),
+            "hard media-failure Range accounting was malformed",
+        )
+
+    failure_index = evidence.get("failure_end_file_index")
+    restored_index = evidence.get("restored_file_loaded_index")
+    require(
+        is_json_integer(failure_index)
+        and is_json_integer(restored_index)
+        and 0 <= failure_index < restored_index < len(observations),
+        "hard media-failure observation ordering or bounds drifted",
+    )
+    failure = observations[failure_index]
+    restored = observations[restored_index]
+    require(
+        failure.get("event") == "end-file"
+        and failure.get("reason") == evidence.get("failure_reason") == "error"
+        and failure.get("pid") == mpv["pid"]
+        and failure.get("ipc_endpoint") == ipc_endpoint
+        and failure.get("path") in (None, media_url),
+        "hard media-failure did not retain the same-process end-file error boundary",
+    )
+    require(
+        restored.get("event") == "file-loaded"
+        and restored.get("pid") == mpv["pid"]
+        and restored.get("ipc_endpoint") == ipc_endpoint
+        and normalized_resolved_path(restored.get("path", "")) == expected_media,
+        "hard media-failure recovery did not load the generated local media",
+    )
+    require(
+        all(
+            observation.get("pid") in (None, mpv["pid"])
+            and observation.get("ipc_endpoint") in (None, ipc_endpoint)
+            for observation in observations[failure_index : restored_index + 1]
+        ),
+        "stale or foreign mpv generation appeared across hard media-failure recovery",
+    )
+    require(
+        evidence.get("initial_pid") == mpv["pid"]
+        and evidence.get("failure_pid") == mpv["pid"]
+        and evidence.get("recovered_pid") == mpv["pid"]
+        and evidence.get("parent_pid") == mpv["parent_pid"],
+        "hard media-failure recovery changed the attested GUI-owned process",
+    )
+    require(
+        normalized_resolved_path(evidence.get("process_image_path", "")) == expected_mpv
+        and evidence.get("process_sha256") == expected_mpv_sha256,
+        "hard media-failure process image identity drifted",
+    )
+    require(
+        evidence.get("initial_ipc_endpoint") == ipc_endpoint
+        and evidence.get("failure_ipc_endpoint") == ipc_endpoint
+        and evidence.get("recovered_ipc_endpoint") == ipc_endpoint,
+        "hard media-failure recovery changed the managed mpv IPC endpoint",
+    )
+    require(
+        normalized_resolved_path(evidence.get("restored_media_path", ""))
+        == expected_media
+        and evidence.get("restored_media_sha256") == sha256_file(expected_media),
+        "hard media-failure restored-media identity drifted",
+    )
+    require(
+        all(
+            evidence.get(key) is True
+            for key in (
+                "same_process_identity",
+                "same_ipc_endpoint",
+                "evidence_retained_before_cleanup",
+                "server_thread_released",
+                "socket_released",
+                "owned_mpv_terminated_after_gui_exit",
+            )
+        ),
+        "hard media-failure identity, retention, release, or cleanup attestation was incomplete",
+    )
+    require(
+        evidence.get("manual_retry_invoked") is False,
+        "hard media-failure recovery unexpectedly used a manual retry",
+    )
+    require(evidence.get("error") is None, "hard media-failure evidence retained an error")
+    require(
+        isinstance(evidence.get("media_fail_event_id"), str)
+        and evidence["media_fail_event_id"]
+        and evidence.get("media_fail_emitter") == "gui-real-mpv"
+        and evidence.get("media_fail_process_role") == "client",
+        "MEDIA-FAIL-001 lifecycle attribution drifted",
+    )
+    require(
+        isinstance(evidence.get("media_playable_event_id"), str)
+        and evidence["media_playable_event_id"]
+        and evidence["media_playable_event_id"] != evidence["media_fail_event_id"]
+        and evidence.get("media_playable_emitter") == "gui-real-mpv"
+        and evidence.get("media_playable_process_role") == "client",
+        "MEDIA-PLAYABLE-001 lifecycle attribution drifted",
     )
 
 
@@ -1284,6 +1550,7 @@ def validate_report(
     expect_recovery: bool = False,
     expect_http_fault: bool = False,
     expect_http_stall: bool = False,
+    lifecycle_summary_path: Path | None = None,
 ) -> dict[str, Any]:
     require(
         sum((expect_recovery, expect_http_fault, expect_http_stall)) <= 1,
@@ -1356,10 +1623,18 @@ def validate_report(
         require("recovery" not in report, "baseline report unexpectedly included recovery state")
     if expect_http_fault:
         require(isinstance(report.get("http_fault"), dict), "HTTP fault contract missing")
+        require(
+            isinstance(report.get("media_failure"), dict),
+            "hard media-failure contract missing",
+        )
     else:
         require(
             "http_fault" not in report,
             "non-HTTP report unexpectedly included faulting HTTP state",
+        )
+        require(
+            "media_failure" not in report,
+            "non-HTTP report unexpectedly included hard media-failure state",
         )
     if expect_http_stall:
         require(isinstance(report.get("http_stall"), dict), "HTTP stall contract missing")
@@ -1416,6 +1691,7 @@ def validate_report(
         "observation_path",
         "mpv_log_path",
         "lifecycle_path",
+        "shared_lifecycle_path",
         "session_exchange_path",
         "menu_interactions_path",
     ):
@@ -1718,18 +1994,45 @@ def validate_report(
         )
     playstate_exchanges = session_exchange.get("playstate_exchanges")
     require(
-        isinstance(playstate_exchanges, list)
-        and len(playstate_exchanges) == len(expected_playstate_exchanges),
+        isinstance(playstate_exchanges, list),
+        "session playstate exchange inventory must be a list",
+    )
+    exchange_index = 0
+    for expected_action, expected_paused in expected_playstate_exchanges:
+        while exchange_index < len(playstate_exchanges):
+            row = playstate_exchanges[exchange_index]
+            exchange_index += 1
+            require(
+                isinstance(row, dict),
+                "session playstate exchange must be an object",
+            )
+            mutation_kind = row.get("mutation_kind")
+            if mutation_kind == "seek":
+                observed_paused = row.get("expected_paused")
+                require(
+                    isinstance(observed_paused, bool),
+                    f"{expected_action} interleaved seek pause level was invalid",
+                )
+                validate_playstate_exchange(
+                    row,
+                    expected_action=expected_action,
+                    expected_paused=observed_paused,
+                    expected_mutation_kind="seek",
+                )
+                continue
+            validate_playstate_exchange(
+                row,
+                expected_action=expected_action,
+                expected_paused=expected_paused,
+                expected_mutation_kind="pause",
+            )
+            break
+        else:
+            raise ValueError("session canonical Play/Pause exchange inventory drifted")
+    require(
+        exchange_index == len(playstate_exchanges),
         "session canonical Play/Pause exchange inventory drifted",
     )
-    for row, (expected_action, expected_paused) in zip(
-        playstate_exchanges, expected_playstate_exchanges, strict=True
-    ):
-        validate_playstate_exchange(
-            row,
-            expected_action=expected_action,
-            expected_paused=expected_paused,
-        )
 
     menu_interactions = load_json(
         resolved_artifacts["menu_interactions"], "real-mpv menu interactions"
@@ -1982,6 +2285,21 @@ def validate_report(
             mpv=mpv,
             ipc_endpoint=str(isolation["ipc_endpoint"]),
         )
+        media_failure = report.get("media_failure")
+        artifact_media_failure = load_json(
+            resolved_artifacts["hard_media_failure"],
+            "hard media-failure recovery",
+        )
+        validate_media_failure_evidence(
+            media_failure,
+            artifact_evidence=artifact_media_failure,
+            observations=observations,
+            expected_media=expected_media,
+            expected_mpv=expected_mpv,
+            expected_mpv_sha256=expected_mpv_sha256,
+            mpv=mpv,
+            ipc_endpoint=str(isolation["ipc_endpoint"]),
+        )
     if expect_http_stall:
         http_stall = report.get("http_stall")
         artifact_http_stall = load_json(
@@ -2023,8 +2341,15 @@ def validate_report(
         summary["recovery_exercised"] = True
     if expect_http_fault:
         summary["http_fault_exercised"] = True
+        summary["media_failure_recovery_exercised"] = True
     if expect_http_stall:
         summary["http_stall_exercised"] = True
+    if lifecycle_summary_path is not None:
+        lifecycle_digest, transition_coverage = lifecycle_summary_binding(
+            lifecycle_summary_path
+        )
+        summary["lifecycle_summary_sha256"] = lifecycle_digest
+        summary["lifecycle_transition_coverage"] = transition_coverage
     return summary
 
 
@@ -2043,6 +2368,7 @@ def main() -> int:
     parser.add_argument("--expected-mpv-sha256", required=True)
     parser.add_argument("--producer-exit-code", type=int, required=True)
     parser.add_argument("--summary", type=Path, required=True)
+    parser.add_argument("--lifecycle-summary", type=Path)
     capability = parser.add_mutually_exclusive_group()
     capability.add_argument("--expect-recovery", action="store_true")
     capability.add_argument("--expect-http-fault", action="store_true")
@@ -2062,6 +2388,7 @@ def main() -> int:
             expect_recovery=args.expect_recovery,
             expect_http_fault=args.expect_http_fault,
             expect_http_stall=args.expect_http_stall,
+            lifecycle_summary_path=args.lifecycle_summary,
         )
     except (OSError, TypeError, ValueError) as error:
         summary = {

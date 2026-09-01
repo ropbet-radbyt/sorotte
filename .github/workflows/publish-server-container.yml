@@ -32,7 +32,15 @@ env:
   DOCKER_METADATA_SHORT_SHA_LENGTH: 40
 
 jobs:
+  playback-lifecycle-release-gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/playback-lifecycle-release-gate.yml
+    with:
+      candidate_sha: ${{ github.sha }}
+
   publish:
+    needs: playback-lifecycle-release-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

@@ -26,8 +26,10 @@ const REAL_MPV_MENU_INTERACTIONS_KIND: &str = "sorotte-gui-real-mpv-menu-interac
 const REAL_MPV_RECOVERY_KIND: &str = "sorotte-gui-real-mpv-owned-process-recovery";
 const REAL_MPV_HTTP_FAULT_KIND: &str = "sorotte-gui-real-mpv-faulting-http-recovery";
 const REAL_MPV_HTTP_FAULT_ROUTE: &str = "/generated-fault.au";
+const REAL_MPV_MEDIA_FAILURE_KIND: &str = "sorotte-gui-real-mpv-media-failure-recovery";
+const REAL_MPV_MEDIA_FAILURE_ROUTE: &str = "/hard-media-failure.au";
 const REAL_MPV_HTTP_FAULT_DURATION_SECONDS: u32 = 45;
-const REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES: usize = 720_000;
+const REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES: usize = 720_000;
 const REAL_MPV_HTTP_FAULT_BYTES_PER_SECOND: usize = 350_000;
 const REAL_MPV_HTTP_STALL_KIND: &str = "sorotte-gui-real-mpv-stalled-http";
 const REAL_MPV_HTTP_STALL_ROUTE: &str = "/generated-stall.au";
@@ -146,6 +148,7 @@ struct IsolationContract {
     observation_path: String,
     mpv_log_path: String,
     lifecycle_path: String,
+    shared_lifecycle_path: String,
     session_exchange_path: String,
     menu_interactions_path: String,
     ipc_endpoint: String,
@@ -185,6 +188,8 @@ struct RealMpvVerticalReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     http_fault: Option<HttpFaultRecoveryEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    media_failure: Option<MediaFailureRecoveryEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     http_stall: Option<HttpStallEvidence>,
     isolation: IsolationContract,
     assertions: Vec<String>,
@@ -223,13 +228,14 @@ struct HttpFaultRecoveryEvidence {
     generated_media_bytes: usize,
     generated_media_sha256: String,
     duration_seconds: u32,
-    disconnect_after_body_bytes: usize,
+    minimum_body_bytes_before_fault: usize,
     request_count: usize,
     premature_disconnect_count: usize,
     complete_response_count: usize,
     requests: Vec<HttpRequestEvidence>,
     initial_file_loaded_index: Option<usize>,
     pre_fault_progress_index: Option<usize>,
+    fault_triggered_after_progress: bool,
     premature_eof_index: Option<usize>,
     recovered_file_loaded_index: Option<usize>,
     recovered_progress_index: Option<usize>,
@@ -263,7 +269,7 @@ impl HttpFaultRecoveryEvidence {
             schema_version: REAL_MPV_SCHEMA_VERSION,
             kind: REAL_MPV_HTTP_FAULT_KIND,
             result: "running".to_owned(),
-            fault: "first-response-malformed-chunk-after-paced-au-prefix-once",
+            fault: "first-response-malformed-chunk-after-observed-progress-and-playable-prefix-once",
             recovery_mode: "same-generation-automatic-network-stream-reload",
             listener_endpoint,
             listener_ipv4_loopback: true,
@@ -272,13 +278,14 @@ impl HttpFaultRecoveryEvidence {
             generated_media_bytes: generated_media.len(),
             generated_media_sha256: hex_sha256(generated_media),
             duration_seconds: REAL_MPV_HTTP_FAULT_DURATION_SECONDS,
-            disconnect_after_body_bytes: REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES,
+            minimum_body_bytes_before_fault: REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES,
             request_count: 0,
             premature_disconnect_count: 0,
             complete_response_count: 0,
             requests: Vec::new(),
             initial_file_loaded_index: None,
             pre_fault_progress_index: None,
+            fault_triggered_after_progress: false,
             premature_eof_index: None,
             recovered_file_loaded_index: None,
             recovered_progress_index: None,
@@ -322,6 +329,110 @@ impl HttpFaultRecoveryEvidence {
                     && request.content_length_header == Some(request.transmitted_body_bytes)
             })
             .count();
+        self.requests = requests;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MediaFailureRecoveryEvidence {
+    schema_version: u32,
+    kind: &'static str,
+    result: String,
+    failure_mode: &'static str,
+    recovery_mode: &'static str,
+    listener_endpoint: String,
+    listener_ipv4_loopback: bool,
+    media_url: String,
+    route: &'static str,
+    request_count: usize,
+    requests: Vec<HttpRequestEvidence>,
+    failure_end_file_index: Option<usize>,
+    failure_reason: Option<String>,
+    media_fail_event_id: Option<String>,
+    media_fail_emitter: Option<String>,
+    media_fail_process_role: Option<String>,
+    restored_file_loaded_index: Option<usize>,
+    media_playable_event_id: Option<String>,
+    media_playable_emitter: Option<String>,
+    media_playable_process_role: Option<String>,
+    initial_pid: u32,
+    failure_pid: Option<u32>,
+    recovered_pid: Option<u32>,
+    parent_pid: u32,
+    process_image_path: String,
+    process_sha256: String,
+    initial_ipc_endpoint: String,
+    failure_ipc_endpoint: Option<String>,
+    recovered_ipc_endpoint: Option<String>,
+    same_process_identity: bool,
+    same_ipc_endpoint: bool,
+    restored_media_path: String,
+    restored_media_sha256: String,
+    manual_retry_invoked: bool,
+    evidence_retained_before_cleanup: bool,
+    server_thread_released: bool,
+    socket_released: bool,
+    owned_mpv_terminated_after_gui_exit: bool,
+    error: Option<String>,
+}
+
+impl MediaFailureRecoveryEvidence {
+    fn new(
+        listener_endpoint: String,
+        media_url: String,
+        initial_pid: u32,
+        parent_pid: u32,
+        process_image_path: &Path,
+        process_sha256: String,
+        initial_ipc_endpoint: String,
+        restored_media_path: &Path,
+        restored_media_sha256: String,
+    ) -> Self {
+        Self {
+            schema_version: REAL_MPV_SCHEMA_VERSION,
+            kind: REAL_MPV_MEDIA_FAILURE_KIND,
+            result: "running".to_owned(),
+            failure_mode: "authoritative-loopback-http-404",
+            recovery_mode: "authoritative-local-media-restore",
+            listener_endpoint,
+            listener_ipv4_loopback: true,
+            media_url,
+            route: REAL_MPV_MEDIA_FAILURE_ROUTE,
+            request_count: 0,
+            requests: Vec::new(),
+            failure_end_file_index: None,
+            failure_reason: None,
+            media_fail_event_id: None,
+            media_fail_emitter: None,
+            media_fail_process_role: None,
+            restored_file_loaded_index: None,
+            media_playable_event_id: None,
+            media_playable_emitter: None,
+            media_playable_process_role: None,
+            initial_pid,
+            failure_pid: None,
+            recovered_pid: None,
+            parent_pid,
+            process_image_path: process_image_path.display().to_string(),
+            process_sha256,
+            initial_ipc_endpoint,
+            failure_ipc_endpoint: None,
+            recovered_ipc_endpoint: None,
+            same_process_identity: false,
+            same_ipc_endpoint: false,
+            restored_media_path: restored_media_path.display().to_string(),
+            restored_media_sha256,
+            manual_retry_invoked: false,
+            evidence_retained_before_cleanup: false,
+            server_thread_released: false,
+            socket_released: false,
+            owned_mpv_terminated_after_gui_exit: false,
+            error: None,
+        }
+    }
+
+    fn record_requests(&mut self, requests: Vec<HttpRequestEvidence>) {
+        self.request_count = requests.len();
         self.requests = requests;
     }
 }
@@ -1093,6 +1204,7 @@ fn serve_complete_stalled_http_response(
 struct FaultingLoopbackHttpServer {
     address: SocketAddr,
     shutdown: Arc<AtomicBool>,
+    fault_trigger: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<HttpRequestEvidence>>>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
 }
@@ -1119,6 +1231,8 @@ impl FaultingLoopbackHttpServer {
         let thread_requests = Arc::clone(&requests);
         let fault_injected = Arc::new(AtomicBool::new(false));
         let thread_fault_injected = Arc::clone(&fault_injected);
+        let fault_trigger = Arc::new(AtomicBool::new(false));
+        let thread_fault_trigger = Arc::clone(&fault_trigger);
         let join_handle = thread::Builder::new()
             .name("sorotte-native-fault-http".to_owned())
             .spawn(move || {
@@ -1140,6 +1254,7 @@ impl FaultingLoopbackHttpServer {
                                 &generated_media,
                                 &thread_shutdown,
                                 &thread_fault_injected,
+                                &thread_fault_trigger,
                             )?;
                             thread_requests
                                 .lock()
@@ -1160,6 +1275,7 @@ impl FaultingLoopbackHttpServer {
         Ok(Self {
             address,
             shutdown,
+            fault_trigger,
             requests,
             join_handle: Some(join_handle),
         })
@@ -1178,6 +1294,13 @@ impl FaultingLoopbackHttpServer {
             .lock()
             .map(|requests| requests.clone())
             .map_err(|_| "faulting HTTP request log was poisoned".to_owned())
+    }
+
+    fn trigger_fault(&self) -> Result<(), String> {
+        self.fault_trigger
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| "faulting HTTP disconnect trigger was applied more than once".to_owned())
     }
 
     fn wait_for_media_gets(
@@ -1242,6 +1365,7 @@ fn handle_faulting_http_connection(
     generated_media: &[u8],
     shutdown: &AtomicBool,
     fault_injected: &AtomicBool,
+    fault_trigger: &AtomicBool,
 ) -> Result<HttpRequestEvidence, String> {
     if !peer.is_ipv4() || !peer.ip().is_loopback() || peer.port() == 0 {
         return Err(format!(
@@ -1341,11 +1465,14 @@ fn handle_faulting_http_connection(
     let transmitted_body_bytes = if method == "HEAD" {
         0
     } else if inject_fault {
-        let target = REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES.min(generated_media.len());
+        let minimum_prefix = REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES.min(generated_media.len());
         let started = Instant::now();
         let mut sent = 0;
-        while sent < target && !shutdown.load(Ordering::Acquire) {
-            let next = (sent + 16 * 1024).min(target);
+        while sent < generated_media.len()
+            && !shutdown.load(Ordering::Acquire)
+            && (sent < minimum_prefix || !fault_trigger.load(Ordering::Acquire))
+        {
+            let next = (sent + 16 * 1024).min(generated_media.len());
             let chunk = &generated_media[sent..next];
             let chunk_header = format!("{:x}\r\n", chunk.len());
             if let Err(error) = stream
@@ -1365,7 +1492,13 @@ fn handle_faulting_http_connection(
                 thread::sleep(delay);
             }
         }
-        if evidence.write_error.is_none() {
+        while evidence.write_error.is_none()
+            && !fault_trigger.load(Ordering::Acquire)
+            && !shutdown.load(Ordering::Acquire)
+        {
+            thread::sleep(Duration::from_millis(2));
+        }
+        if evidence.write_error.is_none() && !shutdown.load(Ordering::Acquire) {
             if let Err(error) = stream.write_all(b"not-a-chunk-size\r\n") {
                 evidence.write_error = Some(format!(
                     "failed writing malformed HTTP chunk boundary: {error}"
@@ -1406,6 +1539,226 @@ fn handle_faulting_http_connection(
     evidence.transmitted_body_bytes = transmitted_body_bytes;
     evidence.disconnected_early = method == "GET"
         && (evidence.framing_fault_injected || transmitted_body_bytes < generated_media.len());
+    Ok(evidence)
+}
+
+struct HardFailureLoopbackHttpServer {
+    address: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<HttpRequestEvidence>>>,
+    join_handle: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl HardFailureLoopbackHttpServer {
+    fn start() -> Result<Self, String> {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| {
+            format!("failed to bind hard-failure HTTP loopback listener: {error}")
+        })?;
+        listener.set_nonblocking(true).map_err(|error| {
+            format!("failed to make hard-failure HTTP listener nonblocking: {error}")
+        })?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("failed to inspect hard-failure HTTP listener: {error}"))?;
+        if !address.is_ipv4() || !address.ip().is_loopback() || address.port() == 0 {
+            return Err(format!(
+                "hard-failure HTTP listener {address} was not strict nonzero IPv4 loopback"
+            ));
+        }
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_shutdown = Arc::clone(&shutdown);
+        let thread_requests = Arc::clone(&requests);
+        let join_handle = thread::Builder::new()
+            .name("sorotte-native-hard-failure-http".to_owned())
+            .spawn(move || {
+                while !thread_shutdown.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, peer)) => {
+                            if thread_shutdown.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let ordinal = thread_requests
+                                .lock()
+                                .map_err(|_| {
+                                    "hard-failure HTTP request log was poisoned".to_owned()
+                                })?
+                                .len()
+                                .saturating_add(1);
+                            let record =
+                                handle_hard_failure_http_connection(stream, peer, ordinal)?;
+                            thread_requests
+                                .lock()
+                                .map_err(|_| {
+                                    "hard-failure HTTP request log was poisoned".to_owned()
+                                })?
+                                .push(record);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => {
+                            return Err(format!(
+                                "hard-failure HTTP listener accept failed: {error}"
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|error| format!("failed to spawn hard-failure HTTP server thread: {error}"))?;
+        Ok(Self {
+            address,
+            shutdown,
+            requests,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        self.address.to_string()
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}{}", self.address, REAL_MPV_MEDIA_FAILURE_ROUTE)
+    }
+
+    fn requests(&self) -> Result<Vec<HttpRequestEvidence>, String> {
+        self.requests
+            .lock()
+            .map(|requests| requests.clone())
+            .map_err(|_| "hard-failure HTTP request log was poisoned".to_owned())
+    }
+
+    fn wait_for_media_get(&self, timeout: Duration) -> Result<Vec<HttpRequestEvidence>, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let requests = self.requests()?;
+            if requests.iter().any(|request| request.method == "GET") {
+                return Ok(requests);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for hard-failure HTTP media GET; requests={requests:?}"
+                ));
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn release(mut self) -> Result<Vec<HttpRequestEvidence>, String> {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle
+                .join()
+                .map_err(|_| "hard-failure HTTP server thread panicked".to_owned())??;
+        }
+        let requests = self.requests()?;
+        let rebound = TcpListener::bind(self.address).map_err(|error| {
+            format!(
+                "hard-failure HTTP listener endpoint {} could not be rebound after release: {error}",
+                self.address
+            )
+        })?;
+        drop(rebound);
+        Ok(requests)
+    }
+}
+
+impl Drop for HardFailureLoopbackHttpServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+fn handle_hard_failure_http_connection(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    ordinal: usize,
+) -> Result<HttpRequestEvidence, String> {
+    if !peer.is_ipv4() || !peer.ip().is_loopback() || peer.port() == 0 {
+        return Err(format!(
+            "hard-failure HTTP peer {peer} was not strict nonzero IPv4 loopback"
+        ));
+    }
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .map_err(|error| format!("failed setting hard-failure HTTP read timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .map_err(|error| format!("failed setting hard-failure HTTP write timeout: {error}"))?;
+
+    let mut request_bytes = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while !request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("failed reading hard-failure HTTP request: {error}"))?;
+        if read == 0 {
+            return Err("hard-failure HTTP peer closed before complete headers".to_owned());
+        }
+        request_bytes.extend_from_slice(&buffer[..read]);
+        if request_bytes.len() > 16 * 1024 {
+            return Err("hard-failure HTTP request headers exceeded 16 KiB".to_owned());
+        }
+    }
+    let request = std::str::from_utf8(&request_bytes)
+        .map_err(|error| format!("hard-failure HTTP request headers were not UTF-8: {error}"))?;
+    let mut lines = request.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "hard-failure HTTP request line was absent".to_owned())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default().to_owned();
+    let path = request_parts.next().unwrap_or_default().to_owned();
+    let version = request_parts.next().unwrap_or_default();
+    if !matches!(method.as_str(), "GET" | "HEAD")
+        || path != REAL_MPV_MEDIA_FAILURE_ROUTE
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+        || request_parts.next().is_some()
+    {
+        return Err(format!(
+            "hard-failure HTTP received unexpected request line {request_line:?}"
+        ));
+    }
+    let range_header = lines.find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case("range")
+                .then(|| value.trim().to_owned())
+        })
+    });
+    let mut evidence = HttpRequestEvidence {
+        ordinal,
+        method,
+        path,
+        peer_endpoint: peer.to_string(),
+        peer_ipv4_loopback: true,
+        range_header,
+        status_code: 404,
+        content_length_header: Some(0),
+        transfer_encoding: None,
+        transmitted_body_bytes: 0,
+        framing_fault_injected: false,
+        disconnected_early: false,
+        write_error: None,
+    };
+    if let Err(error) = stream
+        .write_all(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        )
+        .and_then(|()| stream.flush())
+    {
+        evidence.write_error = Some(format!(
+            "failed writing hard-failure HTTP 404 response: {error}"
+        ));
+    }
+    let _ = stream.shutdown(Shutdown::Both);
     Ok(evidence)
 }
 
@@ -1513,6 +1866,7 @@ struct MpvPreflight {
 #[derive(Debug, Serialize)]
 struct PlaystateExchangeEvidence {
     action: &'static str,
+    mutation_kind: &'static str,
     expected_paused: bool,
     request: String,
     authoritative_echo: String,
@@ -1575,70 +1929,93 @@ fn record_authoritative_playstate_exchange(
     action: &'static str,
     expected_paused: bool,
 ) -> Result<(), String> {
-    let (request, authoritative_echo) = server.recv_playstate_exchange(timeout, action)?;
-    let request_json: serde_json::Value = serde_json::from_str(&request)
-        .map_err(|error| format!("{action} client playstate was invalid JSON: {error}"))?;
-    let echo_json: serde_json::Value = serde_json::from_str(&authoritative_echo)
-        .map_err(|error| format!("{action} authoritative playstate was invalid JSON: {error}"))?;
-    let request_playstate = request_json
-        .pointer("/State/playstate")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| format!("{action} client frame omitted State.playstate"))?;
-    let echo_playstate = echo_json
-        .pointer("/State/playstate")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| format!("{action} server echo omitted State.playstate"))?;
-    let request_position = request_playstate
-        .get("position")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|position| position.is_finite() && *position >= 0.0)
-        .ok_or_else(|| format!("{action} client frame omitted a valid position"))?;
-    if request_playstate
-        .get("paused")
-        .and_then(serde_json::Value::as_bool)
-        != Some(expected_paused)
-        || request_playstate
-            .get("doSeek")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        || request_playstate.contains_key("setBy")
-    {
-        return Err(format!(
-            "{action} client playstate was not the expected authenticated pause-only mutation"
-        ));
-    }
-    if echo_playstate
-        .get("paused")
-        .and_then(serde_json::Value::as_bool)
-        != Some(expected_paused)
-        || echo_playstate
-            .get("doSeek")
-            .and_then(serde_json::Value::as_bool)
-            != Some(false)
-        || echo_playstate
-            .get("setBy")
-            .and_then(serde_json::Value::as_str)
-            != Some(REAL_MPV_LOOPBACK_USERNAME)
-        || echo_playstate
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "timed out waiting for {action} after authenticated interleaved seek exchanges"
+            ));
+        }
+        let (request, authoritative_echo) = server.recv_playstate_exchange(remaining, action)?;
+        let request_json: serde_json::Value = serde_json::from_str(&request)
+            .map_err(|error| format!("{action} client playstate was invalid JSON: {error}"))?;
+        let echo_json: serde_json::Value =
+            serde_json::from_str(&authoritative_echo).map_err(|error| {
+                format!("{action} authoritative playstate was invalid JSON: {error}")
+            })?;
+        let request_playstate = request_json
+            .pointer("/State/playstate")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("{action} client frame omitted State.playstate"))?;
+        let echo_playstate = echo_json
+            .pointer("/State/playstate")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("{action} server echo omitted State.playstate"))?;
+        let request_position = request_playstate
             .get("position")
             .and_then(serde_json::Value::as_f64)
-            .is_none_or(|position| (position - request_position).abs() > f64::EPSILON)
-        || echo_playstate.get("sorotteTransportRevision")
-            != request_playstate.get("sorotteTransportRevision")
-    {
-        return Err(format!(
-            "{action} authoritative echo did not preserve and authenticate the client pause mutation"
-        ));
+            .filter(|position| position.is_finite() && *position >= 0.0)
+            .ok_or_else(|| format!("{action} client frame omitted a valid position"))?;
+        let observed_paused = request_playstate
+            .get("paused")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| format!("{action} client frame omitted a boolean paused state"))?;
+        let observed_do_seek = request_playstate
+            .get("doSeek")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if request_playstate.contains_key("setBy") {
+            return Err(format!(
+                "{action} client playstate improperly claimed server attribution"
+            ));
+        }
+        if echo_playstate
+            .get("paused")
+            .and_then(serde_json::Value::as_bool)
+            != Some(observed_paused)
+            || echo_playstate
+                .get("doSeek")
+                .and_then(serde_json::Value::as_bool)
+                != Some(observed_do_seek)
+            || echo_playstate
+                .get("setBy")
+                .and_then(serde_json::Value::as_str)
+                != Some(REAL_MPV_LOOPBACK_USERNAME)
+            || echo_playstate
+                .get("position")
+                .and_then(serde_json::Value::as_f64)
+                .is_none_or(|position| (position - request_position).abs() > f64::EPSILON)
+            || echo_playstate.get("sorotteTransportRevision")
+                != request_playstate.get("sorotteTransportRevision")
+        {
+            return Err(format!(
+                "{action} authoritative echo did not preserve and authenticate the client mutation"
+            ));
+        }
+
+        let mutation_kind = if observed_do_seek { "seek" } else { "pause" };
+        evidence
+            .playstate_exchanges
+            .push(PlaystateExchangeEvidence {
+                action,
+                mutation_kind,
+                expected_paused: observed_paused,
+                request,
+                authoritative_echo,
+            });
+        write_json_file(evidence_path, evidence)?;
+
+        if observed_do_seek {
+            continue;
+        }
+        if observed_paused != expected_paused {
+            return Err(format!(
+                "{action} client pause mutation had paused={observed_paused}, expected {expected_paused}"
+            ));
+        }
+        return Ok(());
     }
-    evidence
-        .playstate_exchanges
-        .push(PlaystateExchangeEvidence {
-            action,
-            expected_paused,
-            request,
-            authoritative_echo,
-        });
-    write_json_file(evidence_path, evidence)
 }
 
 #[derive(Debug, Serialize)]
@@ -1701,6 +2078,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let menu_interactions_path = artifact_root.join("menu-interactions.json");
     let recovery_path = artifact_root.join("owned-mpv-recovery.json");
     let http_fault_path = artifact_root.join("faulting-http-recovery.json");
+    let media_failure_path = artifact_root.join("hard-media-failure.json");
     let http_stall_path = artifact_root.join("stalled-http.json");
     let mut state = RealMpvVerticalState::new(&artifact_root);
     write_json_file(&state_path, &state)?;
@@ -1717,6 +2095,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
     let mut recovery_evidence: Option<MpvRecoveryEvidence> = None;
     let mut fault_http_server: Option<FaultingLoopbackHttpServer> = None;
     let mut http_fault_evidence: Option<HttpFaultRecoveryEvidence> = None;
+    let mut hard_failure_http_server: Option<HardFailureLoopbackHttpServer> = None;
+    let mut media_failure_evidence: Option<MediaFailureRecoveryEvidence> = None;
     let mut stalled_http_server: Option<StalledLoopbackHttpServer> = None;
     let mut http_stall_evidence: Option<HttpStallEvidence> = None;
 
@@ -1753,6 +2133,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         let observation_path = artifact_root.join("mpv-observation.jsonl");
         let mpv_log_path = artifact_root.join("mpv.log");
         let lifecycle_path = artifact_root.join("gui-lifecycle.jsonl");
+        let shared_lifecycle_path = artifact_root.join("shared-lifecycle-evidence.jsonl");
+        let shared_lifecycle_run_id = format!("gui-real-mpv-{}", unique_suffix());
         let automatic_relaunch_screenshot_path =
             artifact_root.join("owned-mpv-automatic-relaunch.png");
         let recovery_screenshot_path = artifact_root.join("owned-mpv-recovered.png");
@@ -1801,6 +2183,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         }
 
         let mut media_url = None;
+        let mut additional_trusted_media_urls = Vec::new();
         let media_open_target = if options.exercise_http_fault {
             let server = FaultingLoopbackHttpServer::start(generated_media.clone())?;
             let endpoint = server.endpoint();
@@ -1811,6 +2194,14 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             fault_http_server = Some(server);
             http_fault_evidence = Some(evidence);
             media_url = Some(url.clone());
+            let hard_failure_server = HardFailureLoopbackHttpServer::start()?;
+            let hard_failure_endpoint = hard_failure_server.endpoint();
+            require_ipv4_loopback_endpoint(
+                &hard_failure_endpoint,
+                "hard media-failure HTTP listener",
+            )?;
+            additional_trusted_media_urls.push(hard_failure_server.url());
+            hard_failure_http_server = Some(hard_failure_server);
             PathBuf::from(url)
         } else if options.exercise_http_stall {
             let server = StalledLoopbackHttpServer::start(generated_media.clone())?;
@@ -1831,7 +2222,11 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             &mpv_path,
             &observation_script_path,
             &mpv_log_path,
-            media_url.clone(),
+            media_url
+                .iter()
+                .cloned()
+                .chain(additional_trusted_media_urls)
+                .collect(),
         )?;
         state.advance(
             &state_path,
@@ -1900,6 +2295,9 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 appdata_root: Some(&appdata_root),
                 explicit_config_path_with_appdata_root: true,
                 lifecycle_observation_path: Some(&lifecycle_path),
+                shared_lifecycle_evidence_path: Some(&shared_lifecycle_path),
+                shared_lifecycle_run_id: Some(&shared_lifecycle_run_id),
+                shared_lifecycle_emitter: Some("gui-real-mpv"),
                 ..GuiLaunchTestOverrides::default()
             },
         )?;
@@ -2209,6 +2607,19 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             let pre_fault_position = pre_fault_progress
                 .position
                 .ok_or_else(|| "pre-fault time-pos observation omitted its position".to_owned())?;
+            fault_http_server
+                .as_ref()
+                .expect("faulting HTTP server must remain live")
+                .trigger_fault()?;
+            {
+                let evidence = http_fault_evidence
+                    .as_mut()
+                    .expect("faulting HTTP evidence must be initialized");
+                evidence.pre_fault_progress_index = Some(pre_fault_progress_index);
+                evidence.pre_fault_position_seconds = Some(pre_fault_position);
+                evidence.fault_triggered_after_progress = true;
+                write_json_file(&http_fault_path, evidence)?;
+            }
             let (premature_eof_index, premature_eof) = wait_for_mpv_observation(
                 &observation_path,
                 pre_fault_progress_index,
@@ -2235,8 +2646,8 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             if !first_request.disconnected_early
                 || first_request.status_code != 200
                 || first_request.range_header.as_deref() != Some("bytes=0-")
-                || first_request.transmitted_body_bytes
-                    != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+                || first_request.transmitted_body_bytes < REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES
+                || first_request.transmitted_body_bytes >= generated_media.len()
                 || first_request.content_length_header.is_some()
                 || first_request.transfer_encoding.as_deref() != Some("chunked")
                 || !first_request.framing_fault_injected
@@ -2451,6 +2862,257 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 &state_path,
                 "faulting-http-evidence-retained",
                 Some("fault-evidence-retained-before-cleanup"),
+            )?;
+
+            let hard_failure_server = hard_failure_http_server
+                .as_ref()
+                .expect("hard-failure HTTP server must be preflighted and trusted");
+            let hard_failure_endpoint = hard_failure_server.endpoint();
+            require_ipv4_loopback_endpoint(
+                &hard_failure_endpoint,
+                "hard media-failure HTTP listener",
+            )?;
+            let hard_failure_url = hard_failure_server.url();
+            let evidence = MediaFailureRecoveryEvidence::new(
+                hard_failure_endpoint,
+                hard_failure_url.clone(),
+                mpv_pid,
+                parent_pid,
+                &initial_process_image_path,
+                mpv_preflight.identity.sha256.clone(),
+                ipc_endpoint.clone(),
+                &media_path,
+                hex_sha256(&generated_media),
+            );
+            write_json_file(&media_failure_path, &evidence)?;
+            media_failure_evidence = Some(evidence);
+
+            let observations_before_hard_failure = read_mpv_observations(&observation_path)?.len();
+            let lifecycle_before_hard_failure =
+                wait_for_lifecycle_snapshot(&shared_lifecycle_path, step_timeout)?.len();
+            let mock_session = session_server
+                .as_ref()
+                .expect("real-mpv session server must remain live");
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "Set": {
+                        "playlistChange": {
+                            "files": [&hard_failure_url],
+                            "user": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure playlist",
+            )?;
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "Set": {
+                        "playlistIndex": {
+                            "index": 0,
+                            "user": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure playlist selection",
+            )?;
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "State": {
+                        "playstate": {
+                            "position": 0.0,
+                            "paused": true,
+                            "doSeek": false,
+                            "setBy": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure paused transport",
+            )?;
+
+            let initial_hard_failure_requests = hard_failure_http_server
+                .as_ref()
+                .expect("hard-failure HTTP server must remain live")
+                .wait_for_media_get(fault_timeout)?;
+            validate_hard_failure_http_request_accounting(&initial_hard_failure_requests)?;
+            let (failure_end_file_index, failure_end_file) = wait_for_mpv_observation(
+                &observation_path,
+                observations_before_hard_failure,
+                fault_timeout,
+                "same-process end-file error after authoritative HTTP 404 media load",
+                |observation| {
+                    observation.event == "end-file"
+                        && observation.reason.as_deref() == Some("error")
+                        && observation.pid == Some(mpv_pid)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                },
+            )?;
+            let (media_fail_index, media_fail_record) = wait_for_lifecycle_transition(
+                &shared_lifecycle_path,
+                lifecycle_before_hard_failure,
+                "MEDIA-FAIL-001",
+                fault_timeout,
+            )?;
+            let media_fail_event_id =
+                required_lifecycle_string(&media_fail_record, "event_id", "MEDIA-FAIL-001")?;
+            let media_fail_emitter =
+                required_lifecycle_string(&media_fail_record, "emitter", "MEDIA-FAIL-001")?;
+            let media_fail_process_role =
+                required_lifecycle_string(&media_fail_record, "process_role", "MEDIA-FAIL-001")?;
+            if media_fail_emitter != "gui-real-mpv" || media_fail_process_role != "client" {
+                return Err(format!(
+                    "hard media-failure lifecycle attribution drifted: emitter={media_fail_emitter:?}, process_role={media_fail_process_role:?}"
+                ));
+            }
+            if !process_is_running(mpv_pid)
+                || process_parent_pid(mpv_pid)? != gui_pid
+                || binary_identity(&process_image_path(mpv_pid)?)?.sha256
+                    != mpv_preflight.identity.sha256
+            {
+                return Err(format!(
+                    "GUI-owned mpv identity changed across the hard media-failure boundary for PID {mpv_pid}"
+                ));
+            }
+            {
+                let evidence = media_failure_evidence
+                    .as_mut()
+                    .expect("hard media-failure evidence must be initialized");
+                evidence.record_requests(initial_hard_failure_requests);
+                evidence.failure_end_file_index = Some(failure_end_file_index);
+                evidence.failure_reason = failure_end_file.reason.clone();
+                evidence.media_fail_event_id = Some(media_fail_event_id);
+                evidence.media_fail_emitter = Some(media_fail_emitter);
+                evidence.media_fail_process_role = Some(media_fail_process_role);
+                evidence.failure_pid = failure_end_file.pid;
+                evidence.failure_ipc_endpoint = failure_end_file.ipc_endpoint.clone();
+                write_json_file(&media_failure_path, evidence)?;
+            }
+            state.advance(
+                &state_path,
+                "authoritative-http-404-media-failure-observed",
+                Some("authoritative-http-404-produced-media-failure"),
+            )?;
+
+            let restored_media = media_path.display().to_string();
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "Set": {
+                        "playlistChange": {
+                            "files": [&restored_media],
+                            "user": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure recovery playlist",
+            )?;
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "Set": {
+                        "playlistIndex": {
+                            "index": 0,
+                            "user": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure recovery selection",
+            )?;
+            mock_session.send_authoritative_line(
+                serde_json::json!({
+                    "State": {
+                        "playstate": {
+                            "position": 0.0,
+                            "paused": true,
+                            "doSeek": false,
+                            "setBy": "remote-controller",
+                        }
+                    }
+                })
+                .to_string(),
+                "hard media-failure recovery transport",
+            )?;
+            let (restored_file_loaded_index, restored_file_loaded) = wait_for_mpv_observation(
+                &observation_path,
+                failure_end_file_index.saturating_add(1),
+                fault_timeout,
+                "same-process file-loaded after authoritative local-media restore",
+                |observation| {
+                    observation.event == "file-loaded"
+                        && observation.pid == Some(mpv_pid)
+                        && observation.ipc_endpoint.as_deref() == Some(&ipc_endpoint)
+                        && observation.path.as_deref().is_some_and(|path| {
+                            observed_media_path_matches(Path::new(path), &media_path)
+                        })
+                },
+            )?;
+            let (_, media_playable_record) = wait_for_lifecycle_transition(
+                &shared_lifecycle_path,
+                media_fail_index.saturating_add(1),
+                "MEDIA-PLAYABLE-001",
+                fault_timeout,
+            )?;
+            let media_playable_event_id = required_lifecycle_string(
+                &media_playable_record,
+                "event_id",
+                "MEDIA-PLAYABLE-001",
+            )?;
+            let media_playable_emitter =
+                required_lifecycle_string(&media_playable_record, "emitter", "MEDIA-PLAYABLE-001")?;
+            let media_playable_process_role = required_lifecycle_string(
+                &media_playable_record,
+                "process_role",
+                "MEDIA-PLAYABLE-001",
+            )?;
+            if media_playable_emitter != "gui-real-mpv"
+                || media_playable_process_role != "client"
+                || restored_file_loaded.pid != Some(mpv_pid)
+                || restored_file_loaded.ipc_endpoint.as_deref() != Some(&ipc_endpoint)
+                || !process_is_running(mpv_pid)
+                || process_parent_pid(mpv_pid)? != gui_pid
+                || binary_identity(&process_image_path(mpv_pid)?)?.sha256
+                    != mpv_preflight.identity.sha256
+            {
+                return Err(format!(
+                    "same-process hard media-failure recovery identity or lifecycle attribution drifted: emitter={media_playable_emitter:?}, process_role={media_playable_process_role:?}, observation={restored_file_loaded:?}"
+                ));
+            }
+            state.advance(
+                &state_path,
+                "hard-media-failure-recovered",
+                Some("same-owned-mpv-recovered-from-hard-media-failure"),
+            )?;
+
+            let requests = hard_failure_http_server
+                .take()
+                .expect("hard-failure HTTP server must remain live until recovery")
+                .release()?;
+            validate_hard_failure_http_request_accounting(&requests)?;
+            let evidence = media_failure_evidence
+                .as_mut()
+                .expect("hard media-failure evidence must be initialized");
+            evidence.record_requests(requests);
+            evidence.restored_file_loaded_index = Some(restored_file_loaded_index);
+            evidence.media_playable_event_id = Some(media_playable_event_id);
+            evidence.media_playable_emitter = Some(media_playable_emitter);
+            evidence.media_playable_process_role = Some(media_playable_process_role);
+            evidence.recovered_pid = restored_file_loaded.pid;
+            evidence.recovered_ipc_endpoint = restored_file_loaded.ipc_endpoint;
+            evidence.same_process_identity =
+                evidence.failure_pid == Some(mpv_pid) && evidence.recovered_pid == Some(mpv_pid);
+            evidence.same_ipc_endpoint = evidence.failure_ipc_endpoint.as_deref()
+                == Some(&ipc_endpoint)
+                && evidence.recovered_ipc_endpoint.as_deref() == Some(&ipc_endpoint);
+            evidence.evidence_retained_before_cleanup = true;
+            evidence.server_thread_released = true;
+            evidence.socket_released = true;
+            write_json_file(&media_failure_path, evidence)?;
+            state.advance(
+                &state_path,
+                "hard-media-failure-evidence-retained",
+                Some("hard-media-failure-evidence-retained"),
             )?;
         } else if options.exercise_http_stall {
             let stall_timeout = REAL_MPV_HTTP_STALL_MAXIMUM_RECOVERY_WAIT;
@@ -3317,6 +3979,17 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             }
             evidence.result = "passed".to_owned();
             write_json_file(&http_fault_path, evidence)?;
+            let media_failure = media_failure_evidence
+                .as_mut()
+                .expect("hard media-failure evidence must be complete");
+            media_failure.owned_mpv_terminated_after_gui_exit = !process_is_running(mpv_pid);
+            if !media_failure.owned_mpv_terminated_after_gui_exit {
+                return Err(format!(
+                    "GUI-owned mpv PID {mpv_pid} remained alive after hard media-failure GUI exit"
+                ));
+            }
+            media_failure.result = "passed".to_owned();
+            write_json_file(&media_failure_path, media_failure)?;
         }
         if options.exercise_http_stall {
             let requests = stalled_http_server
@@ -3366,7 +4039,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         let exit_assertion = if options.exercise_recovery {
             "gui-exit-reaped-replacement-owned-mpv"
         } else if options.exercise_http_fault {
-            "gui-exit-reaped-owned-mpv-and-released-fault-server"
+            "gui-exit-reaped-owned-mpv-and-released-fault-servers"
         } else if options.exercise_http_stall {
             "gui-exit-reaped-owned-mpv-and-released-stall-server"
         } else {
@@ -3383,6 +4056,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             ("mpv_observation", observation_path.as_path()),
             ("mpv_log", mpv_log_path.as_path()),
             ("gui_lifecycle", lifecycle_path.as_path()),
+            ("shared_lifecycle", shared_lifecycle_path.as_path()),
             ("session_exchange", session_exchange_path.as_path()),
             ("menu_interactions", menu_interactions_path.as_path()),
             ("success_screenshot", success_screenshot_path.as_path()),
@@ -3399,7 +4073,10 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             ]);
         }
         if options.exercise_http_fault {
-            artifact_files.push(("faulting_http_recovery", http_fault_path.as_path()));
+            artifact_files.extend([
+                ("faulting_http_recovery", http_fault_path.as_path()),
+                ("hard_media_failure", media_failure_path.as_path()),
+            ]);
         }
         if options.exercise_http_stall {
             artifact_files.push(("stalled_http", http_stall_path.as_path()));
@@ -3424,6 +4101,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
             recovered_mpv: recovered_mpv_identity,
             recovery: recovery_evidence.clone(),
             http_fault: http_fault_evidence.clone(),
+            media_failure: media_failure_evidence.clone(),
             http_stall: http_stall_evidence.clone(),
             isolation: IsolationContract {
                 artifact_root: artifact_root.display().to_string(),
@@ -3434,6 +4112,7 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 observation_path: observation_path.display().to_string(),
                 mpv_log_path: mpv_log_path.display().to_string(),
                 lifecycle_path: lifecycle_path.display().to_string(),
+                shared_lifecycle_path: shared_lifecycle_path.display().to_string(),
                 session_exchange_path: session_exchange_path.display().to_string(),
                 menu_interactions_path: menu_interactions_path.display().to_string(),
                 ipc_endpoint,
@@ -3488,6 +4167,14 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 evidence.record_requests(requests);
                 let _ = write_json_file(&http_fault_path, evidence);
             }
+            if let (Some(server), Some(evidence)) = (
+                hard_failure_http_server.as_ref(),
+                media_failure_evidence.as_mut(),
+            ) && let Ok(requests) = server.requests()
+            {
+                evidence.record_requests(requests);
+                let _ = write_json_file(&media_failure_path, evidence);
+            }
             if let (Some(server), Some(evidence)) =
                 (stalled_http_server.as_ref(), http_stall_evidence.as_mut())
                 && let Ok(requests) = server.requests()
@@ -3520,6 +4207,20 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 match server.release() {
                     Ok(requests) => {
                         if let Some(evidence) = http_fault_evidence.as_mut() {
+                            evidence.record_requests(requests);
+                            evidence.server_thread_released = true;
+                            evidence.socket_released = true;
+                        }
+                    }
+                    Err(release_error) => {
+                        error = format!("{error}; {release_error}");
+                    }
+                }
+            }
+            if let Some(server) = hard_failure_http_server.take() {
+                match server.release() {
+                    Ok(requests) => {
+                        if let Some(evidence) = media_failure_evidence.as_mut() {
                             evidence.record_requests(requests);
                             evidence.server_thread_released = true;
                             evidence.socket_released = true;
@@ -3592,6 +4293,13 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                     .is_some_and(|pid| !process_is_running(pid));
                 evidence.error = Some(redact_real_mpv_error(&error));
                 let _ = write_json_file(&http_fault_path, evidence);
+            }
+            if let Some(evidence) = media_failure_evidence.as_mut() {
+                evidence.result = "failed".to_owned();
+                evidence.owned_mpv_terminated_after_gui_exit =
+                    !process_is_running(evidence.initial_pid);
+                evidence.error = Some(redact_real_mpv_error(&error));
+                let _ = write_json_file(&media_failure_path, evidence);
             }
             if let Some(evidence) = http_stall_evidence.as_mut() {
                 evidence.result = "failed".to_owned();
@@ -3793,7 +4501,7 @@ fn seed_real_mpv_config(
     mpv_path: &Path,
     observation_script_path: &Path,
     mpv_log_path: &Path,
-    trusted_domain: Option<String>,
+    trusted_domains: Vec<String>,
 ) -> Result<(), String> {
     let player_path = mpv_path.display().to_string();
     let extra_args = vec![
@@ -3817,8 +4525,8 @@ fn seed_real_mpv_config(
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
         check_for_updates_automatically: Some(false),
-        only_switch_to_trusted_domains: trusted_domain.as_ref().map(|_| true),
-        trusted_domains: trusted_domain.map(|domain| vec![domain]),
+        only_switch_to_trusted_domains: (!trusted_domains.is_empty()).then_some(true),
+        trusted_domains: (!trusted_domains.is_empty()).then_some(trusted_domains),
         ..StoredClientSettingsMvp::default()
     };
     upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(|error| {
@@ -3965,6 +4673,117 @@ fn read_mpv_observations(path: &Path) -> Result<Vec<MpvObservation>, String> {
         .collect()
 }
 
+fn read_lifecycle_records(path: &Path) -> Result<Vec<serde_json::Value>, String> {
+    let contents = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "failed to read shared lifecycle evidence {}: {error}",
+            path.display()
+        )
+    })?;
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        return Err(format!(
+            "shared lifecycle evidence {} ended with an incomplete record",
+            path.display()
+        ));
+    }
+    contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+        .map(|(index, line)| {
+            let value: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+                format!(
+                    "shared lifecycle evidence {} line {} was invalid JSON: {error}",
+                    path.display(),
+                    index + 1
+                )
+            })?;
+            if !value.is_object() {
+                return Err(format!(
+                    "shared lifecycle evidence {} line {} was not an object",
+                    path.display(),
+                    index + 1
+                ));
+            }
+            Ok(value)
+        })
+        .collect()
+}
+
+fn wait_for_lifecycle_snapshot(
+    path: &Path,
+    timeout: Duration,
+) -> Result<Vec<serde_json::Value>, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match read_lifecycle_records(path) {
+            Ok(records) => return Ok(records),
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_lifecycle_transition(
+    path: &Path,
+    start_index: usize,
+    transition: &str,
+    timeout: Duration,
+) -> Result<(usize, serde_json::Value), String> {
+    let deadline = Instant::now() + timeout;
+    let mut last_records = Vec::new();
+    loop {
+        let last_error = match read_lifecycle_records(path) {
+            Ok(records) => {
+                if let Some((index, record)) =
+                    records
+                        .iter()
+                        .enumerate()
+                        .skip(start_index)
+                        .find(|(_, record)| {
+                            record
+                                .get("record_type")
+                                .and_then(serde_json::Value::as_str)
+                                == Some("transition")
+                                && record.get("transition").and_then(serde_json::Value::as_str)
+                                    == Some(transition)
+                        })
+                {
+                    return Ok((index, record.clone()));
+                }
+                last_records = records;
+                None
+            }
+            Err(error) => Some(error),
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "timed out waiting for lifecycle transition {transition:?} after record {start_index}; last_error={last_error:?}; records={last_records:?}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn required_lifecycle_string(
+    record: &serde_json::Value,
+    field: &str,
+    transition: &str,
+) -> Result<String, String> {
+    record
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!("lifecycle transition {transition} omitted nonempty string field {field}")
+        })
+}
+
 fn wait_for_mpv_observation<F>(
     path: &Path,
     start_index: usize,
@@ -4069,6 +4888,36 @@ fn observed_media_target_matches(
     )
 }
 
+fn validate_hard_failure_http_request_accounting(
+    requests: &[HttpRequestEvidence],
+) -> Result<(), String> {
+    if !requests.iter().any(|request| request.method == "GET") {
+        return Err(format!(
+            "hard-failure HTTP request accounting omitted a media GET: {requests:?}"
+        ));
+    }
+    for (index, request) in requests.iter().enumerate() {
+        if request.ordinal != index + 1
+            || !matches!(request.method.as_str(), "GET" | "HEAD")
+            || request.path != REAL_MPV_MEDIA_FAILURE_ROUTE
+            || !request.peer_ipv4_loopback
+            || request.status_code != 404
+            || request.content_length_header != Some(0)
+            || request.transfer_encoding.is_some()
+            || request.transmitted_body_bytes != 0
+            || request.framing_fault_injected
+            || request.disconnected_early
+            || request.write_error.is_some()
+        {
+            return Err(format!(
+                "hard-failure HTTP request accounting drifted at row {index}: {request:?}"
+            ));
+        }
+        require_ipv4_loopback_endpoint(&request.peer_endpoint, "hard-failure HTTP connected peer")?;
+    }
+    Ok(())
+}
+
 fn validate_faulting_http_request_accounting(
     requests: &[HttpRequestEvidence],
     generated_media_bytes: usize,
@@ -4124,7 +4973,7 @@ fn validate_faulting_http_request_accounting(
     if !short.disconnected_early
         || short.content_length_header.is_some()
         || short.transfer_encoding.as_deref() != Some("chunked")
-        || short.transmitted_body_bytes != REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        || short.transmitted_body_bytes < REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES
         || !short.framing_fault_injected
         || short.transmitted_body_bytes >= generated_media_bytes
     {
@@ -5314,6 +6163,42 @@ mod tests {
     }
 
     #[test]
+    fn hard_failure_http_server_returns_only_retained_strict_404_evidence() {
+        let server = HardFailureLoopbackHttpServer::start().expect("start hard-failure fixture");
+        let endpoint = server.endpoint();
+        require_ipv4_loopback_endpoint(&endpoint, "unit hard-failure HTTP listener")
+            .expect("strict listener");
+        let mut stream = TcpStream::connect(&endpoint).expect("connect hard-failure fixture");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("set hard-failure response timeout");
+        stream
+            .write_all(
+                format!(
+                    "GET {REAL_MPV_MEDIA_FAILURE_ROUTE} HTTP/1.1\r\nHost: {endpoint}\r\nRange: bytes=0-\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .expect("write hard-failure GET");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .expect("read hard-failure response");
+        assert_eq!(
+            response,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n"
+        );
+        let requests = server
+            .wait_for_media_get(Duration::from_secs(3))
+            .expect("hard-failure GET evidence");
+        validate_hard_failure_http_request_accounting(&requests)
+            .expect("strict hard-failure request accounting");
+        let requests = server.release().expect("release hard-failure fixture");
+        validate_hard_failure_http_request_accounting(&requests)
+            .expect("retained hard-failure request accounting");
+    }
+
+    #[test]
     fn stalled_http_server_keeps_first_get_open_while_serving_complete_recovery_get() {
         fn write_get(stream: &mut TcpStream, endpoint: &str) {
             stream
@@ -5471,6 +6356,9 @@ mod tests {
             "HEAD response must not carry a body"
         );
 
+        server
+            .trigger_fault()
+            .expect("unit fixture should explicitly release its first fault");
         let short = request(&endpoint, "GET", Some("bytes=0-"));
         assert!(
             short.windows(15).any(|window| window == b"HTTP/1.1 200 OK"),
@@ -5531,9 +6419,12 @@ mod tests {
         assert_eq!(requests[1].content_length_header, None);
         assert_eq!(requests[1].transfer_encoding.as_deref(), Some("chunked"));
         assert!(requests[1].framing_fault_injected);
-        assert_eq!(
-            requests[1].transmitted_body_bytes,
-            REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES
+        assert!(
+            requests[1].transmitted_body_bytes >= REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES
+                && requests[1].transmitted_body_bytes
+                    < REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES + 16 * 1024,
+            "pre-triggered unit fault must stop at the first chunk boundary after the playable minimum: {:?}",
+            requests[1]
         );
         assert_eq!(requests[2].range_header.as_deref(), Some("bytes=0-"));
         assert_eq!(
@@ -5584,7 +6475,7 @@ mod tests {
         let request = &requests[0];
         assert_eq!(request.method, "GET");
         assert!(
-            request.transmitted_body_bytes < REAL_MPV_HTTP_FAULT_DISCONNECT_AFTER_BYTES,
+            request.transmitted_body_bytes < REAL_MPV_HTTP_FAULT_MINIMUM_PREFIX_BYTES,
             "client abort must stop before the controlled short-response boundary: {request:?}"
         );
         assert!(request.disconnected_early);

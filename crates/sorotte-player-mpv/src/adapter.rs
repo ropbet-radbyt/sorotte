@@ -28,6 +28,10 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
+    global_enabled,
+};
 use sorotte_player_api::{
     LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
     PlayerAuthoritativeSnapshot, PlayerCacheTelemetryUpdate, PlayerCommandFailureKind,
@@ -845,6 +849,470 @@ pub struct MpvAdapter {
     pending_ipc_connection_events: VecDeque<MpvIpcConnectionEvent>,
 }
 
+fn emit_player_lifecycle_transition(
+    transition: &'static str,
+    machine: &'static str,
+    trigger: Trigger,
+    disposition: Disposition,
+    identities: &[(&'static str, u64)],
+) {
+    let mut observation =
+        TransitionObservation::new(ProcessRole::Player, "attached-player", machine, transition)
+            .target(TargetKind::PlayerState)
+            .triggered_by(trigger)
+            .authority("player-pending", "player-observed")
+            .effect("lifecycle-transition", "lifecycle-transition")
+            .disposition(disposition);
+    for (name, value) in identities.iter().copied().filter(|(_, value)| *value > 0) {
+        observation = observation.identity(name, value);
+    }
+    let _ = emit_global(observation);
+}
+
+fn emit_player_lifecycle_input_evidence(
+    input: &PlayerLifecycleInput,
+    state_before: &PlayerLifecycleState,
+    state_after: &PlayerLifecycleState,
+) {
+    if state_before == state_after {
+        return;
+    }
+    let attachment_epoch = state_before.attachment_epoch.get();
+    match input {
+        PlayerLifecycleInput::LoadAttemptSubmitted {
+            command_id,
+            media_generation,
+            ..
+        } => {
+            let mut identities = vec![
+                ("attachment-epoch", attachment_epoch),
+                ("media-generation", media_generation.get()),
+            ];
+            if let Some(command_id) = command_id {
+                identities.push(("command-id", command_id.get()));
+            }
+            let predecessor = state_before.active_attempt();
+            let recovery =
+                predecessor.is_some_and(|attempt| attempt.media_generation == *media_generation);
+            if let Some(attempt) = predecessor {
+                identities.push(("predecessor-load-attempt-id", attempt.id.get()));
+                if !attempt.state.is_terminal() && !attempt.logical_ownership_revoked {
+                    emit_player_lifecycle_transition(
+                        "LOAD-SUPERSEDE-001",
+                        "load-attempt",
+                        if recovery {
+                            Trigger::Recovery
+                        } else {
+                            Trigger::LocalInput
+                        },
+                        Disposition::Superseded,
+                        &identities,
+                    );
+                }
+            }
+            if let Some(successor) = state_after.active_attempt() {
+                identities.push(("load-attempt-id", successor.id.get()));
+            }
+            if recovery {
+                if state_before.provisional_eof_attempt().is_some() {
+                    emit_player_lifecycle_transition(
+                        "TRANSPORT-EOF-CANCEL-001",
+                        "local-transport",
+                        Trigger::Recovery,
+                        Disposition::Applied,
+                        &identities,
+                    );
+                }
+                emit_player_lifecycle_transition(
+                    "TRANSPORT-FAIL-001",
+                    "local-transport",
+                    Trigger::Fault,
+                    Disposition::Failed,
+                    &identities,
+                );
+                emit_player_lifecycle_transition(
+                    "LOAD-RECOVER-001",
+                    "load-attempt",
+                    Trigger::Recovery,
+                    Disposition::Accepted,
+                    &identities,
+                );
+                emit_player_lifecycle_transition(
+                    "LOAD-RECOVERY-SUBMIT-001",
+                    "load-attempt",
+                    Trigger::Recovery,
+                    Disposition::Submitted,
+                    &identities,
+                );
+            } else {
+                emit_player_lifecycle_transition(
+                    "LOAD-SUBMIT-001",
+                    "load-attempt",
+                    Trigger::LocalInput,
+                    Disposition::Submitted,
+                    &identities,
+                );
+            }
+            emit_player_lifecycle_transition(
+                "TRANSPORT-LOAD-001",
+                "local-transport",
+                Trigger::LocalInput,
+                Disposition::Submitted,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::ExternalLoadObserved {
+            attachment_epoch,
+            media_generation,
+            playlist_entry_id,
+            file_loaded,
+            ..
+        } => {
+            let mut identities = vec![
+                ("attachment-epoch", attachment_epoch.get()),
+                ("media-generation", media_generation.get()),
+            ];
+            if let Ok(entry_id) = u64::try_from(*playlist_entry_id) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            emit_player_lifecycle_transition(
+                if *file_loaded {
+                    "LOAD-ACTIVE-001"
+                } else {
+                    "LOAD-START-001"
+                },
+                "load-attempt",
+                Trigger::PlayerEvent,
+                Disposition::Applied,
+                &identities,
+            );
+            emit_player_lifecycle_transition(
+                "TRANSPORT-LOAD-001",
+                "local-transport",
+                Trigger::PlayerEvent,
+                Disposition::Observed,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::LoadAttemptAccepted {
+            attachment_epoch,
+            attempt_id,
+        } => emit_player_lifecycle_transition(
+            "LOAD-ACCEPT-001",
+            "load-attempt",
+            Trigger::PlayerEvent,
+            Disposition::Accepted,
+            &[
+                ("attachment-epoch", attachment_epoch.get()),
+                ("load-attempt-id", attempt_id.get()),
+            ],
+        ),
+        PlayerLifecycleInput::LoadAttemptRejected {
+            attachment_epoch,
+            attempt_id,
+            ..
+        } => emit_player_lifecycle_transition(
+            "LOAD-TERMINAL-001",
+            "load-attempt",
+            Trigger::PlayerEvent,
+            Disposition::Rejected,
+            &[
+                ("attachment-epoch", attachment_epoch.get()),
+                ("load-attempt-id", attempt_id.get()),
+            ],
+        ),
+        PlayerLifecycleInput::StartFile {
+            attachment_epoch,
+            playlist_entry_id,
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Ok(entry_id) = u64::try_from(*playlist_entry_id) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            emit_player_lifecycle_transition(
+                "LOAD-BIND-001",
+                "load-attempt",
+                Trigger::PlayerEvent,
+                Disposition::Applied,
+                &identities,
+            );
+            emit_player_lifecycle_transition(
+                "LOAD-START-001",
+                "load-attempt",
+                Trigger::PlayerEvent,
+                Disposition::Observed,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::FileLoaded {
+            attachment_epoch,
+            playlist_entry_id,
+            ..
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Some(entry_id) = playlist_entry_id.and_then(|id| u64::try_from(id).ok()) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            emit_player_lifecycle_transition(
+                "LOAD-ACTIVE-001",
+                "load-attempt",
+                Trigger::PlayerEvent,
+                Disposition::Applied,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::EndFile {
+            attachment_epoch,
+            playlist_entry_id,
+            outcome,
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Ok(entry_id) = u64::try_from(*playlist_entry_id) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            emit_player_lifecycle_transition(
+                "LOAD-TERMINAL-001",
+                "load-attempt",
+                Trigger::PlayerEvent,
+                Disposition::Committed,
+                &identities,
+            );
+            let (transition, disposition) = match outcome {
+                PlayerPhysicalLoadOutcome::Ended => ("TRANSPORT-END-001", Disposition::Committed),
+                PlayerPhysicalLoadOutcome::Failed(_)
+                | PlayerPhysicalLoadOutcome::NeverStarted
+                | PlayerPhysicalLoadOutcome::TransportDisconnected => {
+                    ("TRANSPORT-FAIL-001", Disposition::Failed)
+                }
+            };
+            emit_player_lifecycle_transition(
+                transition,
+                "local-transport",
+                Trigger::PlayerEvent,
+                disposition,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::EofObserved {
+            attachment_epoch,
+            playlist_entry_id,
+            reached,
+            ..
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Some(entry_id) = playlist_entry_id.and_then(|id| u64::try_from(id).ok()) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            emit_player_lifecycle_transition(
+                if *reached {
+                    "TRANSPORT-EOF-CANDIDATE-001"
+                } else {
+                    "TRANSPORT-EOF-CANCEL-001"
+                },
+                "local-transport",
+                Trigger::PlayerEvent,
+                Disposition::Observed,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::PlaybackRestart {
+            attachment_epoch,
+            playlist_entry_id,
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Some(entry_id) = playlist_entry_id.and_then(|id| u64::try_from(id).ok()) {
+                identities.push(("playlist-entry-id", entry_id));
+            }
+            if state_before.provisional_eof_attempt().is_some()
+                && state_after.provisional_eof_attempt().is_none()
+            {
+                emit_player_lifecycle_transition(
+                    "TRANSPORT-EOF-CANCEL-001",
+                    "local-transport",
+                    Trigger::PlayerEvent,
+                    Disposition::Applied,
+                    &identities,
+                );
+            }
+            emit_player_lifecycle_transition(
+                "TRANSPORT-PLAY-001",
+                "local-transport",
+                Trigger::PlayerEvent,
+                Disposition::Observed,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::PositionObserved {
+            attachment_epoch,
+            media_generation,
+            ..
+        } => {
+            if state_before.provisional_eof_attempt().is_some()
+                && state_after.provisional_eof_attempt().is_none()
+            {
+                emit_player_lifecycle_transition(
+                    "TRANSPORT-EOF-CANCEL-001",
+                    "local-transport",
+                    Trigger::PlayerEvent,
+                    Disposition::Applied,
+                    &[
+                        ("attachment-epoch", attachment_epoch.get()),
+                        ("media-generation", media_generation.get()),
+                    ],
+                );
+            }
+        }
+        PlayerLifecycleInput::SeekingObserved {
+            attachment_epoch,
+            media_generation,
+            seeking: true,
+            ..
+        } => {
+            let identities = [
+                ("attachment-epoch", attachment_epoch.get()),
+                ("media-generation", media_generation.get()),
+            ];
+            if state_before.provisional_eof_attempt().is_some()
+                && state_after.provisional_eof_attempt().is_none()
+            {
+                emit_player_lifecycle_transition(
+                    "TRANSPORT-EOF-CANCEL-001",
+                    "local-transport",
+                    Trigger::PlayerEvent,
+                    Disposition::Applied,
+                    &identities,
+                );
+            }
+            emit_player_lifecycle_transition(
+                "TRANSPORT-SEEK-001",
+                "local-transport",
+                Trigger::PlayerEvent,
+                Disposition::Observed,
+                &identities,
+            );
+        }
+        PlayerLifecycleInput::PhaseObserved {
+            attachment_epoch,
+            phase,
+        } => {
+            let transition = match phase {
+                PlayerTransportPhase::Empty => Some("TRANSPORT-DETACH-001"),
+                PlayerTransportPhase::Loading | PlayerTransportPhase::Prebuffering => {
+                    Some("TRANSPORT-LOAD-001")
+                }
+                PlayerTransportPhase::ReadyPaused => Some("TRANSPORT-PAUSE-001"),
+                PlayerTransportPhase::Playing => Some("TRANSPORT-PLAY-001"),
+                PlayerTransportPhase::Rebuffering => Some("TRANSPORT-CACHE-PAUSE-001"),
+                PlayerTransportPhase::Seeking => Some("TRANSPORT-SEEK-001"),
+                PlayerTransportPhase::Ended => Some("TRANSPORT-END-001"),
+                PlayerTransportPhase::Failed => Some("TRANSPORT-FAIL-001"),
+            };
+            if let Some(transition) = transition {
+                if state_before.provisional_eof_attempt().is_some()
+                    && state_after.provisional_eof_attempt().is_none()
+                {
+                    emit_player_lifecycle_transition(
+                        "TRANSPORT-EOF-CANCEL-001",
+                        "local-transport",
+                        Trigger::PlayerEvent,
+                        Disposition::Applied,
+                        &[("attachment-epoch", attachment_epoch.get())],
+                    );
+                }
+                emit_player_lifecycle_transition(
+                    transition,
+                    "local-transport",
+                    Trigger::PlayerEvent,
+                    if *phase == PlayerTransportPhase::Failed {
+                        Disposition::Failed
+                    } else {
+                        Disposition::Observed
+                    },
+                    &[("attachment-epoch", attachment_epoch.get())],
+                );
+            }
+        }
+        PlayerLifecycleInput::TransportDelta {
+            attachment_epoch,
+            delta,
+        } => {
+            let mut identities = vec![("attachment-epoch", attachment_epoch.get())];
+            if let Some(load_attempt_id) = delta.load_attempt_id {
+                identities.push(("load-attempt-id", load_attempt_id.get()));
+            }
+            if let Some(media_generation) = delta.media_generation {
+                identities.push(("media-generation", media_generation.get()));
+            }
+            let transition = if delta.paused_for_cache == Some(true) {
+                Some("TRANSPORT-CACHE-PAUSE-001")
+            } else if delta.seeking == Some(true) {
+                Some("TRANSPORT-SEEK-001")
+            } else if delta.eof_reached == Some(true) {
+                Some("TRANSPORT-EOF-CANDIDATE-001")
+            } else if delta.logical_pause == Some(true) {
+                Some("TRANSPORT-PAUSE-001")
+            } else if delta.logical_pause == Some(false) {
+                Some("TRANSPORT-PLAY-001")
+            } else {
+                None
+            };
+            if let Some(transition) = transition {
+                emit_player_lifecycle_transition(
+                    transition,
+                    "local-transport",
+                    Trigger::PlayerEvent,
+                    Disposition::Observed,
+                    &identities,
+                );
+            }
+        }
+        PlayerLifecycleInput::TransportDisconnected { attachment_epoch } => {
+            emit_player_lifecycle_transition(
+                "TRANSPORT-FAIL-001",
+                "local-transport",
+                Trigger::Fault,
+                Disposition::Failed,
+                &[("attachment-epoch", attachment_epoch.get())],
+            );
+            emit_player_lifecycle_transition(
+                "PLAYER-LOSS-001",
+                "player-attachment",
+                Trigger::Fault,
+                Disposition::Failed,
+                &[("attachment-epoch", attachment_epoch.get())],
+            );
+        }
+        PlayerLifecycleInput::AttachmentReplaced if attachment_epoch > 1 => {
+            emit_player_lifecycle_transition(
+                "TRANSPORT-DETACH-001",
+                "local-transport",
+                Trigger::Recovery,
+                Disposition::Superseded,
+                &[("attachment-epoch", attachment_epoch)],
+            );
+        }
+        PlayerLifecycleInput::CommandSubmitted { .. }
+        | PlayerLifecycleInput::CommandAccepted { .. }
+        | PlayerLifecycleInput::CommandRejected { .. }
+        | PlayerLifecycleInput::CommandSuperseded { .. }
+        | PlayerLifecycleInput::CommandTransportDisconnected { .. }
+        | PlayerLifecycleInput::CommandCompleted { .. }
+        | PlayerLifecycleInput::CommandCompletionNotObserved { .. }
+        | PlayerLifecycleInput::PlaylistSnapshot { .. }
+        | PlayerLifecycleInput::LifecycleReconciliationFailed { .. }
+        | PlayerLifecycleInput::SeekingObserved { seeking: false, .. }
+        | PlayerLifecycleInput::LocalFileChanged { .. }
+        | PlayerLifecycleInput::SeekCommandSubmitted { .. }
+        | PlayerLifecycleInput::SeekCommandAccepted { .. }
+        | PlayerLifecycleInput::SeekCommandRejected { .. }
+        | PlayerLifecycleInput::SeekCommandCompletionNotObserved { .. }
+        | PlayerLifecycleInput::EventGapDetected { .. }
+        | PlayerLifecycleInput::AuthoritativeSnapshotApplied(_)
+        | PlayerLifecycleInput::TimerAdvanced { .. }
+        | PlayerLifecycleInput::AttachmentReplaced => {}
+    }
+}
+
 impl MpvAdapter {
     /// Enables sanitized decoded mpv event capture for lifecycle debugging.
     ///
@@ -906,8 +1374,53 @@ impl MpvAdapter {
         endpoint: PathBuf,
         mut client: MpvJsonIpcClient,
     ) -> Result<(), PlayerError> {
-        Self::require_supported_mpv_version(&mut client)?;
         let replacing_attachment = self.ipc_client.is_some();
+        let attachment_epoch = self.lifecycle_epoch().get();
+        if replacing_attachment {
+            emit_player_lifecycle_transition(
+                "PLAYER-LOSS-001",
+                "player-attachment",
+                Trigger::Recovery,
+                Disposition::Superseded,
+                &[("attachment-epoch", attachment_epoch)],
+            );
+            emit_player_lifecycle_transition(
+                "PLAYER-RELAUNCH-001",
+                "player-attachment",
+                Trigger::Recovery,
+                Disposition::Accepted,
+                &[("attachment-epoch", attachment_epoch)],
+            );
+        } else {
+            emit_player_lifecycle_transition(
+                "PLAYER-LAUNCH-001",
+                "player-attachment",
+                Trigger::Startup,
+                Disposition::Submitted,
+                &[("attachment-epoch", attachment_epoch)],
+            );
+        }
+        emit_player_lifecycle_transition(
+            "PLAYER-CONNECT-001",
+            "player-attachment",
+            if replacing_attachment {
+                Trigger::Recovery
+            } else {
+                Trigger::Startup
+            },
+            Disposition::Submitted,
+            &[("attachment-epoch", attachment_epoch)],
+        );
+        if let Err(error) = Self::require_supported_mpv_version(&mut client) {
+            emit_player_lifecycle_transition(
+                "PLAYER-LOSS-001",
+                "player-attachment",
+                Trigger::Fault,
+                Disposition::Rejected,
+                &[("attachment-epoch", attachment_epoch)],
+            );
+            return Err(error);
+        }
         self.release_sorotte_bridge_best_effort();
         self.collect_ipc_connection_events();
         if replacing_attachment {
@@ -956,6 +1469,13 @@ impl MpvAdapter {
             self.ensure_observers_registered_if_attached();
             self.reconcile_lifecycle_from_authority();
         }
+        emit_player_lifecycle_transition(
+            "PLAYER-ATTACH-001",
+            "player-attachment",
+            Trigger::PlayerEvent,
+            Disposition::Applied,
+            &[("attachment-epoch", self.lifecycle_epoch().get())],
+        );
         Ok(())
     }
 
@@ -4724,6 +5244,7 @@ impl MpvAdapter {
     }
 
     fn apply_lifecycle_input(&mut self, input: PlayerLifecycleInput) -> Vec<PlayerLifecycleEffect> {
+        let evidence = global_enabled().then(|| (input.clone(), self.player_lifecycle.clone()));
         let mut effects = Vec::new();
         if matches!(&input, PlayerLifecycleInput::LoadAttemptAccepted { .. }) {
             let now_tick = u64::try_from(self.observation_clock_origin.elapsed().as_millis())
@@ -4776,6 +5297,9 @@ impl MpvAdapter {
             )
         }) {
             self.lifecycle_reconciliation_due = true;
+        }
+        if let Some((input, state_before)) = evidence {
+            emit_player_lifecycle_input_evidence(&input, &state_before, &self.player_lifecycle);
         }
         effects
     }

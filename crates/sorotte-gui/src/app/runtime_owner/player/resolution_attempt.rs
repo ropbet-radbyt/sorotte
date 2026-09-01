@@ -1,5 +1,25 @@
 use super::*;
 
+fn emit_media_resolution_transition(
+    transition: &'static str,
+    trigger: sorotte_lifecycle_evidence::Trigger,
+    disposition: sorotte_lifecycle_evidence::Disposition,
+    playlist_generation: u64,
+) {
+    crate::emit_gui_lifecycle_transition(
+        crate::GuiLifecycleOrigin::new(
+            sorotte_lifecycle_evidence::ProcessRole::Client,
+            "gui-media-resolver",
+        ),
+        transition,
+        "media-resolution",
+        sorotte_lifecycle_evidence::TargetKind::GuiProjection,
+        trigger,
+        disposition,
+        &[("playlist-generation", playlist_generation.max(1))],
+    );
+}
+
 const TRANSIENT_CANDIDATE_RETRY_BASE: Duration = Duration::from_secs(2);
 const TRANSIENT_CANDIDATE_RETRY_MAX: Duration = Duration::from_secs(8);
 const TRANSIENT_CANDIDATE_MAX_FAILURES: u32 = 4;
@@ -160,22 +180,91 @@ impl GuiPersistedConfigRuntimeOwner {
                         )
                         && attempt.media_confirmation_pending
                 });
+        let retired_generation = self
+            .playlist_resolution_attempt
+            .as_ref()
+            .map(|attempt| attempt.playlist_generation);
         if let Some(attempt) = self.playlist_resolution_attempt.as_mut() {
             attempt.state = PlaylistResolutionAttemptState::Superseded;
+        }
+        if let Some(generation) = retired_generation {
+            emit_media_resolution_transition(
+                "MEDIA-CLEAR-001",
+                sorotte_lifecycle_evidence::Trigger::RemoteEvent,
+                sorotte_lifecycle_evidence::Disposition::Superseded,
+                generation,
+            );
         }
         self.pending_logical_media_override = None;
         let mut replacement =
             PlaylistResolutionAttempt::new(row_id, playlist_generation, target.to_owned(), policy);
         replacement.media_confirmation_pending = media_confirmation_pending;
         self.playlist_resolution_attempt = Some(replacement);
+        emit_media_resolution_transition(
+            "MEDIA-SELECT-001",
+            sorotte_lifecycle_evidence::Trigger::RemoteEvent,
+            sorotte_lifecycle_evidence::Disposition::Applied,
+            playlist_generation,
+        );
+        emit_media_resolution_transition(
+            "MEDIA-RESOLVE-001",
+            sorotte_lifecycle_evidence::Trigger::Internal,
+            sorotte_lifecycle_evidence::Disposition::Submitted,
+            playlist_generation,
+        );
     }
 
     pub(in crate::app::runtime_owner) fn supersede_playlist_resolution_attempt(&mut self) {
+        let retired_generation = self
+            .playlist_resolution_attempt
+            .as_ref()
+            .map(|attempt| attempt.playlist_generation);
         if let Some(attempt) = self.playlist_resolution_attempt.as_mut() {
             attempt.state = PlaylistResolutionAttemptState::Superseded;
         }
         self.playlist_resolution_attempt = None;
         self.pending_logical_media_override = None;
+        if let Some(generation) = retired_generation {
+            emit_media_resolution_transition(
+                "MEDIA-CLEAR-001",
+                sorotte_lifecycle_evidence::Trigger::Internal,
+                sorotte_lifecycle_evidence::Disposition::Applied,
+                generation,
+            );
+        }
+    }
+
+    pub(super) fn record_playlist_resolution_missing(&mut self) {
+        let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
+            return;
+        };
+        if attempt.state != PlaylistResolutionAttemptState::Resolving || attempt.missing_reported {
+            return;
+        }
+        attempt.missing_reported = true;
+        emit_media_resolution_transition(
+            "MEDIA-MISSING-001",
+            sorotte_lifecycle_evidence::Trigger::Internal,
+            sorotte_lifecycle_evidence::Disposition::Applied,
+            attempt.playlist_generation,
+        );
+    }
+
+    pub(super) fn record_playlist_resolution_untrusted(&mut self) {
+        let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
+            return;
+        };
+        if attempt.state != PlaylistResolutionAttemptState::Resolving || attempt.untrusted_reported
+        {
+            return;
+        }
+        attempt.untrusted_reported = true;
+        emit_media_resolution_transition(
+            "MEDIA-UNTRUSTED-001",
+            sorotte_lifecycle_evidence::Trigger::Internal,
+            sorotte_lifecycle_evidence::Disposition::Rejected,
+            attempt.playlist_generation,
+        );
     }
 
     pub(super) fn failed_playlist_resolution_candidates(
@@ -357,6 +446,8 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.state = PlaylistResolutionAttemptState::Resolving;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
+        attempt.missing_reported = false;
+        attempt.untrusted_reported = false;
     }
 
     pub(super) fn reconcile_failed_playlist_candidates(
@@ -399,7 +490,14 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         Self::prepare_failed_attempt_for_retry(attempt);
+        let playlist_generation = attempt.playlist_generation;
         self.last_attached_media_resolution_trigger = None;
+        emit_media_resolution_transition(
+            "MEDIA-RESOLVE-001",
+            sorotte_lifecycle_evidence::Trigger::Recovery,
+            sorotte_lifecycle_evidence::Disposition::Submitted,
+            playlist_generation,
+        );
         true
     }
 
@@ -417,10 +515,20 @@ impl GuiPersistedConfigRuntimeOwner {
         if previous_len == attempt.candidate_failures.len() {
             return false;
         }
-        if attempt.state == PlaylistResolutionAttemptState::Failed {
+        let retried = attempt.state == PlaylistResolutionAttemptState::Failed;
+        if retried {
             Self::prepare_failed_attempt_for_retry(attempt);
         }
+        let playlist_generation = attempt.playlist_generation;
         self.last_attached_media_resolution_trigger = None;
+        if retried {
+            emit_media_resolution_transition(
+                "MEDIA-RESOLVE-001",
+                sorotte_lifecycle_evidence::Trigger::LocalInput,
+                sorotte_lifecycle_evidence::Disposition::Submitted,
+                playlist_generation,
+            );
+        }
         true
     }
 
@@ -450,6 +558,8 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.state = PlaylistResolutionAttemptState::Loading;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
+        attempt.missing_reported = false;
+        attempt.untrusted_reported = false;
     }
 
     #[cfg(test)]
@@ -506,6 +616,13 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.state = PlaylistResolutionAttemptState::Active;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
+        let playlist_generation = attempt.playlist_generation;
+        emit_media_resolution_transition(
+            "MEDIA-PLAYABLE-001",
+            sorotte_lifecycle_evidence::Trigger::PlayerEvent,
+            sorotte_lifecycle_evidence::Disposition::Applied,
+            playlist_generation,
+        );
     }
 
     pub(super) fn fail_playlist_resolution_candidate(
@@ -566,7 +683,14 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.state = PlaylistResolutionAttemptState::Failed;
         attempt.fallback_pending = true;
         attempt.handoff_pending = false;
+        let playlist_generation = attempt.playlist_generation;
         self.last_attached_media_resolution_trigger = None;
+        emit_media_resolution_transition(
+            "MEDIA-FAIL-001",
+            sorotte_lifecycle_evidence::Trigger::PlayerEvent,
+            sorotte_lifecycle_evidence::Disposition::Failed,
+            playlist_generation,
+        );
     }
 
     fn clear_rejected_resolution_placeholder(
@@ -723,6 +847,13 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.media_confirmation_pending = false;
         attempt.fallback_pending = false;
         attempt.handoff_pending = true;
+        let playlist_generation = attempt.playlist_generation;
+        emit_media_resolution_transition(
+            "MEDIA-PLAYABLE-001",
+            sorotte_lifecycle_evidence::Trigger::Recovery,
+            sorotte_lifecycle_evidence::Disposition::Applied,
+            playlist_generation,
+        );
 
         let mut logical_override_confirmed = None;
         if let Some(pending) = self.pending_logical_media_override.as_mut()

@@ -655,6 +655,29 @@ impl MockSessionServer {
         })
     }
 
+    pub(super) fn send_authoritative_line(&self, line: String, label: &str) -> Result<(), String> {
+        if line.contains('\r') || line.contains('\n') {
+            return Err(format!(
+                "{label} authoritative mock frame contained a line delimiter"
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            format!("{label} authoritative mock frame was invalid JSON: {error}")
+        })?;
+        if !value.is_object() {
+            return Err(format!(
+                "{label} authoritative mock frame was not a JSON object"
+            ));
+        }
+        self.authoritative_tx
+            .as_ref()
+            .ok_or_else(|| {
+                format!("{label} mock TCP server does not expose authoritative outbound control")
+            })?
+            .send(line)
+            .map_err(|error| format!("failed to queue {label} authoritative mock frame: {error}"))
+    }
+
     pub(super) fn release(mut self, label: &str) -> Result<(), String> {
         let address = self.address.clone();
         let _ = self.release_tx.send(());
@@ -881,6 +904,7 @@ fn start_mock_session_server_with_release_policy(
         hello_rx,
         playlist_exchange_rx: None,
         playstate_exchange_rx: None,
+        authoritative_tx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -980,6 +1004,7 @@ pub(super) fn start_phased_mock_session_server(
         hello_rx,
         playlist_exchange_rx: None,
         playstate_exchange_rx: None,
+        authoritative_tx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -1256,6 +1281,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
     let (hello_tx, hello_rx) = mpsc::channel();
     let (playlist_exchange_tx, playlist_exchange_rx) = mpsc::channel();
     let (playstate_exchange_tx, playstate_exchange_rx) = mpsc::channel();
+    let (authoritative_tx, authoritative_rx) = mpsc::channel::<String>();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::Builder::new()
         .name("sorotte-native-playlist-echo".to_owned())
@@ -1594,6 +1620,25 @@ pub(super) fn start_playlist_echo_mock_session_server(
                 if release_rx.try_recv().is_ok() {
                     return Ok(());
                 }
+                while let Ok(authoritative_line) = authoritative_rx.try_recv() {
+                    stream
+                        .write_all(authoritative_line.as_bytes())
+                        .map_err(|error| {
+                            format!(
+                                "playlist-echo mock TCP server failed to write authoritative injected frame: {error}"
+                            )
+                        })?;
+                    stream.write_all(b"\n").map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to terminate authoritative injected frame: {error}"
+                        )
+                    })?;
+                    stream.flush().map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to flush authoritative injected frame: {error}"
+                        )
+                    })?;
+                }
                 let mut candidate = String::new();
                 match reader.read_line(&mut candidate) {
                     Ok(0) => return Ok(()),
@@ -1706,6 +1751,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
         hello_rx,
         playlist_exchange_rx: Some(playlist_exchange_rx),
         playstate_exchange_rx: Some(playstate_exchange_rx),
+        authoritative_tx: Some(authoritative_tx),
         release_tx,
         join_handle: Some(join_handle),
     })

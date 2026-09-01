@@ -102,6 +102,9 @@ struct GuiLaunchTestOverrides<'a> {
     config_storage_browse_path: Option<&'a Path>,
     test_player_observation_path: Option<&'a Path>,
     lifecycle_observation_path: Option<&'a Path>,
+    shared_lifecycle_evidence_path: Option<&'a Path>,
+    shared_lifecycle_run_id: Option<&'a str>,
+    shared_lifecycle_emitter: Option<&'a str>,
     disable_startup_saved_connect: bool,
     player_settings_degraded: bool,
 }
@@ -115,6 +118,7 @@ struct MockSessionServer {
     hello_rx: mpsc::Receiver<String>,
     playlist_exchange_rx: Option<mpsc::Receiver<PlaylistExchangeEvidence>>,
     playstate_exchange_rx: Option<mpsc::Receiver<(String, String)>>,
+    authoritative_tx: Option<mpsc::Sender<String>>,
     release_tx: mpsc::Sender<()>,
     join_handle: Option<thread::JoinHandle<Result<(), String>>>,
 }
@@ -213,7 +217,9 @@ const MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS: f64 = 2.5;
 const MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS: f64 = 7.5;
 #[path = "sorotte-gui-native-smoke/platform_driver.rs"]
 mod platform_driver;
-use native_smoke_runner::{run_native_smoke, run_real_mpv_vertical_from_args};
+use native_smoke_runner::{
+    run_native_smoke, run_participant_status_system_from_args, run_real_mpv_vertical_from_args,
+};
 use platform_driver::{
     NativeAccessibilityNode, NativeControlKind, NativeGuiDriver, NativeInputMode,
     PlatformNativeGuiDriver,
@@ -248,6 +254,19 @@ fn main() {
     enable_native_smoke_dpi_awareness();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--participant-status-system") {
+        match run_participant_status_system_from_args(&args) {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("sorotte-gui participant-status system proof failed: {error}");
+                println!("{}", render_error(&error, OutputFormat::Json));
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|arg| arg == "--real-mpv-vertical") {
         match run_real_mpv_vertical_from_args(&args) {
             Ok(report) => {

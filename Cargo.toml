@@ -3,6 +3,7 @@ members = [
     "crates/sorotte-secret",
     "crates/sorotte-protocol",
     "crates/sorotte-core",
+    "crates/sorotte-lifecycle-evidence",
     "crates/sorotte-server",
     "crates/sorotte-media-match",
     "crates/sorotte-client-core",

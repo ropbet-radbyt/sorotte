@@ -15,6 +15,17 @@ where
         self.pending_natural_playback_completion = None;
         self.playback_coordination
             .begin_protocol_connection_generation(&self.session);
+        emit_client_lifecycle_transition(
+            "SESSION-CONNECT-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::Recovery,
+            Disposition::Accepted,
+            &[(
+                "connection-generation",
+                self.playback_coordination.connection_generation(),
+            )],
+        );
         self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();
     }
 

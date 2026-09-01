@@ -1,0 +1,92 @@
+{
+  "kind": "sorotte-playback-lifecycle-fault-schedule",
+  "schedule_id": "system-cross-boundary-v1",
+  "schema_version": 1,
+  "seed": 82719,
+  "steps": [
+    {
+      "action": "worker-stall",
+      "boundary": "client-worker",
+      "id": "stall-client-worker-before-hello",
+      "occurrence": 1,
+      "value": 20
+    },
+    {
+      "action": "worker-stall",
+      "boundary": "server-worker",
+      "id": "stall-server-worker-before-hello",
+      "occurrence": 1,
+      "value": 20
+    },
+    {
+      "action": "fragment",
+      "boundary": "client-to-server-frame",
+      "id": "fragment-client-hello",
+      "occurrence": 1,
+      "value": 1
+    },
+    {
+      "action": "delay",
+      "boundary": "server-to-client-frame",
+      "id": "delay-server-hello",
+      "occurrence": 1,
+      "value": 35
+    },
+    {
+      "action": "backpressure",
+      "boundary": "harness-backpressure",
+      "id": "hold-client-upstream-writes",
+      "occurrence": 1,
+      "value": 80
+    },
+    {
+      "action": "half-close",
+      "boundary": "harness-partition",
+      "id": "half-close-active-follower",
+      "occurrence": 1,
+      "value": 1
+    },
+    {
+      "action": "delay",
+      "boundary": "harness-reconnect",
+      "id": "delay-half-close-replacement",
+      "occurrence": 1,
+      "value": 40
+    },
+    {
+      "action": "reset",
+      "boundary": "harness-partition",
+      "id": "reset-and-hold-active-follower",
+      "occurrence": 2,
+      "value": 1
+    },
+    {
+      "action": "delay",
+      "boundary": "harness-reconnect",
+      "id": "delay-reset-replacement",
+      "occurrence": 2,
+      "value": 40
+    },
+    {
+      "action": "channel-hold",
+      "boundary": "harness-partition",
+      "id": "hold-client-write-channel",
+      "occurrence": 3,
+      "value": 1
+    },
+    {
+      "action": "reset",
+      "boundary": "harness-partition",
+      "id": "reset-blocked-client-write",
+      "occurrence": 4,
+      "value": 1
+    },
+    {
+      "action": "channel-release",
+      "boundary": "harness-reconnect",
+      "id": "release-client-write-channel",
+      "occurrence": 3,
+      "value": 1
+    }
+  ]
+}

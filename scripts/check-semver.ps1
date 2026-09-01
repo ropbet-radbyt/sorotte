@@ -14,6 +14,7 @@ param(
         'sorotte-client-app',
         'sorotte-player-api',
         'sorotte-player-mpv',
+        'sorotte-lifecycle-evidence',
         'sorotte-plex',
         'sorotte-cli',
         'sorotte-gui',
@@ -30,6 +31,7 @@ param(
         'sorotte-client-app',
         'sorotte-player-api',
         'sorotte-player-mpv',
+        'sorotte-lifecycle-evidence',
         'sorotte-plex',
         'sorotte-cli',
         'sorotte-gui',
@@ -82,7 +84,21 @@ try {
     Push-Location -LiteralPath $repoRoot
     $locationPushed = $true
 
+    & git cat-file -e "${BaselineRev}^{commit}" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Baseline revision does not resolve to a commit: $BaselineRev"
+    }
+
     foreach ($packageName in $Package) {
+        $baselineManifest = "crates/$packageName/Cargo.toml"
+        $baselineEntries = @(& git ls-tree --name-only $BaselineRev -- $baselineManifest)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to inspect baseline package manifest: $baselineManifest"
+        }
+        if ($baselineEntries.Count -eq 0) {
+            Write-Host "Skipping new package absent from baseline: $packageName"
+            continue
+        }
         & $CargoExecutable semver-checks --package $packageName --baseline-rev $BaselineRev
         if ($LASTEXITCODE -ne 0) {
             throw "cargo semver-checks failed for $packageName with exit code $LASTEXITCODE"

@@ -12,6 +12,7 @@ workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 sorotte-client-core = { path = "../sorotte-client-core" }
+sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 sorotte-player-api = { path = "../sorotte-player-api" }
 sorotte-plex = { path = "../sorotte-plex" }
 sorotte-protocol = { path = "../sorotte-protocol" }

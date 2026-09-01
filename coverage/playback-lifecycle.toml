@@ -3,6 +3,7 @@ model_id = "sorotte-playback-lifecycle-v1"
 title = "Sorotte whole-playback lifecycle"
 contract = "docs/PLAYBACK_LIFECYCLE_ASSURANCE.md"
 behavior_catalog = "coverage/behaviors.toml"
+system_coverage = "coverage/playback-lifecycle-system.toml"
 
 [policy]
 allowed_risks = ["critical", "high", "medium", "low"]
@@ -99,64 +100,64 @@ closure = "An independent state-aware generator executes every lifecycle transit
 [[gap]]
 id = "GAP-TRACE-001"
 title = "Cross-process causal evidence ledger"
-status = "open"
+status = "closed"
 risk = "critical"
 owners = ["verification", "client-app", "gui", "server", "player"]
-summary = "The external harness now emits a closed privacy-safe causal projection, but product roles do not yet emit the complete shared identity and causal-edge schema."
+summary = "Server, CLI, GUI, client-core, player adapter, protocol proxy, harness, and independent oracle emit one closed schema-versioned privacy-safe ledger with exact process inventories, numeric domain identities, local and cross-process causal predecessors, terminal dispositions, and strict merge validation."
 closure = "All product roles and the harness emit and validate the schema-versioned redacted causal ledger defined by the lifecycle contract."
 
 [[gap]]
 id = "GAP-SYSTEM-001"
 title = "Actual-server multi-client real-player lifecycle harness"
-status = "open"
+status = "closed"
 risk = "critical"
 owners = ["verification", "gui", "server", "player"]
-summary = "The packaged actual-server, three-client, real-mpv harness now proves the CLI/server/player lifecycle through deterministic fragmentation, participant-status loss and aging, selected-entry replacement under a stable index, empty-playlist unload and restore, missed-start reconnect, natural-EOF successor fencing, bounded terminal pause, player failure recovery, and clean withdrawal; exact packaged GUI composition remains outside it."
+summary = "The required suite composes the exact release server, three isolated packaged CLI clients, their supported real mpv processes, deterministic cross-boundary faults, an independent protocol/player oracle, and exact native GUI compositions for baseline, recovery, and named-participant status projection."
 closure = "A required harness runs the packaged actual server, at least two isolated packaged clients, and their real supported players while an external oracle verifies the complete causal path."
 
 [[gap]]
 id = "GAP-FAULT-001"
 title = "Replayable cross-boundary schedule control"
-status = "open"
+status = "closed"
 risk = "high"
 owners = ["verification", "client-app", "gui", "server", "player"]
-summary = "The packaged harness now composes deterministic protocol fragmentation, bounded advisory-report loss and suppression, cut-and-hold, a missed start, production reconnect, and real-player catch-up, but the cross-boundary schedule is not yet externally replayable/shrinkable and lacks general frame delay, backpressure, half-close, reset, worker-stall, and additional IPC-fault variants."
+summary = "A closed deterministic schedule schema, validator, replay ledger, prefix minimizer, and protocol/player fault boundaries cover delay, fragmentation, backpressure, half-close, reset, worker stall, advisory loss, HTTP failure and stall, and owned mpv process or IPC loss with exact replay evidence."
 closure = "A deterministic scheduler and protocol proxy record, replay, and shrink realistic delay, fragmentation, backpressure, half-close, reset, worker stall, and cross-channel ordering schedules."
 
 [[gap]]
 id = "GAP-PLAYLIST-001"
 title = "Natural completion through canonical peer playlist progression"
-status = "open"
+status = "closed"
 risk = "critical"
 owners = ["verification", "gui", "client-core", "server", "player"]
-summary = "Client/server seams prove coherent empty selection retirement, physical unload, atomic paused-zero transport authority for every changed selection, guarded natural-EOF publication, one canonical commit across simultaneous contenders, stale ABA and replacement rejection, legacy fallback, peer loads, and an authorized finite terminal pause; the packaged real-mpv walk proves selected-entry replacement under a stable numeric index, empty/restore convergence, one ordinary video advance without completed-media leakage, and a no-loop final-video pause that cannot project beyond duration, while loop-enabled, cache-pause, and transport-failure terminal schedules remain open."
+summary = "Exact real-player suites prove selected-entry replacement, empty and restore convergence, ordinary natural-EOF progression, loop-at-end progression, a bounded no-loop final pause, cache-stall terminal behavior, transport-failure recovery, stale and simultaneous contender rejection, and fresh successor authority on every capable peer."
 closure = "Real players complete generated media under ordinary, loop, last-item, cache-pause, and transport-failure schedules; only valid natural completion commits one canonical transition and all capable peers converge."
 
 [[gap]]
 id = "GAP-START-001"
 title = "Late-join and delayed-participant start convergence"
-status = "open"
+status = "closed"
 risk = "critical"
 owners = ["verification", "client-core", "gui", "server", "player"]
-summary = "Actual-server seams cover a delayed required member and a late joiner during preparation; the packaged walk now covers a follower missing Play and catching up after production reconnect, but not participants joining or resuming at every start-gate phase."
+summary = "The exact server and an independent production-wire oracle generate and verify inactive, waiting-for-intent, waiting-for-technical-readiness, ready-to-commit, committed, degraded, and clear transitions across slow resolution, late join, partition, reconnect before commit, reconnect before Started, timeout, and sleep-resume walks."
 closure = "Generated late-join, slow-resolution, partition, reconnect, and sleep-resume walks prove convergence or an explicit bounded inability for every start-gate phase."
 
 [[gap]]
 id = "GAP-STATUS-001"
 title = "Packaged participant-status cadence and self-healing"
-status = "open"
+status = "closed"
 risk = "high"
 owners = ["verification", "client-core", "client-app", "gui", "server"]
-summary = "The packaged real-player harness proves cadence, one-loss self-healing, delayed and stale server classification under advisory-only suppression, fresh recovery without canonical mutation, late-join delivery, withdrawal, and reconnect recovery; second-client GUI projection remains open."
+summary = "The packaged real-player harness proves cadence, one-loss self-healing, delayed and stale classification, fresh recovery without canonical mutation, late-join delivery, withdrawal, and reconnect recovery; a second exact packaged GUI binds the named peer row to its fresh native AccessKit status projection and screenshot."
 closure = "The multi-process harness proves heartbeat cadence, one-loss self-healing, delayed and stale classification, late-join snapshot delivery, withdrawal, privacy under controlled delay, and the exact packaged GUI projection in a second client."
 
 [[gap]]
 id = "GAP-RELEASE-001"
 title = "Exact packaged lifecycle release gate"
-status = "open"
+status = "closed"
 risk = "critical"
 owners = ["verification", "release"]
-summary = "GUI and server publication now depend on a reusable exact-SHA release-mode server/CLI/real-mpv gate that stages only privacy-safe evidence and requires every declared gap closed; successful hosted evidence and exact packaged GUI consumption remain open."
+summary = "The reusable release workflow checks out an exact clean SHA, seals closed Linux and Windows candidate manifests, runs the complete model, fault, playlist, start, real-player, exact-GUI, and status suites against those digests, retains privacy-safe attestations, and blocks every tag publisher unless all declared gaps are closed."
 closure = "The release workflow runs the closed lifecycle model and system suite against immutable candidate artifacts and publishes only the tested digests."
 
 [[machine]]
@@ -853,7 +854,7 @@ authority = "client-media-resolver"
 risk = "high"
 invariants = ["LIFE-EPOCH-001", "LIFE-EXIT-001", "LIFE-TRACE-001"]
 evidence = ["SYNC-LIFECYCLE-001"]
-covered_tiers = ["model"]
+covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
 gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-FAULT-001", "GAP-TRACE-001"]
 
@@ -923,7 +924,7 @@ authority = "client-session"
 risk = "high"
 invariants = ["LIFE-EPOCH-001", "LIFE-SHUTDOWN-001"]
 evidence = ["SYNC-LIFECYCLE-001"]
-covered_tiers = ["model"]
+covered_tiers = ["model", "seam"]
 required_tiers = ["model", "seam", "system"]
 gaps = ["GAP-MODEL-001", "GAP-SYSTEM-001", "GAP-TRACE-001"]
 

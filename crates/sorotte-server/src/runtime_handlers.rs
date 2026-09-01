@@ -548,6 +548,41 @@ impl ServerRuntime {
         // must be rebuilt for the new participant.
         self.participant_status_snapshot_cache.remove(&room_name);
         self.assign_room_join_order(client_id);
+        let membership_epoch = self.client_room_join_order(client_id);
+        emit_server_lifecycle_transition(
+            "ROOM-JOIN-001",
+            "room-membership",
+            TargetKind::ServerState,
+            Trigger::RemoteEvent,
+            Disposition::Submitted,
+            &[("membership-epoch", membership_epoch)],
+        );
+        emit_server_lifecycle_transition(
+            "ROOM-ACTIVE-001",
+            "room-membership",
+            TargetKind::ServerState,
+            Trigger::RemoteEvent,
+            Disposition::Applied,
+            &[("membership-epoch", membership_epoch)],
+        );
+        emit_server_lifecycle_transition(
+            "SESSION-ACTIVE-001",
+            "session",
+            TargetKind::ServerState,
+            Trigger::RemoteEvent,
+            Disposition::Applied,
+            &[("membership-epoch", membership_epoch)],
+        );
+        if capabilities.participant_status_v1 {
+            emit_server_lifecycle_transition(
+                "STATUS-NEGOTIATE-001",
+                "participant-status",
+                TargetKind::ServerState,
+                Trigger::RemoteEvent,
+                Disposition::Accepted,
+                &[("membership-epoch", membership_epoch)],
+            );
+        }
         self.seed_client_playback_state(
             client_id,
             room_should_seed_joiner_position.then_some(join_room_playback.position),
@@ -591,6 +626,7 @@ impl ServerRuntime {
             );
         }
         let room_playlist = self.room_playlist_state(&room_name);
+        emit_server_playlist_snapshot_evidence(&room_playlist, Trigger::RemoteEvent);
         let playlist_snapshot_message = self.playlist_change_message_for_client(
             client_id,
             room_playlist.files.clone(),
@@ -789,6 +825,15 @@ impl ServerRuntime {
                     }
 
                     let previous_room = session.room.clone();
+                    let previous_membership_epoch = self.client_room_join_order(client_id);
+                    emit_server_lifecycle_transition(
+                        "ROOM-SWITCH-001",
+                        "room-membership",
+                        TargetKind::ServerState,
+                        Trigger::RemoteEvent,
+                        Disposition::Submitted,
+                        &[("membership-epoch", previous_membership_epoch)],
+                    );
                     self.clear_participant_status_for_client(client_id);
                     outbound_messages.extend(self.detach_readiness_membership(client_id, false)?);
                     outbound_messages.extend(self.mark_playback_barrier_participant_disconnected(
@@ -846,6 +891,23 @@ impl ServerRuntime {
                     );
                     session.room = new_room_name;
                     self.sessions.insert(client_id.to_owned(), session.clone());
+                    emit_server_lifecycle_transition(
+                        "PLAYLIST-LOSE-AUTHORITY-001",
+                        "playlist-selection",
+                        TargetKind::ServerState,
+                        Trigger::RemoteEvent,
+                        Disposition::Superseded,
+                        &[("membership-epoch", previous_membership_epoch)],
+                    );
+                    let membership_epoch = self.client_room_join_order(client_id);
+                    emit_server_lifecycle_transition(
+                        "ROOM-ACTIVE-001",
+                        "room-membership",
+                        TargetKind::ServerState,
+                        Trigger::RemoteEvent,
+                        Disposition::Applied,
+                        &[("membership-epoch", membership_epoch)],
+                    );
                     self.participant_status_snapshot_cache.remove(&session.room);
                     outbound_messages.extend(self.refresh_mixed_readiness_cohort(&previous_room)?);
                     // The moving client must observe its canonical room echo
@@ -936,6 +998,7 @@ impl ServerRuntime {
                     }
 
                     let room_playlist = self.room_playlist_state(&session.room);
+                    emit_server_playlist_snapshot_evidence(&room_playlist, Trigger::RemoteEvent);
                     let playlist_snapshot_message = self.playlist_change_message_for_client(
                         client_id,
                         room_playlist.files.clone(),
@@ -1167,6 +1230,32 @@ impl ServerRuntime {
                                 canonical_index,
                             )
                         };
+                        let transaction_identities = [
+                            ("playlist-epoch", playlist_epoch),
+                            ("membership-epoch", self.client_room_join_order(client_id)),
+                        ];
+                        emit_server_lifecycle_transition(
+                            "PLAYLIST-MUTATE-001",
+                            "playlist-selection",
+                            TargetKind::ServerState,
+                            Trigger::RemoteEvent,
+                            Disposition::Accepted,
+                            &transaction_identities,
+                        );
+                        if playlist_changed || selection_changed {
+                            emit_server_lifecycle_transition(
+                                "TX-COMMIT-001",
+                                "canonical-transaction",
+                                TargetKind::ServerState,
+                                Trigger::RemoteEvent,
+                                Disposition::Committed,
+                                &transaction_identities,
+                            );
+                        }
+                        emit_server_playlist_snapshot_evidence(
+                            &self.room_playlist_state(&session.room),
+                            Trigger::RemoteEvent,
+                        );
                         if playlist_changed || selection_changed {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
@@ -1220,8 +1309,29 @@ impl ServerRuntime {
                             }
                         }
                         outbound_messages.extend(readiness_outbound);
+                        if playlist_changed || selection_changed {
+                            emit_server_lifecycle_transition(
+                                "TX-FANOUT-001",
+                                "canonical-transaction",
+                                TargetKind::ProtocolMessage,
+                                Trigger::Internal,
+                                Disposition::Submitted,
+                                &transaction_identities,
+                            );
+                        }
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
+                        emit_server_lifecycle_transition(
+                            "TX-REJECT-001",
+                            "canonical-transaction",
+                            TargetKind::ServerState,
+                            Trigger::RemoteEvent,
+                            Disposition::Rejected,
+                            &[
+                                ("playlist-epoch", room_state.epoch),
+                                ("membership-epoch", self.client_room_join_order(client_id)),
+                            ],
+                        );
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
                             self.playlist_change_message_for_client(
@@ -1264,6 +1374,17 @@ impl ServerRuntime {
                         // The winning fanout is authoritative; silently
                         // consume the stale compare-and-set so it cannot
                         // become a duplicate selection generation.
+                        emit_server_lifecycle_transition(
+                            "TX-SUPERSEDE-001",
+                            "canonical-transaction",
+                            TargetKind::ServerState,
+                            Trigger::RemoteEvent,
+                            Disposition::Superseded,
+                            &[
+                                ("playlist-epoch", room_state.epoch),
+                                ("membership-epoch", self.client_room_join_order(client_id)),
+                            ],
+                        );
                         continue;
                     }
                     let index = command.index;
@@ -1282,15 +1403,61 @@ impl ServerRuntime {
                             );
                         let lifecycle_authority =
                             self.room_uses_playback_lifecycle_authority(&session.room);
-                        let reset_transport =
-                            selection_changed && (guarded_natural_advance || lifecycle_authority);
+                        // Every accepted selection event is a fresh selection
+                        // identity for lifecycle-aware clients, even when the
+                        // numeric row is unchanged. Those clients fence local
+                        // transport behind the successor revision, so the
+                        // server must publish matching paused-zero authority
+                        // for the replay instead of leaving them permanently
+                        // behind the predecessor transport generation.
+                        let selection_generation_changed = selection_changed || lifecycle_authority;
+                        let reset_transport = guarded_natural_advance || lifecycle_authority;
                         let now_seconds = self.current_time_seconds();
                         let playlist_epoch = {
                             let room_playlist = self.room_playlist_state_mut(&session.room);
                             room_playlist.index = index;
                             room_playlist.advance_epoch()
                         };
-                        if selection_changed {
+                        let mut transaction_identities = vec![("playlist-epoch", playlist_epoch)];
+                        if let Some(index) = index.and_then(|value| u64::try_from(value).ok()) {
+                            transaction_identities
+                                .push(("playlist-index", index.saturating_add(1)));
+                        }
+                        emit_server_lifecycle_transition(
+                            "PLAYLIST-SELECT-001",
+                            "playlist-selection",
+                            TargetKind::ServerState,
+                            if guarded_natural_advance {
+                                Trigger::PlayerEvent
+                            } else {
+                                Trigger::RemoteEvent
+                            },
+                            Disposition::Accepted,
+                            &transaction_identities,
+                        );
+                        if selection_generation_changed {
+                            emit_server_lifecycle_transition(
+                                "TX-COMMIT-001",
+                                "canonical-transaction",
+                                TargetKind::ServerState,
+                                if guarded_natural_advance {
+                                    Trigger::PlayerEvent
+                                } else {
+                                    Trigger::RemoteEvent
+                                },
+                                Disposition::Committed,
+                                &transaction_identities,
+                            );
+                        }
+                        emit_server_playlist_snapshot_evidence(
+                            &self.room_playlist_state(&session.room),
+                            if guarded_natural_advance {
+                                Trigger::PlayerEvent
+                            } else {
+                                Trigger::RemoteEvent
+                            },
+                        );
+                        if selection_generation_changed {
                             self.advance_participant_status_media_generation(&session.room, None);
                             self.clear_participant_status_for_room(&session.room);
                         }
@@ -1347,9 +1514,30 @@ impl ServerRuntime {
                                     .push(DirectedProtocolMessage::new(peer_client, state_message));
                             }
                         }
+                        if selection_generation_changed {
+                            emit_server_lifecycle_transition(
+                                "TX-FANOUT-001",
+                                "canonical-transaction",
+                                TargetKind::ProtocolMessage,
+                                Trigger::Internal,
+                                Disposition::Submitted,
+                                &transaction_identities,
+                            );
+                        }
                         outbound_messages.extend(readiness_outbound);
                     } else {
                         let room_state = self.room_playlist_state(&session.room);
+                        emit_server_lifecycle_transition(
+                            "TX-REJECT-001",
+                            "canonical-transaction",
+                            TargetKind::ServerState,
+                            Trigger::RemoteEvent,
+                            Disposition::Rejected,
+                            &[
+                                ("playlist-epoch", room_state.epoch),
+                                ("membership-epoch", self.client_room_join_order(client_id)),
+                            ],
+                        );
                         outbound_messages.push(DirectedProtocolMessage::new(
                             client_id,
                             playlist_snapshot_index_message(
@@ -1382,6 +1570,18 @@ impl ServerRuntime {
                     self.sessions.insert(client_id.to_owned(), session.clone());
                     if previously_supported_participant_status != now_supported_participant_status {
                         self.clear_participant_status_for_client(client_id);
+                        emit_server_lifecycle_transition(
+                            if now_supported_participant_status {
+                                "STATUS-NEGOTIATE-001"
+                            } else {
+                                "STATUS-UNAVAILABLE-001"
+                            },
+                            "participant-status",
+                            TargetKind::ServerState,
+                            Trigger::RemoteEvent,
+                            Disposition::Applied,
+                            &[("membership-epoch", self.client_room_join_order(client_id))],
+                        );
                     }
                     let feature_update = user_features_update_message(
                         &session.username,
@@ -1679,6 +1879,17 @@ impl ServerRuntime {
                 room_state.set_by = Some(session.username.clone());
             }
             self.advance_transport_authority_revision(&session.room);
+            let transport_revision = self
+                .transport_authority_revision_for_room(&session.room)
+                .unwrap_or_default();
+            emit_server_lifecycle_transition(
+                "TX-COMMIT-001",
+                "canonical-transaction",
+                TargetKind::ServerState,
+                Trigger::RemoteEvent,
+                Disposition::Committed,
+                &[("transport-revision", transport_revision)],
+            );
             self.seed_room_client_playback_states(&session.room, watcher_position, now_seconds);
             self.persist_room_if_needed(&session.room)?;
             if pause_changed && !sample_paused {
@@ -1700,6 +1911,14 @@ impl ServerRuntime {
                 );
                 outbound_messages.push(DirectedProtocolMessage::new(peer_client, state_message));
             }
+            emit_server_lifecycle_transition(
+                "TX-FANOUT-001",
+                "canonical-transaction",
+                TargetKind::ProtocolMessage,
+                Trigger::Internal,
+                Disposition::Submitted,
+                &[("transport-revision", transport_revision)],
+            );
             return Ok(outbound_messages);
         }
 
@@ -1754,12 +1973,17 @@ impl ServerRuntime {
         let forward_delay_ms =
             self.participant_status_forward_delay_ms_at(client_id, received_at_seconds);
         let room_join_sequence = self.client_room_join_order(client_id);
+        let report_sequence = report.report_sequence;
+        let playback_scope = report.playback_scope;
         self.client_participant_status.insert(
             client_id.to_owned(),
             RetainedParticipantStatus {
                 report,
                 received_at_seconds,
                 max_projected_report_age_ms: MonotonicParticipantStatusAge::new(0),
+                projected_availability: MonotonicParticipantStatusAvailability::new(
+                    ParticipantStatusAvailability::Fresh,
+                ),
                 forward_delay_ms,
                 room: session.room.clone(),
                 username: session.username.clone(),
@@ -1767,5 +1991,26 @@ impl ServerRuntime {
             },
         );
         self.participant_status_snapshot_cache.remove(&session.room);
+        let mut identities = vec![
+            ("membership-epoch", room_join_sequence),
+            ("report-sequence", report_sequence),
+        ];
+        if let Some(scope) = playback_scope {
+            identities.push(("media-generation", scope.media_generation));
+            if let Some(state_revision) = scope.state_revision {
+                identities.push(("state-revision", state_revision));
+            }
+            if let Some(transport_revision) = scope.transport_revision {
+                identities.push(("transport-revision", transport_revision));
+            }
+        }
+        emit_server_lifecycle_transition(
+            "STATUS-FRESH-001",
+            "participant-status",
+            TargetKind::ServerState,
+            Trigger::RemoteEvent,
+            Disposition::Committed,
+            &identities,
+        );
     }
 }

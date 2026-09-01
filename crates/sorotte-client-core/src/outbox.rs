@@ -1,8 +1,52 @@
 use std::{cell::Cell, collections::VecDeque};
 
+use sorotte_lifecycle_evidence::{Disposition, TargetKind, Trigger};
 use sorotte_protocol::{
     ProtocolMessage, SOROTTE_PARTICIPANT_STATUS_V1, SOROTTE_PLAYBACK_BARRIER_V1, StatePayload,
 };
+
+use crate::{
+    emit_client_lifecycle_transition, is_playback_protocol_message,
+    next_client_transaction_sequence,
+};
+
+fn emit_unstaged_transaction_superseded(count: usize) {
+    if count == 0 {
+        return;
+    }
+    let transaction_sequence = next_client_transaction_sequence();
+    let identities = [
+        ("transaction-sequence", transaction_sequence),
+        ("superseded-count", u64::try_from(count).unwrap_or(u64::MAX)),
+    ];
+    emit_client_lifecycle_transition(
+        "TX-BEGIN-001",
+        "canonical-transaction",
+        TargetKind::ProtocolMessage,
+        Trigger::Internal,
+        Disposition::Submitted,
+        &identities,
+    );
+    emit_client_lifecycle_transition(
+        "TX-SUPERSEDE-001",
+        "canonical-transaction",
+        TargetKind::ProtocolMessage,
+        Trigger::Internal,
+        Disposition::Superseded,
+        &identities,
+    );
+}
+
+fn emit_staged_transaction_superseded(lease: ProtocolLineLease) {
+    emit_client_lifecycle_transition(
+        "TX-SUPERSEDE-001",
+        "canonical-transaction",
+        TargetKind::ProtocolMessage,
+        Trigger::Internal,
+        Disposition::Superseded,
+        &[("frame-receipt", lease.get())],
+    );
+}
 
 fn merge_playback_barrier_observations(previous: &StatePayload, latest: &mut StatePayload) {
     let Ok(Some(previous_extension)) = previous.playback_barrier_v1() else {
@@ -236,6 +280,12 @@ impl ProtocolDelivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProtocolLineLease(u64);
 
+impl ProtocolLineLease {
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// Outbound protocol ownership split by delivery semantics.
 ///
 /// Durable reliable commands remain in FIFO order until acknowledged.
@@ -274,16 +324,35 @@ impl ProtocolOutbox {
         &self.pending
     }
 
+    #[cfg(test)]
     pub(crate) fn front_for_delivery(&self) -> Option<(ProtocolLineLease, &ProtocolMessage)> {
+        self.front_for_delivery_with_status()
+            .map(|(lease, message, _)| (lease, message))
+    }
+
+    pub(crate) fn front_for_delivery_with_status(
+        &self,
+    ) -> Option<(ProtocolLineLease, &ProtocolMessage, bool)> {
         let message = self.pending.front()?;
-        let lease = self.leased_front.get().unwrap_or_else(|| {
+        let existing = self.leased_front.get();
+        let lease = existing.unwrap_or_else(|| {
             let next = self.next_lease.get().wrapping_add(1).max(1);
             self.next_lease.set(next);
             let lease = ProtocolLineLease(next);
             self.leased_front.set(Some(lease));
             lease
         });
-        Some((lease, message))
+        Some((lease, message, existing.is_none()))
+    }
+
+    pub(crate) fn leased_front_message(
+        &self,
+        lease: ProtocolLineLease,
+    ) -> Option<&ProtocolMessage> {
+        if self.leased_front.get() != Some(lease) {
+            return None;
+        }
+        self.pending.front()
     }
 
     pub(crate) fn push_back(&mut self, message: ProtocolMessage) {
@@ -381,6 +450,24 @@ impl ProtocolOutbox {
     }
 
     fn invalidate_readiness_intents(&mut self, should_cancel: impl Fn(&ProtocolDelivery) -> bool) {
+        let leased = self.leased_front.get();
+        let staged_superseded = leased.is_some()
+            && self.delivery.front().is_some_and(&should_cancel)
+            && self
+                .pending
+                .front()
+                .is_some_and(is_playback_protocol_message);
+        let unstaged_superseded = self
+            .pending
+            .iter()
+            .zip(&self.delivery)
+            .enumerate()
+            .filter(|(index, (message, delivery))| {
+                !(leased.is_some() && *index == 0)
+                    && should_cancel(delivery)
+                    && is_playback_protocol_message(message)
+            })
+            .count();
         if self.leased_front.get().is_some()
             && self.delivery.front().is_some_and(&should_cancel)
             && let Some(ProtocolDelivery::ConnectionRoomScopedReadinessIntent { cancelled, .. }) =
@@ -389,6 +476,10 @@ impl ProtocolOutbox {
             *cancelled = true;
         }
         self.retain_deliveries(true, |delivery| !should_cancel(delivery));
+        if staged_superseded && let Some(lease) = leased {
+            emit_staged_transaction_superseded(lease);
+        }
+        emit_unstaged_transaction_superseded(unstaged_superseded);
     }
 
     pub(crate) fn retain_connection_scoped_reliable_scope(
@@ -462,6 +553,24 @@ impl ProtocolOutbox {
         &mut self,
         should_cancel: impl Fn(&ProtocolDelivery) -> bool,
     ) {
+        let leased = self.leased_front.get();
+        let staged_superseded = leased.is_some()
+            && self.delivery.front().is_some_and(&should_cancel)
+            && self
+                .pending
+                .front()
+                .is_some_and(is_playback_protocol_message);
+        let unstaged_superseded = self
+            .pending
+            .iter()
+            .zip(&self.delivery)
+            .enumerate()
+            .filter(|(index, (message, delivery))| {
+                !(leased.is_some() && *index == 0)
+                    && should_cancel(delivery)
+                    && is_playback_protocol_message(message)
+            })
+            .count();
         if self.leased_front.get().is_some()
             && self.delivery.front().is_some_and(&should_cancel)
             && let Some(ProtocolDelivery::ConnectionScopedReliable { cancelled, .. }) =
@@ -470,6 +579,10 @@ impl ProtocolOutbox {
             *cancelled = true;
         }
         self.retain_deliveries(true, |delivery| !should_cancel(delivery));
+        if staged_superseded && let Some(lease) = leased {
+            emit_staged_transaction_superseded(lease);
+        }
+        emit_unstaged_transaction_superseded(unstaged_superseded);
     }
 
     fn retain_deliveries(
@@ -527,12 +640,16 @@ impl ProtocolOutbox {
             .then_some(index)
         });
         if let Some(index) = replace_at {
+            let superseded_playback = is_playback_protocol_message(&self.pending[index]);
             if let (ProtocolMessage::State(previous), ProtocolMessage::State(latest)) =
                 (&self.pending[index], &mut message)
             {
                 merge_pending_state_obligations(&previous.state, &mut latest.state);
             }
             self.pending[index] = message;
+            if superseded_playback {
+                emit_unstaged_transaction_superseded(1);
+            }
         } else {
             self.pending.push_back(message);
             self.delivery
@@ -544,6 +661,26 @@ impl ProtocolOutbox {
     }
 
     pub(crate) fn begin_connection_generation(&mut self) {
+        let leased = self.leased_front.get();
+        let should_discard =
+            |delivery: &ProtocolDelivery| !matches!(delivery, ProtocolDelivery::Reliable);
+        let staged_superseded = leased.is_some()
+            && self.delivery.front().is_some_and(should_discard)
+            && self
+                .pending
+                .front()
+                .is_some_and(is_playback_protocol_message);
+        let unstaged_superseded = self
+            .pending
+            .iter()
+            .zip(&self.delivery)
+            .enumerate()
+            .filter(|(index, (message, delivery))| {
+                !(leased.is_some() && *index == 0)
+                    && should_discard(delivery)
+                    && is_playback_protocol_message(message)
+            })
+            .count();
         self.connection_generation = self.connection_generation.wrapping_add(1);
         self.active_generation = None;
         self.leased_front.set(None);
@@ -551,6 +688,10 @@ impl ProtocolOutbox {
         self.retain_deliveries(false, |delivery| {
             matches!(delivery, ProtocolDelivery::Reliable)
         });
+        if staged_superseded && let Some(lease) = leased {
+            emit_staged_transaction_superseded(lease);
+        }
+        emit_unstaged_transaction_superseded(unstaged_superseded);
     }
 
     pub(crate) fn activate_connection_generation(&mut self) {

@@ -388,6 +388,24 @@ where
         if queued {
             self.playback_coordination
                 .commit_participant_status_report(&pending);
+            let mut identities = vec![("report-sequence", pending.report.report_sequence)];
+            if let Some(scope) = pending.report.playback_scope {
+                identities.push(("media-generation", scope.media_generation));
+                if let Some(state_revision) = scope.state_revision {
+                    identities.push(("state-revision", state_revision));
+                }
+                if let Some(transport_revision) = scope.transport_revision {
+                    identities.push(("transport-revision", transport_revision));
+                }
+            }
+            emit_client_lifecycle_transition(
+                "STATUS-FRESH-001",
+                "participant-status",
+                TargetKind::ProtocolMessage,
+                Trigger::Timer,
+                Disposition::Submitted,
+                &identities,
+            );
         }
         queued
     }

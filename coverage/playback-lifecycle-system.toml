@@ -1,0 +1,176 @@
+schema_version = 1
+model_id = "sorotte-playback-lifecycle-v1"
+
+[[suite]]
+id = "linux-ordinary-terminal"
+platform = "linux-x86_64"
+source = "ordinary-terminal-system"
+transitions = [
+  "APP-LAUNCH-001",
+  "APP-RUN-001",
+  "APP-STOP-001",
+  "APP-TERM-001",
+  "LOAD-ACCEPT-001",
+  "LOAD-ACTIVE-001",
+  "LOAD-BIND-001",
+  "LOAD-START-001",
+  "LOAD-SUBMIT-001",
+  "LOAD-SUPERSEDE-001",
+  "LOAD-TERMINAL-001",
+  "MEDIA-CLEAR-001",
+  "MEDIA-PLAYABLE-001",
+  "MEDIA-RESOLVE-001",
+  "MEDIA-SELECT-001",
+  "MEDIA-UNTRUSTED-001",
+  "PLAYER-ATTACH-001",
+  "PLAYER-CONNECT-001",
+  "PLAYER-LAUNCH-001",
+  "PLAYLIST-EXHAUST-001",
+  "PLAYLIST-LOSE-AUTHORITY-001",
+  "PLAYLIST-MUTATE-001",
+  "PLAYLIST-SELECT-001",
+  "PLAYLIST-SNAPSHOT-EMPTY-001",
+  "PLAYLIST-SNAPSHOT-POPULATED-001",
+  "PLAYLIST-SNAPSHOT-SELECTED-001",
+  "ROOM-ACTIVE-001",
+  "ROOM-JOIN-001",
+  "ROOM-LEAVE-001",
+  "ROOM-OUTSIDE-001",
+  "ROOM-SWITCH-001",
+  "SESSION-ACTIVE-001",
+  "SESSION-CLOSE-001",
+  "SESSION-CONNECT-001",
+  "SESSION-DISCONNECT-001",
+  "SESSION-HELLO-001",
+  "SESSION-LOSS-001",
+  "STATUS-DELAY-001",
+  "STATUS-FRESH-001",
+  "STATUS-NEGOTIATE-001",
+  "STATUS-STALE-001",
+  "STATUS-UNAVAILABLE-001",
+  "STATUS-WITHDRAW-001",
+  "TRANSPORT-END-001",
+  "TRANSPORT-EOF-CANDIDATE-001",
+  "TRANSPORT-LOAD-001",
+  "TRANSPORT-PAUSE-001",
+  "TRANSPORT-PLAY-001",
+  "TRANSPORT-SEEK-001",
+  "TX-BEGIN-001",
+  "TX-COMMIT-001",
+  "TX-CONVERGE-001",
+  "TX-DELIVERY-001",
+  "TX-FAIL-001",
+  "TX-FANOUT-001",
+  "TX-REJECT-001",
+  "TX-SUPERSEDE-001",
+  "TX-WRITTEN-001",
+]
+
+[[suite]]
+id = "linux-loop-boundary"
+platform = "linux-x86_64"
+source = "loop-system"
+transitions = [
+  "TRANSPORT-END-001",
+  "TRANSPORT-EOF-CANDIDATE-001",
+  "TX-COMMIT-001",
+  "TX-CONVERGE-001",
+  "TX-FANOUT-001",
+]
+
+[[suite]]
+id = "linux-start-gate"
+platform = "linux-x86_64"
+source = "start-gate-system"
+transitions = [
+  "GATE-CLEAR-001",
+  "GATE-COMMIT-001",
+  "GATE-DEGRADE-001",
+  "GATE-PLAYABILITY-001",
+  "GATE-PREPARE-001",
+  "GATE-READY-001",
+]
+
+[[suite]]
+id = "windows-participant-status"
+platform = "windows-x86_64"
+source = "participant-status-system"
+transitions = [
+  "APP-LAUNCH-001",
+  "APP-RUN-001",
+  "APP-STOP-001",
+  "APP-TERM-001",
+  "PLAYER-ATTACH-001",
+  "PLAYER-CONNECT-001",
+  "PLAYER-LAUNCH-001",
+  "STATUS-FRESH-001",
+  "STATUS-NEGOTIATE-001",
+  "STATUS-UNAVAILABLE-001",
+  "STATUS-WITHDRAW-001",
+]
+
+[[suite]]
+id = "windows-gui-baseline"
+platform = "windows-x86_64"
+source = "exact-gui-baseline"
+transitions = [
+  "APP-LAUNCH-001",
+  "APP-RUN-001",
+  "APP-STOP-001",
+  "APP-TERM-001",
+  "LOAD-ACCEPT-001",
+  "LOAD-ACTIVE-001",
+  "LOAD-BIND-001",
+  "LOAD-START-001",
+  "LOAD-SUBMIT-001",
+  "PLAYER-ATTACH-001",
+  "PLAYER-CONNECT-001",
+  "PLAYER-LAUNCH-001",
+  "SESSION-ACTIVE-001",
+  "SESSION-CONNECT-001",
+  "SESSION-HELLO-001",
+  "TRANSPORT-LOAD-001",
+  "TRANSPORT-PAUSE-001",
+  "TRANSPORT-PLAY-001",
+  "TRANSPORT-SEEK-001",
+]
+
+[[suite]]
+id = "windows-gui-faulting-http"
+platform = "windows-x86_64"
+source = "exact-gui-faulting-http"
+transitions = [
+  "LOAD-RECOVER-001",
+  "LOAD-RECOVERY-SUBMIT-001",
+  "MEDIA-FAIL-001",
+  "MEDIA-MISSING-001",
+  "MEDIA-PLAYABLE-001",
+  "TRANSPORT-CACHE-PAUSE-001",
+  "TRANSPORT-EOF-CANCEL-001",
+  "TRANSPORT-EOF-CANDIDATE-001",
+  "TRANSPORT-FAIL-001",
+]
+
+[[suite]]
+id = "windows-gui-stalled-http"
+platform = "windows-x86_64"
+source = "exact-gui-stalled-http"
+transitions = [
+  "LOAD-RECOVER-001",
+  "LOAD-RECOVERY-SUBMIT-001",
+  "LOAD-SUPERSEDE-001",
+  "LOAD-TERMINAL-001",
+  "TRANSPORT-CACHE-PAUSE-001",
+  "TRANSPORT-FAIL-001",
+]
+
+[[suite]]
+id = "windows-gui-owned-process-recovery"
+platform = "windows-x86_64"
+source = "exact-gui-owned-process-recovery"
+transitions = [
+  "PLAYER-LOSS-001",
+  "PLAYER-RELAUNCH-001",
+  "PLAYER-STOP-001",
+  "TRANSPORT-DETACH-001",
+]

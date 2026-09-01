@@ -445,7 +445,26 @@ where
                     self.control.activate_protocol_connection_generation();
                     self.control
                         .emit_causal_state(state)
-                        .map(|_| true)
+                        .map(|_| {
+                            let mut identities = vec![(
+                                "playlist-index",
+                                u64::try_from(expected_index)
+                                    .unwrap_or(u64::MAX)
+                                    .saturating_add(1),
+                            )];
+                            if let Some(epoch) = expected_epoch {
+                                identities.push(("playlist-epoch", epoch));
+                            }
+                            emit_client_lifecycle_transition(
+                                "PLAYLIST-EXHAUST-001",
+                                "playlist-selection",
+                                TargetKind::ProtocolMessage,
+                                Trigger::PlayerEvent,
+                                Disposition::Committed,
+                                &identities,
+                            );
+                            true
+                        })
                         .map_err(client_effect_player_error)
                 }
                 None => Ok(false),

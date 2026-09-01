@@ -29,6 +29,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 zip.workspace = true
 sorotte-compat = { path = "../sorotte-compat", optional = true }
 sorotte-client-app = { path = "../sorotte-client-app" }

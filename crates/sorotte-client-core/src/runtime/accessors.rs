@@ -184,12 +184,32 @@ impl<'a> ClientSessionUpdate<'a> {
     }
 
     fn cancel_participant_status_for_inactive_phase(&mut self) {
+        let had_status_epoch =
+            self.session.is_active() && self.session.server_participant_status_v1_supported();
         if let Some(control) = self.control.as_deref_mut() {
             // A status report belongs to the active authenticated connection.
             // Strip unleased reports immediately and mark a leased front so a
             // failed transport write cannot retry it after the lifecycle
             // boundary.
             control.cancel_protocol_participant_status_reports();
+        }
+        if had_status_epoch {
+            emit_client_lifecycle_transition(
+                "STATUS-WITHDRAW-001",
+                "participant-status",
+                TargetKind::ProtocolMessage,
+                Trigger::Shutdown,
+                Disposition::Applied,
+                &[],
+            );
+            emit_client_lifecycle_transition(
+                "STATUS-UNAVAILABLE-001",
+                "participant-status",
+                TargetKind::ProtocolMessage,
+                Trigger::Shutdown,
+                Disposition::Applied,
+                &[],
+            );
         }
     }
 
@@ -226,6 +246,26 @@ impl<'a> ClientSessionUpdate<'a> {
             if is_hello && let Some(control) = self.control.as_deref_mut() {
                 control.activate_protocol_connection_generation();
             }
+            if is_hello {
+                emit_client_lifecycle_transition(
+                    "SESSION-ACTIVE-001",
+                    "session",
+                    TargetKind::ProtocolMessage,
+                    Trigger::RemoteEvent,
+                    Disposition::Applied,
+                    &[],
+                );
+                if self.session.server_participant_status_v1_supported() {
+                    emit_client_lifecycle_transition(
+                        "STATUS-NEGOTIATE-001",
+                        "participant-status",
+                        TargetKind::ProtocolMessage,
+                        Trigger::RemoteEvent,
+                        Disposition::Accepted,
+                        &[],
+                    );
+                }
+            }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
             if confirms_room_membership
@@ -258,6 +298,26 @@ impl<'a> ClientSessionUpdate<'a> {
         if result.is_ok() {
             if is_hello && let Some(control) = self.control.as_deref_mut() {
                 control.activate_protocol_connection_generation();
+            }
+            if is_hello {
+                emit_client_lifecycle_transition(
+                    "SESSION-ACTIVE-001",
+                    "session",
+                    TargetKind::ProtocolMessage,
+                    Trigger::RemoteEvent,
+                    Disposition::Applied,
+                    &[],
+                );
+                if self.session.server_participant_status_v1_supported() {
+                    emit_client_lifecycle_transition(
+                        "STATUS-NEGOTIATE-001",
+                        "participant-status",
+                        TargetKind::ProtocolMessage,
+                        Trigger::RemoteEvent,
+                        Disposition::Accepted,
+                        &[],
+                    );
+                }
             }
             self.observe_playback_barrier_extension(extension, now_seconds);
             self.observe_local_control_authority(authority_evidence);
@@ -293,26 +353,66 @@ impl<'a> ClientSessionUpdate<'a> {
     pub fn mark_connecting(&mut self) {
         self.cancel_participant_status_for_inactive_phase();
         self.session.mark_connecting();
+        emit_client_lifecycle_transition(
+            "SESSION-CONNECT-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::Startup,
+            Disposition::Submitted,
+            &[],
+        );
     }
 
     pub fn mark_awaiting_hello(&mut self) {
         self.cancel_participant_status_for_inactive_phase();
         self.session.mark_awaiting_hello();
+        emit_client_lifecycle_transition(
+            "SESSION-HELLO-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::RemoteEvent,
+            Disposition::Accepted,
+            &[],
+        );
     }
 
     pub fn mark_reconnecting(&mut self, attempt: u32) {
         self.cancel_participant_status_for_inactive_phase();
         self.session.mark_reconnecting(attempt);
+        emit_client_lifecycle_transition(
+            "SESSION-LOSS-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::Fault,
+            Disposition::Failed,
+            &[("reconnect-attempt", u64::from(attempt).saturating_add(1))],
+        );
     }
 
     pub fn mark_closing(&mut self) {
         self.cancel_participant_status_for_inactive_phase();
         self.session.mark_closing();
+        emit_client_lifecycle_transition(
+            "SESSION-CLOSE-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::Shutdown,
+            Disposition::Accepted,
+            &[],
+        );
     }
 
     pub fn mark_disconnected(&mut self) {
         self.cancel_participant_status_for_inactive_phase();
         self.session.mark_disconnected();
+        emit_client_lifecycle_transition(
+            "SESSION-DISCONNECT-001",
+            "session",
+            TargetKind::ProtocolMessage,
+            Trigger::Shutdown,
+            Disposition::Applied,
+            &[],
+        );
     }
 
     pub fn reset_sync_state_for_reconnect(&mut self) {

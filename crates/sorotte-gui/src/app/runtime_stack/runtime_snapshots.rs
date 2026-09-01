@@ -15,11 +15,47 @@ use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
 };
 use sorotte_client_core::RoomPlaystateAuthority;
-use sorotte_protocol::{
-    ParticipantPlaybackPhase, ParticipantStatusAvailability, ParticipantStatusCorrelation,
-    PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use sorotte_protocol::{
+    ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantStatusAvailability,
+    ParticipantStatusCorrelation, PlaybackBarrierParticipantPhase, PlaybackBarrierPhase,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
+
+const GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL: Duration = Duration::from_secs(1);
+static GUI_PARTICIPANT_STATUS_EVIDENCE_LIMITER: OnceLock<Mutex<ProjectionEmissionLimiter>> =
+    OnceLock::new();
+
+#[derive(Default)]
+struct ProjectionEmissionLimiter {
+    last_by_projection: BTreeMap<String, Instant>,
+}
+
+impl ProjectionEmissionLimiter {
+    fn admit(&mut self, projection: String, now: Instant) -> bool {
+        if self
+            .last_by_projection
+            .get(&projection)
+            .is_some_and(|last| {
+                now.saturating_duration_since(*last) < GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL
+            })
+        {
+            return false;
+        }
+        self.last_by_projection.insert(projection, now);
+        self.last_by_projection.retain(|_, last| {
+            now.saturating_duration_since(*last)
+                <= GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL.saturating_mul(4)
+        });
+        true
+    }
+}
 
 fn playback_barrier_participant_label(phase: PlaybackBarrierParticipantPhase) -> &'static str {
     match phase {
@@ -30,6 +66,55 @@ fn playback_barrier_participant_label(phase: PlaybackBarrierParticipantPhase) ->
         PlaybackBarrierParticipantPhase::PrepareTimedOut => "prepare timed out",
         PlaybackBarrierParticipantPhase::StartedAckTimedOut => "start acknowledgement timed out",
     }
+}
+
+fn emit_gui_participant_status_projection(
+    availability: ParticipantStatusAvailability,
+    scope: Option<ParticipantPlaybackScope>,
+) {
+    let projection_key = format!("{availability:?}:{scope:?}");
+    let limiter = GUI_PARTICIPANT_STATUS_EVIDENCE_LIMITER
+        .get_or_init(|| Mutex::new(ProjectionEmissionLimiter::default()));
+    if !limiter
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admit(projection_key, Instant::now())
+    {
+        return;
+    }
+    let (transition, disposition) = match availability {
+        ParticipantStatusAvailability::Fresh => ("STATUS-FRESH-001", Disposition::Applied),
+        ParticipantStatusAvailability::Delayed => ("STATUS-DELAY-001", Disposition::Applied),
+        ParticipantStatusAvailability::Stale => ("STATUS-STALE-001", Disposition::Applied),
+        ParticipantStatusAvailability::AwaitingReport => {
+            ("STATUS-NEGOTIATE-001", Disposition::Observed)
+        }
+        ParticipantStatusAvailability::Unsupported | ParticipantStatusAvailability::Unavailable => {
+            ("STATUS-UNAVAILABLE-001", Disposition::Observed)
+        }
+        _ => ("STATUS-UNAVAILABLE-001", Disposition::Observed),
+    };
+    let mut observation = TransitionObservation::new(
+        ProcessRole::Gui,
+        "participant-row",
+        "participant-status",
+        transition,
+    )
+    .target(TargetKind::GuiProjection)
+    .triggered_by(Trigger::RemoteEvent)
+    .authority("server-projected", "gui-projected")
+    .effect("status-visible", "status-visible")
+    .disposition(disposition);
+    if let Some(scope) = scope {
+        observation = observation.identity("media-generation", scope.media_generation);
+        if let Some(state_revision) = scope.state_revision {
+            observation = observation.identity("state-revision", state_revision);
+        }
+        if let Some(transport_revision) = scope.transport_revision {
+            observation = observation.identity("transport-revision", transport_revision);
+        }
+    }
+    let _ = emit_global(observation);
 }
 
 fn playback_barrier_phase_label(phase: PlaybackBarrierPhase) -> &'static str {
@@ -197,6 +282,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     .then(|| session.user_participant_status_at(&username, now_seconds))
                     .flatten();
                 let participant_status = if let Some(status) = participant_status_view {
+                    emit_gui_participant_status_projection(
+                        status.status.availability,
+                        status.status.playback_scope,
+                    );
                     match status.status.availability {
                         ParticipantStatusAvailability::Unsupported => {
                             MainWindowParticipantStatusPresentation::LegacyClient
@@ -586,5 +675,29 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         })
+    }
+}
+
+#[cfg(test)]
+mod projection_emission_limiter_tests {
+    use super::*;
+
+    #[test]
+    fn identical_projection_is_bounded_but_changes_and_periodic_evidence_pass() {
+        let mut limiter = ProjectionEmissionLimiter::default();
+        let started = Instant::now();
+        assert!(limiter.admit("fresh:scope-1".to_owned(), started));
+        assert!(!limiter.admit(
+            "fresh:scope-1".to_owned(),
+            started + GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL / 2
+        ));
+        assert!(limiter.admit(
+            "delayed:scope-1".to_owned(),
+            started + GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL / 2
+        ));
+        assert!(limiter.admit(
+            "fresh:scope-1".to_owned(),
+            started + GUI_PARTICIPANT_STATUS_EVIDENCE_INTERVAL
+        ));
     }
 }

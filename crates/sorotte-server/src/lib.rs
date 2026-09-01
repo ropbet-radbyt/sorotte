@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -22,6 +22,9 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use sorotte_core::{DomainError, SyncDomain};
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
+};
 use sorotte_protocol::{
     ChatPayload, CommitStartPayload, ControllerAuthPayload, DEFAULT_MAX_PROTOCOL_LINE_BYTES,
     DirectReadinessSurface, FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload,
@@ -67,6 +70,78 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
+
+#[derive(Clone, Copy)]
+struct LifecycleAuthorityTransition {
+    before: &'static str,
+    after: &'static str,
+}
+
+fn emit_server_lifecycle_transition(
+    transition: &'static str,
+    machine: &'static str,
+    target: TargetKind,
+    trigger: Trigger,
+    disposition: Disposition,
+    identities: &[(&'static str, u64)],
+) {
+    emit_server_lifecycle_state_transition(
+        transition,
+        machine,
+        target,
+        trigger,
+        disposition,
+        LifecycleAuthorityTransition {
+            before: "server-pending",
+            after: "server-committed",
+        },
+        identities,
+    );
+}
+
+fn emit_server_lifecycle_state_transition(
+    transition: &'static str,
+    machine: &'static str,
+    target: TargetKind,
+    trigger: Trigger,
+    disposition: Disposition,
+    authority: LifecycleAuthorityTransition,
+    identities: &[(&'static str, u64)],
+) {
+    let mut observation =
+        TransitionObservation::new(ProcessRole::Server, "server-room", machine, transition)
+            .target(target)
+            .triggered_by(trigger)
+            .authority(authority.before, authority.after)
+            .effect("lifecycle-transition", "lifecycle-transition")
+            .disposition(disposition);
+    for (name, value) in identities.iter().copied().filter(|(_, value)| *value > 0) {
+        observation = observation.identity(name, value);
+    }
+    let _ = emit_global(observation);
+}
+
+fn emit_server_playlist_snapshot_evidence(state: &RoomPlaylistState, trigger: Trigger) {
+    let transition = if state.files.is_empty() {
+        "PLAYLIST-SNAPSHOT-EMPTY-001"
+    } else if state.selected_entry_identity().is_some() {
+        "PLAYLIST-SNAPSHOT-SELECTED-001"
+    } else {
+        "PLAYLIST-SNAPSHOT-POPULATED-001"
+    };
+    let mut identities = vec![("playlist-epoch", state.epoch)];
+    if let Some(index) = state.index.and_then(|index| u64::try_from(index).ok()) {
+        identities.push(("playlist-index", index.saturating_add(1)));
+    }
+    emit_server_lifecycle_transition(
+        transition,
+        "playlist-selection",
+        TargetKind::ServerState,
+        trigger,
+        Disposition::Applied,
+        &identities,
+    );
+}
 
 fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
@@ -599,6 +674,7 @@ struct RetainedParticipantStatus {
     report: ParticipantStatusReport,
     received_at_seconds: f64,
     max_projected_report_age_ms: MonotonicParticipantStatusAge,
+    projected_availability: MonotonicParticipantStatusAvailability,
     forward_delay_ms: Option<u64>,
     room: String,
     username: String,
@@ -631,6 +707,44 @@ impl Clone for MonotonicParticipantStatusAge {
 impl PartialEq for MonotonicParticipantStatusAge {
     fn eq(&self, other: &Self) -> bool {
         self.get() == other.get()
+    }
+}
+
+#[derive(Debug)]
+struct MonotonicParticipantStatusAvailability(AtomicU8);
+
+impl MonotonicParticipantStatusAvailability {
+    fn new(availability: ParticipantStatusAvailability) -> Self {
+        Self(AtomicU8::new(Self::code(availability)))
+    }
+
+    fn advance(&self, availability: ParticipantStatusAvailability) -> bool {
+        let next = Self::code(availability);
+        self.0.fetch_max(next, Ordering::Relaxed) < next
+    }
+
+    const fn code(availability: ParticipantStatusAvailability) -> u8 {
+        match availability {
+            ParticipantStatusAvailability::Fresh => 1,
+            ParticipantStatusAvailability::Delayed => 2,
+            ParticipantStatusAvailability::Stale => 3,
+            ParticipantStatusAvailability::AwaitingReport
+            | ParticipantStatusAvailability::Unsupported
+            | ParticipantStatusAvailability::Unavailable => 0,
+            _ => 0,
+        }
+    }
+}
+
+impl Clone for MonotonicParticipantStatusAvailability {
+    fn clone(&self) -> Self {
+        Self(AtomicU8::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
+impl PartialEq for MonotonicParticipantStatusAvailability {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.load(Ordering::Relaxed) == other.0.load(Ordering::Relaxed)
     }
 }
 

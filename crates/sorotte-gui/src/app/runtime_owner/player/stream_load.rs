@@ -216,6 +216,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> bool {
         match self.room_stream_target_kind(state, target) {
             GuiStreamTargetKind::UntrustedUrl => {
+                self.record_playlist_resolution_untrusted();
                 self.refresh_stream_helper_runtime_snapshot_for_target(None);
                 self.queue_stream_warning(format!(
                     "Blocked automatic room URL open because the selected URL is not trusted locally: {target}."

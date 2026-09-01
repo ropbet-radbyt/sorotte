@@ -73,6 +73,38 @@ def playstate_exchange(
     }
     return {
         "action": action,
+        "mutation_kind": "pause",
+        "expected_paused": paused,
+        "request": json.dumps(request, separators=(",", ":")),
+        "authoritative_echo": json.dumps(
+            authoritative_echo, separators=(",", ":")
+        ),
+    }
+
+
+def seek_exchange(action: str, paused: bool, position: float) -> dict[str, Any]:
+    request = {
+        "State": {
+            "playstate": {
+                "position": position,
+                "paused": paused,
+                "doSeek": True,
+            }
+        }
+    }
+    authoritative_echo = {
+        "State": {
+            "playstate": {
+                "doSeek": True,
+                "paused": paused,
+                "position": position,
+                "setBy": "real-mpv-user",
+            }
+        }
+    }
+    return {
+        "action": action,
+        "mutation_kind": "seek",
         "expected_paused": paused,
         "request": json.dumps(request, separators=(",", ":")),
         "authoritative_echo": json.dumps(
@@ -96,6 +128,7 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
     observations = root / "mpv-observation.jsonl"
     mpv_log = root / "mpv.log"
     lifecycle = root / "gui-lifecycle.jsonl"
+    shared_lifecycle = root / "shared-lifecycle-evidence.jsonl"
     session_exchange = root / "session-exchange.json"
     menu_interactions = root / "menu-interactions.json"
     screenshot = root / "success-real-mpv.png"
@@ -122,6 +155,7 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
     )
     mpv_log.write_text("[status] generated-silence.wav loaded\n", encoding="utf-8")
     lifecycle.write_text('{"event":"app-drop-complete"}\n', encoding="utf-8")
+    shared_lifecycle.write_text('{"fixture":"shared-lifecycle"}\n', encoding="utf-8")
     write_json(
         session_exchange,
         {
@@ -232,6 +266,7 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
         "mpv_observation": observations,
         "mpv_log": mpv_log,
         "gui_lifecycle": lifecycle,
+        "shared_lifecycle": shared_lifecycle,
         "session_exchange": session_exchange,
         "menu_interactions": menu_interactions,
         "success_screenshot": screenshot,
@@ -261,6 +296,7 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
             "observation_path": str(observations),
             "mpv_log_path": str(mpv_log),
             "lifecycle_path": str(lifecycle),
+            "shared_lifecycle_path": str(shared_lifecycle),
             "session_exchange_path": str(session_exchange),
             "menu_interactions_path": str(menu_interactions),
             "ipc_endpoint": ipc_endpoint,
@@ -603,7 +639,7 @@ def extend_with_faulting_http_recovery(
         "schema_version": 1,
         "kind": contract.HTTP_FAULT_KIND,
         "result": "passed",
-        "fault": "first-response-malformed-chunk-after-paced-au-prefix-once",
+        "fault": "first-response-malformed-chunk-after-observed-progress-and-playable-prefix-once",
         "recovery_mode": "same-generation-automatic-network-stream-reload",
         "listener_endpoint": endpoint,
         "listener_ipv4_loopback": True,
@@ -612,13 +648,14 @@ def extend_with_faulting_http_recovery(
         "generated_media_bytes": media_path.stat().st_size,
         "generated_media_sha256": sha256(media_path),
         "duration_seconds": contract.HTTP_FAULT_DURATION_SECONDS,
-        "disconnect_after_body_bytes": contract.HTTP_FAULT_DISCONNECT_AFTER_BYTES,
+        "minimum_body_bytes_before_fault": contract.HTTP_FAULT_DISCONNECT_AFTER_BYTES,
         "request_count": len(requests),
         "premature_disconnect_count": 1,
         "complete_response_count": 1,
         "requests": requests,
         "initial_file_loaded_index": 0,
         "pre_fault_progress_index": 2,
+        "fault_triggered_after_progress": True,
         "premature_eof_index": 3,
         "recovered_file_loaded_index": 4,
         "recovered_progress_index": 5,
@@ -647,12 +684,104 @@ def extend_with_faulting_http_recovery(
     }
     write_json(evidence_path, evidence)
 
+    hard_failure_path = root / "hard-media-failure.json"
+    hard_failure_endpoint = "127.0.0.1:46802"
+    hard_failure_url = (
+        f"http://{hard_failure_endpoint}{contract.MEDIA_FAILURE_ROUTE}"
+    )
+    failure_index = len(observations)
+    observations.extend(
+        [
+            {
+                "event": "end-file",
+                "pid": pid,
+                "path": hard_failure_url,
+                "ipc_endpoint": ipc_endpoint,
+                "reason": "error",
+            },
+            {
+                "event": "file-loaded",
+                "pid": pid,
+                "path": str(media_path),
+                "filename": media_path.name,
+                "duration": float(contract.HTTP_FAULT_DURATION_SECONDS),
+                "position": 0.0,
+                "pause": True,
+                "ipc_endpoint": ipc_endpoint,
+            },
+        ]
+    )
+    observations_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in observations),
+        encoding="utf-8",
+    )
+    hard_failure_requests = [
+        {
+            "ordinal": 1,
+            "method": "GET",
+            "path": contract.MEDIA_FAILURE_ROUTE,
+            "peer_endpoint": "127.0.0.1:52004",
+            "peer_ipv4_loopback": True,
+            "range_header": "bytes=0-",
+            "status_code": 404,
+            "content_length_header": 0,
+            "transfer_encoding": None,
+            "transmitted_body_bytes": 0,
+            "framing_fault_injected": False,
+            "disconnected_early": False,
+            "write_error": None,
+        }
+    ]
+    media_failure = {
+        "schema_version": 1,
+        "kind": contract.MEDIA_FAILURE_KIND,
+        "result": "passed",
+        "failure_mode": "authoritative-loopback-http-404",
+        "recovery_mode": "authoritative-local-media-restore",
+        "listener_endpoint": hard_failure_endpoint,
+        "listener_ipv4_loopback": True,
+        "media_url": hard_failure_url,
+        "route": contract.MEDIA_FAILURE_ROUTE,
+        "request_count": len(hard_failure_requests),
+        "requests": hard_failure_requests,
+        "failure_end_file_index": failure_index,
+        "failure_reason": "error",
+        "media_fail_event_id": "gui-real-mpv.00000020",
+        "media_fail_emitter": "gui-real-mpv",
+        "media_fail_process_role": "client",
+        "restored_file_loaded_index": failure_index + 1,
+        "media_playable_event_id": "gui-real-mpv.00000024",
+        "media_playable_emitter": "gui-real-mpv",
+        "media_playable_process_role": "client",
+        "initial_pid": pid,
+        "failure_pid": pid,
+        "recovered_pid": pid,
+        "parent_pid": report["mpv"]["parent_pid"],
+        "process_image_path": report["mpv"]["process_image_path"],
+        "process_sha256": report["mpv"]["sha256"],
+        "initial_ipc_endpoint": ipc_endpoint,
+        "failure_ipc_endpoint": ipc_endpoint,
+        "recovered_ipc_endpoint": ipc_endpoint,
+        "same_process_identity": True,
+        "same_ipc_endpoint": True,
+        "restored_media_path": str(media_path),
+        "restored_media_sha256": sha256(media_path),
+        "manual_retry_invoked": False,
+        "evidence_retained_before_cleanup": True,
+        "server_thread_released": True,
+        "socket_released": True,
+        "owned_mpv_terminated_after_gui_exit": True,
+        "error": None,
+    }
+    write_json(hard_failure_path, media_failure)
+
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["assertions"] = list(contract.HTTP_FAULT_REQUIRED_ASSERTIONS)
     write_json(state_path, state)
 
     report["assertions"] = list(contract.HTTP_FAULT_REQUIRED_ASSERTIONS)
     report["http_fault"] = evidence
+    report["media_failure"] = media_failure
     report["isolation"].update(
         {
             "network_mode": "os-assigned-ipv4-loopback-session-and-http",
@@ -669,6 +798,7 @@ def extend_with_faulting_http_recovery(
         "session_exchange": session_exchange_path,
         "state": state_path,
         "faulting_http_recovery": evidence_path,
+        "hard_media_failure": hard_failure_path,
     }.items():
         report["artifacts"][label] = identity(path, relative_to=root)
 
@@ -955,6 +1085,27 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self.assertEqual(summary["artifact_count"], len(contract.REQUIRED_ARTIFACTS))
         self.assertNotIn("recovery_exercised", summary)
 
+    def test_accepts_authenticated_seek_interleaved_before_canonical_play(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report, arguments = build_valid_fixture(
+                pathlib.Path(temporary) / "artifacts"
+            )
+            root = pathlib.Path(arguments["artifact_root"])
+            session_path = root / "session-exchange.json"
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+            session["playstate_exchanges"].insert(
+                0,
+                seek_exchange("GUI Play canonical transport", True, 0.0),
+            )
+            write_json(session_path, session)
+            report["artifacts"]["session_exchange"] = identity(
+                session_path, relative_to=root
+            )
+
+            summary = contract.validate_report(report, **arguments)
+
+        self.assertEqual(summary["result"], "passed")
+
     def test_local_media_contract_requires_exact_canonical_playlist_echo(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report, arguments = build_valid_fixture(
@@ -1063,6 +1214,7 @@ class RealMpvVerticalContractTests(unittest.TestCase):
 
         self.assertEqual(summary["result"], "passed")
         self.assertTrue(summary["http_fault_exercised"])
+        self.assertTrue(summary["media_failure_recovery_exercised"])
         self.assertEqual(
             summary["assertion_count"], len(contract.HTTP_FAULT_REQUIRED_ASSERTIONS)
         )
@@ -1088,6 +1240,62 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self.assertEqual(
             summary["artifact_count"], len(contract.HTTP_STALL_REQUIRED_ARTIFACTS)
         )
+
+    def test_hard_media_failure_contract_rejects_weakened_causality_or_identity(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "non-404 response",
+                lambda evidence: evidence["requests"][0].__setitem__(
+                    "status_code", 200
+                ),
+                "exact bodyless 404 contract",
+            ),
+            (
+                "different recovery process",
+                lambda evidence: evidence.__setitem__(
+                    "recovered_pid", evidence["initial_pid"] + 1
+                ),
+                "changed the attested GUI-owned process",
+            ),
+            (
+                "reused lifecycle event",
+                lambda evidence: evidence.__setitem__(
+                    "media_playable_event_id", evidence["media_fail_event_id"]
+                ),
+                "MEDIA-PLAYABLE-001 lifecycle attribution drifted",
+            ),
+            (
+                "manual recovery",
+                lambda evidence: evidence.__setitem__("manual_retry_invoked", True),
+                "manual retry",
+            ),
+            (
+                "unreleased socket",
+                lambda evidence: evidence.__setitem__("socket_released", False),
+                "release",
+            ),
+        )
+        for label, mutate, error_pattern in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                report, arguments = build_valid_fixture(
+                    pathlib.Path(temporary) / "artifacts"
+                )
+                extend_with_faulting_http_recovery(report, arguments)
+                mutate(report["media_failure"])
+                root = pathlib.Path(arguments["artifact_root"])
+                evidence_path = root / "hard-media-failure.json"
+                write_json(evidence_path, report["media_failure"])
+                report["artifacts"]["hard_media_failure"] = identity(
+                    evidence_path, relative_to=root
+                )
+                with self.assertRaisesRegex(ValueError, error_pattern):
+                    contract.validate_report(
+                        report,
+                        **arguments,
+                        expect_http_fault=True,
+                    )
 
     def test_capability_modes_are_pairwise_mutually_exclusive(self) -> None:
         mode_pairs = (
@@ -1339,6 +1547,13 @@ class RealMpvVerticalContractTests(unittest.TestCase):
         self,
     ) -> None:
         mutations = (
+            (
+                "fault released before progress",
+                lambda report, rows: report["http_fault"].__setitem__(
+                    "fault_triggered_after_progress", False
+                ),
+                "causally released after observed playback progress",
+            ),
             (
                 "boolean observation index",
                 lambda report, rows: report["http_fault"].__setitem__(
@@ -1973,11 +2188,36 @@ class RealMpvVerticalContractTests(unittest.TestCase):
             "--expected-gui-sha256",
             "--expected-mpv-sha256",
             "--producer-exit-code",
+            "--lifecycle-summary",
             "gui_binary_sha256_before",
             "gui_binary_sha256_after",
         ]
         missing = [fragment for fragment in required_fragments if fragment not in text]
         self.assertEqual(missing, [])
+
+    def test_lifecycle_summary_binding_rejects_tampered_transition_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "shared-lifecycle-summary.json"
+            payload = {
+                "schema_version": 1,
+                "kind": "sorotte-playback-lifecycle-evidence-validation",
+                "result": "passed",
+                "transitions": {
+                    "APP-LAUNCH-001": 1,
+                    "TRANSPORT-PLAY-001": 2,
+                },
+            }
+            write_json(path, payload)
+            digest, transitions = contract.lifecycle_summary_binding(path)
+            self.assertEqual(digest, sha256(path))
+            self.assertEqual(
+                transitions, ["APP-LAUNCH-001", "TRANSPORT-PLAY-001"]
+            )
+
+            payload["transitions"]["TRANSPORT-PLAY-001"] = 0
+            write_json(path, payload)
+            with self.assertRaisesRegex(ValueError, "transition inventory is malformed"):
+                contract.lifecycle_summary_binding(path)
 
 
 if __name__ == "__main__":

@@ -68,6 +68,9 @@ $null = New-Item -ItemType Directory -Path $artifactDirectory
 $reportPath = Join-Path $artifactDirectory "harness-report.json"
 $stderrPath = Join-Path $artifactDirectory "harness-stderr.log"
 $summaryPath = Join-Path $artifactDirectory "contract-summary.json"
+$sharedLifecyclePath = Join-Path $artifactDirectory "shared-lifecycle-evidence.jsonl"
+$sharedLifecycleMergedPath = Join-Path $artifactDirectory "shared-lifecycle-merged.jsonl"
+$sharedLifecycleSummaryPath = Join-Path $artifactDirectory "shared-lifecycle-summary.json"
 $metadataPath = Join-Path $artifactDirectory "invocation.json"
 $guiBuildStdoutPath = Join-Path $artifactDirectory "gui-build-stdout.log"
 $guiBuildStderrPath = Join-Path $artifactDirectory "gui-build-stderr.log"
@@ -399,8 +402,28 @@ if ($guiSha256Before) {
     }
 }
 
+$lifecycleValidatorExitCode = 1
+if ($pythonCommand -and $guiSha256Before -and $producerExitCode -eq 0) {
+    & $pythonCommand.Source `
+        (Join-Path $PSScriptRoot "playback_lifecycle_evidence.py") `
+        --model (Join-Path $repoRoot "coverage\playback-lifecycle.toml") `
+        --input $sharedLifecyclePath `
+        --output $sharedLifecycleMergedPath `
+        --summary $sharedLifecycleSummaryPath `
+        --require-inventory "gui-real-mpv=gui,client,player" `
+        --require-role gui `
+        --require-role client `
+        --require-role player `
+        --expected-digest "gui-real-mpv=$guiSha256Before"
+    $lifecycleValidatorExitCode = $LASTEXITCODE
+}
+
 $validatorExitCode = 1
-if ($pythonCommand -and $guiSha256Before) {
+if (
+    $pythonCommand -and
+    $guiSha256Before -and
+    $lifecycleValidatorExitCode -eq 0
+) {
     $validatorArguments = @(
         $validatorPath,
         "--report",
@@ -418,7 +441,9 @@ if ($pythonCommand -and $guiSha256Before) {
         "--producer-exit-code",
         [string]$producerExitCode,
         "--summary",
-        $summaryPath
+        $summaryPath,
+        "--lifecycle-summary",
+        $sharedLifecycleSummaryPath
     )
     if ($ExerciseOwnedMpvRecovery) {
         $validatorArguments += "--expect-recovery"
@@ -445,7 +470,11 @@ else {
     )
 }
 
-$finalResult = if ($producerExitCode -eq 0 -and $validatorExitCode -eq 0) {
+$finalResult = if (
+    $producerExitCode -eq 0 -and
+    $validatorExitCode -eq 0 -and
+    $lifecycleValidatorExitCode -eq 0
+) {
     "passed"
 }
 else {
@@ -461,7 +490,7 @@ Write-InvocationMetadata `
     -GuiSha256After $guiSha256After `
     -EffectiveMpvPath $effectiveMpvPath `
     -MpvSha256 $mpvSha256 `
-    -ErrorMessage $(if ($finalResult -eq "passed") { $null } else { "producer=$producerExitCode validator=$validatorExitCode" })
+    -ErrorMessage $(if ($finalResult -eq "passed") { $null } else { "producer=$producerExitCode validator=$validatorExitCode lifecycle_validator=$lifecycleValidatorExitCode" })
 
 Get-Content -LiteralPath $reportPath
 if ($producerExitCode -ne 0) {
@@ -476,6 +505,10 @@ if ($producerExitCode -ne 0) {
 if ($validatorExitCode -ne 0) {
     Write-Error "real-mpv report failed its strict contract; artifacts: $artifactDirectory" -ErrorAction Continue
     exit $validatorExitCode
+}
+if ($lifecycleValidatorExitCode -ne 0) {
+    Write-Error "real-mpv shared lifecycle evidence failed its strict contract; artifacts: $artifactDirectory" -ErrorAction Continue
+    exit $lifecycleValidatorExitCode
 }
 
 Write-Verbose "Real-mpv vertical artifacts: $artifactDirectory"

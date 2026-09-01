@@ -225,6 +225,8 @@ pub(super) struct PlaylistResolutionAttempt {
     pub(super) candidate_failures: Vec<PlaylistResolutionCandidateFailure>,
     pub(super) fallback_pending: bool,
     pub(super) handoff_pending: bool,
+    pub(super) missing_reported: bool,
+    pub(super) untrusted_reported: bool,
 }
 
 impl std::fmt::Debug for PlaylistResolutionAttempt {
@@ -259,6 +261,8 @@ impl std::fmt::Debug for PlaylistResolutionAttempt {
             )
             .field("fallback_pending", &self.fallback_pending)
             .field("handoff_pending", &self.handoff_pending)
+            .field("missing_reported", &self.missing_reported)
+            .field("untrusted_reported", &self.untrusted_reported)
             .finish()
     }
 }
@@ -286,6 +290,8 @@ impl PlaylistResolutionAttempt {
             candidate_failures: Vec::new(),
             fallback_pending: false,
             handoff_pending: false,
+            missing_reported: false,
+            untrusted_reported: false,
         }
     }
 

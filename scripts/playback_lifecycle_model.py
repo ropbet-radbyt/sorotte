@@ -131,6 +131,53 @@ def behavior_ids(catalog: Mapping[str, Any]) -> set[str]:
     return result
 
 
+def system_coverage_suites(
+    registry: Mapping[str, Any], *, expected_model_id: str
+) -> dict[str, dict[str, Any]]:
+    require_exact_keys(
+        registry,
+        required={"schema_version", "model_id", "suite"},
+        allowed={"schema_version", "model_id", "suite"},
+        context="system coverage registry",
+    )
+    if registry["schema_version"] != 1:
+        raise ModelError("system coverage registry schema_version must be 1")
+    if registry["model_id"] != expected_model_id:
+        raise ModelError("system coverage registry model_id does not match the model")
+    suites: dict[str, dict[str, Any]] = {}
+    sources: set[str] = set()
+    for index, suite in enumerate(require_table_list(registry["suite"], "system suite")):
+        context = f"system suite[{index}]"
+        require_exact_keys(
+            suite,
+            required={"id", "platform", "source", "transitions"},
+            allowed={"id", "platform", "source", "transitions"},
+            context=context,
+        )
+        suite_id = require_string(suite["id"], f"{context}.id")
+        if not SLUG.fullmatch(suite_id) or suite_id in suites:
+            raise ModelError(f"{context}.id is invalid or duplicated: {suite_id!r}")
+        platform = require_string(suite["platform"], f"{context}.platform")
+        if platform not in {"linux-x86_64", "windows-x86_64"}:
+            raise ModelError(f"{context}.platform is unsupported: {platform}")
+        source = require_string(suite["source"], f"{context}.source")
+        if not SLUG.fullmatch(source) or source in sources:
+            raise ModelError(f"{context}.source is invalid or duplicated: {source!r}")
+        transitions = require_string_list(
+            suite["transitions"], f"{context}.transitions"
+        )
+        invalid = [item for item in transitions if not TRANSITION_ID.fullmatch(item)]
+        if invalid:
+            raise ModelError(f"{context} has invalid transition ids {invalid}")
+        sources.add(source)
+        suites[suite_id] = {
+            "platform": platform,
+            "source": source,
+            "transitions": transitions,
+        }
+    return suites
+
+
 def validate_model(
     model: Mapping[str, Any],
     *,
@@ -145,6 +192,7 @@ def validate_model(
             "title",
             "contract",
             "behavior_catalog",
+            "system_coverage",
             "policy",
             "invariant",
             "gap",
@@ -156,6 +204,7 @@ def validate_model(
             "title",
             "contract",
             "behavior_catalog",
+            "system_coverage",
             "policy",
             "invariant",
             "gap",
@@ -172,6 +221,18 @@ def validate_model(
     safe_repo_path(repo_root, model["contract"], "contract")
     catalog_path = safe_repo_path(repo_root, model["behavior_catalog"], "behavior_catalog")
     catalog_behaviors = behavior_ids(load_toml(catalog_path, "behavior catalog"))
+    system_coverage_path = safe_repo_path(
+        repo_root, model["system_coverage"], "system_coverage"
+    )
+    system_suites = system_coverage_suites(
+        load_toml(system_coverage_path, "system coverage registry"),
+        expected_model_id=model_id,
+    )
+    system_covered_transitions = {
+        transition_id
+        for suite in system_suites.values()
+        for transition_id in suite["transitions"]
+    }
 
     policy = model["policy"]
     if not isinstance(policy, dict):
@@ -276,6 +337,7 @@ def validate_model(
     state_count = 0
     transition_count = 0
     transitions_missing_tiers: dict[str, list[str]] = {}
+    system_required_transitions: set[str] = set()
 
     for machine_index, machine in enumerate(machines):
         context = f"machine[{machine_index}]"
@@ -473,6 +535,12 @@ def validate_model(
             if evidence_refs and not covered:
                 raise ModelError(f"{transition_id} names evidence without covered tiers")
 
+            effective_covered = set(covered)
+            if transition_id in system_covered_transitions:
+                effective_covered.add("system")
+            if "system" in required:
+                system_required_transitions.add(transition_id)
+
             gap_refs = set(
                 require_string_list(
                     transition["gaps"], f"{transition_context}.gaps", allow_empty=True
@@ -482,7 +550,7 @@ def validate_model(
             if unknown_gaps:
                 raise ModelError(f"{transition_id} references unknown gaps {sorted(unknown_gaps)}")
             referenced_gaps.update(gap_refs)
-            missing_tiers = required - covered
+            missing_tiers = required - effective_covered
             if missing_tiers:
                 open_refs = gap_refs & open_gaps
                 if not open_refs:
@@ -530,6 +598,19 @@ def validate_model(
                     f"{sorted(cannot_reset)}"
                 )
 
+    unknown_system_transitions = system_covered_transitions - transition_ids
+    if unknown_system_transitions:
+        raise ModelError(
+            "system coverage registry references unknown transitions: "
+            f"{sorted(unknown_system_transitions)}"
+        )
+    non_system_transitions = system_covered_transitions - system_required_transitions
+    if non_system_transitions:
+        raise ModelError(
+            "system coverage registry assigns transitions that do not require system proof: "
+            f"{sorted(non_system_transitions)}"
+        )
+
     unused_invariants = set(invariants) - referenced_invariants
     if unused_invariants:
         raise ModelError(f"unreferenced lifecycle invariants: {sorted(unused_invariants)}")
@@ -543,6 +624,8 @@ def validate_model(
         "machine_count": len(machine_ids),
         "state_count": state_count,
         "transition_count": transition_count,
+        "system_suite_count": len(system_suites),
+        "system_covered_transition_count": len(system_covered_transitions),
         "invariant_count": len(invariants),
         "referenced_behavior_count": len(referenced_behaviors),
         "gap_count": len(gaps),

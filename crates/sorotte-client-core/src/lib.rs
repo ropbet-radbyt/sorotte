@@ -1,12 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::Md5;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use sorotte_core::SyncDomain;
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
+};
 use sorotte_media_match::{MEDIA_MATCH_FILE_PAYLOAD_KEY, MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate,
@@ -29,6 +32,60 @@ use sorotte_protocol::{
 use sorotte_secret::SecretValue;
 
 const SEEK_THRESHOLD_SECONDS: f64 = 1.0;
+static CLIENT_TRANSACTION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_client_transaction_sequence() -> u64 {
+    CLIENT_TRANSACTION_SEQUENCE
+        .fetch_add(1, AtomicOrdering::Relaxed)
+        .wrapping_add(1)
+        .max(1)
+}
+
+fn is_playback_protocol_message(message: &ProtocolMessage) -> bool {
+    match message {
+        ProtocolMessage::Set(message) => {
+            let set = &message.set;
+            set.file.is_some()
+                || set.ready.is_some()
+                || set.playlist_change.is_some()
+                || set.playlist_index.is_some()
+                || matches!(set.playback_barrier_v1(), Ok(Some(_)))
+                || matches!(set.readiness_v2(), Ok(Some(_)))
+        }
+        ProtocolMessage::State(message) => {
+            let state = &message.state;
+            state.playstate.is_some()
+                || matches!(state.playback_barrier_v1(), Ok(Some(_)))
+                || matches!(state.readiness_v2(), Ok(Some(_)))
+        }
+        ProtocolMessage::Hello(_)
+        | ProtocolMessage::List(_)
+        | ProtocolMessage::Chat(_)
+        | ProtocolMessage::Error(_)
+        | ProtocolMessage::Tls(_) => false,
+    }
+}
+
+fn emit_client_lifecycle_transition(
+    transition: &'static str,
+    machine: &'static str,
+    target: TargetKind,
+    trigger: Trigger,
+    disposition: Disposition,
+    identities: &[(&'static str, u64)],
+) {
+    let mut observation =
+        TransitionObservation::new(ProcessRole::Client, "client-session", machine, transition)
+            .target(target)
+            .triggered_by(trigger)
+            .authority("client-pending", "authority-observed")
+            .effect("lifecycle-transition", "lifecycle-transition")
+            .disposition(disposition);
+    for (name, value) in identities.iter().copied().filter(|(_, value)| *value > 0) {
+        observation = observation.identity(name, value);
+    }
+    let _ = emit_global(observation);
+}
 
 fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();

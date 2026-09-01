@@ -309,6 +309,56 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
 
         self.assertEqual(revision, 22)
 
+    def test_natural_eof_successor_boundary_accepts_last_to_first_loop(self) -> None:
+        canonical = [
+            {"event": "playstate", "paused": False, "transport_revision": 30},
+            {"event": "playlist-index", "playlist_index": 0},
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 31,
+            },
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 31,
+            },
+        ]
+        records = {
+            "controller": [
+                {"event": "end-file", "reason": "eof", "media_slot": "media-2"},
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-1",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                },
+            ],
+            "follower": [
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-1",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                }
+            ],
+        }
+
+        revision = system.validate_natural_eof_successor_boundary(
+            canonical,
+            records,
+            previous_transport_revision=30,
+            expected_playlist_index=0,
+            predecessor_media_slot="media-2",
+            successor_media_slot="media-1",
+        )
+
+        self.assertEqual(revision, 31)
+
     def test_natural_eof_successor_boundary_rejects_completed_media_authority(self) -> None:
         canonical = [
             {"event": "playlist-index", "playlist_index": 1},
@@ -465,6 +515,34 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_protocol_projection_redacts_room_names_and_maps_membership_roles(self) -> None:
+        events, response = system.project_protocol_message(
+            {
+                "Set": {
+                    "user": {
+                        system.ROLE_USERNAMES["observer"]: {
+                            "room": {"name": "private-room-name"}
+                        },
+                        "unknown-private-user": {
+                            "room": {"name": "another-private-room"}
+                        },
+                    }
+                }
+            }
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(
+            events,
+            [
+                {"event": "room-membership-update", "member_role": "observer"},
+                {"event": "room-membership-update", "member_role": "other"},
+            ],
+        )
+        serialized = json.dumps(events)
+        self.assertNotIn("private-room-name", serialized)
+        self.assertNotIn("unknown-private-user", serialized)
 
     def test_protocol_projection_combines_ping_and_ignore_obligations(self) -> None:
         events, response = system.project_protocol_message(
