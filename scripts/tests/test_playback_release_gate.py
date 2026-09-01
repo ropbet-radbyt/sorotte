@@ -245,6 +245,23 @@ class SystemCoverageRegistryTests(unittest.TestCase):
             suites["exact-gui-owned-process-recovery"]["transitions"],
         )
 
+    def test_load_terminal_is_attributed_to_terminal_http_not_open_stall(self) -> None:
+        all_transitions, required_system = gate.model_transition_inventory(MODEL_PATH)
+        _, suites = gate.model_system_suite_inventory(
+            MODEL_PATH,
+            all_transitions=all_transitions,
+            required_system=required_system,
+        )
+
+        self.assertIn(
+            "LOAD-TERMINAL-001",
+            suites["exact-gui-faulting-http"]["transitions"],
+        )
+        self.assertNotIn(
+            "LOAD-TERMINAL-001",
+            suites["exact-gui-stalled-http"]["transitions"],
+        )
+
 
 class CompleteGateTests(unittest.TestCase):
     def platform_gate(self, platform: str) -> dict[str, object]:
