@@ -573,7 +573,10 @@ impl QueuedRuntimeControl {
         };
         let line = encode_message_line(message)?;
         if newly_staged && is_playback_protocol_message(message) {
-            let identities = [("frame-receipt", lease.get())];
+            let frame_bytes = u64::try_from(line.len().saturating_add(2))
+                .unwrap_or(u64::MAX)
+                .max(1);
+            let identities = [("frame-receipt", lease.get()), ("frame-bytes", frame_bytes)];
             emit_client_lifecycle_transition(
                 "TX-BEGIN-001",
                 "canonical-transaction",

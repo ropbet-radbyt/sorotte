@@ -55,6 +55,10 @@ INTENDED_EOF_LEAD_SECONDS = 2.5
 ROOM_VERSION = "1.7.5"
 MINIMUM_MPV_VERSION = (0, 41, 0)
 MINIMUM_CROSS_PROCESS_EDGES = 6
+WRITE_FAILURE_FRAME_PAYLOAD_BYTES = 256 * 1024
+LIFECYCLE_WRITE_BARRIER_MODE = "leased-oversized-frame"
+LIFECYCLE_WRITE_BARRIER_READY_SUFFIX = ".leased-frame-ready"
+LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX = ".leased-frame-release"
 
 ORACLE_CONVERGENCE_CHECKS = frozenset(
     {
@@ -189,6 +193,66 @@ def participant_status_authority_withdrawn(
         "awaitingReport",
         "unavailable",
     }
+
+
+def bounded_playback_frame_delivery(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    after: int,
+    minimum_frame_bytes: int,
+) -> Mapping[str, Any] | None:
+    """Find the staged playback frame large enough to own the fault boundary."""
+
+    return next(
+        (
+            record
+            for record in records[after:]
+            if record.get("transition") == "TX-DELIVERY-001"
+            and isinstance(record.get("identities"), Mapping)
+            and record["identities"].get("frame-bytes", 0) >= minimum_frame_bytes
+        ),
+        None,
+    )
+
+
+def exact_leased_frame_failure(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    after: int,
+    frame_receipt: int,
+) -> Mapping[str, Any] | None:
+    """Return exact lease failure, rejecting a locally completed target frame."""
+
+    terminal_records = [
+        record
+        for record in records[after:]
+        if isinstance(record.get("identities"), Mapping)
+        and record["identities"].get("frame-receipt") == frame_receipt
+        and record.get("transition") in {"TX-WRITTEN-001", "TX-FAIL-001"}
+    ]
+    if any(record.get("transition") == "TX-WRITTEN-001" for record in terminal_records):
+        raise ValueError(
+            "the exact leased playback frame completed before the scheduled reset"
+        )
+    return next(
+        (
+            record
+            for record in terminal_records
+            if record.get("transition") == "TX-FAIL-001"
+        ),
+        None,
+    )
+
+
+def lifecycle_write_barrier_paths(evidence_path: Path) -> tuple[Path, Path]:
+    return (
+        evidence_path.with_name(
+            evidence_path.name + LIFECYCLE_WRITE_BARRIER_READY_SUFFIX
+        ),
+        evidence_path.with_name(
+            evidence_path.name + LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX
+        ),
+    )
 
 
 def validate_terminal_playlist_boundary(
@@ -1253,6 +1317,7 @@ class ProtocolFaultProxy:
         self._active_upstream: socket.socket | None = None
         self._accepted_count = 0
         self._upstream_connection_count = 0
+        self._completed_connection_count = 0
         self._fragment_count = 0
         self._forwarded_bytes = 0
         self._participant_status_report_count = 0
@@ -1303,6 +1368,11 @@ class ProtocolFaultProxy:
     def upstream_connection_count(self) -> int:
         with self._lock:
             return self._upstream_connection_count
+
+    @property
+    def completed_connection_count(self) -> int:
+        with self._lock:
+            return self._completed_connection_count
 
     @property
     def fragment_count(self) -> int:
@@ -1684,6 +1754,7 @@ class ProtocolFaultProxy:
                 self._active_client = None
             if self._active_upstream is upstream:
                 self._active_upstream = None
+            self._completed_connection_count += 1
 
     def _run(self) -> None:
         try:
@@ -1757,11 +1828,6 @@ class ProtocolFaultProxy:
             raise lifecycle_faults.FaultScheduleError(
                 "fault schedule has no client-write channel hold step"
             )
-        if client is not None:
-            try:
-                client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-            except OSError:
-                pass
 
     def apply_scheduled_write_failure_reset(self) -> None:
         with self._lock:
@@ -2644,6 +2710,10 @@ class PlaybackLifecycleHarness:
                 "SOROTTE_LIFECYCLE_EMITTER": f"client-{role}",
             }
         )
+        if role == "follower":
+            environment["SOROTTE_LIFECYCLE_WRITE_BARRIER"] = (
+                LIFECYCLE_WRITE_BARRIER_MODE
+            )
         return environment
 
     def _start_client(self, role: str, first: Path, second: Path) -> ClientProcess:
@@ -3154,7 +3224,12 @@ class PlaybackLifecycleHarness:
         self._observer_event(
             delayed.sequence,
             lambda event: follower_availability(event, "stale"),
-            timeout=9.0,
+            # The server's stale boundary is ten seconds from the last accepted
+            # report, while snapshots are emitted on an independent periodic
+            # cadence. Leave one complete slow-host cadence beyond that
+            # boundary instead of assuming the delayed observation occurred at
+            # its earliest possible instant.
+            timeout=12.0,
         )
         self._pass(
             "participant-status-delayed-and-stale",
@@ -3432,46 +3507,83 @@ class PlaybackLifecycleHarness:
         lifecycle_path = self.lifecycle_process_paths["client-follower"]
         lifecycle_cursor = len(lifecycle_evidence.read_jsonl(lifecycle_path))
         previous_connections = proxy.upstream_connection_count
+        previous_completed_connections = proxy.completed_connection_count
         observer_cursor = self.observer.cursor()
+        barrier_ready_path, barrier_release_path = lifecycle_write_barrier_paths(
+            lifecycle_path
+        )
 
         self.stage = "scheduled-write-failure-hold"
         proxy.apply_scheduled_write_failure_hold()
-        large_target = "fault-payload-" + ("x" * (512 * 1024)) + ".mkv"
+        large_target = (
+            "fault-payload-" + ("x" * WRITE_FAILURE_FRAME_PAYLOAD_BYTES) + ".mkv"
+        )
         self.clients["follower"].process.write_line(f"queue {large_target}")
         self._emit(
             event="local-command-issued",
             role="follower",
             detail="bounded-large-playlist-frame",
         )
-        self._wait(
+        leased_record = self._wait(
             "the follower to lease the bounded large playback frame",
-            lambda: next(
-                (
-                    record
-                    for record in lifecycle_evidence.read_jsonl(lifecycle_path)[
-                        lifecycle_cursor:
-                    ]
-                    if record.get("transition") == "TX-DELIVERY-001"
-                ),
-                None,
+            lambda: bounded_playback_frame_delivery(
+                lifecycle_evidence.read_jsonl(lifecycle_path),
+                after=lifecycle_cursor,
+                minimum_frame_bytes=WRITE_FAILURE_FRAME_PAYLOAD_BYTES,
             ),
             timeout=6.0,
         )
-        time.sleep(0.15)
+        leased_receipt = leased_record["identities"].get("frame-receipt")
+        if not isinstance(leased_receipt, int) or leased_receipt <= 0:
+            raise HarnessFailure(
+                self.stage,
+                "the bounded large playback frame has no valid lease receipt",
+            )
+        self._wait(
+            "the exact leased playback frame to enter the deterministic write barrier",
+            barrier_ready_path.is_file,
+            timeout=3.0,
+        )
         self.stage = "scheduled-write-failure-reset"
         proxy.apply_scheduled_write_failure_reset()
         self._wait(
+            "the reset relay generation to terminate before releasing the leased frame",
+            lambda: proxy.completed_connection_count > previous_completed_connections,
+            timeout=3.0,
+        )
+        try:
+            with barrier_release_path.open("x", encoding="utf-8") as release:
+                release.write("reset\n")
+                release.flush()
+                os.fsync(release.fileno())
+        except OSError as error:
+            raise HarnessFailure(
+                self.stage,
+                f"failed to release the leased-frame write barrier: {redact_sensitive_text(error)}",
+            ) from error
+        self._emit(
+            event="leased-frame-write-released",
+            role="follower",
+            detail="after scheduled transport reset",
+        )
+
+        def exact_frame_failure() -> dict[str, Any] | None:
+            try:
+                result = exact_leased_frame_failure(
+                    lifecycle_evidence.read_jsonl(lifecycle_path),
+                    after=lifecycle_cursor,
+                    frame_receipt=leased_receipt,
+                )
+            except ValueError as error:
+                raise HarnessFailure(
+                    self.stage,
+                    str(error),
+                ) from error
+            return dict(result) if result is not None else None
+
+        self._wait(
             "the exact leased playback frame to terminate as a write failure",
-            lambda: next(
-                (
-                    record
-                    for record in lifecycle_evidence.read_jsonl(lifecycle_path)[
-                        lifecycle_cursor:
-                    ]
-                    if record.get("transition") == "TX-FAIL-001"
-                ),
-                None,
-            ),
+            exact_frame_failure,
             timeout=6.0,
         )
 
@@ -3584,6 +3696,14 @@ class PlaybackLifecycleHarness:
             position=3.0,
             timeout=8.0,
         )
+        try:
+            barrier_ready_path.unlink()
+            barrier_release_path.unlink()
+        except OSError as error:
+            raise HarnessFailure(
+                self.stage,
+                f"failed to retire lifecycle write barrier markers: {redact_sensitive_text(error)}",
+            ) from error
         self._pass(
             "scheduled-write-failure-recovered",
             "a leased playback frame failed at the socket boundary, never reached authority, and every reconnected client applied fresh play, pause, and seek commands",

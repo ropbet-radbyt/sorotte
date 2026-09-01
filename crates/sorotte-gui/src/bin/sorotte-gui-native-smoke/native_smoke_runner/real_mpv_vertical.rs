@@ -6066,6 +6066,47 @@ mod tests {
     }
 
     #[test]
+    fn playlist_echo_server_preserves_a_fragmented_frame_across_read_timeout() {
+        let media_url = "http://127.0.0.1:49152/generated-fault.au";
+        let (server, _, mut stream, _) = connect_playlist_echo_test_server(media_url);
+        let frame = serde_json::json!({
+            "State": {
+                "ping": {
+                    "clientLatencyCalculation": 1.0,
+                    "clientRtt": 0.0,
+                    "serverRtt": 0.0,
+                }
+            }
+        })
+        .to_string();
+        let split = frame.len() / 2;
+        stream
+            .write_all(&frame.as_bytes()[..split])
+            .expect("write first heartbeat fragment");
+        thread::sleep(Duration::from_millis(150));
+        stream
+            .write_all(&frame.as_bytes()[split..])
+            .expect("write second heartbeat fragment");
+        stream
+            .write_all(b"\n")
+            .expect("terminate fragmented heartbeat");
+
+        let receive_error = server
+            .recv_playlist_exchange(Duration::from_secs(2), "fragmented-frame rejection")
+            .expect_err("widened fragmented heartbeat must not produce playlist evidence");
+        assert!(receive_error.contains("closed"));
+        let release_error = server
+            .release("fragmented-frame rejection")
+            .expect_err("widened fragmented heartbeat must fail the fixture");
+        assert!(
+            release_error.contains(
+                "unexpected client frame before playlistChange (redacted shape: State.ping)"
+            ),
+            "fragmented frame lost its semantic rejection reason: {release_error}"
+        );
+    }
+
+    #[test]
     fn playlist_echo_server_rejects_default_ready_publish_with_extra_fields() {
         let media_url = "http://127.0.0.1:49152/generated-fault.au";
         let (server, _, mut stream, _) = connect_playlist_echo_test_server(media_url);

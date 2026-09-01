@@ -8738,6 +8738,80 @@ mod tests {
     }
 
     #[test]
+    fn participant_status_withdraw_evidence_requires_an_active_negotiated_epoch() {
+        fn session_with_status_support(supported: bool) -> ClientSession {
+            let mut session = ClientSession::default();
+            session
+                .apply_message_json(&format!(
+                    r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"sorotteParticipantStatusV1":{supported}}}}}}}"#
+                ))
+                .expect("participant-status Hello should apply");
+            session
+        }
+
+        let mut active_unsupported = ClientRuntime::new(
+            session_with_status_support(false),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, unsupported_transitions) = capture_client_lifecycle_transitions(|| {
+            active_unsupported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            unsupported_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            ["SESSION-CONNECT-001"],
+            "an active connection without negotiated status support has no status authority to withdraw"
+        );
+
+        let mut inactive_supported_session = session_with_status_support(true);
+        inactive_supported_session.mark_disconnected();
+        let mut inactive_supported = ClientRuntime::new(
+            inactive_supported_session,
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, inactive_transitions) = capture_client_lifecycle_transitions(|| {
+            inactive_supported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            inactive_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            ["SESSION-CONNECT-001"],
+            "negotiated support from an inactive connection is no longer a live status epoch"
+        );
+
+        let mut active_supported = ClientRuntime::new(
+            session_with_status_support(true),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, supported_transitions) = capture_client_lifecycle_transitions(|| {
+            active_supported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            supported_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            [
+                "STATUS-WITHDRAW-001",
+                "STATUS-UNAVAILABLE-001",
+                "SESSION-CONNECT-001",
+            ]
+        );
+        for status_transition in &supported_transitions[..2] {
+            assert_eq!(status_transition.trigger, Trigger::Shutdown);
+            assert_eq!(status_transition.disposition, Disposition::Applied);
+            assert!(status_transition.identities.is_empty());
+        }
+    }
+
+    #[test]
     fn participant_status_reconnect_reset_cancels_unleased_and_leased_reports() {
         let mut unleased = ClientRuntime::new(
             participant_status_session(),

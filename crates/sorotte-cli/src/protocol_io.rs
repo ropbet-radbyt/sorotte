@@ -1,3 +1,9 @@
+use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_player_api::PlayerAdapter;
 use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
@@ -7,6 +13,139 @@ use tokio::time::Instant;
 use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
 pub const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+
+const LIFECYCLE_WRITE_BARRIER_ENV: &str = "SOROTTE_LIFECYCLE_WRITE_BARRIER";
+const LIFECYCLE_WRITE_BARRIER_MODE: &str = "leased-oversized-frame";
+const LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES: usize = 256 * 1024;
+const LIFECYCLE_WRITE_BARRIER_TIMEOUT: Duration = Duration::from_secs(15);
+const LIFECYCLE_WRITE_BARRIER_READY_SUFFIX: &str = ".leased-frame-ready";
+const LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX: &str = ".leased-frame-release";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LifecycleWriteBarrier {
+    ready_path: PathBuf,
+    release_path: PathBuf,
+}
+
+fn lifecycle_write_barrier_marker_path(
+    evidence_path: &Path,
+    suffix: &str,
+) -> anyhow::Result<PathBuf> {
+    let file_name = evidence_path.file_name().ok_or_else(|| {
+        anyhow::anyhow!("{LIFECYCLE_WRITE_BARRIER_ENV} requires a lifecycle evidence file path")
+    })?;
+    let mut marker_name = OsString::from(file_name);
+    marker_name.push(suffix);
+    Ok(evidence_path.with_file_name(marker_name))
+}
+
+fn parse_lifecycle_write_barrier(
+    evidence_enabled: bool,
+    configured: Option<&str>,
+    evidence_path: Option<&Path>,
+    frame_bytes: usize,
+) -> anyhow::Result<Option<LifecycleWriteBarrier>> {
+    let Some(configured) = configured.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !evidence_enabled {
+        return Err(anyhow::anyhow!(
+            "{LIFECYCLE_WRITE_BARRIER_ENV} requires lifecycle evidence to be enabled"
+        ));
+    }
+    if configured != LIFECYCLE_WRITE_BARRIER_MODE {
+        return Err(anyhow::anyhow!(
+            "{LIFECYCLE_WRITE_BARRIER_ENV} must be {LIFECYCLE_WRITE_BARRIER_MODE:?}"
+        ));
+    }
+    let evidence_path = evidence_path.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{LIFECYCLE_WRITE_BARRIER_ENV} requires {}",
+            sorotte_lifecycle_evidence::EVIDENCE_PATH_ENV
+        )
+    })?;
+    if frame_bytes < LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(LifecycleWriteBarrier {
+        ready_path: lifecycle_write_barrier_marker_path(
+            evidence_path,
+            LIFECYCLE_WRITE_BARRIER_READY_SUFFIX,
+        )?,
+        release_path: lifecycle_write_barrier_marker_path(
+            evidence_path,
+            LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX,
+        )?,
+    }))
+}
+
+fn lifecycle_write_barrier_for_frame(
+    frame_bytes: usize,
+) -> anyhow::Result<Option<LifecycleWriteBarrier>> {
+    let configured = std::env::var(LIFECYCLE_WRITE_BARRIER_ENV).ok();
+    let evidence_path =
+        std::env::var_os(sorotte_lifecycle_evidence::EVIDENCE_PATH_ENV).map(PathBuf::from);
+    parse_lifecycle_write_barrier(
+        sorotte_lifecycle_evidence::global_enabled(),
+        configured.as_deref(),
+        evidence_path.as_deref(),
+        frame_bytes,
+    )
+}
+
+async fn await_lifecycle_write_barrier(frame_bytes: usize) -> anyhow::Result<()> {
+    let Some(barrier) = lifecycle_write_barrier_for_frame(frame_bytes)? else {
+        return Ok(());
+    };
+    await_configured_lifecycle_write_barrier(barrier).await
+}
+
+async fn await_configured_lifecycle_write_barrier(
+    barrier: LifecycleWriteBarrier,
+) -> anyhow::Result<()> {
+    if barrier.release_path.exists() && !barrier.ready_path.exists() {
+        return Err(anyhow::anyhow!(
+            "lifecycle write barrier release marker existed before the leased frame arrived"
+        ));
+    }
+    let mut ready = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&barrier.ready_path)
+    {
+        Ok(ready) => ready,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // The barrier is one-shot. A reconnect may retry the semantic
+            // frame after the first transport has failed.
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "failed to create lifecycle write barrier readiness marker: {error}"
+            ));
+        }
+    };
+    ready.write_all(b"leased\n").map_err(|error| {
+        anyhow::anyhow!("failed to write lifecycle write barrier readiness marker: {error}")
+    })?;
+    ready.sync_all().map_err(|error| {
+        anyhow::anyhow!("failed to sync lifecycle write barrier readiness marker: {error}")
+    })?;
+    drop(ready);
+
+    let deadline = Instant::now() + LIFECYCLE_WRITE_BARRIER_TIMEOUT;
+    loop {
+        if barrier.release_path.is_file() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "timed out waiting for lifecycle write barrier release"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +322,10 @@ where
     P: PlayerAdapter,
 {
     while let Some(pending) = runtime.pending_protocol_line()? {
-        let write = write_protocol_line(writer, pending.line());
+        let write = async {
+            await_lifecycle_write_barrier(pending.line().len().saturating_add(2)).await?;
+            write_protocol_line(writer, pending.line()).await
+        };
         tokio::pin!(write);
         let mut maintenance_tick = tokio::time::interval(std::time::Duration::from_millis(
             PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
@@ -293,6 +435,122 @@ mod tests {
         fn maintain_runtime_integrations(&mut self) {
             panic!("async protocol writes must not invoke blocking player maintenance");
         }
+    }
+
+    #[test]
+    fn lifecycle_write_barrier_is_evidence_gated_bounded_and_path_derived() {
+        let evidence_path = Path::new("evidence/client-follower.jsonl");
+        assert_eq!(
+            parse_lifecycle_write_barrier(false, None, None, usize::MAX)
+                .expect("an absent barrier must be inert"),
+            None
+        );
+        assert!(
+            parse_lifecycle_write_barrier(
+                false,
+                Some(LIFECYCLE_WRITE_BARRIER_MODE),
+                Some(evidence_path),
+                usize::MAX,
+            )
+            .expect_err("ordinary clients must reject the verification-only barrier")
+            .to_string()
+            .contains("requires lifecycle evidence")
+        );
+        assert!(
+            parse_lifecycle_write_barrier(
+                true,
+                Some("unknown-mode"),
+                Some(evidence_path),
+                usize::MAX,
+            )
+            .expect_err("unknown barrier modes must fail closed")
+            .to_string()
+            .contains(LIFECYCLE_WRITE_BARRIER_MODE)
+        );
+        assert!(
+            parse_lifecycle_write_barrier(
+                true,
+                Some(LIFECYCLE_WRITE_BARRIER_MODE),
+                None,
+                usize::MAX,
+            )
+            .expect_err("the marker path must derive from lifecycle evidence")
+            .to_string()
+            .contains(sorotte_lifecycle_evidence::EVIDENCE_PATH_ENV)
+        );
+        assert_eq!(
+            parse_lifecycle_write_barrier(
+                true,
+                Some(LIFECYCLE_WRITE_BARRIER_MODE),
+                Some(evidence_path),
+                LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES - 1,
+            )
+            .expect("ordinary frames must bypass the barrier"),
+            None
+        );
+
+        let barrier = parse_lifecycle_write_barrier(
+            true,
+            Some(LIFECYCLE_WRITE_BARRIER_MODE),
+            Some(evidence_path),
+            LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES,
+        )
+        .expect("valid barrier configuration")
+        .expect("the threshold frame must be gated");
+        assert_eq!(
+            barrier.ready_path,
+            Path::new("evidence/client-follower.jsonl.leased-frame-ready")
+        );
+        assert_eq!(
+            barrier.release_path,
+            Path::new("evidence/client-follower.jsonl.leased-frame-release")
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_write_barrier_waits_once_for_an_explicit_release() {
+        static NEXT_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-cli-lifecycle-write-barrier-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).expect("unique barrier test directory should be created");
+        let barrier = LifecycleWriteBarrier {
+            ready_path: root.join("ready"),
+            release_path: root.join("release"),
+        };
+        let waiting_barrier = barrier.clone();
+        let waiter =
+            tokio::spawn(
+                async move { await_configured_lifecycle_write_barrier(waiting_barrier).await },
+            );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !barrier.ready_path.is_file() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the leased-frame marker should appear");
+        assert!(
+            !waiter.is_finished(),
+            "the write must remain behind the barrier"
+        );
+        std::fs::write(&barrier.release_path, b"reset\n")
+            .expect("the harness release marker should be written");
+        waiter
+            .await
+            .expect("barrier task should not panic")
+            .expect("explicit release should unblock the write");
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            await_configured_lifecycle_write_barrier(barrier),
+        )
+        .await
+        .expect("a semantic retry must bypass the one-shot barrier")
+        .expect("a semantic retry must remain valid");
+        std::fs::remove_dir_all(root).expect("barrier test directory should be removed");
     }
 
     #[tokio::test]

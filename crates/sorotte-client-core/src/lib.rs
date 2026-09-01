@@ -66,6 +66,42 @@ fn is_playback_protocol_message(message: &ProtocolMessage) -> bool {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CapturedClientLifecycleTransition {
+    transition: &'static str,
+    trigger: Trigger,
+    disposition: Disposition,
+    identities: Vec<(&'static str, u64)>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static CAPTURED_CLIENT_LIFECYCLE_TRANSITIONS:
+        std::cell::RefCell<Option<Vec<CapturedClientLifecycleTransition>>> =
+            const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn capture_client_lifecycle_transitions<R>(
+    action: impl FnOnce() -> R,
+) -> (R, Vec<CapturedClientLifecycleTransition>) {
+    CAPTURED_CLIENT_LIFECYCLE_TRANSITIONS.with(|capture| {
+        assert!(
+            capture.replace(Some(Vec::new())).is_none(),
+            "client lifecycle evidence capture must not be nested"
+        );
+    });
+    let result = action();
+    let transitions = CAPTURED_CLIENT_LIFECYCLE_TRANSITIONS.with(|capture| {
+        capture
+            .borrow_mut()
+            .take()
+            .expect("client lifecycle evidence capture should remain active")
+    });
+    (result, transitions)
+}
+
 fn emit_client_lifecycle_transition(
     transition: &'static str,
     machine: &'static str,
@@ -74,6 +110,22 @@ fn emit_client_lifecycle_transition(
     disposition: Disposition,
     identities: &[(&'static str, u64)],
 ) {
+    #[cfg(test)]
+    if CAPTURED_CLIENT_LIFECYCLE_TRANSITIONS.with(|capture| {
+        let mut capture = capture.borrow_mut();
+        let Some(transitions) = capture.as_mut() else {
+            return false;
+        };
+        transitions.push(CapturedClientLifecycleTransition {
+            transition,
+            trigger,
+            disposition,
+            identities: identities.to_vec(),
+        });
+        true
+    }) {
+        return;
+    }
     let mut observation =
         TransitionObservation::new(ProcessRole::Client, "client-session", machine, transition)
             .target(target)
