@@ -543,6 +543,42 @@ fn client_runtime_set_paused_dispatches_only_when_state_changes() {
 }
 
 #[test]
+fn client_runtime_explicit_pause_is_not_masked_by_cache_pause_projection() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
+        )
+        .expect("hello should apply");
+    session
+        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
+        .expect("local ready should apply");
+
+    let player = RecordingPlayer {
+        pending_playback_telemetry_update: Some(
+            PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_paused_for_cache(true),
+        ),
+        ..RecordingPlayer::default()
+    };
+    let control = QueuedRuntimeControl::default();
+    let mut runtime = ClientRuntime::new(session, player, control);
+
+    assert!(
+        runtime
+            .run_set_paused(true)
+            .expect("explicit pause should not fail while cache telemetry is stale"),
+        "a cache-induced effective pause must not suppress the durable player pause command"
+    );
+    assert_eq!(runtime.player().paused, Some(true));
+    assert_eq!(runtime.session().local_paused(), Some(true));
+    assert_eq!(runtime.session().local_paused_for_cache(), Some(true));
+    assert_eq!(runtime.session().user_ready("alice"), Some(false));
+    assert_eq!(runtime.control().outbound_messages().len(), 1);
+}
+
+#[test]
 fn client_runtime_set_paused_retains_intent_when_player_pause_fails() {
     let mut session = ClientSession::default();
     session
