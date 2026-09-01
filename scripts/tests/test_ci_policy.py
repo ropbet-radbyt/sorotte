@@ -3996,30 +3996,6 @@ done""",
                             ),
                             (
                                 (
-                                    "gui-playlist-delivery-fence-finish-"
-                                    "let-chain-or"
-                                ),
-                                "gui-playlist-delivery-fence",
-                                (
-                                    "crates/sorotte-gui/src/app/runtime_owner/"
-                                    "player/media_open.rs"
-                                ),
-                                (
-                                    "GuiPersistedConfigRuntimeOwner::"
-                                    "finish_shared_playlist_open_after_delivery"
-                                ),
-                                "",
-                                "BinaryOperator",
-                                "||",
-                                (
-                                    "cargo-mutants changes the observed && "
-                                    "connector in a Rust let-chain to ||, "
-                                    "which rustc rejects because let-chain "
-                                    "conditions support only &&"
-                                ),
-                            ),
-                            (
-                                (
                                     "client-app-participant-status-"
                                     "presentation-default"
                                 ),
