@@ -59,7 +59,8 @@ def materialize_bundle(root: Path, platform: str) -> dict[str, object]:
 
 
 def system_report(manifest: dict[str, object], *, loop: bool) -> dict[str, object]:
-    required = gate.BASE_CHECKS | (gate.LOOP_CHECKS if loop else frozenset())
+    boundary_checks = gate.LOOP_CHECKS if loop else gate.TERMINAL_CHECKS
+    required = gate.COMMON_CHECKS | boundary_checks
     report: dict[str, object] = {
         "schema_version": 1,
         "kind": "sorotte-playback-lifecycle-system",
@@ -85,8 +86,7 @@ def system_report(manifest: dict[str, object], *, loop: bool) -> dict[str, objec
         },
         "lifecycle_summary": lifecycle_summary("APP-LAUNCH-001"),
     }
-    if loop:
-        report["playlist_policy"] = "loop-at-end"
+    report["playlist_policy"] = "loop-at-end" if loop else "terminal-at-end"
     return report
 
 
@@ -146,6 +146,19 @@ class LinuxAttestationTests(unittest.TestCase):
             gate.validate_system_report(base_path, bundle_manifest=manifest, loop=False)
             gate.validate_system_report(loop_path, bundle_manifest=manifest, loop=True)
             gate.validate_start_report(start_path, manifest)
+
+            base_checks = {
+                check["id"]
+                for check in system_report(manifest, loop=False)["checks"]
+            }
+            loop_checks = {
+                check["id"]
+                for check in system_report(manifest, loop=True)["checks"]
+            }
+            self.assertTrue(gate.TERMINAL_CHECKS <= base_checks)
+            self.assertTrue(gate.LOOP_CHECKS.isdisjoint(base_checks))
+            self.assertTrue(gate.LOOP_CHECKS <= loop_checks)
+            self.assertTrue(gate.TERMINAL_CHECKS.isdisjoint(loop_checks))
 
             broken = system_report(manifest, loop=False)
             broken["fault_schedule"]["actions"].remove("reset")

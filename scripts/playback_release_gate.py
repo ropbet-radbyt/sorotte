@@ -41,7 +41,7 @@ FAULT_ACTIONS = frozenset(
         "worker-stall",
     }
 )
-BASE_CHECKS = frozenset(
+COMMON_CHECKS = frozenset(
     {
         "prerequisites-attested",
         "room-switch-rejoin-preserved-authority",
@@ -66,11 +66,15 @@ BASE_CHECKS = frozenset(
         "natural-eof-advanced-once",
         "next-item-loaded-everywhere",
         "natural-eof-successor-authority-reset",
-        "final-item-canonical-terminal-bounded",
         "no-contained-player-failures",
         "fault-schedule-replayed-completely",
         "shared-causal-ledger-validated",
         "server-drained-cleanly",
+    }
+)
+TERMINAL_CHECKS = frozenset(
+    {
+        "final-item-canonical-terminal-bounded",
     }
 )
 LOOP_CHECKS = frozenset(
@@ -400,7 +404,8 @@ def validate_system_report(
         raise ReleaseGateError("system server digest differs from candidate bundle")
     if prerequisites.get("client", {}).get("sha256") != files["client"]["sha256"]:
         raise ReleaseGateError("system client digest differs from candidate bundle")
-    required_checks = BASE_CHECKS | (LOOP_CHECKS if loop else frozenset())
+    boundary_checks = LOOP_CHECKS if loop else TERMINAL_CHECKS
+    required_checks = COMMON_CHECKS | boundary_checks
     missing = required_checks - set(checks_by_id(report))
     if missing:
         raise ReleaseGateError(f"system report omitted required checks: {sorted(missing)}")
