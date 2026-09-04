@@ -326,7 +326,7 @@ fn process_interrupt_barrier(boundary: ProcessInterruptBoundary) {
         .expect("the updater child must publish its durable interruption boundary");
     let release = root.join("release-boundary");
     while !release.exists() {
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
@@ -2388,6 +2388,14 @@ fn wait_for_process_exit(_pid: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn acquire_updater_durability_test_lock() -> TargetUpdateLock {
+        let lock_root = env::temp_dir().join("sorotte-updater-durability-test-lock");
+        fs::create_dir_all(&lock_root)
+            .expect("the shared updater durability test lock root should exist");
+        TargetUpdateLock::acquire(&lock_root)
+            .expect("the updater durability test process should acquire its shared lock")
+    }
+
     fn test_root(label: &str) -> PathBuf {
         let root = env::temp_dir().join(format!("sorotte-updater-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -3732,6 +3740,7 @@ mod tests {
 
     #[test]
     fn replacement_journal_artifact_fault_matrix_matches_the_reference_model() {
+        let _durability_test_lock = acquire_updater_durability_test_lock();
         let mut schedules = 0;
         for mode in MatrixRecoveryMode::ALL {
             for kind in MatrixFileKind::ALL {
@@ -4396,7 +4405,7 @@ mod tests {
 
         fn wait_for_boundary_and_terminate(fixture: &ProcessFixtureRoot, expected_boundary: &str) {
             let mut child = spawn_fixture(&fixture.path, "apply", Some(expected_boundary));
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 if boundary_marker_has_expected_content(&fixture.marker(), expected_boundary)
                     .expect("the updater boundary marker should be observable")
@@ -4419,7 +4428,7 @@ mod tests {
                     Instant::now() < deadline,
                     "timed out waiting for updater boundary {expected_boundary}"
                 );
-                std::thread::yield_now();
+                std::thread::sleep(Duration::from_millis(1));
             }
             child
                 .child_mut()
@@ -4434,7 +4443,7 @@ mod tests {
         }
 
         fn wait_for_success(mut child: KillAndReapChild, description: &str) {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 if child
                     .child_mut()
@@ -4454,7 +4463,7 @@ mod tests {
                     Instant::now() < deadline,
                     "timed out waiting for {description}"
                 );
-                std::thread::yield_now();
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
 
@@ -4558,6 +4567,7 @@ mod tests {
 
         #[test]
         fn real_process_termination_recovers_every_durable_transaction_boundary() {
+            let _durability_test_lock = acquire_updater_durability_test_lock();
             assert_boundary_marker_handshake_is_atomic_and_content_acknowledged();
 
             let schedules = [

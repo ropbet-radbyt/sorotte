@@ -46,13 +46,19 @@ membership, playlist selection, media resolution, physical loads, local
 transport, canonical transactions, readiness, and participant status in one
 validated composition without collapsing their separate authorities. Every
 critical transition must require independent model, boundary-seam, and real
-system proof. A missing tier is accepted only while it points at an explicit
-open gap with a concrete closure condition. Normal pull-request validation
-keeps that map internally complete. GUI and server publication both depend on
-the reusable `playback-lifecycle-release-gate.yml`, which executes release-mode
-server and client candidates at the exact publication SHA with pinned real mpv
-and then uses `--require-closed`; candidate artifacts cannot publish while a
-lifecycle gap remains open.
+system proof. `playback-lifecycle-system.toml` assigns every system-required
+transition to one or more named release suites. The validator rejects unknown
+or incomplete assignments, each platform gate verifies the transitions
+actually emitted by every assigned suite, and the composed gate requires the
+exact Linux/Windows union to cover every system-required transition. A missing
+tier is accepted only while it points at an explicit open gap with a concrete
+closure condition. Normal pull-request validation keeps that map internally
+complete. GUI and server publication both depend on the reusable
+`playback-lifecycle-release-gate.yml`, which executes release-mode server,
+client, and GUI candidates at the exact publication SHA with pinned real mpv,
+produces separate Linux and Windows platform attestations, composes their exact
+transition union, and then uses `--require-closed`; candidate artifacts cannot
+publish while a lifecycle gap or system-proof assignment remains open.
 
 The packaged system command is intentionally separate from the fast model and
 seam checks. It launches an actual server, three isolated production CLI

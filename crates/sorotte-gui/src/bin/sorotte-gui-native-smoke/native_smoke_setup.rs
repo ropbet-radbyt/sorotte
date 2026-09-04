@@ -55,6 +55,9 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
         "SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT",
         "SOROTTE_GUI_TEST_PLAYER_OBSERVATION_PATH",
         "SOROTTE_GUI_TEST_LIFECYCLE_OBSERVATION_PATH",
+        "SOROTTE_LIFECYCLE_EVIDENCE_PATH",
+        "SOROTTE_LIFECYCLE_RUN_ID",
+        "SOROTTE_LIFECYCLE_EMITTER",
         "SOROTTE_CLIENT_CONFIG_ROOT",
         "SOROTTE_CLIENT_INSTALL_ROOT",
     ] {
@@ -85,6 +88,24 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     }
     if let Some(path) = test_overrides.lifecycle_observation_path {
         command.env("SOROTTE_GUI_TEST_LIFECYCLE_OBSERVATION_PATH", path);
+    }
+    match (
+        test_overrides.shared_lifecycle_evidence_path,
+        test_overrides.shared_lifecycle_run_id,
+        test_overrides.shared_lifecycle_emitter,
+    ) {
+        (Some(path), Some(run_id), Some(emitter)) => {
+            command.env("SOROTTE_LIFECYCLE_EVIDENCE_PATH", path);
+            command.env("SOROTTE_LIFECYCLE_RUN_ID", run_id);
+            command.env("SOROTTE_LIFECYCLE_EMITTER", emitter);
+        }
+        (None, None, None) => {}
+        _ => {
+            return Err(
+                "shared lifecycle evidence launch override must provide path, run id, and emitter"
+                    .to_owned(),
+            );
+        }
     }
     if test_overrides.disable_startup_saved_connect
         || matches!(

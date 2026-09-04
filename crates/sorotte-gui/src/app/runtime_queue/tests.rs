@@ -514,6 +514,7 @@ fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waitin
 #[test]
 fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
     struct DropAwareRuntimeOwner {
+        started_tx: Option<mpsc::Sender<()>>,
         dropped: Arc<AtomicBool>,
     }
 
@@ -529,20 +530,30 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
             _handle: &GuiQueuedRuntimeBridgeHandle,
             _input: &crate::app::feature_slices::GuiRuntimeInput,
         ) {
+            if let Some(started_tx) = self.started_tx.take() {
+                let _ = started_tx.send(());
+            }
         }
 
         fn poll(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle) {}
     }
 
+    let (started_tx, started_rx) = mpsc::channel();
     let dropped = Arc::new(AtomicBool::new(false));
-    let threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
+    let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         GuiQueuedRuntimeBridgeHandle::default(),
         DropAwareRuntimeOwner {
+            started_tx: Some(started_tx),
             dropped: dropped.clone(),
         },
         Duration::from_millis(10),
     )
     .expect("threaded runtime owner should spawn");
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("threaded runtime owner should start before shutdown is tested");
 
     drop(threaded_pump);
 

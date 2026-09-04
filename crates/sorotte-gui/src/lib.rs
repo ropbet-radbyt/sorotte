@@ -1,5 +1,46 @@
 mod app;
 
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
+};
+
+#[derive(Clone, Copy)]
+pub(crate) struct GuiLifecycleOrigin {
+    process_role: ProcessRole,
+    subject: &'static str,
+}
+
+impl GuiLifecycleOrigin {
+    pub(crate) const fn new(process_role: ProcessRole, subject: &'static str) -> Self {
+        Self {
+            process_role,
+            subject,
+        }
+    }
+}
+
+pub(crate) fn emit_gui_lifecycle_transition(
+    origin: GuiLifecycleOrigin,
+    transition: &'static str,
+    machine: &'static str,
+    target: TargetKind,
+    trigger: Trigger,
+    disposition: Disposition,
+    identities: &[(&'static str, u64)],
+) {
+    let mut observation =
+        TransitionObservation::new(origin.process_role, origin.subject, machine, transition)
+            .target(target)
+            .triggered_by(trigger)
+            .authority("gui-pending", "gui-applied")
+            .effect("lifecycle-transition", "lifecycle-transition")
+            .disposition(disposition);
+    for (name, value) in identities.iter().copied().filter(|(_, value)| *value > 0) {
+        observation = observation.identity(name, value);
+    }
+    let _ = emit_global(observation);
+}
+
 pub use app::run_sorotte_gui;
 
 #[cfg(feature = "gui-semantic-smoke")]

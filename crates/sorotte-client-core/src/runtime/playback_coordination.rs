@@ -2108,6 +2108,10 @@ impl RuntimePlaybackCoordination {
         }
     }
 
+    pub(crate) const fn connection_generation(&self) -> u64 {
+        self.connection_generation
+    }
+
     pub(crate) fn playback_barrier_set_for_new_media(
         &mut self,
         plan: &MediaLoadPlan,
@@ -6369,49 +6373,56 @@ where
         Ok(true)
     }
 
-    /// Preserves a single causally unowned native Playing edge when its stable
-    /// confirmation would otherwise be erased by a pause correction. During
-    /// Preparing the semantic Play becomes Ready while the gate correction is
-    /// retained. In every manually controllable V2 phase, the controller's
-    /// transport overlay supersedes the not-yet-dispatched stale correction.
+    /// Preserves a user-owned Play edge when its resulting observation races a
+    /// not-yet-dispatched pause correction. During Preparing the semantic Play
+    /// becomes Ready while the exact gate correction is retained. Everywhere
+    /// else, an authorized room/media/connection-scoped Play intent supersedes
+    /// the stale correction until canonical authority accepts or rejects it.
     fn promote_pending_native_play_before_pause_correction(
         &mut self,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) -> Result<bool, PlayerError> {
-        let pause_correction_cause = self
-            .playback_coordination
-            .cause_for_coordinator_command(CoordinatorPlayerCommand::SetPaused(true));
-        let has_eligible_pause_correction = actions.iter().any(|action| {
+        let has_pause_correction = actions.iter().any(|action| {
             matches!(
                 action,
                 PlaybackCoordinatorAction::Execute {
                     command: CoordinatorPlayerCommand::SetPaused(true),
                     ..
                 }
-            ) && matches!(
-                pause_correction_cause,
-                PlayerCommandCause::ReadinessGateHold
-                    | PlayerCommandCause::RemoteRoomSynchronization
             )
         });
-        if !has_eligible_pause_correction {
+        if !has_pause_correction {
             return Ok(false);
         }
 
         let gate_holds = self.readiness_gate_holds_current_playback();
-        let controller_can_own_transport = self.session.server_readiness_v2_supported()
+        let controller_can_own_v2_transport = self.session.server_readiness_v2_supported()
             && self.session.local_can_control().unwrap_or(false)
             && !gate_holds;
-        if !gate_holds && !controller_can_own_transport {
-            return Ok(false);
-        }
-
-        let promoted =
-            self.confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl)?;
-        if !controller_can_own_transport
-            || !self
-                .playback_coordination
-                .has_active_local_pause_intent(false, &self.session)
+        let pause_correction_cause = self
+            .playback_coordination
+            .cause_for_coordinator_command(CoordinatorPlayerCommand::SetPaused(true));
+        let native_promotion_allowed = matches!(
+            pause_correction_cause,
+            PlayerCommandCause::ReadinessGateHold | PlayerCommandCause::RemoteRoomSynchronization
+        ) && (gate_holds || controller_can_own_v2_transport);
+        let promoted = if native_promotion_allowed {
+            self.confirm_pending_native_player_play(PlayerInteractionSurface::NativePlayerControl)?
+        } else {
+            false
+        };
+        let local_play_intent_active = self
+            .playback_coordination
+            .has_active_local_pause_intent(false, &self.session);
+        let playlist_transition_holds = self.session.has_pending_playlist_index_reset_intent();
+        let room_buffering_holds = matches!(
+            self.session.current_room_playstate_authority(),
+            Some(RoomPlaystateAuthority::ServerBufferingPolicy { .. })
+        );
+        if !local_play_intent_active
+            || gate_holds
+            || playlist_transition_holds
+            || room_buffering_holds
         {
             return Ok(promoted);
         }
@@ -8727,6 +8738,80 @@ mod tests {
     }
 
     #[test]
+    fn participant_status_withdraw_evidence_requires_an_active_negotiated_epoch() {
+        fn session_with_status_support(supported: bool) -> ClientSession {
+            let mut session = ClientSession::default();
+            session
+                .apply_message_json(&format!(
+                    r#"{{"Hello":{{"username":"alice","room":{{"name":"room1"}},"version":"1.7.5","features":{{"sorotteParticipantStatusV1":{supported}}}}}}}"#
+                ))
+                .expect("participant-status Hello should apply");
+            session
+        }
+
+        let mut active_unsupported = ClientRuntime::new(
+            session_with_status_support(false),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, unsupported_transitions) = capture_client_lifecycle_transitions(|| {
+            active_unsupported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            unsupported_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            ["SESSION-CONNECT-001"],
+            "an active connection without negotiated status support has no status authority to withdraw"
+        );
+
+        let mut inactive_supported_session = session_with_status_support(true);
+        inactive_supported_session.mark_disconnected();
+        let mut inactive_supported = ClientRuntime::new(
+            inactive_supported_session,
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, inactive_transitions) = capture_client_lifecycle_transitions(|| {
+            inactive_supported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            inactive_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            ["SESSION-CONNECT-001"],
+            "negotiated support from an inactive connection is no longer a live status epoch"
+        );
+
+        let mut active_supported = ClientRuntime::new(
+            session_with_status_support(true),
+            DisconnectedPlayer,
+            QueuedRuntimeControl::default(),
+        );
+        let (_, supported_transitions) = capture_client_lifecycle_transitions(|| {
+            active_supported.session_mut().mark_connecting();
+        });
+        assert_eq!(
+            supported_transitions
+                .iter()
+                .map(|transition| transition.transition)
+                .collect::<Vec<_>>(),
+            [
+                "STATUS-WITHDRAW-001",
+                "STATUS-UNAVAILABLE-001",
+                "SESSION-CONNECT-001",
+            ]
+        );
+        for status_transition in &supported_transitions[..2] {
+            assert_eq!(status_transition.trigger, Trigger::Shutdown);
+            assert_eq!(status_transition.disposition, Disposition::Applied);
+            assert!(status_transition.identities.is_empty());
+        }
+    }
+
+    #[test]
     fn participant_status_reconnect_reset_cancels_unleased_and_leased_reports() {
         let mut unleased = ClientRuntime::new(
             participant_status_session(),
@@ -9816,6 +9901,125 @@ mod tests {
             response_position,
             Some(7.0),
             "an inbound State response must sample the acknowledged physical seek before publishing local authority"
+        );
+    }
+
+    #[test]
+    fn adjacent_pause_then_seek_rejects_a_late_pre_pause_play_projection() {
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let attempt_id = LoadAttemptId::new(1);
+        let mut session = participant_status_session();
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"alice","sorotteTransportRevision":1}}}"#,
+                1.0,
+            )
+            .expect("initial canonical pause should apply");
+        let mut runtime = ClientRuntime::new(
+            session,
+            CoordinatedTestPlayer {
+                ordered_delivery: true,
+                ..CoordinatedTestPlayer::default()
+            },
+            QueuedRuntimeControl::default(),
+        );
+        let plan = runtime.prepare_playback_media(
+            LogicalMediaId::new("adjacent-pause-seek-player-fence").unwrap(),
+            MediaTransportKind::NetworkVod,
+            1.0,
+        );
+        let media_generation = PlayerMediaGeneration::new(plan.media_generation);
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            1,
+            1,
+            Some(active_snapshot(
+                epoch,
+                1,
+                attempt_id,
+                media_generation,
+                ordered_paused_transport(
+                    media_generation,
+                    PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+                    0.0,
+                ),
+            )),
+            Vec::new(),
+            Vec::new(),
+        ));
+        runtime
+            .drain_player_transport_coordination(1.0)
+            .expect("initial paused snapshot should drain");
+        runtime.flush_queued_protocol_messages();
+
+        assert!(runtime.run_set_paused(false).expect("Play should dispatch"));
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice","sorotteTransportRevision":2}}}"#,
+                1.1,
+            )
+            .expect("canonical Play echo should apply");
+        assert!(runtime.run_set_paused(true).expect("Pause should dispatch"));
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.1,"paused":true,"doSeek":false,"setBy":"alice","sorotteTransportRevision":3}}}"#,
+                1.2,
+            )
+            .expect("canonical Pause echo should apply");
+
+        runtime.player.ordered_batches.push_back(ordered_batch(
+            epoch,
+            2,
+            2,
+            None,
+            vec![SequencedPlayerEvent {
+                order: PlayerEventOrder::new(epoch, 2),
+                event: PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    load_attempt_id: Some(attempt_id),
+                    media_generation: Some(media_generation),
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_millis(1150),
+                    )),
+                    phase: Some(PlayerTransportPhase::Playing),
+                    position_seconds: Some(0.1),
+                    logical_pause: Some(false),
+                    paused_for_cache: Some(false),
+                    ..PlayerTransportDelta::default()
+                }),
+            }],
+            Vec::new(),
+        ));
+
+        assert!(
+            runtime
+                .run_seek_to_position(3.0)
+                .expect("adjacent Seek should dispatch")
+        );
+        assert_eq!(
+            runtime.session().local_paused(),
+            Some(false),
+            "the regression must actually drain the late Play projection before building Seek"
+        );
+        let seek_playstate = runtime
+            .flush_queued_protocol_messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                ProtocolMessage::State(state) => state.state.playstate,
+                _ => None,
+            })
+            .find(|playstate| {
+                playstate.do_seek == Some(true)
+                    && playstate
+                        .position
+                        .is_some_and(|position| (position - 3.0).abs() < f64::EPSILON)
+            })
+            .expect("the local Seek must publish one causal playstate");
+        assert_eq!(
+            seek_playstate.paused,
+            Some(true),
+            "Seek must preserve canonical Pause despite the late pre-Pause player edge"
         );
     }
 
@@ -16335,6 +16539,82 @@ mod tests {
         assert!(
             !coordination.snapshot().ordinary_correction_blocked,
             "advancing playback after the echo must complete coordinator ownership"
+        );
+    }
+
+    #[test]
+    fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo() {
+        let mut session = ClientSession::default();
+        session
+            .apply_message_json_at(
+                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+                0.0,
+            )
+            .expect("legacy Hello should apply");
+        session
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#,
+                0.0,
+            )
+            .expect("initial canonical pause should apply");
+        let mut runtime =
+            ClientRuntime::new(session, DisconnectedPlayer, QueuedRuntimeControl::default());
+        runtime.prepare_playback_media(
+            LogicalMediaId::new("attached-local-play-seek-echo").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        );
+        runtime.reconcile_external_player_playback(0.0);
+        runtime.observe_external_player_transport(
+            paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 0.0),
+            0.0,
+        );
+
+        let staged = runtime.stage_external_player_pause_intent(false, 0.1);
+        assert!(!has_pause_play_or_seek(&staged));
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            Some(false),
+        );
+        runtime
+            .session_mut()
+            .apply_message_json_at(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":true,"setBy":"alice"}}}"#,
+                0.11,
+            )
+            .expect("the local seek echo should apply before the Play echo");
+        let seek_echo = runtime.reconcile_external_player_playback(0.11);
+        assert!(!has_pause_play_or_seek(&seek_echo));
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .seek_preparation
+                .is_some(),
+            "the network seek echo should reproduce the preparation window"
+        );
+
+        let observed_play = runtime.observe_external_player_transport(
+            transport(1, 0.12, PlayerTransportPhase::Playing, 0.0),
+            0.12,
+        );
+        assert!(
+            !observed_play.iter().any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "the in-flight local Play must supersede a preparation pause before dispatch: {observed_play:?}"
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            Some(false),
+            "suppressing the stale pause must retain the local intent until its canonical echo"
         );
     }
 

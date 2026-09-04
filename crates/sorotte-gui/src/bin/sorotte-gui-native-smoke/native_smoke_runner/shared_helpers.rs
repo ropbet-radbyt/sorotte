@@ -655,6 +655,29 @@ impl MockSessionServer {
         })
     }
 
+    pub(super) fn send_authoritative_line(&self, line: String, label: &str) -> Result<(), String> {
+        if line.contains('\r') || line.contains('\n') {
+            return Err(format!(
+                "{label} authoritative mock frame contained a line delimiter"
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            format!("{label} authoritative mock frame was invalid JSON: {error}")
+        })?;
+        if !value.is_object() {
+            return Err(format!(
+                "{label} authoritative mock frame was not a JSON object"
+            ));
+        }
+        self.authoritative_tx
+            .as_ref()
+            .ok_or_else(|| {
+                format!("{label} mock TCP server does not expose authoritative outbound control")
+            })?
+            .send(line)
+            .map_err(|error| format!("failed to queue {label} authoritative mock frame: {error}"))
+    }
+
     pub(super) fn release(mut self, label: &str) -> Result<(), String> {
         let address = self.address.clone();
         let _ = self.release_tx.send(());
@@ -881,6 +904,7 @@ fn start_mock_session_server_with_release_policy(
         hello_rx,
         playlist_exchange_rx: None,
         playstate_exchange_rx: None,
+        authoritative_tx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -980,6 +1004,7 @@ pub(super) fn start_phased_mock_session_server(
         hello_rx,
         playlist_exchange_rx: None,
         playstate_exchange_rx: None,
+        authoritative_tx: None,
         release_tx,
         join_handle: Some(join_handle),
     })
@@ -1237,6 +1262,54 @@ fn is_known_post_playlist_housekeeping_frame(
         })
 }
 
+const MAX_PLAYLIST_ECHO_CLIENT_FRAME_BYTES: usize = 1024 * 1024;
+
+enum PlaylistEchoLineRead {
+    Line(String),
+    TimedOut,
+    Closed,
+}
+
+fn read_playlist_echo_line_preserving_timeouts(
+    reader: &mut BufReader<std::net::TcpStream>,
+    partial: &mut Vec<u8>,
+) -> Result<PlaylistEchoLineRead, String> {
+    loop {
+        let (consumed, complete) = match reader.fill_buf() {
+            Ok([]) => {
+                return if partial.is_empty() {
+                    Ok(PlaylistEchoLineRead::Closed)
+                } else {
+                    Err("client closed with an unterminated frame".to_owned())
+                };
+            }
+            Ok(available) => {
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let consumed = newline.map_or(available.len(), |index| index + 1);
+                if partial.len().saturating_add(consumed) > MAX_PLAYLIST_ECHO_CLIENT_FRAME_BYTES {
+                    return Err("client frame exceeded the bounded line budget".to_owned());
+                }
+                partial.extend_from_slice(&available[..consumed]);
+                (consumed, newline.is_some())
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Ok(PlaylistEchoLineRead::TimedOut);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        reader.consume(consumed);
+        if complete {
+            partial.pop();
+            if partial.last() == Some(&b'\r') {
+                partial.pop();
+            }
+            let frame = String::from_utf8(std::mem::take(partial))
+                .map_err(|_| "client frame was not valid UTF-8".to_owned())?;
+            return Ok(PlaylistEchoLineRead::Line(frame));
+        }
+    }
+}
+
 pub(super) fn start_playlist_echo_mock_session_server(
     server_hello: &'static str,
     expected_media_url: String,
@@ -1256,6 +1329,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
     let (hello_tx, hello_rx) = mpsc::channel();
     let (playlist_exchange_tx, playlist_exchange_rx) = mpsc::channel();
     let (playstate_exchange_tx, playstate_exchange_rx) = mpsc::channel();
+    let (authoritative_tx, authoritative_rx) = mpsc::channel::<String>();
     let (release_tx, release_rx) = mpsc::channel();
     let join_handle = thread::Builder::new()
         .name("sorotte-native-playlist-echo".to_owned())
@@ -1331,6 +1405,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
 
             let exchange_deadline = Instant::now() + Duration::from_secs(25);
             let mut unrelated_frame_count = 0usize;
+            let mut partial_client_frame = Vec::new();
             let request = loop {
                 if release_rx.try_recv().is_ok() {
                     return Err(
@@ -1338,20 +1413,17 @@ pub(super) fn start_playlist_echo_mock_session_server(
                             .to_owned(),
                     );
                 }
-                let mut candidate = String::new();
-                match reader.read_line(&mut candidate) {
-                    Ok(0) => {
+                let candidate = match read_playlist_echo_line_preserving_timeouts(
+                    &mut reader,
+                    &mut partial_client_frame,
+                ) {
+                    Ok(PlaylistEchoLineRead::Closed) => {
                         return Err(
                             "playlist-echo mock TCP client closed before playlistChange".to_owned()
                         );
                     }
-                    Ok(_) => {}
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            ErrorKind::WouldBlock | ErrorKind::TimedOut
-                        ) =>
-                    {
+                    Ok(PlaylistEchoLineRead::Line(candidate)) => candidate,
+                    Ok(PlaylistEchoLineRead::TimedOut) => {
                         if Instant::now() >= exchange_deadline {
                             return Err(
                                 "playlist-echo mock TCP server timed out waiting for playlistChange"
@@ -1365,7 +1437,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
                             "playlist-echo mock TCP server failed reading client frame: {error}"
                         ));
                     }
-                }
+                };
                 let candidate = candidate.trim();
                 if candidate.is_empty() {
                     return Err(
@@ -1453,20 +1525,17 @@ pub(super) fn start_playlist_echo_mock_session_server(
                             .to_owned(),
                     );
                 }
-                let mut candidate = String::new();
-                match reader.read_line(&mut candidate) {
-                    Ok(0) => {
+                let candidate = match read_playlist_echo_line_preserving_timeouts(
+                    &mut reader,
+                    &mut partial_client_frame,
+                ) {
+                    Ok(PlaylistEchoLineRead::Closed) => {
                         return Err(
                             "playlist-echo mock TCP client closed before playlistIndex".to_owned(),
                         );
                     }
-                    Ok(_) => {}
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            ErrorKind::WouldBlock | ErrorKind::TimedOut
-                        ) =>
-                    {
+                    Ok(PlaylistEchoLineRead::Line(candidate)) => candidate,
+                    Ok(PlaylistEchoLineRead::TimedOut) => {
                         if Instant::now() >= exchange_deadline {
                             return Err(
                                 "playlist-echo mock TCP server timed out waiting for playlistIndex"
@@ -1480,7 +1549,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
                             "playlist-echo mock TCP server failed reading client frame before playlistIndex: {error}"
                         ));
                     }
-                }
+                };
                 let candidate = candidate.trim();
                 if candidate.is_empty() {
                     return Err(
@@ -1594,24 +1663,38 @@ pub(super) fn start_playlist_echo_mock_session_server(
                 if release_rx.try_recv().is_ok() {
                     return Ok(());
                 }
-                let mut candidate = String::new();
-                match reader.read_line(&mut candidate) {
-                    Ok(0) => return Ok(()),
-                    Ok(_) => {}
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            ErrorKind::WouldBlock | ErrorKind::TimedOut
-                        ) =>
-                    {
-                        continue;
-                    }
+                while let Ok(authoritative_line) = authoritative_rx.try_recv() {
+                    stream
+                        .write_all(authoritative_line.as_bytes())
+                        .map_err(|error| {
+                            format!(
+                                "playlist-echo mock TCP server failed to write authoritative injected frame: {error}"
+                            )
+                        })?;
+                    stream.write_all(b"\n").map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to terminate authoritative injected frame: {error}"
+                        )
+                    })?;
+                    stream.flush().map_err(|error| {
+                        format!(
+                            "playlist-echo mock TCP server failed to flush authoritative injected frame: {error}"
+                        )
+                    })?;
+                }
+                let candidate = match read_playlist_echo_line_preserving_timeouts(
+                    &mut reader,
+                    &mut partial_client_frame,
+                ) {
+                    Ok(PlaylistEchoLineRead::Closed) => return Ok(()),
+                    Ok(PlaylistEchoLineRead::Line(candidate)) => candidate,
+                    Ok(PlaylistEchoLineRead::TimedOut) => continue,
                     Err(error) => {
                         return Err(format!(
                             "playlist-echo mock TCP server failed reading post-playlist client frame: {error}"
                         ));
                     }
-                }
+                };
                 let candidate = candidate.trim();
                 if candidate.is_empty() {
                     return Err(
@@ -1706,6 +1789,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
         hello_rx,
         playlist_exchange_rx: Some(playlist_exchange_rx),
         playstate_exchange_rx: Some(playstate_exchange_rx),
+        authoritative_tx: Some(authoritative_tx),
         release_tx,
         join_handle: Some(join_handle),
     })

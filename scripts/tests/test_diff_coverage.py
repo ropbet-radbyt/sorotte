@@ -600,6 +600,57 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertNotIn(13, structural)
         self.assertNotIn(14, structural)
 
+    def test_compiler_uninstrumented_path_chain_pattern_and_literal_glue_is_structural(
+        self,
+    ) -> None:
+        source_lines = [
+            "    format!(",
+            '        "{}",',
+            "        sorotte_lifecycle_evidence::EVIDENCE_PATH_ENV",
+            "    );",
+            "    self.inner",
+            "        .lock()",
+            "        .writer",
+            "        .flush()",
+            "    match phase {",
+            "        Phase::Waiting { generation }",
+            "        | Phase::Ready {",
+            "            generation, ..",
+            "        }",
+            "        | Phase::Degraded { timed_out: false, .. }",
+            "        => generation,",
+            "    }",
+            "    Step {",
+            '        transition: "GATE-DEGRADE-001",',
+            '        authority_after: "degraded",',
+            "        computed: compute_authority(),",
+            "    }",
+        ]
+
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+
+        self.assertTrue({3, 7, 11, 14, 18, 19}.issubset(structural))
+        self.assertNotIn(6, structural)
+        self.assertNotIn(8, structural)
+        self.assertNotIn(20, structural)
+
+    def test_structural_continuations_do_not_exempt_executable_lookalikes(self) -> None:
+        source_lines = [
+            "    dangerous::perform();",
+            "    dangerous::STATE",
+            "    .flush()",
+            "    transition: compute_transition(),",
+            "    | Phase::Ready { value } if allowed(value) => use_value(value),",
+            "    invoke(",
+            "        Phase::Ready { value: compute_value() }",
+            "    );",
+        ]
+
+        structural = coverage.lexical_non_coverable_lines(source_lines)
+
+        self.assertTrue(set(range(1, 6)).isdisjoint(structural))
+        self.assertNotIn(7, structural)
+
     def test_wholly_unmapped_executable_new_file_fails_closed(self) -> None:
         new_source = self.repo / "src" / "new.rs"
         new_source.write_text("pub fn new_behavior() -> bool {\n    true\n}\n", encoding="utf-8")

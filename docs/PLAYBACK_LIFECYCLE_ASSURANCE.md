@@ -182,6 +182,8 @@ Every critical transition requires all three layers:
 
 Line coverage, a product-derived final projection, or a mock-server native flow cannot replace a missing layer. They remain useful supporting evidence.
 
+`coverage/playback-lifecycle-system.toml` is the closed system-proof registry. It maps each required release suite to the exact transition identifiers that the suite must emit in its validated causal ledger. Model validation rejects an unknown suite, source, platform, transition, or non-system transition assignment. Platform attestation rejects a passed report whose ledger omits any transition assigned to that named suite, and the complete attestation requires the exact union of the Linux and Windows platform coverage to equal every system-required model transition. A transition therefore cannot acquire system coverage from a descriptive claim or a blanket tier promotion.
+
 ## Independent model explorer
 
 `scripts/playback_lifecycle_oracle.py explore` is the required model-layer gate. It begins with the shortest executable path to all 217 transition/source pairs, then performs deterministic state-aware interleavings across all 11 machines and multiple isolated client, room, transaction, player, and server subjects. Every accepted event is checked against every invariant assigned to that transition. A separate adversarial inventory proves that invalid authority, identity, causal edge, deadline, privacy schema, duplicate, retired epoch, uncorrelated EOF, and premature dependent-effect histories are rejected.
@@ -277,21 +279,20 @@ The TCP proxy may delay, fragment, throttle, half-close, or reset a stream. It m
 
 ## Current proof and gap map
 
-The machine model records the following current evidence honestly:
+All eight implementation gaps in the machine model are closed. Closure means the production behavior, executable proof capability, and fail-closed release contract exist; it does not claim that an untested future candidate has passed. Every release candidate must still produce fresh exact-SHA hosted evidence through the reusable gate.
 
-| Boundary | Strong existing evidence | Remaining composition gap |
+| Gap | Closure mechanism | Candidate-time proof |
 |---|---|---|
-| independent lifecycle composition | transition-complete state-aware exploration, all 15 assigned invariants, fixed cross-machine replay seeds, nine invalid-history probes, and minimized replay persistence | product-role causal emission and replayable/shrinkable cross-boundary fault schedules remain open |
-| mpv command/load/epoch ownership | `PL-ACK-001`, `PL-EPOCH-001`, `PL-START-001`, `PL-RECOVERY-001`, `PL-PROP-001`, `PL-STALE-001`, `PL-IPC-*`, `PL-PROC-001` | packaged real-player and actual-GUI composition remain open |
-| reconnect and transport | `NET-RECONNECT-001`, `NET-DEADLINE-001`, `NET-CODEC-001`, `NET-GUI-001`, an actual-server production-loop seam, directional Pause/Play intent fencing across heartbeat, canonical-echo, and player-observation races, and a packaged fragment/cut/hold/missed-start/reconnect walk | half-close/reset replay, slow-reader schedules, and actual-GUI walks remain open |
-| participant status | `SYNC-PSTATUS-001` plus packaged real-player cadence, single-loss self-healing, advisory-only delayed/stale aging, fresh recovery without canonical mutation, late snapshot, withdrawal, and reconnect recovery | exact packaged second-client GUI projection remains open |
-| readiness and seek | `GUI-READY-001`, `GUI-SEEK-001`, plus actual-server delayed-member, late-join, and production seek seams | every start-gate phase under reconnect, sleep/resume, and slow resolution remains open |
-| native GUI and real mpv | strict native/real-mpv inventories, a locally provisioned supported mpv build, and a required packaged server/three-client/real-mpv harness | actual-GUI composition plus successful exact-candidate and pinned-CI evidence remain open |
-| server release | packaged server protocol/persistence smoke plus a reusable exact-SHA release-mode server/CLI/real-mpv gate | successful hosted evidence and exact packaged-GUI consumption remain open |
-| playlist mutation and EOF | negotiated coherent empty-selection retirement, real-player unload/restore, FIFO causal same-row reset State, atomic server-owned paused-zero transport reset for explicit changes and selected-entry replacement under a stable numeric index, exact legacy-only Python wire parity, selection-generation fencing, compare-and-set proof across simultaneous contenders and stale ABA/replacement schedules, actual-server simulated-player natural EOF proof, and a required real-mpv system walk | successful exact-candidate evidence plus loop, cache-pause, and transport-failure system schedules remain open |
-| publication | GUI and server publication depend on the reusable lifecycle gate, safe evidence staging, and `--require-closed` | no successful exact-candidate gate evidence yet; the system walk still uses packaged CLI rather than the GUI artifact |
+| `GAP-MODEL-001` | transition-complete state-aware exploration, all 15 assigned invariants, invalid-history probes, deterministic shrinking, and persisted replay | closed-model validation and oracle execution at the candidate SHA |
+| `GAP-TRACE-001` | one versioned privacy-safe ledger across server, CLI, GUI, client-core, player, proxy, harness, and oracle roles, with strict causal merge validation | regenerated ledger summaries whose digests and transition inventories are bound into every suite report |
+| `GAP-SYSTEM-001` | exact server, three isolated packaged CLI clients, supported real mpv processes, an independent observer, and exact native-GUI compositions | ordinary system walk plus all Windows exact-GUI suites declared by the system-proof registry |
+| `GAP-FAULT-001` | a closed replayable schedule schema and deterministic protocol, advisory, HTTP, worker, IPC, and process fault boundaries | ordinary scheduled fault walk plus faulting HTTP, stalled HTTP, and owned-process exact-GUI suites |
+| `GAP-PLAYLIST-001` | canonical same-row/replacement/empty/restore handling, guarded EOF contention, ordinary advance, last-item bound, and loop-at-end proof | ordinary and loop system ledgers must contain every playlist transition assigned by the registry |
+| `GAP-START-001` | an external production-wire oracle traversing every start-gate phase under late join, slow resolution, partition, reconnect, timeout, and sleep/resume | exact-server start-gate suite and bound causal ledger |
+| `GAP-STATUS-001` | packaged cadence, loss self-healing, aging, recovery, withdrawal, reconnect, and a named second-client native GUI projection | packaged status walk plus exact GUI AccessKit projection and screenshot |
+| `GAP-RELEASE-001` | immutable candidate bundles, separate Linux and Windows platform attestations, and one composed complete attestation | both hosted platform gates must bind the same model, registry, candidate SHA, binary digests, and exact transition union before publication |
 
-Open gaps are first-class entries in `coverage/playback-lifecycle.toml`, with owners, risk, affected transitions, and mechanical closure criteria. A gap may be explicit while this branch is under construction; the final release gate must run the validator with `--require-closed`.
+Gaps remain first-class entries in `coverage/playback-lifecycle.toml`, with owners, risk, affected transitions, and mechanical closure criteria. Any future regression in the proof capability reopens the relevant entry; publication always runs the validator with `--require-closed` and cannot treat a local development-unverified run as release evidence.
 
 ## Completion criteria
 

@@ -136,8 +136,22 @@ impl ClientSession {
         current_gate_holds_play: Option<bool>,
     ) -> Vec<ClientRuntimeAction> {
         let effective_paused = self.effective_local_paused_state(now_seconds);
+        // Cache starvation can stop playback while mpv's durable `pause`
+        // property remains false. Treat that as paused for Toggle and deferred
+        // Play decisions, but never as proof that an explicit/system pause has
+        // reached the player. Otherwise a stale `paused_for_cache=true`
+        // observation can swallow Pause while the player is already advancing
+        // again.
+        let player_requires_pause_command = !effective_paused
+            || (self.model.playback.local_paused_for_cache == Some(true)
+                && self.model.playback.local_paused != Some(true));
         if self.model.connection.username.is_none() || !self.server_readiness_supported() {
-            if effective_paused == paused {
+            let player_state_change_required = if paused {
+                player_requires_pause_command
+            } else {
+                effective_paused
+            };
+            if !player_state_change_required {
                 return Vec::new();
             }
             self.model.playback.local_paused = Some(paused);
@@ -182,7 +196,7 @@ impl ClientSession {
             // Terminal barriers, user-owned pauses, and ordinary post-start
             // playback deliberately fall through to controller authority.
             self.model.playback.local_paused = Some(true);
-            let mut actions = (!effective_paused)
+            let mut actions = player_requires_pause_command
                 .then_some(ClientRuntimeAction::SetPaused(true))
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -206,7 +220,12 @@ impl ClientSession {
         if !local_can_control {
             self.model.playback.local_paused = Some(global_paused);
             let mut actions = Vec::new();
-            if effective_paused != global_paused {
+            let player_state_change_required = if global_paused {
+                player_requires_pause_command
+            } else {
+                effective_paused
+            };
+            if player_state_change_required {
                 actions.push(ClientRuntimeAction::SetPaused(global_paused));
             }
             if let Some(action) = readiness_action.take() {
@@ -217,7 +236,7 @@ impl ClientSession {
 
         if paused {
             self.model.playback.local_paused = Some(true);
-            let mut actions = (effective_paused != paused)
+            let mut actions = player_requires_pause_command
                 .then_some(ClientRuntimeAction::SetPaused(true))
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -245,7 +264,7 @@ impl ClientSession {
         let instaplay = self.instaplay_conditions_met(local_can_control, is_playing_music);
         if !instaplay {
             self.model.playback.local_paused = Some(true);
-            let mut actions = (!effective_paused)
+            let mut actions = player_requires_pause_command
                 .then_some(ClientRuntimeAction::SetPaused(true))
                 .into_iter()
                 .collect::<Vec<_>>();

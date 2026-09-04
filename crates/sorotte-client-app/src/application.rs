@@ -12,6 +12,9 @@ use sorotte_client_core::{
     ReconnectStateRestoreCorrectionStateSnapshot, ReconnectTransitionNotification,
     RoomPlaystateView, UserChangeNotification,
 };
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
+};
 use sorotte_player_api::{
     PlayerAdapter, PlayerCommandId, PlayerError, PlayerMediaGeneration,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
@@ -335,6 +338,42 @@ struct CanonicalPlaylistSelection {
     target: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CanonicalMediaResolutionEvidence {
+    Resolving,
+    Playable,
+    Untrusted,
+    Failed,
+}
+
+fn emit_application_media_transition(
+    transition: &'static str,
+    trigger: Trigger,
+    disposition: Disposition,
+    selection: &CanonicalPlaylistSelection,
+    player_attachment_revision: u64,
+) {
+    let mut observation = TransitionObservation::new(
+        ProcessRole::Client,
+        "application-media-resolver",
+        "media-resolution",
+        transition,
+    )
+    .target(TargetKind::PlayerCommand)
+    .triggered_by(trigger)
+    .authority("selection-pending", "resolver-observed")
+    .effect("lifecycle-transition", "lifecycle-transition")
+    .disposition(disposition)
+    .identity(
+        "attachment-revision",
+        player_attachment_revision.saturating_add(1),
+    );
+    if let Ok(index) = u64::try_from(selection.index) {
+        observation = observation.identity("playlist-index", index.saturating_add(1));
+    }
+    let _ = emit_global(observation);
+}
+
 pub struct ClientApplication<P>
 where
     P: PlayerAdapter,
@@ -350,6 +389,8 @@ where
     last_file_observation_attachment_revision: Option<u64>,
     pending_canonical_playlist_load: Option<CanonicalPlaylistSelection>,
     retired_canonical_selection_attachment_revision: Option<u64>,
+    canonical_media_resolution_evidence:
+        Option<(CanonicalPlaylistSelection, CanonicalMediaResolutionEvidence)>,
 }
 
 impl<P> ClientApplication<P>
@@ -404,6 +445,7 @@ where
             last_file_observation_attachment_revision: None,
             pending_canonical_playlist_load: None,
             retired_canonical_selection_attachment_revision: None,
+            canonical_media_resolution_evidence: None,
         }
     }
 
@@ -414,6 +456,7 @@ where
             self.player_attachment_revision = self.player_attachment_revision.saturating_add(1);
             self.pending_canonical_playlist_load = None;
             self.retired_canonical_selection_attachment_revision = None;
+            self.canonical_media_resolution_evidence = None;
         }
         self.player_connection_observed = Some(connected);
     }
@@ -688,6 +731,30 @@ where
         let Some(selection) = self.current_canonical_playlist_selection() else {
             return self.synchronize_canonical_playlist_absence_to_player();
         };
+        if self
+            .canonical_media_resolution_evidence
+            .as_ref()
+            .is_none_or(|(observed, _)| observed != &selection)
+        {
+            emit_application_media_transition(
+                "MEDIA-SELECT-001",
+                Trigger::RemoteEvent,
+                Disposition::Applied,
+                &selection,
+                self.player_attachment_revision,
+            );
+            emit_application_media_transition(
+                "MEDIA-RESOLVE-001",
+                Trigger::Internal,
+                Disposition::Submitted,
+                &selection,
+                self.player_attachment_revision,
+            );
+            self.canonical_media_resolution_evidence = Some((
+                selection.clone(),
+                CanonicalMediaResolutionEvidence::Resolving,
+            ));
+        }
         let selection_follows_canonical_retirement = self
             .retired_canonical_selection_attachment_revision
             == Some(self.player_attachment_revision);
@@ -697,7 +764,49 @@ where
             .playlist_target_switch_allowed_legacy_compatible(&selection.target)
         {
             self.pending_canonical_playlist_load = None;
+            if !self
+                .canonical_media_resolution_evidence
+                .as_ref()
+                .is_some_and(|(observed, outcome)| {
+                    observed == &selection
+                        && *outcome == CanonicalMediaResolutionEvidence::Untrusted
+                })
+            {
+                emit_application_media_transition(
+                    "MEDIA-UNTRUSTED-001",
+                    Trigger::Internal,
+                    Disposition::Rejected,
+                    &selection,
+                    self.player_attachment_revision,
+                );
+                self.canonical_media_resolution_evidence =
+                    Some((selection, CanonicalMediaResolutionEvidence::Untrusted));
+            }
             return Ok(false);
+        }
+        if self
+            .canonical_media_resolution_evidence
+            .as_ref()
+            .is_some_and(|(observed, outcome)| {
+                observed == &selection
+                    && matches!(
+                        outcome,
+                        CanonicalMediaResolutionEvidence::Untrusted
+                            | CanonicalMediaResolutionEvidence::Failed
+                    )
+            })
+        {
+            emit_application_media_transition(
+                "MEDIA-RESOLVE-001",
+                Trigger::Recovery,
+                Disposition::Submitted,
+                &selection,
+                self.player_attachment_revision,
+            );
+            self.canonical_media_resolution_evidence = Some((
+                selection.clone(),
+                CanonicalMediaResolutionEvidence::Resolving,
+            ));
         }
 
         // `plex://` is a logical identity, not a directly playable transport.
@@ -727,6 +836,25 @@ where
                 .is_some_and(|file| local_file_matches_playlist_target(file, &selection.target));
         if current_file_matches {
             self.pending_canonical_playlist_load = None;
+            if !self
+                .canonical_media_resolution_evidence
+                .as_ref()
+                .is_some_and(|(observed, outcome)| {
+                    observed == &selection && *outcome == CanonicalMediaResolutionEvidence::Playable
+                })
+            {
+                emit_application_media_transition(
+                    "MEDIA-PLAYABLE-001",
+                    Trigger::PlayerEvent,
+                    Disposition::Applied,
+                    &selection,
+                    self.player_attachment_revision,
+                );
+                self.canonical_media_resolution_evidence = Some((
+                    selection.clone(),
+                    CanonicalMediaResolutionEvidence::Playable,
+                ));
+            }
         }
 
         let mut changed = false;
@@ -750,7 +878,18 @@ where
                 // new load instead of retrying an impossible precondition.
                 self.runtime.player_mut().set_paused(true)?;
             }
-            self.runtime.player_mut().open_file(&selection.target)?;
+            if let Err(error) = self.runtime.player_mut().open_file(&selection.target) {
+                emit_application_media_transition(
+                    "MEDIA-FAIL-001",
+                    Trigger::PlayerEvent,
+                    Disposition::Failed,
+                    &selection,
+                    self.player_attachment_revision,
+                );
+                self.canonical_media_resolution_evidence =
+                    Some((selection, CanonicalMediaResolutionEvidence::Failed));
+                return Err(error);
+            }
             // An observation of the retiring file (including one delivered
             // late after `stop`) cannot prove this asynchronous load. A
             // matching same-path restore must wait for file evidence observed
@@ -849,6 +988,15 @@ where
             .take_pending_playlist_index_reset_intent();
         self.last_file_observation_attachment_revision = None;
         self.retired_canonical_selection_attachment_revision = Some(attachment_revision);
+        if let Some((selection, _)) = self.canonical_media_resolution_evidence.take() {
+            emit_application_media_transition(
+                "MEDIA-CLEAR-001",
+                Trigger::RemoteEvent,
+                Disposition::Applied,
+                &selection,
+                attachment_revision,
+            );
+        }
         Ok(true)
     }
 

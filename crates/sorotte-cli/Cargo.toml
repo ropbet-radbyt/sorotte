@@ -15,6 +15,7 @@ fuzz-support = []
 anyhow.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
+sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 tokio = { workspace = true, features = ["io-util", "net"] }
 tokio-rustls.workspace = true
 sorotte-client-app = { path = "../sorotte-client-app" }

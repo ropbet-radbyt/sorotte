@@ -52,6 +52,7 @@ impl ClientSession {
     pub(crate) fn causal_state_for_local_seek_actions(
         &mut self,
         actions: &[ClientRuntimeAction],
+        pending_local_pause_intent: Option<bool>,
     ) -> Option<StatePayload> {
         let [ClientRuntimeAction::SetPosition(target_position)] = actions else {
             return None;
@@ -59,14 +60,17 @@ impl ClientSession {
         if !self.is_active() {
             return None;
         }
-        let paused = self
-            .model
-            .playback
-            .local_paused
+        // Seek mutates position, not pause authority. A still-pending local
+        // Play/Pause intent is the newest semantic authority; otherwise the
+        // canonical room pause must win over an asynchronously delivered
+        // player sample. This prevents a late pre-Pause Play observation from
+        // being laundered into the immediately following Seek frame.
+        let paused = pending_local_pause_intent
             .or_else(|| {
                 self.current_room_playstate()
                     .and_then(|playstate| playstate.paused)
             })
+            .or(self.model.playback.local_paused)
             .unwrap_or(true);
         self.model.playback.client_ignoring_on_the_fly = self
             .model

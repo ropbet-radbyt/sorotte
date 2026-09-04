@@ -2543,7 +2543,11 @@ def lexical_non_coverable_lines(
             result.add(number)
             continue
         if (
-            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", code_stripped)
+            re.fullmatch(
+                r"(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*::)*"
+                r"(?:r#)?[A-Za-z_][A-Za-z0-9_]*",
+                code_stripped,
+            )
             and preceding_code.endswith(",")
             and re.match(r"^[)\]}]", following_code)
         ):
@@ -2571,7 +2575,13 @@ def lexical_non_coverable_lines(
             continue
         if re.fullmatch(
             r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
-            r"(?:\([^;=]*\)|\s*\{\s*\.\.\s*\})?,?",
+            r"(?:\([^;=]*\)|\s*\{[^;=]*\})?,?",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*\s*\{",
             code_stripped,
         ):
             result.add(number)
@@ -2592,6 +2602,9 @@ def lexical_non_coverable_lines(
         ):
             result.add(number)
             continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*:\s*,", code_stripped):
+            result.add(number)
+            continue
         if re.fullmatch(
             r"[+-]?(?:0[xob][0-9A-Fa-f_]+|[0-9][0-9_]*(?:\.[0-9_]+)?)"
             r"(?:[iu](?:8|16|32|64|128|size)|f(?:32|64))?,",
@@ -2599,7 +2612,7 @@ def lexical_non_coverable_lines(
         ):
             result.add(number)
             continue
-        if re.fullmatch(r"\.[A-Za-z_][A-Za-z0-9_]*[;?,]", code_stripped):
+        if re.fullmatch(r"\.[A-Za-z_][A-Za-z0-9_]*[;?,]?", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(

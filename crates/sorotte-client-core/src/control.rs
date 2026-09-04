@@ -566,23 +566,72 @@ impl QueuedRuntimeControl {
     pub(crate) fn front_outbound_message_line(
         &self,
     ) -> Result<Option<PendingProtocolLine>, ProtocolError> {
-        self.outbound_messages
-            .front_for_delivery()
-            .map(|(lease, message)| {
-                encode_message_line(message).map(|line| PendingProtocolLine { lease, line })
-            })
-            .transpose()
+        let Some((lease, message, newly_staged)) =
+            self.outbound_messages.front_for_delivery_with_status()
+        else {
+            return Ok(None);
+        };
+        let line = encode_message_line(message)?;
+        if newly_staged && is_playback_protocol_message(message) {
+            let frame_bytes = u64::try_from(line.len().saturating_add(2))
+                .unwrap_or(u64::MAX)
+                .max(1);
+            let identities = [("frame-receipt", lease.get()), ("frame-bytes", frame_bytes)];
+            emit_client_lifecycle_transition(
+                "TX-BEGIN-001",
+                "canonical-transaction",
+                TargetKind::ProtocolMessage,
+                Trigger::Internal,
+                Disposition::Submitted,
+                &identities,
+            );
+            emit_client_lifecycle_transition(
+                "TX-DELIVERY-001",
+                "canonical-transaction",
+                TargetKind::ProtocolMessage,
+                Trigger::Internal,
+                Disposition::Submitted,
+                &identities,
+            );
+        }
+        Ok(Some(PendingProtocolLine { lease, line }))
     }
 
     pub(crate) fn acknowledge_outbound_message(
         &mut self,
         lease: ProtocolLineLease,
     ) -> Option<ProtocolMessage> {
-        self.outbound_messages.acknowledge_front(lease)
+        let message = self.outbound_messages.acknowledge_front(lease)?;
+        if is_playback_protocol_message(&message) {
+            emit_client_lifecycle_transition(
+                "TX-WRITTEN-001",
+                "canonical-transaction",
+                TargetKind::ProtocolMessage,
+                Trigger::RemoteEvent,
+                Disposition::Committed,
+                &[("frame-receipt", lease.get())],
+            );
+        }
+        Some(message)
     }
 
     pub(crate) fn release_outbound_message(&mut self, lease: ProtocolLineLease) -> bool {
-        self.outbound_messages.release_front(lease)
+        let playback_transaction = self
+            .outbound_messages
+            .leased_front_message(lease)
+            .is_some_and(is_playback_protocol_message);
+        let released = self.outbound_messages.release_front(lease);
+        if released && playback_transaction {
+            emit_client_lifecycle_transition(
+                "TX-FAIL-001",
+                "canonical-transaction",
+                TargetKind::FaultBoundary,
+                Trigger::Fault,
+                Disposition::Failed,
+                &[("frame-receipt", lease.get())],
+            );
+        }
+        released
     }
 
     pub fn drain_reconnect_delays(&mut self) -> Vec<f64> {

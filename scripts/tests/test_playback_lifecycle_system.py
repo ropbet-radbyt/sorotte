@@ -42,6 +42,150 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertEqual(len(set(usernames)), len(usernames))
         self.assertTrue(all(1 <= len(username) <= 16 for username in usernames))
 
+    def test_partition_status_authority_accepts_absence_or_nonfresh_projection(self) -> None:
+        fresh = {
+            "event": "participant-status-snapshot",
+            "participants": ["follower"],
+            "participant_views": {
+                "follower": {
+                    "availability": "fresh",
+                    "playerConnection": "connected",
+                }
+            },
+        }
+        self.assertFalse(
+            system.participant_status_authority_withdrawn(fresh, "follower")
+        )
+
+        for availability in ("delayed", "stale", "awaitingReport", "unavailable"):
+            event = json.loads(json.dumps(fresh))
+            event["participant_views"]["follower"]["availability"] = availability
+            self.assertTrue(
+                system.participant_status_authority_withdrawn(event, "follower")
+            )
+
+        absent = {
+            "event": "participant-status-snapshot",
+            "participants": ["controller"],
+            "participant_views": {"controller": {"availability": "fresh"}},
+        }
+        self.assertTrue(
+            system.participant_status_authority_withdrawn(absent, "follower")
+        )
+        self.assertFalse(
+            system.participant_status_authority_withdrawn(
+                {"event": "playstate"}, "follower"
+            )
+        )
+
+    def test_scheduled_write_failure_is_bound_to_the_exact_large_frame_lease(self) -> None:
+        records = [
+            {
+                "transition": "TX-DELIVERY-001",
+                "identities": {"frame-receipt": 40, "frame-bytes": 512},
+            },
+            {
+                "transition": "TX-WRITTEN-001",
+                "identities": {"frame-receipt": 40},
+            },
+            {
+                "transition": "TX-DELIVERY-001",
+                "identities": {
+                    "frame-receipt": 41,
+                    "frame-bytes": system.WRITE_FAILURE_FRAME_PAYLOAD_BYTES + 100,
+                },
+            },
+            {
+                "transition": "TX-FAIL-001",
+                "identities": {"frame-receipt": 42},
+            },
+        ]
+
+        delivery = system.bounded_playback_frame_delivery(
+            records,
+            after=0,
+            minimum_frame_bytes=system.WRITE_FAILURE_FRAME_PAYLOAD_BYTES,
+        )
+        self.assertEqual(delivery["identities"]["frame-receipt"], 41)
+        self.assertIsNone(
+            system.exact_leased_frame_failure(
+                records,
+                after=0,
+                frame_receipt=41,
+            ),
+            "another frame failing must not terminate the target lease",
+        )
+
+        failed = {
+            "transition": "TX-FAIL-001",
+            "identities": {"frame-receipt": 41},
+        }
+        self.assertIs(
+            system.exact_leased_frame_failure(
+                [*records, failed],
+                after=0,
+                frame_receipt=41,
+            ),
+            failed,
+        )
+        with self.assertRaisesRegex(ValueError, "completed before the scheduled reset"):
+            system.exact_leased_frame_failure(
+                [
+                    *records,
+                    {
+                        "transition": "TX-WRITTEN-001",
+                        "identities": {"frame-receipt": 41},
+                    },
+                ],
+                after=0,
+                frame_receipt=41,
+            )
+
+    def test_fault_frame_is_bounded_and_only_the_follower_gets_a_write_barrier(self) -> None:
+        self.assertGreaterEqual(system.WRITE_FAILURE_FRAME_PAYLOAD_BYTES, 256 * 1024)
+        self.assertLess(system.WRITE_FAILURE_FRAME_PAYLOAD_BYTES, 512 * 1024 - 16 * 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            harness = system.PlaybackLifecycleHarness(
+                server_path=root / "server",
+                client_path=root / "client",
+                mpv_path=root / "mpv",
+                ffmpeg_path=root / "ffmpeg",
+                artifact_dir=root / "artifacts",
+                candidate_sha="a" * 40,
+            )
+            controller = harness._client_environment(
+                role="controller",
+                server_port=1234,
+                media=root / "media.mkv",
+                ipc_path="controller-ipc",
+            )
+            follower = harness._client_environment(
+                role="follower",
+                server_port=1234,
+                media=root / "media.mkv",
+                ipc_path="follower-ipc",
+            )
+
+        self.assertNotIn("SOROTTE_LIFECYCLE_WRITE_BARRIER", controller)
+        self.assertEqual(
+            follower["SOROTTE_LIFECYCLE_WRITE_BARRIER"],
+            system.LIFECYCLE_WRITE_BARRIER_MODE,
+        )
+
+    def test_lifecycle_write_barrier_markers_are_derived_from_follower_evidence(self) -> None:
+        ready, release = system.lifecycle_write_barrier_paths(
+            pathlib.Path("evidence/client-follower.jsonl")
+        )
+        self.assertEqual(
+            ready,
+            pathlib.Path("evidence/client-follower.jsonl.leased-frame-ready"),
+        )
+        self.assertEqual(
+            release,
+            pathlib.Path("evidence/client-follower.jsonl.leased-frame-release"),
+        )
+
     def test_mpv_version_parser_accepts_reviewed_shapes_and_rejects_noise(self) -> None:
         self.assertEqual(system.parse_mpv_version("mpv 0.41.0 Copyright"), (0, 41, 0))
         self.assertEqual(system.parse_mpv_version("mpv v1.2.3-45-gabc"), (1, 2, 3))
@@ -309,6 +453,56 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
 
         self.assertEqual(revision, 22)
 
+    def test_natural_eof_successor_boundary_accepts_last_to_first_loop(self) -> None:
+        canonical = [
+            {"event": "playstate", "paused": False, "transport_revision": 30},
+            {"event": "playlist-index", "playlist_index": 0},
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 31,
+            },
+            {
+                "event": "playstate",
+                "paused": True,
+                "position_seconds": 0.0,
+                "do_seek": False,
+                "transport_revision": 31,
+            },
+        ]
+        records = {
+            "controller": [
+                {"event": "end-file", "reason": "eof", "media_slot": "media-2"},
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-1",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                },
+            ],
+            "follower": [
+                {
+                    "event": "file-loaded",
+                    "media_slot": "media-1",
+                    "paused": True,
+                    "position_seconds": 0.0,
+                }
+            ],
+        }
+
+        revision = system.validate_natural_eof_successor_boundary(
+            canonical,
+            records,
+            previous_transport_revision=30,
+            expected_playlist_index=0,
+            predecessor_media_slot="media-2",
+            successor_media_slot="media-1",
+        )
+
+        self.assertEqual(revision, 31)
+
     def test_natural_eof_successor_boundary_rejects_completed_media_authority(self) -> None:
         canonical = [
             {"event": "playlist-index", "playlist_index": 1},
@@ -465,6 +659,34 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_protocol_projection_redacts_room_names_and_maps_membership_roles(self) -> None:
+        events, response = system.project_protocol_message(
+            {
+                "Set": {
+                    "user": {
+                        system.ROLE_USERNAMES["observer"]: {
+                            "room": {"name": "private-room-name"}
+                        },
+                        "unknown-private-user": {
+                            "room": {"name": "another-private-room"}
+                        },
+                    }
+                }
+            }
+        )
+
+        self.assertIsNone(response)
+        self.assertEqual(
+            events,
+            [
+                {"event": "room-membership-update", "member_role": "observer"},
+                {"event": "room-membership-update", "member_role": "other"},
+            ],
+        )
+        serialized = json.dumps(events)
+        self.assertNotIn("private-room-name", serialized)
+        self.assertNotIn("unknown-private-user", serialized)
 
     def test_protocol_projection_combines_ping_and_ignore_obligations(self) -> None:
         events, response = system.project_protocol_message(

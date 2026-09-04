@@ -901,6 +901,17 @@ reason = "cargo-mutants requests Default for a directed protocol message inside 
 review_by = "2026-11-30"
 
 [[accepted_unviable]]
+id = "server-participant-status-barrier-scope-message-default"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_playback_barrier.rs"
+function = "ServerRuntime::replace_room_barrier_participant_status_scope"
+return_type = "-> Vec<DirectedProtocolMessage>"
+genre = "FnValue"
+replacement = "vec![Default::default()]"
+reason = "cargo-mutants requests Default for a directed protocol message in the barrier-scope replacement vector, but every message requires an explicit authenticated recipient and protocol payload, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
 id = "server-participant-status-clear-client-let-chain-or"
 shard = "server-participant-status"
 file = "crates/sorotte-server/src/runtime_maintenance.rs"

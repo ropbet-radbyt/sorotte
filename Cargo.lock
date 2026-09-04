@@ -3654,6 +3654,7 @@ dependencies = [
  "serde_json",
  "sorotte-client-app",
  "sorotte-client-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-player-mpv",
  "sorotte-protocol",
@@ -3672,6 +3673,7 @@ dependencies = [
  "proptest",
  "serde_json",
  "sorotte-client-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-plex",
  "sorotte-protocol",
@@ -3690,6 +3692,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sorotte-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-plex",
@@ -3738,6 +3741,7 @@ dependencies = [
  "sorotte-client-app",
  "sorotte-client-core",
  "sorotte-compat",
+ "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-player-mpv",
@@ -3748,6 +3752,16 @@ dependencies = [
  "windows",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "sorotte-lifecycle-evidence"
+version = "0.2.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3781,6 +3795,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sorotte-client-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-secret",
  "url",
@@ -3833,6 +3848,7 @@ dependencies = [
  "sorotte-client-app",
  "sorotte-client-core",
  "sorotte-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-protocol",

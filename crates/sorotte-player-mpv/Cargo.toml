@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sorotte-player-api = { path = "../sorotte-player-api" }
+sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 sorotte-secret = { path = "../sorotte-secret" }
 url.workspace = true
 

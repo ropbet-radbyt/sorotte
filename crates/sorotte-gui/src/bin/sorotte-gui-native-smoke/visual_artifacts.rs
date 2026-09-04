@@ -643,6 +643,9 @@ fn capture_visual_scenario(
                 .then_some(config_storage_browse_path.as_path()),
             test_player_observation_path: None,
             lifecycle_observation_path: None,
+            shared_lifecycle_evidence_path: None,
+            shared_lifecycle_run_id: None,
+            shared_lifecycle_emitter: None,
             disable_startup_saved_connect: matches!(
                 scenario,
                 VisualScenario::SaveAndConnect | VisualScenario::ConnectOnceDirty

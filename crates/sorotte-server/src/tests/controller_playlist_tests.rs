@@ -301,6 +301,95 @@ fn selected_entry_replacement_at_the_same_index_starts_fresh_transport_authority
 }
 
 #[test]
+fn lifecycle_same_row_replay_starts_fresh_transport_authority() {
+    let mut runtime = ServerRuntime::default();
+    for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {
+        let hello = runtime
+            .handle_line_fanout(client_id, &playback_lifecycle_hello(username))
+            .expect("participant hello should establish a lifecycle session");
+        acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&hello));
+    }
+    runtime
+        .handle_line_fanout(
+            "client-1",
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"]}}}"#,
+        )
+        .expect("playlist should be accepted");
+    let initial_selection = runtime
+        .handle_line_fanout("client-1", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("initial selection should be accepted");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&initial_selection));
+
+    let initial_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("initial selection should establish transport authority");
+    let positioned = runtime
+        .handle_line_fanout(
+            "client-1",
+            &format!(
+                r#"{{"State":{{"playstate":{{"position":7.0,"paused":true,"doSeek":true,"sorotteTransportRevision":{initial_revision}}}}}}}"#
+            ),
+        )
+        .expect("predecessor position should become canonical");
+    acknowledge_directed_state_counters(&mut runtime, &decode_directed_lines(&positioned));
+    let predecessor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the predecessor should have transport authority");
+
+    let replay = runtime
+        .handle_line_fanout("client-2", r#"{"Set":{"playlistIndex":{"index":0}}}"#)
+        .expect("same-row lifecycle replay should be accepted");
+    let replay_messages = decode_directed_lines(&replay);
+    let successor_revision = runtime
+        .transport_authority_revision_for_room("room1")
+        .expect("the replay should establish successor transport authority");
+    assert!(successor_revision > predecessor_revision);
+    assert_eq!(runtime.room_playback_state("room1").position, 0.0);
+    assert!(runtime.room_playback_state("room1").paused);
+
+    for client_id in ["client-1", "client-2"] {
+        let recipient_messages: Vec<_> = replay_messages
+            .iter()
+            .filter(|(recipient, _)| recipient == client_id)
+            .map(|(_, message)| message)
+            .collect();
+        let playlist_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::Set(payload)
+                        if payload.set.playlist_index.as_ref().is_some_and(|index| {
+                            index.index_value() == Some(0)
+                        })
+                )
+            })
+            .expect("the replayed selection should be fanned out");
+        let state_offset = recipient_messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message,
+                    ProtocolMessage::State(payload)
+                        if payload.state.playstate.as_ref().is_some_and(|playstate| {
+                            playstate.position == Some(0.0)
+                                && playstate.paused == Some(true)
+                                && playstate.do_seek == Some(false)
+                                && playstate.set_by.as_deref() == Some("bob")
+                                && playstate.transport_revision().ok().flatten()
+                                    == Some(successor_revision)
+                        })
+                )
+            })
+            .expect("successor transport must follow the replayed selection");
+        assert!(playlist_offset < state_offset);
+        let seeded = &runtime.client_playback_states[client_id];
+        assert_eq!(seeded.position, Some(0.0));
+        assert_eq!(seeded.transport_revision, Some(successor_revision));
+    }
+}
+
+#[test]
 fn guarded_natural_advance_retires_completed_media_transport_authority() {
     let mut runtime = ServerRuntime::default();
     for (client_id, username) in [("client-1", "alice"), ("client-2", "bob")] {

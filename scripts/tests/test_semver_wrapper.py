@@ -13,7 +13,13 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "check-semver.ps1"
 DEVELOPMENT = REPO_ROOT / "docs" / "DEVELOPMENT.md"
-BASELINE = "a" * 40
+BASELINE = subprocess.run(
+    ["git", "rev-parse", "HEAD"],
+    cwd=REPO_ROOT,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
 
 
 class SemverWrapperPolicyTests(unittest.TestCase):
@@ -60,6 +66,9 @@ class SemverWrapperPolicyTests(unittest.TestCase):
             "$targetRoot.StartsWith($repoPrefix",
             "$env:CARGO_TARGET_DIR = $targetRoot",
             "Remove-Item -LiteralPath $targetRoot -Recurse -Force",
+            'git cat-file -e "${BaselineRev}^{commit}"',
+            "git ls-tree --name-only $BaselineRev -- $baselineManifest",
+            "Skipping new package absent from baseline",
         ):
             self.assertIn(required, wrapper)
 

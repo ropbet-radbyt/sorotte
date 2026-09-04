@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use sorotte_client_core::{ClientParticipantStatusFreshness, ClientSession};
+use sorotte_lifecycle_evidence::{Disposition, Trigger};
 use sorotte_protocol::{
     ParticipantPlaybackPhase, ParticipantPlaybackScope, ParticipantPlayerConnection,
     ParticipantStatusAvailability, ParticipantStatusCorrelation, ParticipantStatusReport,
@@ -14,7 +15,7 @@ use crate::{
     PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS, PARTICIPANT_STATUS_MAX_PLAYBACK_RATE,
     PARTICIPANT_STATUS_MAX_POSITION_SECONDS, PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS,
     PROTOCOL_TIMEOUT_SECONDS, RoomPlaybackState, ServerCompatibilityFallback,
-    ServerOutboundDelivery,
+    ServerOutboundDelivery, capture_server_lifecycle_transitions,
 };
 
 #[test]
@@ -825,14 +826,29 @@ fn freshness_projection_and_server_derived_offsets_require_strict_correlation() 
     assert_eq!(alice.position_seconds, Some(99.375));
     assert_eq!(alice.room_offset_seconds, Some(-1.625));
 
-    let delayed = periodic_snapshot(&mut runtime, "bob", 104.0).unwrap();
+    let (delayed, delayed_transitions) = capture_server_lifecycle_transitions(|| {
+        periodic_snapshot(&mut runtime, "bob", 104.0).unwrap()
+    });
     assert_eq!(
         delayed.participants["alice"].availability,
         ParticipantStatusAvailability::Delayed
     );
     assert_eq!(delayed.participants["alice"].room_offset_seconds, None);
+    let delayed_transition = delayed_transitions
+        .iter()
+        .find(|transition| transition.transition == "STATUS-DELAY-001")
+        .expect("fresh-to-delayed projection should emit its lifecycle boundary");
+    assert_eq!(delayed_transition.trigger, Trigger::Timer);
+    assert_eq!(delayed_transition.disposition, Disposition::Applied);
+    assert!(
+        delayed_transition
+            .identities
+            .contains(&("report-sequence", 1))
+    );
 
-    let stale = periodic_snapshot(&mut runtime, "bob", 111.0).unwrap();
+    let (stale, stale_transitions) = capture_server_lifecycle_transitions(|| {
+        periodic_snapshot(&mut runtime, "bob", 111.0).unwrap()
+    });
     let alice = &stale.participants["alice"];
     assert_eq!(alice.availability, ParticipantStatusAvailability::Stale);
     assert_eq!(
@@ -843,6 +859,17 @@ fn freshness_projection_and_server_derived_offsets_require_strict_correlation() 
     assert_eq!(alice.position_seconds, None);
     assert_eq!(alice.buffered_ahead_seconds, None);
     assert_eq!(alice.room_offset_seconds, None);
+    let stale_transition = stale_transitions
+        .iter()
+        .find(|transition| transition.transition == "STATUS-STALE-001")
+        .expect("delayed-to-stale projection should emit its lifecycle boundary");
+    assert_eq!(stale_transition.trigger, Trigger::Timer);
+    assert_eq!(stale_transition.disposition, Disposition::Applied);
+    assert!(
+        stale_transition
+            .identities
+            .contains(&("report-sequence", 1))
+    );
 
     runtime.set_time_now_override_seconds(Some(120.0));
     send_status(

@@ -12,14 +12,16 @@ permissions:
   contents: read
 
 jobs:
-  playback-lifecycle-release-gate:
-    name: Exact-candidate playback lifecycle release gate
+  linux-candidate:
+    name: Linux immutable candidate lifecycle
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     env:
       MPV_SOURCE_SHA: 41f6a645068483470267271e1d09966ca3b9f413
       MPV_MINIMUM_VERSION: "0.41.0"
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      CANDIDATE_DIR: target/playback-release-candidate/linux-x86_64
+      EVIDENCE_DIR: target/verification/playback-release-evidence/linux-x86_64
     steps:
       - name: Checkout exact Sorotte candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,7 +29,7 @@ jobs:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
 
-      - name: Bind checkout to release candidate
+      - name: Bind Linux checkout to release candidate
         run: |
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
@@ -104,17 +106,31 @@ jobs:
           --minimum-version "$MPV_MINIMUM_VERSION"
           --binary target/mpv-supported-release/build/mpv
 
-      - name: Validate lifecycle declarations and behavior evidence
+      - name: Validate closed lifecycle declarations and deterministic model
         run: |
           python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
-          python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml
+          python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
           python scripts/playback_lifecycle_oracle.py witness-summary --model coverage/playback-lifecycle.toml --compact
           python scripts/playback_lifecycle_oracle.py run-suite --schedule-dir fixtures/playback-lifecycle
+          python -m unittest \
+            scripts.tests.test_playback_lifecycle_evidence \
+            scripts.tests.test_playback_lifecycle_faults \
+            scripts.tests.test_playback_start_gate_system \
+            scripts.tests.test_playback_release_gate
 
-      - name: Build exact release-mode lifecycle candidates
+      - name: Build exact Linux release candidates
         run: cargo build --locked --release -p sorotte-server -p sorotte-cli
 
-      - name: Run exact-candidate multi-client real mpv lifecycle
+      - name: Seal immutable Linux candidate bundle
+        run: |
+          python scripts/playback_release_gate.py bundle \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --platform linux-x86_64 \
+            --artifact server=target/release/sorotte-server \
+            --artifact client=target/release/sorotte-cli \
+            --output-dir "$CANDIDATE_DIR"
+
+      - name: Run ordinary and terminal exact-candidate lifecycle
         id: playback_lifecycle_system
         continue-on-error: true
         run: |
@@ -124,6 +140,24 @@ jobs:
             --mpv target/mpv-supported-release/build/mpv \
             --ffmpeg ffmpeg \
             --artifact-dir target/verification/playback-lifecycle-release \
+            --candidate-sha "$CANDIDATE_SHA"
+
+      - name: Run loop-boundary exact-candidate lifecycle
+        run: |
+          python scripts/playback_lifecycle_system.py run \
+            --server target/release/sorotte-server \
+            --client target/release/sorotte-cli \
+            --mpv target/mpv-supported-release/build/mpv \
+            --ffmpeg ffmpeg \
+            --artifact-dir target/verification/playback-lifecycle-loop-release \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --loop-at-end-of-playlist
+
+      - name: Run generated every-phase start-gate lifecycle
+        run: |
+          python scripts/playback_start_gate_system.py \
+            --server target/release/sorotte-server \
+            --artifact-dir target/verification/playback-start-gate-release \
             --candidate-sha "$CANDIDATE_SHA"
 
       - name: Validate and stage privacy-safe release evidence
@@ -164,3 +198,266 @@ jobs:
           test "$PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME" = success
           test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
           test "$PLAYBACK_LIFECYCLE_CLOSED_OUTCOME" = success
+
+      - name: Attest exact Linux suite and candidate digests
+        run: |
+          python scripts/playback_release_gate.py attest-linux \
+            --bundle-dir "$CANDIDATE_DIR" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --system-report target/verification/playback-lifecycle-release/report.json \
+            --loop-report target/verification/playback-lifecycle-loop-release/report.json \
+            --start-report target/verification/playback-start-gate-release/playback-start-gate-system-report.json \
+            --model coverage/playback-lifecycle.toml \
+            --output target/verification/playback-lifecycle-release-safe/platform-gate.json
+
+      - name: Upload Linux platform lifecycle attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-platform-linux-${{ inputs.candidate_sha }}
+          path: target/verification/playback-lifecycle-release-safe/platform-gate.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  windows-candidate:
+    name: Windows exact GUI and status candidate lifecycle
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - sorotte-native-interactive
+      - sorotte-ephemeral
+    timeout-minutes: 70
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      CANDIDATE_DIR: target/playback-release-candidate/windows-x86_64
+      MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-08-30-e8673660ab/mpv-x86_64-20260830-git-e8673660ab.7z
+      MPV_ARCHIVE_SHA256: 6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879
+      MPV_BINARY_SHA256: 547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe
+      FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/2026-08-27-git-a6f573a1db/ffmpeg-2026-08-27-git-a6f573a1db-full_build.7z
+      FFMPEG_ARCHIVE_SHA256: 64d2b339dc536808b7c155ebc4d41cc7940eab7277659e43a3979078d665ed13
+      FFMPEG_BINARY_SHA256: fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690
+    steps:
+      - name: Attest ephemeral interactive Windows runner
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          if ($env:SOROTTE_NATIVE_RUNNER_CONTRACT -cne "sorotte-ephemeral-interactive-windows-v1") {
+              throw "interactive runner contract is missing or unsupported"
+          }
+          if ($env:SOROTTE_NATIVE_RUNNER_MAX_JOBS -cne "1") {
+              throw "interactive runner must attest a one-job lifetime"
+          }
+          $instance = [Guid]::Empty
+          if (-not [Guid]::TryParse($env:SOROTTE_NATIVE_RUNNER_INSTANCE_ID, [ref]$instance) -or $instance -eq [Guid]::Empty) {
+              throw "interactive runner instance ID is invalid"
+          }
+          $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if ($sessionId -le 0) {
+              throw "interactive runner cannot execute in session zero"
+          }
+          $explorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId })
+          if ($explorer.Count -eq 0) {
+              throw "interactive runner session has no Explorer shell"
+          }
+
+      - name: Checkout exact Sorotte candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          clean: true
+          persist-credentials: false
+
+      - name: Bind Windows checkout to release candidate
+        shell: pwsh
+        run: |
+          $actual = (git rev-parse 'HEAD^{commit}').Trim()
+          if ($actual -cne $env:CANDIDATE_SHA -or $env:GITHUB_SHA -cne $env:CANDIDATE_SHA) {
+              throw "Windows checkout differs from exact release candidate"
+          }
+          if (@(git status --porcelain --untracked-files=all).Count -ne 0) {
+              throw "Windows release candidate checkout is not clean"
+          }
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download and verify pinned supported Windows media tools
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $tools = Join-Path $PWD "target\playback-release-tools"
+          $null = New-Item -ItemType Directory -Force -Path $tools
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          $mpvArchive = Join-Path $tools "mpv.7z"
+          $ffmpegArchive = Join-Path $tools "ffmpeg.7z"
+          Invoke-WebRequest -Uri $env:MPV_ARCHIVE_URL -OutFile $mpvArchive
+          Invoke-WebRequest -Uri $env:FFMPEG_ARCHIVE_URL -OutFile $ffmpegArchive
+          if ((Get-FileHash -LiteralPath $mpvArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:MPV_ARCHIVE_SHA256) {
+              throw "downloaded mpv archive digest differs from pinned identity"
+          }
+          if ((Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FFMPEG_ARCHIVE_SHA256) {
+              throw "downloaded FFmpeg archive digest differs from pinned identity"
+          }
+          & $sevenZip x $mpvArchive "-o$(Join-Path $tools 'mpv')" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "mpv extraction failed" }
+          & $sevenZip x $ffmpegArchive "-o$(Join-Path $tools 'ffmpeg')" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg extraction failed" }
+          $mpv = @(Get-ChildItem -LiteralPath (Join-Path $tools "mpv") -Recurse -File -Filter mpv.exe)
+          $ffmpeg = @(Get-ChildItem -LiteralPath (Join-Path $tools "ffmpeg") -Recurse -File -Filter ffmpeg.exe)
+          if ($mpv.Count -ne 1 -or $ffmpeg.Count -ne 1) {
+              throw "supported media tool extraction did not produce one exact binary each"
+          }
+          if ((Get-FileHash -LiteralPath $mpv[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:MPV_BINARY_SHA256) {
+              throw "extracted mpv binary digest differs from pinned identity"
+          }
+          if ((Get-FileHash -LiteralPath $ffmpeg[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FFMPEG_BINARY_SHA256) {
+              throw "extracted FFmpeg binary digest differs from pinned identity"
+          }
+          "MPV_PATH=$($mpv[0].FullName)" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+          "FFMPEG_PATH=$($ffmpeg[0].FullName)" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Validate closed lifecycle declarations and harness contracts
+        shell: pwsh
+        run: |
+          python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
+          python -m unittest `
+            scripts.tests.test_gui_real_mpv_vertical_contract `
+            scripts.tests.test_playback_status_system `
+            scripts.tests.test_playback_release_gate
+
+      - name: Build exact Windows release candidates and native driver
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p sorotte-server -p sorotte-cli
+          cargo build --locked --release -p sorotte-gui --bin sorotte-gui --bin sorotte-gui-updater
+          cargo build --locked -p sorotte-gui --features gui-native-smoke --bin sorotte-gui-native-smoke
+
+      - name: Seal immutable Windows candidate bundle
+        shell: pwsh
+        run: |
+          python scripts/playback_release_gate.py bundle `
+            --candidate-sha $env:CANDIDATE_SHA `
+            --platform windows-x86_64 `
+            --artifact server=target/release/sorotte-server.exe `
+            --artifact client=target/release/sorotte-cli.exe `
+            --artifact gui=target/release/sorotte-gui.exe `
+            --artifact gui-updater=target/release/sorotte-gui-updater.exe `
+            --output-dir $env:CANDIDATE_DIR
+
+      - name: Run exact GUI baseline and terminal fault modes
+        shell: pwsh
+        run: |
+          ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000
+          ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseFaultingHttpRecovery
+          ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 50000 -ExerciseStalledHttp
+          ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseOwnedMpvRecovery
+
+      - name: Run exact second-client native participant status composition
+        shell: pwsh
+        run: |
+          python scripts/playback_status_system.py `
+            --server target/release/sorotte-server.exe `
+            --client target/release/sorotte-cli.exe `
+            --gui target/release/sorotte-gui.exe `
+            --native-harness target/debug/sorotte-gui-native-smoke.exe `
+            --mpv $env:MPV_PATH `
+            --artifact-dir target/verification/playback-status-release `
+            --candidate-sha $env:CANDIDATE_SHA
+
+      - name: Attest exact Windows suite and candidate digests
+        shell: pwsh
+        run: |
+          $baseline = @(Get-ChildItem target/verification/gui-real-mpv-vertical -Recurse -File -Filter contract-summary.json)
+          $faulting = @(Get-ChildItem target/verification/gui-real-mpv-faulting-http-recovery -Recurse -File -Filter contract-summary.json)
+          $stalled = @(Get-ChildItem target/verification/gui-real-mpv-stalled-http -Recurse -File -Filter contract-summary.json)
+          $owned = @(Get-ChildItem target/verification/gui-real-mpv-owned-process-recovery -Recurse -File -Filter contract-summary.json)
+          if ($baseline.Count -ne 1 -or $faulting.Count -ne 1 -or $stalled.Count -ne 1 -or $owned.Count -ne 1) {
+              throw "exact-GUI release summary inventory is not one per required mode"
+          }
+          python scripts/playback_release_gate.py attest-windows `
+            --bundle-dir $env:CANDIDATE_DIR `
+            --candidate-sha $env:CANDIDATE_SHA `
+            --status-report target/verification/playback-status-release/playback-status-system-report.json `
+            --vertical-summary "baseline=$($baseline[0].FullName)" `
+            --vertical-summary "faulting-http=$($faulting[0].FullName)" `
+            --vertical-summary "stalled-http=$($stalled[0].FullName)" `
+            --vertical-summary "owned-process-recovery=$($owned[0].FullName)" `
+            --mpv $env:MPV_PATH `
+            --ffmpeg $env:FFMPEG_PATH `
+            --expected-mpv-sha256 $env:MPV_BINARY_SHA256 `
+            --expected-ffmpeg-sha256 $env:FFMPEG_BINARY_SHA256 `
+            --model coverage/playback-lifecycle.toml `
+            --output target/verification/playback-status-release/platform-gate.json
+
+      - name: Upload Windows platform lifecycle attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
+          path: target/verification/playback-status-release/platform-gate.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
+  complete-candidate:
+    name: Complete cross-platform lifecycle attestation
+    needs:
+      - linux-candidate
+      - windows-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Checkout exact Sorotte candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Download Linux platform lifecycle attestation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-platform-linux-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate/linux
+
+      - name: Download Windows platform lifecycle attestation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate/windows
+
+      - name: Prove complete model transition coverage
+        run: |
+          test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
+          python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
+          python scripts/playback_release_gate.py attest-complete \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --linux-gate target/verification/complete-gate/linux/platform-gate.json \
+            --windows-gate target/verification/complete-gate/windows/platform-gate.json \
+            --model coverage/playback-lifecycle.toml \
+            --output target/verification/complete-gate/platform-complete.json
+
+      - name: Upload complete lifecycle attestation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-complete-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate/platform-complete.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true

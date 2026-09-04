@@ -26,16 +26,21 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+
+import playback_lifecycle_evidence as lifecycle_evidence
+import playback_lifecycle_faults as lifecycle_faults
 
 
 SCHEMA_VERSION = 1
@@ -45,9 +50,41 @@ PLAYER_TRACE_KIND = "sorotte-real-mpv-observation"
 MISSING_PREREQUISITE_EXIT = 125
 DEFAULT_TIMEOUT_SECONDS = 135.0
 DEFAULT_CLIENT_RUNTIME_SECONDS = 65.0
+FIRST_MEDIA_DURATION_SECONDS = 30.0
+INTENDED_EOF_LEAD_SECONDS = 2.5
 ROOM_VERSION = "1.7.5"
 MINIMUM_MPV_VERSION = (0, 41, 0)
-FAULT_SCHEDULE_ID = "status-replacement-empty-partition-eof-recovery-v3"
+MINIMUM_CROSS_PROCESS_EDGES = 6
+WRITE_FAILURE_FRAME_PAYLOAD_BYTES = 256 * 1024
+LIFECYCLE_WRITE_BARRIER_MODE = "leased-oversized-frame"
+LIFECYCLE_WRITE_BARRIER_READY_SUFFIX = ".leased-frame-ready"
+LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX = ".leased-frame-release"
+
+ORACLE_CONVERGENCE_CHECKS = frozenset(
+    {
+        "room-switch-rejoin-preserved-authority",
+        "initial-two-clients-loaded-paused",
+        "play-committed-and-applied",
+        "pause-committed-and-applied",
+        "seek-committed-and-applied",
+        "late-joiner-caught-up",
+        "participant-status-snapshot-and-cadence",
+        "participant-status-single-loss-self-healed",
+        "participant-status-delayed-and-stale",
+        "participant-status-fresh-recovery-advisory",
+        "untrusted-selection-rejected-and-restored",
+        "same-index-replacement-fresh-authority",
+        "empty-playlist-clears-selected-media",
+        "playlist-restore-reloads-selected-media",
+        "partitioned-follower-caught-up",
+        "post-reconnect-room-stable",
+        "scheduled-write-failure-recovered",
+        "natural-eof-advanced-once",
+        "next-item-loaded-everywhere",
+        "final-item-canonical-terminal-bounded",
+        "participant-status-withdrawal",
+    }
+)
 
 ROLE_USERNAMES = {
     "observer": "life-observer",
@@ -65,6 +102,7 @@ SAFE_TRACE_FIELDS = {
     "correlation_id",
     "source",
     "role",
+    "member_role",
     "event",
     "source_sequence",
     "media_slot",
@@ -136,6 +174,85 @@ def contained_player_failure_counts(
         if count:
             failures[role] = count
     return failures
+
+
+def participant_status_authority_withdrawn(
+    event: Mapping[str, Any], role: str
+) -> bool:
+    """Return whether a live status snapshot no longer grants fresh authority."""
+
+    if event.get("event") != "participant-status-snapshot":
+        return False
+    if role not in set(event.get("participants", [])):
+        return True
+    views = event.get("participant_views", {})
+    view = views.get(role) if isinstance(views, dict) else None
+    return isinstance(view, dict) and view.get("availability") in {
+        "delayed",
+        "stale",
+        "awaitingReport",
+        "unavailable",
+    }
+
+
+def bounded_playback_frame_delivery(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    after: int,
+    minimum_frame_bytes: int,
+) -> Mapping[str, Any] | None:
+    """Find the staged playback frame large enough to own the fault boundary."""
+
+    return next(
+        (
+            record
+            for record in records[after:]
+            if record.get("transition") == "TX-DELIVERY-001"
+            and isinstance(record.get("identities"), Mapping)
+            and record["identities"].get("frame-bytes", 0) >= minimum_frame_bytes
+        ),
+        None,
+    )
+
+
+def exact_leased_frame_failure(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    after: int,
+    frame_receipt: int,
+) -> Mapping[str, Any] | None:
+    """Return exact lease failure, rejecting a locally completed target frame."""
+
+    terminal_records = [
+        record
+        for record in records[after:]
+        if isinstance(record.get("identities"), Mapping)
+        and record["identities"].get("frame-receipt") == frame_receipt
+        and record.get("transition") in {"TX-WRITTEN-001", "TX-FAIL-001"}
+    ]
+    if any(record.get("transition") == "TX-WRITTEN-001" for record in terminal_records):
+        raise ValueError(
+            "the exact leased playback frame completed before the scheduled reset"
+        )
+    return next(
+        (
+            record
+            for record in terminal_records
+            if record.get("transition") == "TX-FAIL-001"
+        ),
+        None,
+    )
+
+
+def lifecycle_write_barrier_paths(evidence_path: Path) -> tuple[Path, Path]:
+    return (
+        evidence_path.with_name(
+            evidence_path.name + LIFECYCLE_WRITE_BARRIER_READY_SUFFIX
+        ),
+        evidence_path.with_name(
+            evidence_path.name + LIFECYCLE_WRITE_BARRIER_RELEASE_SUFFIX
+        ),
+    )
 
 
 def validate_terminal_playlist_boundary(
@@ -240,6 +357,8 @@ def validate_natural_eof_successor_boundary(
     *,
     previous_transport_revision: int,
     expected_playlist_index: int = 1,
+    predecessor_media_slot: str = "media-1",
+    successor_media_slot: str = "media-2",
 ) -> int:
     """Prove that completed-media authority cannot cross a playlist advance."""
 
@@ -291,14 +410,14 @@ def validate_natural_eof_successor_boundary(
         total_eof_records += sum(
             record.get("event") == "end-file"
             and record.get("reason") == "eof"
-            and record.get("media_slot") == "media-1"
+            and record.get("media_slot") == predecessor_media_slot
             for record in records
         )
         load_indices = [
             index
             for index, record in enumerate(records)
             if record.get("event") == "file-loaded"
-            and record.get("media_slot") == "media-2"
+            and record.get("media_slot") == successor_media_slot
         ]
         if len(load_indices) != 1:
             raise ValueError(
@@ -309,7 +428,7 @@ def validate_natural_eof_successor_boundary(
             (
                 index
                 for index, record in enumerate(records[load_index:], start=load_index)
-                if record.get("media_slot") == "media-2"
+                if record.get("media_slot") == successor_media_slot
                 and record.get("paused") is True
                 and (position := _safe_number(record.get("position_seconds")))
                 is not None
@@ -320,7 +439,7 @@ def validate_natural_eof_successor_boundary(
         if convergence_index is None:
             raise ValueError(f"the {role} player never converged at the successor origin")
         for record in records[convergence_index:]:
-            if record.get("media_slot") != "media-2":
+            if record.get("media_slot") != successor_media_slot:
                 continue
             position = _safe_number(record.get("position_seconds"))
             if record.get("paused") is False:
@@ -504,6 +623,108 @@ def stage_privacy_safe_evidence(artifact_dir: Path, output_dir: Path) -> dict[st
         for record in read_jsonl(path):
             assert_privacy_safe_player_trace_record(record)
         selected.append(path)
+
+    if report.get("result") == "passed":
+        if not isinstance(artifacts, dict):
+            raise ValueError("passed system report has no artifact inventory")
+        process_names = artifacts.get("lifecycle_process_ledgers")
+        expected_process_names = {
+            "lifecycle-server.jsonl",
+            "lifecycle-client-controller.jsonl",
+            "lifecycle-client-follower.jsonl",
+            "lifecycle-client-late.jsonl",
+            "lifecycle-harness.jsonl",
+        }
+        if (
+            not isinstance(process_names, list)
+            or len(process_names) != len(expected_process_names)
+            or set(process_names) != expected_process_names
+        ):
+            raise ValueError("passed system report has an incomplete lifecycle ledger inventory")
+        if artifacts.get("lifecycle_evidence") != "lifecycle-evidence.jsonl":
+            raise ValueError("passed system report has no merged lifecycle evidence")
+        if (
+            artifacts.get("lifecycle_evidence_summary")
+            != "lifecycle-evidence-summary.json"
+        ):
+            raise ValueError("passed system report has no lifecycle evidence summary")
+        process_paths = [artifact_dir / name for name in process_names]
+        for path in process_paths:
+            if not path.is_file():
+                raise ValueError(f"declared lifecycle ledger is missing: {path.name}")
+        merged_path = artifact_dir / "lifecycle-evidence.jsonl"
+        summary_path = artifact_dir / "lifecycle-evidence-summary.json"
+        if not merged_path.is_file() or not summary_path.is_file():
+            raise ValueError("validated lifecycle evidence output is missing")
+        server_prerequisite = prerequisites.get("server")
+        client_prerequisite = prerequisites.get("client")
+        if not isinstance(server_prerequisite, dict) or not isinstance(
+            client_prerequisite, dict
+        ):
+            raise ValueError("passed evidence lacks packaged server and client attestations")
+        with tempfile.TemporaryDirectory() as validation_directory:
+            regenerated_merged = Path(validation_directory) / "lifecycle-evidence.jsonl"
+            regenerated_summary = lifecycle_evidence.validate_and_merge(
+                process_paths,
+                model_path=Path(__file__).resolve().parents[1]
+                / "coverage"
+                / "playback-lifecycle.toml",
+                output_path=regenerated_merged,
+                required_inventories={
+                    "server": frozenset({"server"}),
+                    "client-controller": frozenset({"client", "player"}),
+                    "client-follower": frozenset({"client", "player"}),
+                    "client-late": frozenset({"client", "player"}),
+                    "system-harness": frozenset({"harness", "proxy", "oracle"}),
+                },
+                required_roles=frozenset(
+                    {"server", "client", "player", "proxy", "harness", "oracle"}
+                ),
+                expected_digests={
+                    "server": server_prerequisite.get("sha256"),
+                    "client-controller": client_prerequisite.get("sha256"),
+                    "client-follower": client_prerequisite.get("sha256"),
+                    "client-late": client_prerequisite.get("sha256"),
+                    "system-harness": sha256_file(Path(__file__).resolve()),
+                },
+                minimum_cross_process_edges=MINIMUM_CROSS_PROCESS_EDGES,
+            )
+            if sha256_file(regenerated_merged) != sha256_file(merged_path):
+                raise ValueError("merged lifecycle evidence is not reproducible")
+        declared_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if declared_summary != regenerated_summary:
+            raise ValueError("lifecycle evidence summary does not match validated ledgers")
+        if report.get("lifecycle_summary") != declared_summary:
+            raise ValueError("system report lifecycle summary does not match validated ledgers")
+        assert_privacy_safe_tree(declared_summary)
+        selected.extend([*process_paths, merged_path, summary_path])
+
+        if artifacts.get("fault_schedule") != "fault-schedule.json" or artifacts.get(
+            "fault_replay"
+        ) != "fault-replay.jsonl":
+            raise ValueError("passed system report has no deterministic fault replay evidence")
+        fault_schedule_path = artifact_dir / "fault-schedule.json"
+        fault_replay_path = artifact_dir / "fault-replay.jsonl"
+        schedule = lifecycle_faults.FaultSchedule.read(fault_schedule_path)
+        replay = lifecycle_faults.read_replay_trace(fault_replay_path)
+        declared_fault = report.get("fault_schedule")
+        if not isinstance(declared_fault, dict):
+            raise ValueError("passed system report has no fault schedule attestation")
+        if (
+            declared_fault.get("id") != schedule.schedule_id
+            or declared_fault.get("staged_sha256") != sha256_file(fault_schedule_path)
+            or declared_fault.get("replay_sha256") != sha256_file(fault_replay_path)
+            or declared_fault.get("step_count") != len(schedule.steps)
+        ):
+            raise ValueError("fault schedule attestation does not match staged evidence")
+        replay_ids = [record["step_id"] for record in replay]
+        if (
+            len(replay_ids) != len(set(replay_ids))
+            or set(replay_ids) != {step.id for step in schedule.steps}
+            or any(record["outcome"] != "applied" for record in replay)
+        ):
+            raise ValueError("fault replay is incomplete, duplicated, or unsuccessful")
+        selected.extend([fault_schedule_path, fault_replay_path])
 
     output_dir.mkdir(parents=True, exist_ok=True)
     files: list[dict[str, Any]] = []
@@ -780,6 +1001,16 @@ def project_protocol_message(
 
     set_payload = message.get("Set")
     if isinstance(set_payload, dict):
+        user_updates = set_payload.get("user")
+        if isinstance(user_updates, dict):
+            for username, update in user_updates.items():
+                if isinstance(update, dict) and isinstance(update.get("room"), dict):
+                    events.append(
+                        {
+                            "event": "room-membership-update",
+                            "member_role": _role(username, role_by_username),
+                        }
+                    )
         playlist_change = set_payload.get("playlistChange")
         if isinstance(playlist_change, dict) and isinstance(playlist_change.get("files"), list):
             events.append(
@@ -1054,7 +1285,7 @@ class ProtocolObserver:
 
 
 class ProtocolFaultProxy:
-    """Owned loopback TCP proxy with a deterministic cut-and-hold barrier."""
+    """Owned loopback TCP proxy driven by a replayable bounded fault schedule."""
 
     _FRAGMENT_SIZES = (1, 2, 5, 13, 29)
 
@@ -1065,11 +1296,13 @@ class ProtocolFaultProxy:
         upstream_port: int,
         role: str,
         ledger: TraceLedger,
+        fault_cursor: lifecycle_faults.FaultScheduleCursor | None = None,
     ) -> None:
         self.upstream_host = upstream_host
         self.upstream_port = upstream_port
         self.role = role
         self.ledger = ledger
+        self.fault_cursor = fault_cursor
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -1084,6 +1317,7 @@ class ProtocolFaultProxy:
         self._active_upstream: socket.socket | None = None
         self._accepted_count = 0
         self._upstream_connection_count = 0
+        self._completed_connection_count = 0
         self._fragment_count = 0
         self._forwarded_bytes = 0
         self._participant_status_report_count = 0
@@ -1092,6 +1326,12 @@ class ProtocolFaultProxy:
         self._drop_next_participant_status_reports = 0
         self._block_participant_status_reports = False
         self._upstream_send_lock = threading.Lock()
+        self._channel_allowed = {
+            1: threading.Event(),
+            2: threading.Event(),
+        }
+        for event in self._channel_allowed.values():
+            event.set()
         self.error: str | None = None
         self.thread = threading.Thread(
             target=self._run,
@@ -1128,6 +1368,11 @@ class ProtocolFaultProxy:
     def upstream_connection_count(self) -> int:
         with self._lock:
             return self._upstream_connection_count
+
+    @property
+    def completed_connection_count(self) -> int:
+        with self._lock:
+            return self._completed_connection_count
 
     @property
     def fragment_count(self) -> int:
@@ -1243,11 +1488,21 @@ class ProtocolFaultProxy:
             forwarded_message.pop("State", None)
         return forwarded_message or None
 
-    def _fragmented_send(self, destination: socket.socket, data: bytes) -> None:
+    def _fragmented_send(
+        self,
+        destination: socket.socket,
+        data: bytes,
+        *,
+        scheduled_fragment_bytes: int | None = None,
+    ) -> None:
         offset = 0
         fragment_index = 0
         while offset < len(data) and not self._stop.is_set():
-            size = self._FRAGMENT_SIZES[fragment_index % len(self._FRAGMENT_SIZES)]
+            size = (
+                scheduled_fragment_bytes
+                if scheduled_fragment_bytes is not None
+                else self._FRAGMENT_SIZES[fragment_index % len(self._FRAGMENT_SIZES)]
+            )
             fragment_index += 1
             destination.sendall(data[offset : offset + size])
             sent = min(size, len(data) - offset)
@@ -1255,6 +1510,78 @@ class ProtocolFaultProxy:
                 self._fragment_count += 1
                 self._forwarded_bytes += sent
             offset += size
+
+    @staticmethod
+    def _reset_socket(value: socket.socket | None) -> None:
+        if value is None:
+            return
+        try:
+            linger = struct.pack("HH", 1, 0) if os.name == "nt" else struct.pack("ii", 1, 0)
+            value.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        except OSError:
+            pass
+        try:
+            value.close()
+        except OSError:
+            pass
+
+    def _execute_fault_step(
+        self,
+        step: lifecycle_faults.FaultStep,
+        source: socket.socket | None,
+        destination: socket.socket | None,
+    ) -> None:
+        if step.action in {"delay", "worker-stall"}:
+            self._stop.wait(step.value / 1000.0)
+        elif step.action == "backpressure":
+            with self._upstream_send_lock:
+                self._stop.wait(step.value / 1000.0)
+        elif step.action == "fragment":
+            pass
+        elif step.action == "half-close":
+            target = destination or source
+            if target is None:
+                raise lifecycle_faults.FaultScheduleError(
+                    "half-close step has no active transport"
+                )
+            try:
+                target.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        elif step.action == "reset":
+            if source is None and destination is None:
+                raise lifecycle_faults.FaultScheduleError(
+                    "reset step has no active transport"
+                )
+            self._reset_socket(source)
+            self._reset_socket(destination)
+        elif step.action == "channel-hold":
+            self._channel_allowed.setdefault(step.value, threading.Event()).clear()
+        elif step.action == "channel-release":
+            self._channel_allowed.setdefault(step.value, threading.Event()).set()
+        else:
+            raise lifecycle_faults.FaultScheduleError(
+                f"protocol proxy cannot execute {step.action}"
+            )
+        self.ledger.emit(
+            source="protocol-fault-proxy",
+            role=self.role,
+            event="fault-step-applied",
+            detail=f"{step.action}:{step.boundary}",
+        )
+
+    def _fault_checkpoint(
+        self,
+        boundary: str,
+        source: socket.socket | None,
+        destination: socket.socket | None,
+    ) -> lifecycle_faults.FaultStep | None:
+        if self.fault_cursor is None:
+            return None
+        return self.fault_cursor.checkpoint(
+            boundary,
+            lambda step: self._execute_fault_step(step, source, destination),
+        )
 
     def _pump(
         self,
@@ -1264,8 +1591,20 @@ class ProtocolFaultProxy:
         observe_client_protocol: bool = False,
     ) -> None:
         line_buffer = bytearray()
+        worker_boundary = "client-worker" if observe_client_protocol else "server-worker"
+        frame_boundary = (
+            "client-to-server-frame"
+            if observe_client_protocol
+            else "server-to-client-frame"
+        )
+        channel = self._channel_allowed[1 if observe_client_protocol else 2]
         try:
             while not self._stop.is_set() and not finished.is_set():
+                while not self._stop.is_set() and not channel.wait(0.05):
+                    pass
+                if self._stop.is_set():
+                    return
+                self._fault_checkpoint(worker_boundary, source, destination)
                 data = source.recv(16 * 1024)
                 if not data:
                     return
@@ -1278,12 +1617,36 @@ class ProtocolFaultProxy:
                         try:
                             message = json.loads(line.decode("utf-8"))
                         except (UnicodeDecodeError, json.JSONDecodeError):
+                            fault = self._fault_checkpoint(
+                                frame_boundary, source, destination
+                            )
                             with self._upstream_send_lock:
-                                self._fragmented_send(destination, framed_line)
+                                self._fragmented_send(
+                                    destination,
+                                    framed_line,
+                                    scheduled_fragment_bytes=(
+                                        fault.value
+                                        if fault is not None
+                                        and fault.action == "fragment"
+                                        else None
+                                    ),
+                                )
                             continue
                         if not isinstance(message, dict):
+                            fault = self._fault_checkpoint(
+                                frame_boundary, source, destination
+                            )
                             with self._upstream_send_lock:
-                                self._fragmented_send(destination, framed_line)
+                                self._fragmented_send(
+                                    destination,
+                                    framed_line,
+                                    scheduled_fragment_bytes=(
+                                        fault.value
+                                        if fault is not None
+                                        and fault.action == "fragment"
+                                        else None
+                                    ),
+                                )
                             continue
                         for event in project_client_protocol_message(message):
                             self.ledger.emit(
@@ -1308,14 +1671,34 @@ class ProtocolFaultProxy:
                                 ).encode("utf-8")
                                 + b"\n"
                             )
+                        fault = self._fault_checkpoint(
+                            frame_boundary, source, destination
+                        )
                         with self._upstream_send_lock:
-                            self._fragmented_send(destination, framed_line)
+                            self._fragmented_send(
+                                destination,
+                                framed_line,
+                                scheduled_fragment_bytes=(
+                                    fault.value
+                                    if fault is not None and fault.action == "fragment"
+                                    else None
+                                ),
+                            )
                     if len(line_buffer) > 1024 * 1024:
                         # A malformed unterminated frame is never useful
                         # evidence and must not create an unbounded raw buffer.
                         line_buffer.clear()
                     continue
-                self._fragmented_send(destination, data)
+                fault = self._fault_checkpoint(frame_boundary, source, destination)
+                self._fragmented_send(
+                    destination,
+                    data,
+                    scheduled_fragment_bytes=(
+                        fault.value
+                        if fault is not None and fault.action == "fragment"
+                        else None
+                    ),
+                )
         except OSError:
             return
         finally:
@@ -1371,6 +1754,7 @@ class ProtocolFaultProxy:
                 self._active_client = None
             if self._active_upstream is upstream:
                 self._active_upstream = None
+            self._completed_connection_count += 1
 
     def _run(self) -> None:
         try:
@@ -1401,8 +1785,10 @@ class ProtocolFaultProxy:
         with self._lock:
             client = self._active_client
             upstream = self._active_upstream
-        self._close_socket(client)
-        self._close_socket(upstream)
+        fault = self._fault_checkpoint("harness-partition", client, upstream)
+        if fault is None:
+            self._close_socket(client)
+            self._close_socket(upstream)
         self.ledger.emit(
             source="protocol-fault-proxy",
             role=self.role,
@@ -1411,6 +1797,10 @@ class ProtocolFaultProxy:
         )
 
     def resume(self) -> None:
+        with self._lock:
+            client = self._active_client
+            upstream = self._active_upstream
+        self._fault_checkpoint("harness-reconnect", client, upstream)
         self._upstream_allowed.set()
         self.ledger.emit(
             source="protocol-fault-proxy",
@@ -1418,6 +1808,46 @@ class ProtocolFaultProxy:
             event="proxy-resumed",
             detail="replacement transport released",
         )
+
+    def apply_scheduled_backpressure(self) -> None:
+        with self._lock:
+            client = self._active_client
+            upstream = self._active_upstream
+        fault = self._fault_checkpoint("harness-backpressure", client, upstream)
+        if fault is None:
+            raise lifecycle_faults.FaultScheduleError(
+                "fault schedule has no harness backpressure step"
+            )
+
+    def apply_scheduled_write_failure_hold(self) -> None:
+        with self._lock:
+            client = self._active_client
+            upstream = self._active_upstream
+        fault = self._fault_checkpoint("harness-partition", client, upstream)
+        if fault is None or fault.action != "channel-hold":
+            raise lifecycle_faults.FaultScheduleError(
+                "fault schedule has no client-write channel hold step"
+            )
+
+    def apply_scheduled_write_failure_reset(self) -> None:
+        with self._lock:
+            client = self._active_client
+            upstream = self._active_upstream
+        fault = self._fault_checkpoint("harness-partition", client, upstream)
+        if fault is None or fault.action != "reset":
+            raise lifecycle_faults.FaultScheduleError(
+                "fault schedule has no client-write reset step"
+            )
+
+    def apply_scheduled_write_failure_release(self) -> None:
+        with self._lock:
+            client = self._active_client
+            upstream = self._active_upstream
+        fault = self._fault_checkpoint("harness-reconnect", client, upstream)
+        if fault is None or fault.action != "channel-release":
+            raise lifecycle_faults.FaultScheduleError(
+                "fault schedule has no client-write channel release step"
+            )
 
     def close(self) -> None:
         self._stop.set()
@@ -1587,7 +2017,9 @@ class PlaybackLifecycleHarness:
     ffmpeg_path: Path
     artifact_dir: Path
     candidate_sha: str | None
+    fault_schedule_path: Path | None = None
     allow_unverified_candidate: bool = False
+    loop_at_end_of_playlist: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     client_runtime_seconds: float = DEFAULT_CLIENT_RUNTIME_SECONDS
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -1597,10 +2029,45 @@ class PlaybackLifecycleHarness:
         self.artifact_dir = self.artifact_dir.resolve()
         self.report_path = self.artifact_dir / "report.json"
         self.trace_path = self.artifact_dir / "causal-trace.jsonl"
+        self.lifecycle_model_path = self.repo_root / "coverage" / "playback-lifecycle.toml"
+        self.lifecycle_merged_path = self.artifact_dir / "lifecycle-evidence.jsonl"
+        self.lifecycle_summary_path = (
+            self.artifact_dir / "lifecycle-evidence-summary.json"
+        )
+        self.lifecycle_process_paths = {
+            "server": self.artifact_dir / "lifecycle-server.jsonl",
+            "client-controller": self.artifact_dir
+            / "lifecycle-client-controller.jsonl",
+            "client-follower": self.artifact_dir / "lifecycle-client-follower.jsonl",
+            "client-late": self.artifact_dir / "lifecycle-client-late.jsonl",
+            "system-harness": self.artifact_dir / "lifecycle-harness.jsonl",
+        }
+        if self.fault_schedule_path is None:
+            self.fault_schedule_path = (
+                self.repo_root
+                / "fixtures"
+                / "playback-lifecycle"
+                / "system-fault-schedule-v1.json"
+            )
+        else:
+            self.fault_schedule_path = self.fault_schedule_path.resolve()
+        self.staged_fault_schedule_path = self.artifact_dir / "fault-schedule.json"
+        self.fault_replay_path = self.artifact_dir / "fault-replay.jsonl"
+        with (self.repo_root / "Cargo.toml").open("rb") as workspace_manifest:
+            self.product_version = str(
+                tomllib.load(workspace_manifest)["workspace"]["package"]["version"]
+            )
         self.started_at = utc_now()
         self.deadline = time.monotonic() + self.timeout_seconds
         self.stage = "initialization"
         self.ledger: TraceLedger | None = None
+        self.lifecycle_writer: lifecycle_evidence.EvidenceWriter | None = None
+        self.lifecycle_validation: dict[str, Any] | None = None
+        self.fault_schedule: lifecycle_faults.FaultSchedule | None = None
+        self.fault_cursor: lifecycle_faults.FaultScheduleCursor | None = None
+        self.fault_ledger: lifecycle_faults.FaultReplayLedger | None = None
+        self.fault_schedule_source_digest: str | None = None
+        self.fault_schedule_validated = False
         self.server: ProcessCapture | None = None
         self.server_port: int | None = None
         self.observer: ProtocolObserver | None = None
@@ -1616,6 +2083,11 @@ class PlaybackLifecycleHarness:
             float,
             int,
         ] | None = None
+        self._loop_boundary_evidence: tuple[
+            int,
+            dict[str, int],
+            int,
+        ] | None = None
         self.room = f"lifecycle-{self.correlation_id[:12]}"
         self._known_sensitive_values: list[object] = [
             self.server_path,
@@ -1623,11 +2095,204 @@ class PlaybackLifecycleHarness:
             self.mpv_path,
             self.ffmpeg_path,
             self.artifact_dir,
+            self.fault_schedule_path,
         ]
 
     def _emit(self, *, source: str = "harness", role: str = "orchestrator", event: str, **fields: Any) -> None:
         if self.ledger is not None:
             self.ledger.emit(source=source, role=role, event=event, **fields)
+
+    def _lifecycle_product_tails(self) -> tuple[str, ...]:
+        tails: list[str] = []
+        for emitter, path in self.lifecycle_process_paths.items():
+            if emitter == "system-harness" or not path.is_file():
+                continue
+            records = lifecycle_evidence.read_jsonl(path)
+            if records:
+                event_id = records[-1].get("event_id")
+                if isinstance(event_id, str):
+                    tails.append(event_id)
+        return tuple(tails)
+
+    def _lifecycle_emit(
+        self,
+        *,
+        process_role: str,
+        subject: str,
+        machine: str,
+        transition: str,
+        target_kind: str,
+        trigger: str,
+        authority_before: str,
+        authority_after: str,
+        expected_effect: str,
+        observed_effect: str,
+        disposition: str,
+        identities: Mapping[str, int] | None = None,
+        include_product_tails: bool = False,
+    ) -> str | None:
+        if self.lifecycle_writer is None:
+            return None
+        predecessors = self._lifecycle_product_tails() if include_product_tails else ()
+        return self.lifecycle_writer.emit(
+            process_role=process_role,
+            subject=subject,
+            machine=machine,
+            transition=transition,
+            target_kind=target_kind,
+            trigger=trigger,
+            authority_before=authority_before,
+            authority_after=authority_after,
+            expected_effect=expected_effect,
+            observed_effect=observed_effect,
+            disposition=disposition,
+            identities=identities,
+            causal_predecessors=predecessors,
+        )
+
+    def _start_lifecycle_writer(self) -> None:
+        self.lifecycle_writer = lifecycle_evidence.EvidenceWriter(
+            self.lifecycle_process_paths["system-harness"],
+            run_id=self.correlation_id,
+            emitter="system-harness",
+            binary_role="harness",
+            component_roles=("harness", "proxy", "oracle"),
+            product_version=self.product_version,
+            product_digest=sha256_file(Path(__file__).resolve()),
+        )
+        self._lifecycle_emit(
+            process_role="harness",
+            subject="system-harness",
+            machine="application",
+            transition="APP-LAUNCH-001",
+            target_kind="process-boundary",
+            trigger="startup",
+            authority_before="unowned",
+            authority_after="initializing",
+            expected_effect="harness-starting",
+            observed_effect="harness-starting",
+            disposition="accepted",
+        )
+        self._lifecycle_emit(
+            process_role="harness",
+            subject="system-harness",
+            machine="application",
+            transition="APP-RUN-001",
+            target_kind="process-boundary",
+            trigger="startup",
+            authority_before="initializing",
+            authority_after="running",
+            expected_effect="harness-running",
+            observed_effect="harness-running",
+            disposition="applied",
+        )
+
+    def _stop_lifecycle_writer(self) -> None:
+        if self.lifecycle_writer is None:
+            return
+        self._lifecycle_emit(
+            process_role="harness",
+            subject="system-harness",
+            machine="application",
+            transition="APP-STOP-001",
+            target_kind="process-boundary",
+            trigger="shutdown",
+            authority_before="running",
+            authority_after="stopping",
+            expected_effect="owned-resources-draining",
+            observed_effect="owned-resources-drained",
+            disposition="applied",
+            include_product_tails=True,
+        )
+        self._lifecycle_emit(
+            process_role="harness",
+            subject="system-harness",
+            machine="application",
+            transition="APP-TERM-001",
+            target_kind="process-boundary",
+            trigger="shutdown",
+            authority_before="stopping",
+            authority_after="terminated",
+            expected_effect="evidence-flushed",
+            observed_effect="evidence-flushed",
+            disposition="applied",
+        )
+        self.lifecycle_writer.close()
+        self.lifecycle_writer = None
+
+    def _validate_lifecycle_evidence(self) -> None:
+        self.stage = "shared-causal-ledger"
+        client_digest = self.prerequisites["client"]["sha256"]
+        summary = lifecycle_evidence.validate_and_merge(
+            list(self.lifecycle_process_paths.values()),
+            model_path=self.lifecycle_model_path,
+            output_path=self.lifecycle_merged_path,
+            summary_path=self.lifecycle_summary_path,
+            required_inventories={
+                "server": frozenset({"server"}),
+                "client-controller": frozenset({"client", "player"}),
+                "client-follower": frozenset({"client", "player"}),
+                "client-late": frozenset({"client", "player"}),
+                "system-harness": frozenset({"harness", "proxy", "oracle"}),
+            },
+            required_roles=frozenset(
+                {"server", "client", "player", "proxy", "harness", "oracle"}
+            ),
+            expected_digests={
+                "server": self.prerequisites["server"]["sha256"],
+                "client-controller": client_digest,
+                "client-follower": client_digest,
+                "client-late": client_digest,
+                "system-harness": sha256_file(Path(__file__).resolve()),
+            },
+            minimum_cross_process_edges=MINIMUM_CROSS_PROCESS_EDGES,
+        )
+        self.lifecycle_validation = summary
+        self._pass(
+            "shared-causal-ledger-validated",
+            "all runtime roles produced one privacy-safe exact-artifact ledger with cross-process causes",
+        )
+
+    def _start_fault_schedule(self) -> None:
+        assert self.fault_schedule_path is not None
+        self.fault_schedule = lifecycle_faults.FaultSchedule.read(self.fault_schedule_path)
+        self.fault_schedule_source_digest = lifecycle_faults.sha256_file(
+            self.fault_schedule_path
+        )
+        self.fault_schedule.write_atomic(self.staged_fault_schedule_path)
+        self.fault_ledger = lifecycle_faults.FaultReplayLedger(
+            self.fault_replay_path,
+            self.fault_schedule.schedule_id,
+        )
+        self.fault_cursor = lifecycle_faults.FaultScheduleCursor(
+            self.fault_schedule,
+            ledger=self.fault_ledger,
+        )
+
+    def _finish_fault_schedule(self) -> None:
+        if self.fault_cursor is None or self.fault_schedule is None:
+            raise HarnessFailure(
+                "fault-schedule-validation", "fault schedule was not initialized"
+            )
+        self.fault_cursor.assert_consumed()
+        if self.fault_ledger is not None:
+            self.fault_ledger.close()
+            self.fault_ledger = None
+        records = lifecycle_faults.read_replay_trace(self.fault_replay_path)
+        if len(records) != len(self.fault_schedule.steps):
+            raise HarnessFailure(
+                "fault-schedule-validation",
+                "fault replay did not retain exactly one result per scheduled step",
+            )
+        if any(record["outcome"] != "applied" for record in records):
+            raise HarnessFailure(
+                "fault-schedule-validation", "a scheduled fault did not apply"
+            )
+        self._pass(
+            "fault-schedule-replayed-completely",
+            "the committed delay, fragmentation, backpressure, half-close, reset, and worker-stall schedule was consumed exactly once",
+        )
+        self.fault_schedule_validated = True
 
     def _remaining(self) -> float:
         return max(0.0, self.deadline - time.monotonic())
@@ -1669,6 +2334,22 @@ class PlaybackLifecycleHarness:
     def _pass(self, check_id: str, detail: str) -> None:
         self.checks.append({"id": check_id, "status": "passed", "detail": detail})
         self._emit(event="check-passed", check_id=check_id, detail=detail)
+        if check_id in ORACLE_CONVERGENCE_CHECKS:
+            self._lifecycle_emit(
+                process_role="oracle",
+                subject=check_id,
+                machine="canonical-transaction",
+                transition="TX-CONVERGE-001",
+                target_kind="server-state",
+                trigger="internal",
+                authority_before="peer-application-pending",
+                authority_after="converged",
+                expected_effect="capable-peers-converged",
+                observed_effect="external-oracle-converged",
+                disposition="observed",
+                identities={"check_sequence": len(self.checks)},
+                include_product_tails=True,
+            )
 
     def _not_applicable(self, check_id: str, detail: str) -> None:
         self.checks.append({"id": check_id, "status": "not-applicable", "detail": detail})
@@ -1811,7 +2492,12 @@ class PlaybackLifecycleHarness:
         second = fixture_dir / f"lifecycle-media-two-{self.correlation_id[:8]}.mkv"
         self._known_sensitive_values.extend((first, second))
         self.fixtures = {
-            "media-1": generate_av_fixture(self.ffmpeg_path, first, 10.0, color="red"),
+            "media-1": generate_av_fixture(
+                self.ffmpeg_path,
+                first,
+                FIRST_MEDIA_DURATION_SECONDS,
+                color="red",
+            ),
             "media-2": generate_av_fixture(self.ffmpeg_path, second, 14.0, color="blue"),
         }
         self._emit(event="fixtures-generated", detail="two deterministic FFmpeg A/V fixtures")
@@ -1827,6 +2513,20 @@ class PlaybackLifecycleHarness:
                 self.server_port = int(match.group(1))
                 port_ready.set()
 
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("SOROTTE_")
+        }
+        environment.update(
+            {
+                "SOROTTE_LIFECYCLE_EVIDENCE_PATH": str(
+                    self.lifecycle_process_paths["server"]
+                ),
+                "SOROTTE_LIFECYCLE_RUN_ID": self.correlation_id,
+                "SOROTTE_LIFECYCLE_EMITTER": "server",
+            }
+        )
         self.server = ProcessCapture(
             role="server",
             args=[
@@ -1839,11 +2539,7 @@ class PlaybackLifecycleHarness:
                 "--disable-ready",
             ],
             cwd=self.repo_root,
-            env={
-                key: value
-                for key, value in os.environ.items()
-                if not key.upper().startswith("SOROTTE_")
-            },
+            env=environment,
             artifact_dir=self.artifact_dir,
             stdin=False,
             stderr_callback=inspect_stderr,
@@ -1887,6 +2583,28 @@ class PlaybackLifecycleHarness:
         )
         self.observer.connect()
         self._observer_event(0, lambda event: event.get("event") == "server-hello")
+        self.stage = "room-switch-rejoin"
+        switch_cursor = self.observer.cursor()
+        self.observer.send(
+            {"Set": {"room": {"name": f"alternate-{self.correlation_id[:8]}"}}}
+        )
+        switched = self._observer_event(
+            switch_cursor,
+            lambda event: event.get("event") == "room-membership-update"
+            and event.get("member_role") == "observer",
+        )
+        self.observer.send({"Set": {"room": {"name": self.room}}})
+        self._observer_event(
+            switched.sequence,
+            lambda event: event.get("event") == "room-membership-update"
+            and event.get("member_role") == "observer",
+        )
+        self._pass(
+            "room-switch-rejoin-preserved-authority",
+            "the authenticated observer switched rooms and rejoined before installing canonical playback authority",
+        )
+
+        self.stage = "canonical-seed"
         cursor = self.observer.cursor()
         self.observer.send(
             {"Set": {"playlistChange": {"files": [str(first), str(second)]}}}
@@ -1914,6 +2632,28 @@ class PlaybackLifecycleHarness:
             and event.get("playlist_index") == 0,
         )
         self._pass("canonical-playlist-seeded", "server committed the generated two-item playlist")
+
+        self.stage = "canonical-reject"
+        reject_cursor = self.observer.cursor()
+        self.observer.send({"Set": {"playlistIndex": {"index": 999}}})
+        self._observer_event(
+            reject_cursor,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("playlist_index") == 0,
+        )
+        if any(
+            event.fields.get("event") == "playlist-index"
+            and event.fields.get("playlist_index") == 999
+            for event in self.observer.events_after(reject_cursor)
+        ):
+            raise HarnessFailure(
+                self.stage,
+                "the rejected out-of-range selection mutated canonical authority",
+            )
+        self._pass(
+            "canonical-playlist-reject-preserved-authority",
+            "an invalid authenticated selection was rejected and the exact canonical row remained selected",
+        )
 
     def _ipc_path(self, role: str) -> str:
         suffix = self.correlation_id[:8]
@@ -1945,9 +2685,11 @@ class PlaybackLifecycleHarness:
                 "SOROTTE_CLIENT_CAN_CONTROL": "1",
                 "SOROTTE_CLIENT_SHARED_PLAYLIST_ENABLED": "1",
                 "SOROTTE_CLIENT_PAUSE_ON_LEAVE": "0",
-                "SOROTTE_CLIENT_LOOP_AT_END_OF_PLAYLIST": "0",
+                "SOROTTE_CLIENT_LOOP_AT_END_OF_PLAYLIST": (
+                    "1" if self.loop_at_end_of_playlist else "0"
+                ),
                 "SOROTTE_CLIENT_LOOP_SINGLE_FILES": "0",
-                "SOROTTE_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS": "0",
+                "SOROTTE_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS": "1",
                 "SOROTTE_CLIENT_UNPAUSE_ACTION": "always",
                 "SOROTTE_CLIENT_FILENAME_PRIVACY_MODE": "raw",
                 "SOROTTE_CLIENT_FILESIZE_PRIVACY_MODE": "raw",
@@ -1961,8 +2703,17 @@ class PlaybackLifecycleHarness:
                 "SOROTTE_CLIENT_MPV_MANAGED_CONNECT_TIMEOUT_MS": "10000",
                 "SOROTTE_CLIENT_MPV_MANAGED_CONNECT_POLL_INTERVAL_MS": "25",
                 "SOROTTE_CLIENT_LOG_PLAYER_TELEMETRY": "1",
+                "SOROTTE_LIFECYCLE_EVIDENCE_PATH": str(
+                    self.lifecycle_process_paths[f"client-{role}"]
+                ),
+                "SOROTTE_LIFECYCLE_RUN_ID": self.correlation_id,
+                "SOROTTE_LIFECYCLE_EMITTER": f"client-{role}",
             }
         )
+        if role == "follower":
+            environment["SOROTTE_LIFECYCLE_WRITE_BARRIER"] = (
+                LIFECYCLE_WRITE_BARRIER_MODE
+            )
         return environment
 
     def _start_client(self, role: str, first: Path, second: Path) -> ClientProcess:
@@ -1975,9 +2726,25 @@ class PlaybackLifecycleHarness:
                 upstream_port=self.server_port,
                 role=role,
                 ledger=self.ledger,
+                fault_cursor=self.fault_cursor,
             )
             self.proxies[role] = proxy
             client_server_port = proxy.port
+            self._lifecycle_emit(
+                process_role="proxy",
+                subject="protocol-fault-proxy",
+                machine="session",
+                transition="SESSION-CONNECT-001",
+                target_kind="fault-boundary",
+                trigger="internal",
+                authority_before="disconnected",
+                authority_after="connecting",
+                expected_effect="proxy-listening",
+                observed_effect="proxy-listening",
+                disposition="applied",
+                identities={"proxy_generation": 1},
+                include_product_tails=True,
+            )
         trace_path = self.artifact_dir / f"player-{role}.jsonl"
         script_path = self.artifact_dir / f"player-{role}-observer.lua"
         trace_path.write_text("", encoding="utf-8")
@@ -2246,6 +3013,83 @@ class PlaybackLifecycleHarness:
         )
         self._pass("seek-committed-and-applied", "canonical seek reached both real player timelines while paused")
 
+    def _verify_scheduled_transport_fault_recovery(self) -> None:
+        assert self.observer is not None
+        proxy = self.proxies.get("follower")
+        if proxy is None:
+            raise HarnessFailure(
+                "scheduled-transport-recovery", "the follower fault proxy is missing"
+            )
+        self.stage = "scheduled-backpressure"
+        proxy.apply_scheduled_backpressure()
+
+        self.stage = "scheduled-half-close"
+        previous_connections = proxy.upstream_connection_count
+        proxy.cut_and_hold()
+        self._lifecycle_emit(
+            process_role="proxy",
+            subject="follower-session",
+            machine="session",
+            transition="SESSION-LOSS-001",
+            target_kind="fault-boundary",
+            trigger="fault",
+            authority_before="active",
+            authority_after="reconnecting",
+            expected_effect="old-connection-fenced",
+            observed_effect="half-close-applied",
+            disposition="applied",
+            identities={"connection_generation": previous_connections},
+            include_product_tails=True,
+        )
+        proxy.resume()
+        self._wait(
+            "the half-closed follower to establish a replacement connection",
+            lambda: proxy.upstream_connection_count > previous_connections,
+            timeout=8.0,
+        )
+
+        self.stage = "scheduled-half-close-convergence"
+        observer_cursor = self.observer.cursor()
+        follower_cursor = self._player_cursor("follower")
+        self._command("controller", "seek 6.0")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=6.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            ("follower",),
+            {"follower": follower_cursor},
+            media_slot="media-1",
+            paused=True,
+            position=6.0,
+            timeout=8.0,
+        )
+        observer_cursor = self.observer.cursor()
+        follower_cursor = self._player_cursor("follower")
+        self._command("controller", "seek 7.0")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=7.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            ("follower",),
+            {"follower": follower_cursor},
+            media_slot="media-1",
+            paused=True,
+            position=7.0,
+            timeout=8.0,
+        )
+        self._pass(
+            "scheduled-half-close-reconnected",
+            "bounded backpressure and half-close forced a production reconnect that applied newer canonical seek authority",
+        )
+
     def _verify_late_join_and_status(self, first: Path, second: Path) -> None:
         assert self.observer is not None
         self.stage = "late-join-catch-up"
@@ -2380,7 +3224,12 @@ class PlaybackLifecycleHarness:
         self._observer_event(
             delayed.sequence,
             lambda event: follower_availability(event, "stale"),
-            timeout=9.0,
+            # The server's stale boundary is ten seconds from the last accepted
+            # report, while snapshots are emitted on an independent periodic
+            # cadence. Leave one complete slow-host cadence beyond that
+            # boundary instead of assuming the delayed observation occurred at
+            # its earliest possible instant.
+            timeout=12.0,
         )
         self._pass(
             "participant-status-delayed-and-stale",
@@ -2514,6 +3363,350 @@ class PlaybackLifecycleHarness:
         self._pass(
             "same-index-restore-fresh-authority",
             "restoring the first selected entry repeated the fresh paused-zero physical generation",
+        )
+
+    def _verify_untrusted_selection_rejected_and_restored(
+        self, first: Path, second: Path
+    ) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+        lifecycle_cursors = {
+            role: len(
+                lifecycle_evidence.read_jsonl(
+                    self.lifecycle_process_paths[f"client-{role}"]
+                )
+            )
+            for role in roles
+        }
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+
+        self.stage = "untrusted-selection-rejection"
+        observer_cursor = self.observer.cursor()
+        self.observer.send(
+            {
+                "Set": {
+                    "playlistChange": {
+                        "files": [
+                            "https://untrusted.invalid/private/video.mkv",
+                            str(second),
+                        ]
+                    }
+                }
+            }
+        )
+        untrusted_change = self._observer_event(
+            observer_cursor,
+            lambda event: event.get("event") == "playlist-change"
+            and event.get("playlist_size") == 2,
+        )
+        self._observer_event(
+            untrusted_change.sequence,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("playlist_index") == 0,
+        )
+        for role in roles:
+            path = self.lifecycle_process_paths[f"client-{role}"]
+            cursor = lifecycle_cursors[role]
+            self._wait(
+                f"{role} trusted-domain rejection evidence",
+                lambda path=path, cursor=cursor: next(
+                    (
+                        record
+                        for record in lifecycle_evidence.read_jsonl(path)[cursor:]
+                        if record.get("transition") == "MEDIA-UNTRUSTED-001"
+                    ),
+                    None,
+                ),
+                timeout=6.0,
+            )
+        for role in roles:
+            leaked = [
+                record
+                for record in read_jsonl(self.clients[role].player_trace)[
+                    player_cursors[role] :
+                ]
+                if record.get("media_slot") == "other"
+                and record.get("event") in {"media-changed", "file-loaded"}
+            ]
+            if leaked:
+                raise HarnessFailure(
+                    self.stage,
+                    f"the {role} real player attempted the rejected untrusted target",
+                )
+
+        self.stage = "untrusted-selection-restore"
+        observer_cursor = self.observer.cursor()
+        restore_cursors = {role: self._player_cursor(role) for role in roles}
+        restore_lifecycle_cursors = {
+            role: len(
+                lifecycle_evidence.read_jsonl(
+                    self.lifecycle_process_paths[f"client-{role}"]
+                )
+            )
+            for role in roles
+        }
+        self.observer.send(
+            {"Set": {"playlistChange": {"files": [str(first), str(second)]}}}
+        )
+        restored_change = self._observer_event(
+            observer_cursor,
+            lambda event: event.get("event") == "playlist-change"
+            and event.get("playlist_size") == 2,
+        )
+        self._observer_event(
+            restored_change.sequence,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("playlist_index") == 0,
+        )
+        for role in roles:
+            path = self.lifecycle_process_paths[f"client-{role}"]
+            cursor = restore_lifecycle_cursors[role]
+            self._wait(
+                f"{role} trusted media restoration evidence",
+                lambda path=path, cursor=cursor: next(
+                    (
+                        record
+                        for record in lifecycle_evidence.read_jsonl(path)[cursor:]
+                        if record.get("transition") == "MEDIA-PLAYABLE-001"
+                    ),
+                    None,
+                ),
+                timeout=6.0,
+            )
+        seek_cursor = self.observer.cursor()
+        self._command("controller", "seek 1.0")
+        self._canonical_playstate(
+            seek_cursor,
+            paused=True,
+            set_by="controller",
+            position=1.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            roles,
+            restore_cursors,
+            media_slot="media-1",
+            paused=True,
+            position=1.0,
+            tolerance=0.75,
+            timeout=10.0,
+        )
+        self._pass(
+            "untrusted-selection-rejected-and-restored",
+            "every packaged client rejected the remote target locally without opening it, then converged after trusted canonical media returned",
+        )
+
+    def _verify_scheduled_write_failure_recovery(self) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+        proxy = self.proxies.get("follower")
+        if proxy is None:
+            raise HarnessFailure(
+                "scheduled-write-failure", "the follower fault proxy is missing"
+            )
+        lifecycle_path = self.lifecycle_process_paths["client-follower"]
+        lifecycle_cursor = len(lifecycle_evidence.read_jsonl(lifecycle_path))
+        previous_connections = proxy.upstream_connection_count
+        previous_completed_connections = proxy.completed_connection_count
+        observer_cursor = self.observer.cursor()
+        barrier_ready_path, barrier_release_path = lifecycle_write_barrier_paths(
+            lifecycle_path
+        )
+
+        self.stage = "scheduled-write-failure-hold"
+        proxy.apply_scheduled_write_failure_hold()
+        large_target = (
+            "fault-payload-" + ("x" * WRITE_FAILURE_FRAME_PAYLOAD_BYTES) + ".mkv"
+        )
+        self.clients["follower"].process.write_line(f"queue {large_target}")
+        self._emit(
+            event="local-command-issued",
+            role="follower",
+            detail="bounded-large-playlist-frame",
+        )
+        leased_record = self._wait(
+            "the follower to lease the bounded large playback frame",
+            lambda: bounded_playback_frame_delivery(
+                lifecycle_evidence.read_jsonl(lifecycle_path),
+                after=lifecycle_cursor,
+                minimum_frame_bytes=WRITE_FAILURE_FRAME_PAYLOAD_BYTES,
+            ),
+            timeout=6.0,
+        )
+        leased_receipt = leased_record["identities"].get("frame-receipt")
+        if not isinstance(leased_receipt, int) or leased_receipt <= 0:
+            raise HarnessFailure(
+                self.stage,
+                "the bounded large playback frame has no valid lease receipt",
+            )
+        self._wait(
+            "the exact leased playback frame to enter the deterministic write barrier",
+            barrier_ready_path.is_file,
+            timeout=3.0,
+        )
+        self.stage = "scheduled-write-failure-reset"
+        proxy.apply_scheduled_write_failure_reset()
+        self._wait(
+            "the reset relay generation to terminate before releasing the leased frame",
+            lambda: proxy.completed_connection_count > previous_completed_connections,
+            timeout=3.0,
+        )
+        try:
+            with barrier_release_path.open("x", encoding="utf-8") as release:
+                release.write("reset\n")
+                release.flush()
+                os.fsync(release.fileno())
+        except OSError as error:
+            raise HarnessFailure(
+                self.stage,
+                f"failed to release the leased-frame write barrier: {redact_sensitive_text(error)}",
+            ) from error
+        self._emit(
+            event="leased-frame-write-released",
+            role="follower",
+            detail="after scheduled transport reset",
+        )
+
+        def exact_frame_failure() -> dict[str, Any] | None:
+            try:
+                result = exact_leased_frame_failure(
+                    lifecycle_evidence.read_jsonl(lifecycle_path),
+                    after=lifecycle_cursor,
+                    frame_receipt=leased_receipt,
+                )
+            except ValueError as error:
+                raise HarnessFailure(
+                    self.stage,
+                    str(error),
+                ) from error
+            return dict(result) if result is not None else None
+
+        self._wait(
+            "the exact leased playback frame to terminate as a write failure",
+            exact_frame_failure,
+            timeout=6.0,
+        )
+
+        # Replace the failed oversized local mutation before the next transport
+        # is released, so the retry can only carry the bounded prior snapshot.
+        self.clients["follower"].process.write_line("undo")
+        self._emit(
+            event="local-command-issued",
+            role="follower",
+            detail="playlist-undo-after-write-failure",
+        )
+        settle_cursors = {role: self._player_cursor(role) for role in roles}
+        proxy.apply_scheduled_write_failure_release()
+        self._wait(
+            "the follower to reconnect after the deterministic write failure",
+            lambda: proxy.upstream_connection_count > previous_connections,
+            timeout=8.0,
+        )
+
+        # The undo is the first authoritative follower mutation on the new
+        # connection. Its canonical same-index selection resets playstate to
+        # the beginning, and every client must finish applying that remote
+        # correction before a fresh local command can be meaningfully tested.
+        restored_selection = self._observer_event(
+            observer_cursor,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("playlist_index") == 0
+            and event.get("set_by") == "follower",
+            timeout=8.0,
+        )
+        self._canonical_playstate(
+            restored_selection.sequence,
+            paused=True,
+            set_by="controller",
+            position=0.0,
+            require_seek=False,
+            timeout=8.0,
+        )
+        self._wait_player_state(
+            roles,
+            settle_cursors,
+            media_slot="media-1",
+            paused=True,
+            position=0.0,
+            timeout=8.0,
+        )
+        leaked_playlist = next(
+            (
+                event
+                for event in self.observer.events_after(observer_cursor)
+                if event.fields.get("event") == "playlist-change"
+                and event.fields.get("playlist_size") != 2
+            ),
+            None,
+        )
+        if leaked_playlist is not None:
+            raise HarnessFailure(
+                self.stage,
+                "the failed oversized playlist mutation reached canonical authority",
+            )
+
+        self.stage = "scheduled-write-failure-convergence"
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "play")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=False,
+            set_by="controller",
+        )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-1",
+            paused=False,
+            timeout=8.0,
+        )
+
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "pause")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+        )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-1",
+            paused=True,
+            timeout=8.0,
+        )
+
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "seek 3.0")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=3.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-1",
+            paused=True,
+            position=3.0,
+            timeout=8.0,
+        )
+        try:
+            barrier_ready_path.unlink()
+            barrier_release_path.unlink()
+        except OSError as error:
+            raise HarnessFailure(
+                self.stage,
+                f"failed to retire lifecycle write barrier markers: {redact_sensitive_text(error)}",
+            ) from error
+        self._pass(
+            "scheduled-write-failure-recovered",
+            "a leased playback frame failed at the socket boundary, never reached authority, and every reconnected client applied fresh play, pause, and seek commands",
         )
 
     def _verify_empty_playlist_clear_and_restore(self, first: Path, second: Path) -> None:
@@ -2657,21 +3850,26 @@ class PlaybackLifecycleHarness:
         status_cursor = self.observer.cursor()
         follower_trace_cursor = self._player_cursor("follower")
         accepted_before_cut = proxy.accepted_count
+        upstream_before_cut = proxy.upstream_connection_count
         proxy.cut_and_hold()
         self._wait(
             "the production follower to reconnect into the held proxy",
             lambda: proxy.accepted_count > accepted_before_cut,
             timeout=5.0,
         )
+        if proxy.upstream_connection_count != upstream_before_cut:
+            raise HarnessFailure(
+                self.stage,
+                "the held follower replacement unexpectedly reached the server",
+            )
         self._observer_event(
             status_cursor,
-            lambda event: event.get("event") == "participant-status-snapshot"
-            and "follower" not in set(event.get("participants", [])),
+            lambda event: participant_status_authority_withdrawn(event, "follower"),
             timeout=6.0,
         )
         self._pass(
             "partition-withdraws-follower-status",
-            "a deterministic transport cut removed the absent packaged follower from status authority",
+            "a deterministic transport cut withdrew fresh follower status authority while its replacement upstream remained held",
         )
 
         self.stage = "start-while-follower-partitioned"
@@ -2784,6 +3982,33 @@ class PlaybackLifecycleHarness:
     def _verify_resume_eof_and_playlist(self) -> None:
         assert self.observer is not None
         roles = ("controller", "follower", "late")
+
+        # Earlier scenarios deliberately leave the first item playing while a
+        # participant is partitioned. Give that media ample headroom so slow
+        # CI cannot trigger an accidental EOF, then approach the boundary here
+        # under explicit canonical authority.
+        first_duration_seconds = float(self.fixtures["media-1"]["duration_seconds"])
+        eof_position = max(0.0, first_duration_seconds - INTENDED_EOF_LEAD_SECONDS)
+        self.stage = "pre-eof-positioning"
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", f"seek {eof_position:.3f}")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=eof_position,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-1",
+            paused=True,
+            position=eof_position,
+            timeout=8.0,
+        )
+
         self.stage = "resume-authority"
         observer_cursor = self.observer.cursor()
         player_cursors = {role: self._player_cursor(role) for role in roles}
@@ -3064,6 +4289,196 @@ class PlaybackLifecycleHarness:
             "natural EOF committed one stable terminal pause while selection remained on the final item",
         )
 
+    def _verify_loop_playlist_boundary(self) -> None:
+        assert self.observer is not None
+        roles = ("controller", "follower", "late")
+
+        self.stage = "loop-final-item-near-tail-seek"
+        observer_cursor = self.observer.cursor()
+        seek_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "seek 11.0")
+        self._canonical_playstate(
+            observer_cursor,
+            paused=True,
+            set_by="controller",
+            position=11.0,
+            require_seek=True,
+        )
+        self._wait_player_state(
+            roles,
+            seek_cursors,
+            media_slot="media-2",
+            paused=True,
+            position=11.0,
+            tolerance=1.25,
+        )
+        self._pass(
+            "loop-final-item-seek-committed-and-applied",
+            "canonical near-tail seek reached every loop-enabled real player",
+        )
+
+        self.stage = "loop-final-item-natural-eof"
+        observer_cursor = self.observer.cursor()
+        player_cursors = {role: self._player_cursor(role) for role in roles}
+        self._command("controller", "play")
+        play_commit = self._canonical_playstate(
+            observer_cursor,
+            paused=False,
+            set_by="controller",
+        )
+        initial_transport_revision = play_commit.fields.get("transport_revision")
+        if not isinstance(initial_transport_revision, int) or isinstance(
+            initial_transport_revision, bool
+        ):
+            raise HarnessFailure(
+                self.stage,
+                "the loop final-item Play commit did not carry transport authority",
+            )
+        self._wait_player_state(
+            roles,
+            player_cursors,
+            media_slot="media-2",
+            paused=False,
+            position=11.0,
+            tolerance=1.5,
+        )
+        self._pass(
+            "loop-final-item-resume-committed-and-applied",
+            "all three loop-enabled real players resumed the final item near its tail",
+        )
+
+        advance = self._observer_event(
+            play_commit.sequence,
+            lambda event: event.get("event") == "playlist-index"
+            and event.get("playlist_index") == 0,
+            timeout=8.0,
+        )
+        successor_commit = self._observer_event(
+            advance.sequence,
+            lambda event: event.get("event") == "playstate"
+            and event.get("paused") is True
+            and event.get("set_by") in roles
+            and event.get("do_seek") is False
+            and _safe_number(event.get("position_seconds")) is not None
+            and abs(float(event["position_seconds"])) <= 0.25
+            and isinstance(event.get("transport_revision"), int)
+            and not isinstance(event.get("transport_revision"), bool),
+            timeout=5.0,
+        )
+        successor_transport_revision = successor_commit.fields.get(
+            "transport_revision"
+        )
+        if successor_transport_revision <= initial_transport_revision:
+            raise HarnessFailure(
+                self.stage,
+                "the loop successor did not receive fresh transport authority",
+            )
+
+        def any_final_item_eof() -> bool:
+            return any(
+                any(
+                    record.get("event") == "end-file"
+                    and record.get("reason") == "eof"
+                    and record.get("media_slot") == "media-2"
+                    for record in read_jsonl(self.clients[role].player_trace)[
+                        player_cursors[role] :
+                    ]
+                )
+                for role in roles
+            )
+
+        self._wait("a loop-authorizing natural real-mpv EOF", any_final_item_eof, timeout=4.0)
+
+        for role in roles:
+            loaded = self._player_record(
+                role,
+                player_cursors[role],
+                lambda record: record.get("event") == "file-loaded"
+                and record.get("media_slot") == "media-1",
+                timeout=10.0,
+            )
+            loaded_sequence = loaded.get("sequence")
+            if not isinstance(loaded_sequence, int) or isinstance(
+                loaded_sequence, bool
+            ):
+                raise HarnessFailure(
+                    self.stage,
+                    f"the {role} loop successor load had no sequence fence",
+                )
+            self._player_record(
+                role,
+                max(0, loaded_sequence - 1),
+                lambda record: record.get("media_slot") == "media-1"
+                and record.get("paused") is True
+                and _safe_number(record.get("position_seconds")) is not None
+                and abs(float(record["position_seconds"])) <= 0.75,
+                timeout=8.0,
+            )
+
+        def loop_successor_authority_observed_twice() -> bool:
+            return (
+                len(
+                    [
+                        event
+                        for event in self.observer.events_after(
+                            successor_commit.sequence - 1
+                        )
+                        if event.fields.get("event") == "playstate"
+                        and event.fields.get("paused") is True
+                        and event.fields.get("transport_revision")
+                        == successor_transport_revision
+                        and _safe_number(event.fields.get("position_seconds"))
+                        is not None
+                        and abs(float(event.fields["position_seconds"])) <= 0.25
+                    ]
+                )
+                >= 2
+            )
+
+        self._wait(
+            "loop successor authority to remain stable across a server refresh",
+            loop_successor_authority_observed_twice,
+            timeout=3.0,
+        )
+        try:
+            verified_successor_revision = validate_natural_eof_successor_boundary(
+                (event.fields for event in self.observer.events_after(observer_cursor)),
+                {
+                    role: read_jsonl(self.clients[role].player_trace)[
+                        player_cursors[role] :
+                    ]
+                    for role in roles
+                },
+                previous_transport_revision=initial_transport_revision,
+                expected_playlist_index=0,
+                predecessor_media_slot="media-2",
+                successor_media_slot="media-1",
+            )
+        except ValueError as error:
+            raise HarnessFailure(self.stage, str(error)) from error
+        if verified_successor_revision != successor_transport_revision:
+            raise HarnessFailure(
+                self.stage,
+                "loop successor transport evidence changed during verification",
+            )
+        self._loop_boundary_evidence = (
+            observer_cursor,
+            player_cursors,
+            initial_transport_revision,
+        )
+        self._pass(
+            "loop-final-item-advanced-once",
+            "one natural final-item EOF committed exactly one canonical loop to item zero",
+        )
+        self._pass(
+            "loop-successor-loaded-everywhere",
+            "every loop-enabled managed real mpv loaded item zero at paused origin",
+        )
+        self._pass(
+            "loop-successor-authority-reset",
+            "completed final-item state could not cross the fresh loop successor revision",
+        )
+
     def _verify_clean_shutdown_and_withdrawal(self) -> None:
         assert self.observer is not None
         self.stage = "client-bounded-shutdown"
@@ -3103,36 +4518,69 @@ class PlaybackLifecycleHarness:
             "no packaged client recovered past a failed external-player lifecycle step",
         )
 
-        self.stage = "final-item-terminal-through-client-exit"
-        if self._terminal_boundary_evidence is None:
-            raise HarnessFailure(
-                self.stage,
-                "terminal boundary evidence was not retained for full-runtime verification",
-            )
-        (
-            terminal_observer_cursor,
-            terminal_player_cursors,
-            terminal_duration_seconds,
-            initial_transport_revision,
-        ) = self._terminal_boundary_evidence
-        validate_terminal_playlist_boundary(
+        if self.loop_at_end_of_playlist:
+            self.stage = "loop-successor-through-client-exit"
+            if self._loop_boundary_evidence is None:
+                raise HarnessFailure(
+                    self.stage,
+                    "loop boundary evidence was not retained for full-runtime verification",
+                )
             (
-                event.fields
-                for event in self.observer.events_after(terminal_observer_cursor)
-            ),
-            {
-                role: read_jsonl(self.clients[role].player_trace)[
-                    terminal_player_cursors[role] :
-                ]
-                for role in self.clients
-            },
-            terminal_duration_seconds=terminal_duration_seconds,
-            initial_transport_revision=initial_transport_revision,
-        )
-        self._pass(
-            "final-item-terminal-stable-through-client-exit",
-            "canonical pause, terminal position, selection, and physical players remained bounded for the rest of the run",
-        )
+                loop_observer_cursor,
+                loop_player_cursors,
+                initial_transport_revision,
+            ) = self._loop_boundary_evidence
+            validate_natural_eof_successor_boundary(
+                (
+                    event.fields
+                    for event in self.observer.events_after(loop_observer_cursor)
+                ),
+                {
+                    role: read_jsonl(self.clients[role].player_trace)[
+                        loop_player_cursors[role] :
+                    ]
+                    for role in self.clients
+                },
+                previous_transport_revision=initial_transport_revision,
+                expected_playlist_index=0,
+                predecessor_media_slot="media-2",
+                successor_media_slot="media-1",
+            )
+            self._pass(
+                "loop-successor-stable-through-client-exit",
+                "canonical loop selection, paused origin, and every physical successor remained bounded for the rest of the run",
+            )
+        else:
+            self.stage = "final-item-terminal-through-client-exit"
+            if self._terminal_boundary_evidence is None:
+                raise HarnessFailure(
+                    self.stage,
+                    "terminal boundary evidence was not retained for full-runtime verification",
+                )
+            (
+                terminal_observer_cursor,
+                terminal_player_cursors,
+                terminal_duration_seconds,
+                initial_transport_revision,
+            ) = self._terminal_boundary_evidence
+            validate_terminal_playlist_boundary(
+                (
+                    event.fields
+                    for event in self.observer.events_after(terminal_observer_cursor)
+                ),
+                {
+                    role: read_jsonl(self.clients[role].player_trace)[
+                        terminal_player_cursors[role] :
+                    ]
+                    for role in self.clients
+                },
+                terminal_duration_seconds=terminal_duration_seconds,
+                initial_transport_revision=initial_transport_revision,
+            )
+            self._pass(
+                "final-item-terminal-stable-through-client-exit",
+                "canonical pause, terminal position, selection, and physical players remained bounded for the rest of the run",
+            )
 
         self.stage = "participant-status-withdrawal"
         withdrawal_cursor = self.observer.cursor()
@@ -3202,11 +4650,52 @@ class PlaybackLifecycleHarness:
             for role in self._started_process_log_roles
             for stream in ("stdout", "stderr")
         ]
+        artifacts: dict[str, Any] = {
+            "causal_trace": self.trace_path.name,
+            "player_traces": [f"player-{role}.jsonl" for role in sorted(self.clients)],
+            "process_logs": [
+                name for name in potential_process_logs if (self.artifact_dir / name).is_file()
+            ],
+        }
+        if self.lifecycle_validation is not None:
+            artifacts.update(
+                {
+                    "lifecycle_evidence": self.lifecycle_merged_path.name,
+                    "lifecycle_evidence_summary": self.lifecycle_summary_path.name,
+                    "lifecycle_process_ledgers": [
+                        path.name for path in self.lifecycle_process_paths.values()
+                    ],
+                }
+            )
+        if self.fault_schedule_validated:
+            artifacts.update(
+                {
+                    "fault_schedule": self.staged_fault_schedule_path.name,
+                    "fault_replay": self.fault_replay_path.name,
+                }
+            )
+        fault_schedule = None
+        if self.fault_schedule is not None:
+            fault_schedule = {
+                "id": self.fault_schedule.schedule_id,
+                "source_sha256": self.fault_schedule_source_digest,
+                "staged_sha256": sha256_file(self.staged_fault_schedule_path),
+                "replay_sha256": (
+                    sha256_file(self.fault_replay_path)
+                    if self.fault_schedule_validated
+                    else None
+                ),
+                "step_count": len(self.fault_schedule.steps),
+                "actions": sorted({step.action for step in self.fault_schedule.steps}),
+            }
         return {
             "schema_version": SCHEMA_VERSION,
             "kind": REPORT_KIND,
             "result": result,
             "capability": "actual-server-multi-client-real-mpv",
+            "playlist_policy": (
+                "loop-at-end" if self.loop_at_end_of_playlist else "terminal-at-end"
+            ),
             "candidate_sha": safe_candidate_sha,
             "correlation_id": self.correlation_id,
             "started_at_utc": self.started_at,
@@ -3217,40 +4706,10 @@ class PlaybackLifecycleHarness:
             },
             "prerequisites": self.prerequisites,
             "fixtures": self.fixtures,
-            "fault_schedule": {
-                "id": FAULT_SCHEDULE_ID,
-                "fragment_sizes": list(ProtocolFaultProxy._FRAGMENT_SIZES),
-                "steps": [
-                    "converge-through-fragmenting-proxy",
-                    "drop-one-participant-status-report",
-                    "verify-periodic-status-self-heal",
-                    "block-participant-status-reports",
-                    "verify-delayed-then-stale-status",
-                    "release-participant-status-reports",
-                    "verify-fresh-status-without-authority-mutation",
-                    "replace-selected-entry-under-stable-index",
-                    "verify-fresh-selection-and-paused-zero-real-players",
-                    "restore-selected-entry-under-stable-index",
-                    "verify-second-fresh-selection-generation",
-                    "clear-canonical-playlist-and-selection",
-                    "verify-all-real-players-unloaded",
-                    "restore-playlist-and-select-through-production-client",
-                    "verify-fresh-paused-zero-transport-generation",
-                    "seek-paused-baseline",
-                    "cut-and-hold-follower",
-                    "start-while-follower-absent",
-                    "release-replacement-transport",
-                    "verify-authoritative-catch-up",
-                ],
-            },
+            "fault_schedule": fault_schedule,
             "checks": self.checks,
-            "artifacts": {
-                "causal_trace": self.trace_path.name,
-                "player_traces": [f"player-{role}.jsonl" for role in sorted(self.clients)],
-                "process_logs": [
-                    name for name in potential_process_logs if (self.artifact_dir / name).is_file()
-                ],
-            },
+            "artifacts": artifacts,
+            "lifecycle_summary": self.lifecycle_validation,
         }
 
     def _write_report(
@@ -3325,6 +4784,21 @@ class PlaybackLifecycleHarness:
                     Path(client.ipc_path).unlink()
                 except FileNotFoundError:
                     pass
+        if self.lifecycle_writer is not None:
+            try:
+                self._stop_lifecycle_writer()
+            except (OSError, ValueError):
+                try:
+                    self.lifecycle_writer.close()
+                except OSError:
+                    pass
+                self.lifecycle_writer = None
+        if self.fault_ledger is not None:
+            try:
+                self.fault_ledger.close()
+            except OSError:
+                pass
+            self.fault_ledger = None
 
     def run(self) -> int:
         if self.artifact_dir.exists() and any(self.artifact_dir.iterdir()):
@@ -3336,22 +4810,33 @@ class PlaybackLifecycleHarness:
             return 2
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.ledger = TraceLedger(self.trace_path, self.correlation_id)
-        self._emit(event="verification-started", detail="packaged multi-process lifecycle")
         try:
+            self._start_fault_schedule()
+            self._start_lifecycle_writer()
+            self._emit(event="verification-started", detail="packaged multi-process lifecycle")
             self.preflight()
             first, second = self._create_fixtures()
             self._start_server()
             self._connect_observer_and_seed(first, second)
             self._verify_initial_players(first, second)
             self._verify_play_pause_seek()
+            self._verify_scheduled_transport_fault_recovery()
             self._verify_late_join_and_status(first, second)
             self._verify_participant_status_loss_delay_stale_recovery()
+            self._verify_untrusted_selection_rejected_and_restored(first, second)
             self._verify_same_index_selected_entry_replacement(first, second)
             self._verify_empty_playlist_clear_and_restore(first, second)
             self._verify_partitioned_follower_catches_up_to_missed_start()
+            self._verify_scheduled_write_failure_recovery()
             self._verify_resume_eof_and_playlist()
-            self._verify_terminal_playlist_boundary()
+            if self.loop_at_end_of_playlist:
+                self._verify_loop_playlist_boundary()
+            else:
+                self._verify_terminal_playlist_boundary()
             self._verify_clean_shutdown_and_withdrawal()
+            self._finish_fault_schedule()
+            self._stop_lifecycle_writer()
+            self._validate_lifecycle_evidence()
             self._emit(event="verification-passed", detail="all required lifecycle checks")
             self._write_report("passed")
             self._print_summary("passed")
@@ -3380,11 +4865,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mpv", type=Path, required=True, help="exact supported mpv executable")
     run.add_argument("--ffmpeg", type=Path, required=True, help="exact FFmpeg fixture generator")
     run.add_argument("--artifact-dir", type=Path, required=True)
+    run.add_argument(
+        "--fault-schedule",
+        type=Path,
+        help="closed deterministic schedule to replay (defaults to the committed system schedule)",
+    )
     run.add_argument("--candidate-sha", help="full git SHA represented by the candidate binaries")
     run.add_argument(
         "--allow-unverified-candidate",
         action="store_true",
         help="development only: run with a dirty or mismatched checkout and mark the evidence non-publishable",
+    )
+    run.add_argument(
+        "--loop-at-end-of-playlist",
+        action="store_true",
+        help="require natural final-item EOF to commit one canonical last-to-first loop",
     )
     run.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     run.add_argument(
@@ -3416,7 +4911,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ffmpeg_path=args.ffmpeg,
             artifact_dir=args.artifact_dir,
             candidate_sha=args.candidate_sha,
+            fault_schedule_path=args.fault_schedule,
             allow_unverified_candidate=args.allow_unverified_candidate,
+            loop_at_end_of_playlist=args.loop_at_end_of_playlist,
             timeout_seconds=args.timeout_seconds,
             client_runtime_seconds=args.client_runtime_seconds,
         )

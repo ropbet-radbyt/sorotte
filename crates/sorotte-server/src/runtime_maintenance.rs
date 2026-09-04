@@ -598,7 +598,46 @@ impl ServerRuntime {
         if !self.sessions.contains_key(client_id) {
             return None;
         }
+        let status_supported = self
+            .sessions
+            .get(client_id)
+            .is_some_and(|session| session.capabilities.participant_status_v1);
+        let membership_epoch = self.client_room_join_order(client_id);
+        emit_server_lifecycle_transition(
+            "ROOM-LEAVE-001",
+            "room-membership",
+            TargetKind::ServerState,
+            Trigger::Shutdown,
+            Disposition::Submitted,
+            &[("membership-epoch", membership_epoch)],
+        );
+        emit_server_lifecycle_transition(
+            "PLAYLIST-LOSE-AUTHORITY-001",
+            "playlist-selection",
+            TargetKind::ServerState,
+            Trigger::Shutdown,
+            Disposition::Applied,
+            &[("membership-epoch", membership_epoch)],
+        );
         self.clear_participant_status_for_client(client_id);
+        if status_supported {
+            emit_server_lifecycle_transition(
+                "STATUS-UNAVAILABLE-001",
+                "participant-status",
+                TargetKind::ServerState,
+                Trigger::Shutdown,
+                Disposition::Applied,
+                &[("membership-epoch", membership_epoch)],
+            );
+        }
+        emit_server_lifecycle_transition(
+            "SESSION-DISCONNECT-001",
+            "session",
+            TargetKind::ServerState,
+            Trigger::Shutdown,
+            Disposition::Applied,
+            &[("membership-epoch", membership_epoch)],
+        );
         let session = self.sessions.remove(client_id)?;
         self.playback_barrier_fenced_clients.remove(client_id);
         let _ = self.domain.leave_room(&session.username, &session.room);
@@ -617,6 +656,14 @@ impl ServerRuntime {
         self.client_last_state_update_at.remove(client_id);
         self.client_next_periodic_state_at.remove(client_id);
         self.client_peer_ips.remove(client_id);
+        emit_server_lifecycle_transition(
+            "ROOM-OUTSIDE-001",
+            "room-membership",
+            TargetKind::ServerState,
+            Trigger::Shutdown,
+            Disposition::Applied,
+            &[("membership-epoch", membership_epoch)],
+        );
         Some(session)
     }
 
@@ -625,20 +672,31 @@ impl ServerRuntime {
     /// room is included even when no report was retained, because cached
     /// snapshots also contain `AwaitingReport` and `Unsupported` members.
     pub(crate) fn clear_participant_status_for_client(&mut self, client_id: &str) {
-        let retained_room = self
-            .client_participant_status
-            .remove(client_id)
-            .map(|retained| retained.room);
+        let retained = self.client_participant_status.remove(client_id);
+        if let Some(retained) = retained.as_ref() {
+            emit_server_lifecycle_transition(
+                "STATUS-WITHDRAW-001",
+                "participant-status",
+                TargetKind::ServerState,
+                Trigger::Internal,
+                Disposition::Applied,
+                &[
+                    ("membership-epoch", retained.room_join_sequence),
+                    ("report-sequence", retained.report.report_sequence),
+                ],
+            );
+        }
+        let retained_room = retained.as_ref().map(|retained| retained.room.as_str());
         let session_room = self
             .sessions
             .get(client_id)
             .map(|session| session.room.clone());
 
-        if let Some(room) = retained_room.as_deref() {
+        if let Some(room) = retained_room {
             self.participant_status_snapshot_cache.remove(room);
         }
         if let Some(room) = session_room.as_deref()
-            && retained_room.as_deref() != Some(room)
+            && retained_room != Some(room)
         {
             self.participant_status_snapshot_cache.remove(room);
         }
@@ -751,6 +809,26 @@ impl ServerRuntime {
                         current_scope,
                     );
                     let availability = participant_status_availability(report_age_ms);
+                    if retained.projected_availability.advance(availability) {
+                        let transition = match availability {
+                            ParticipantStatusAvailability::Delayed => Some("STATUS-DELAY-001"),
+                            ParticipantStatusAvailability::Stale => Some("STATUS-STALE-001"),
+                            _ => None,
+                        };
+                        if let Some(transition) = transition {
+                            emit_server_lifecycle_transition(
+                                transition,
+                                "participant-status",
+                                TargetKind::ServerState,
+                                Trigger::Timer,
+                                Disposition::Applied,
+                                &[
+                                    ("membership-epoch", retained.room_join_sequence),
+                                    ("report-sequence", retained.report.report_sequence),
+                                ],
+                            );
+                        }
+                    }
                     let mut view = ParticipantStatusView::new(availability);
                     view.correlation = Some(correlation);
                     view.player_connection = Some(retained.report.player_connection);
@@ -1363,6 +1441,10 @@ impl ServerRuntime {
     }
 
     fn remove_room_runtime_state(&mut self, room_name: &str) {
+        // The final participant may already have removed the readiness room,
+        // but every alternate retirement path must still close an active gate
+        // before its canonical barrier is discarded.
+        let _ = self.clear_readiness_gate(room_name);
         self.room_controllers.remove(room_name);
         self.room_playlists.remove(room_name);
         self.room_playback_states.remove(room_name);

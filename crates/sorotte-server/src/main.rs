@@ -7,6 +7,10 @@ use cli::{
     CliAction, ServerBindEndpoint, ServerBindFamily, ServerRunConfig, parse_server_cli_args,
     print_help, print_version, resolve_run_config,
 };
+use sorotte_lifecycle_evidence::{
+    Disposition, ProcessInventorySpec, ProcessRole, TargetKind, TransitionObservation, Trigger,
+    emit_global, flush_global, init_global_from_env,
+};
 use sorotte_server::{ServerActorHandle, ServerApp, run_server_network_loops_and_shutdown_actor};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -181,12 +185,42 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
     app.runtime_mut().set_stats_db_path(config.stats_db_file)?;
 
     let runtime = ServerActorHandle::spawn(std::mem::take(app.runtime_mut()));
+    emit_global(
+        TransitionObservation::new(
+            ProcessRole::Server,
+            "application-process",
+            "application",
+            "APP-RUN-001",
+        )
+        .target(TargetKind::ProcessBoundary)
+        .triggered_by(Trigger::Startup)
+        .authority("initializing", "process-owned")
+        .effect("process-running", "process-running")
+        .disposition(Disposition::Applied),
+    )?;
     run_server_until_shutdown_signal(listeners, runtime, platform_shutdown_signal()).await
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match parse_server_cli_args(env::args().skip(1)) {
+    init_global_from_env(ProcessInventorySpec::new(
+        ProcessRole::Server,
+        [ProcessRole::Server],
+    )?)?;
+    emit_global(
+        TransitionObservation::new(
+            ProcessRole::Server,
+            "application-process",
+            "application",
+            "APP-LAUNCH-001",
+        )
+        .target(TargetKind::ProcessBoundary)
+        .triggered_by(Trigger::Startup)
+        .authority("unowned", "initializing")
+        .effect("process-starting", "process-starting")
+        .disposition(Disposition::Accepted),
+    )?;
+    let result = match parse_server_cli_args(env::args().skip(1)) {
         Ok(CliAction::Help) => {
             print_help();
             Ok(())
@@ -201,7 +235,40 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("Try 'sorotte-server --help' for usage.");
             bail!("invalid command line")
         }
-    }
+    };
+    let (observed_effect, disposition) = if result.is_ok() {
+        ("shutdown-requested", Disposition::Accepted)
+    } else {
+        ("runtime-failed", Disposition::Failed)
+    };
+    emit_global(
+        TransitionObservation::new(
+            ProcessRole::Server,
+            "application-process",
+            "application",
+            "APP-STOP-001",
+        )
+        .target(TargetKind::ProcessBoundary)
+        .triggered_by(Trigger::Shutdown)
+        .authority("process-owned", "draining")
+        .effect("bounded-drain", observed_effect)
+        .disposition(disposition),
+    )?;
+    emit_global(
+        TransitionObservation::new(
+            ProcessRole::Server,
+            "application-process",
+            "application",
+            "APP-TERM-001",
+        )
+        .target(TargetKind::ProcessBoundary)
+        .triggered_by(Trigger::Shutdown)
+        .authority("draining", "unowned")
+        .effect("resources-released", "resources-released")
+        .disposition(Disposition::Applied),
+    )?;
+    flush_global()?;
+    result
 }
 
 #[cfg(test)]

@@ -1630,8 +1630,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let candidate = match plan.decision(GuiMediaResolutionFallbackPolicy::WaitForHigherPriority)
         {
             GuiMediaResolutionDecision::Ready(candidate) => candidate,
-            GuiMediaResolutionDecision::WaitingForHigherPriority
-            | GuiMediaResolutionDecision::Exhausted => {
+            GuiMediaResolutionDecision::WaitingForHigherPriority => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            GuiMediaResolutionDecision::Exhausted => {
+                self.record_playlist_resolution_missing();
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
         };
@@ -1731,8 +1734,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let candidate = match plan.decision(GuiMediaResolutionFallbackPolicy::AllowReadyFallback) {
             GuiMediaResolutionDecision::Ready(candidate) => candidate,
-            GuiMediaResolutionDecision::WaitingForHigherPriority
-            | GuiMediaResolutionDecision::Exhausted => {
+            GuiMediaResolutionDecision::WaitingForHigherPriority => {
+                return SelectedPlaylistMediaSyncOutcome::NoChange;
+            }
+            GuiMediaResolutionDecision::Exhausted => {
+                self.record_playlist_resolution_missing();
                 return SelectedPlaylistMediaSyncOutcome::NoChange;
             }
         };

@@ -304,6 +304,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn detach_player(&mut self) {
         let attachment_ended = self.player.is_some() || self.managed_mpv_process.is_some();
+        let retired_attachment_epoch = self.player_attachment_epoch.max(1);
         self.release_attached_sorotte_bridge_best_effort();
         self.player = None;
         self.managed_mpv_process = None;
@@ -314,6 +315,18 @@ impl GuiPersistedConfigRuntimeOwner {
         });
         if attachment_ended {
             self.player_attachment_epoch = self.player_attachment_epoch.wrapping_add(1);
+            crate::emit_gui_lifecycle_transition(
+                crate::GuiLifecycleOrigin::new(
+                    sorotte_lifecycle_evidence::ProcessRole::Player,
+                    "gui-player-owner",
+                ),
+                "TRANSPORT-DETACH-001",
+                "local-transport",
+                sorotte_lifecycle_evidence::TargetKind::PlayerState,
+                sorotte_lifecycle_evidence::Trigger::Internal,
+                sorotte_lifecycle_evidence::Disposition::Applied,
+                &[("attachment-epoch", retired_attachment_epoch)],
+            );
         }
         self.ordered_player_events = player::GuiOrderedPlayerEventConsumer::default();
         self.network_options_hook_failure_reason = None;
@@ -1040,6 +1053,27 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         if self.player_launch_state.can_attach_on_demand() {
+            if self
+                .player_unavailability_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("GUI-owned mpv exited "))
+            {
+                crate::emit_gui_lifecycle_transition(
+                    crate::GuiLifecycleOrigin::new(
+                        sorotte_lifecycle_evidence::ProcessRole::Player,
+                        "gui-player-owner",
+                    ),
+                    "PLAYER-RELAUNCH-001",
+                    "player-attachment",
+                    sorotte_lifecycle_evidence::TargetKind::ProcessBoundary,
+                    sorotte_lifecycle_evidence::Trigger::Recovery,
+                    sorotte_lifecycle_evidence::Disposition::Submitted,
+                    &[(
+                        "attachment-epoch",
+                        self.player_attachment_epoch.wrapping_add(1).max(1),
+                    )],
+                );
+            }
             self.attach_player_from_launch_state(self.player_launch_state.clone());
         }
     }
@@ -1087,6 +1121,18 @@ impl GuiPersistedConfigRuntimeOwner {
             Some(guard) => match guard.try_wait() {
                 Ok(status) => status,
                 Err(error) => {
+                    crate::emit_gui_lifecycle_transition(
+                        crate::GuiLifecycleOrigin::new(
+                            sorotte_lifecycle_evidence::ProcessRole::Player,
+                            "gui-player-owner",
+                        ),
+                        "PLAYER-LOSS-001",
+                        "player-attachment",
+                        sorotte_lifecycle_evidence::TargetKind::ProcessBoundary,
+                        sorotte_lifecycle_evidence::Trigger::Fault,
+                        sorotte_lifecycle_evidence::Disposition::Failed,
+                        &[("attachment-epoch", self.player_attachment_epoch.max(1))],
+                    );
                     self.detach_player();
                     self.player_unavailability_reason = Some(error);
                     return;
@@ -1102,6 +1148,18 @@ impl GuiPersistedConfigRuntimeOwner {
             .code()
             .map(|code| format!("with exit code {code}"))
             .unwrap_or_else(|| "after an abnormal termination".to_owned());
+        crate::emit_gui_lifecycle_transition(
+            crate::GuiLifecycleOrigin::new(
+                sorotte_lifecycle_evidence::ProcessRole::Player,
+                "gui-player-owner",
+            ),
+            "PLAYER-LOSS-001",
+            "player-attachment",
+            sorotte_lifecycle_evidence::TargetKind::ProcessBoundary,
+            sorotte_lifecycle_evidence::Trigger::Fault,
+            sorotte_lifecycle_evidence::Disposition::Failed,
+            &[("attachment-epoch", self.player_attachment_epoch.max(1))],
+        );
         self.detach_player();
         self.player_unavailability_reason = Some(format!(
             "GUI-owned mpv exited {status_text}. Open media or save/reload configuration to relaunch it."
@@ -1397,6 +1455,20 @@ impl GuiPersistedConfigRuntimeOwner {
 
 impl Drop for GuiPersistedConfigRuntimeOwner {
     fn drop(&mut self) {
+        if self.player.is_some() || self.managed_mpv_process.is_some() {
+            crate::emit_gui_lifecycle_transition(
+                crate::GuiLifecycleOrigin::new(
+                    sorotte_lifecycle_evidence::ProcessRole::Player,
+                    "gui-player-owner",
+                ),
+                "PLAYER-STOP-001",
+                "player-attachment",
+                sorotte_lifecycle_evidence::TargetKind::ProcessBoundary,
+                sorotte_lifecycle_evidence::Trigger::Shutdown,
+                sorotte_lifecycle_evidence::Disposition::Applied,
+                &[("attachment-epoch", self.player_attachment_epoch.max(1))],
+            );
+        }
         self.release_attached_sorotte_bridge_best_effort();
     }
 }

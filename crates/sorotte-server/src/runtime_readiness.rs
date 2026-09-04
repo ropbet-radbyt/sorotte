@@ -1,5 +1,204 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StartGateEvidenceStep {
+    transition: &'static str,
+    authority_before: &'static str,
+    authority_after: &'static str,
+    trigger: Trigger,
+    disposition: Disposition,
+}
+
+fn start_gate_phase_name(phase: &RoomStartGatePhase) -> &'static str {
+    match phase {
+        RoomStartGatePhase::Inactive => "inactive",
+        RoomStartGatePhase::WaitingForIntent { .. } => "waiting-for-intent",
+        RoomStartGatePhase::WaitingForTechnicalReadiness { .. } => {
+            "waiting-for-technical-readiness"
+        }
+        RoomStartGatePhase::ReadyToCommit { .. } => "ready-to-commit",
+        RoomStartGatePhase::Committed { .. } => "committed",
+        RoomStartGatePhase::Degraded { .. } => "degraded",
+    }
+}
+
+fn start_gate_media_generation(phase: &RoomStartGatePhase) -> Option<u64> {
+    match phase {
+        RoomStartGatePhase::Inactive => None,
+        RoomStartGatePhase::WaitingForIntent { media_generation }
+        | RoomStartGatePhase::WaitingForTechnicalReadiness { media_generation }
+        | RoomStartGatePhase::ReadyToCommit {
+            media_generation, ..
+        }
+        | RoomStartGatePhase::Committed {
+            media_generation, ..
+        }
+        | RoomStartGatePhase::Degraded {
+            media_generation, ..
+        } => Some(*media_generation),
+    }
+}
+
+fn start_gate_evidence_plan(
+    previous: &RoomStartGatePhase,
+    next: &RoomStartGatePhase,
+) -> Vec<StartGateEvidenceStep> {
+    if previous == next {
+        return Vec::new();
+    }
+
+    let next_generation = start_gate_media_generation(next);
+    let previous_is = |candidate: &str| {
+        start_gate_phase_name(previous) == candidate
+            && start_gate_media_generation(previous) == next_generation
+    };
+    let mut steps = Vec::with_capacity(4);
+    let mut prepare = || {
+        steps.push(StartGateEvidenceStep {
+            transition: "GATE-PREPARE-001",
+            authority_before: start_gate_phase_name(previous),
+            authority_after: "waiting-for-intent",
+            trigger: Trigger::RemoteEvent,
+            disposition: Disposition::Accepted,
+        });
+    };
+
+    match next {
+        RoomStartGatePhase::Inactive => steps.push(StartGateEvidenceStep {
+            transition: "GATE-CLEAR-001",
+            authority_before: start_gate_phase_name(previous),
+            authority_after: "inactive",
+            trigger: Trigger::Internal,
+            disposition: Disposition::Applied,
+        }),
+        RoomStartGatePhase::WaitingForIntent { .. } => prepare(),
+        RoomStartGatePhase::WaitingForTechnicalReadiness { .. } => {
+            if !previous_is("waiting-for-intent") {
+                prepare();
+            }
+            steps.push(StartGateEvidenceStep {
+                transition: "GATE-PLAYABILITY-001",
+                authority_before: "waiting-for-intent",
+                authority_after: "waiting-for-technical-readiness",
+                trigger: Trigger::RemoteEvent,
+                disposition: Disposition::Applied,
+            });
+        }
+        RoomStartGatePhase::ReadyToCommit { .. } => {
+            if !previous_is("waiting-for-technical-readiness") {
+                if !previous_is("waiting-for-intent") {
+                    prepare();
+                }
+                steps.push(StartGateEvidenceStep {
+                    transition: "GATE-PLAYABILITY-001",
+                    authority_before: "waiting-for-intent",
+                    authority_after: "waiting-for-technical-readiness",
+                    trigger: Trigger::RemoteEvent,
+                    disposition: Disposition::Applied,
+                });
+            }
+            steps.push(StartGateEvidenceStep {
+                transition: "GATE-READY-001",
+                authority_before: "waiting-for-technical-readiness",
+                authority_after: "ready-to-commit",
+                trigger: Trigger::RemoteEvent,
+                disposition: Disposition::Applied,
+            });
+        }
+        RoomStartGatePhase::Committed { .. } => {
+            if !previous_is("ready-to-commit") {
+                if !previous_is("waiting-for-technical-readiness") {
+                    if !previous_is("waiting-for-intent") {
+                        prepare();
+                    }
+                    steps.push(StartGateEvidenceStep {
+                        transition: "GATE-PLAYABILITY-001",
+                        authority_before: "waiting-for-intent",
+                        authority_after: "waiting-for-technical-readiness",
+                        trigger: Trigger::RemoteEvent,
+                        disposition: Disposition::Applied,
+                    });
+                }
+                steps.push(StartGateEvidenceStep {
+                    transition: "GATE-READY-001",
+                    authority_before: "waiting-for-technical-readiness",
+                    authority_after: "ready-to-commit",
+                    trigger: Trigger::RemoteEvent,
+                    disposition: Disposition::Applied,
+                });
+            }
+            steps.push(StartGateEvidenceStep {
+                transition: "GATE-COMMIT-001",
+                authority_before: "ready-to-commit",
+                authority_after: "committed",
+                trigger: Trigger::RemoteEvent,
+                disposition: Disposition::Committed,
+            });
+        }
+        RoomStartGatePhase::Degraded { reason, .. } => {
+            if matches!(previous, RoomStartGatePhase::Inactive) {
+                prepare();
+            }
+            let (trigger, disposition) = match reason {
+                StartGateDegradedReason::TimedOut => (Trigger::Timer, Disposition::TimedOut),
+                StartGateDegradedReason::TechnicalFailure => (Trigger::Fault, Disposition::Failed),
+                _ => (Trigger::Internal, Disposition::Applied),
+            };
+            steps.push(StartGateEvidenceStep {
+                transition: "GATE-DEGRADE-001",
+                authority_before: if matches!(previous, RoomStartGatePhase::Inactive) {
+                    "waiting-for-intent"
+                } else {
+                    start_gate_phase_name(previous)
+                },
+                authority_after: "degraded",
+                trigger,
+                disposition,
+            });
+        }
+    }
+    steps
+}
+
+fn emit_start_gate_phase_change(previous: &RoomStartGatePhase, next: &RoomStartGatePhase) {
+    let media_generation = start_gate_media_generation(next)
+        .or_else(|| start_gate_media_generation(previous))
+        .unwrap_or_default();
+    let readiness_revision = match next {
+        RoomStartGatePhase::ReadyToCommit {
+            readiness_revision, ..
+        }
+        | RoomStartGatePhase::Committed {
+            readiness_revision, ..
+        } => *readiness_revision,
+        _ => 0,
+    };
+    let playback_revision = match next {
+        RoomStartGatePhase::Committed {
+            playback_revision, ..
+        } => *playback_revision,
+        _ => 0,
+    };
+    for step in start_gate_evidence_plan(previous, next) {
+        emit_server_lifecycle_state_transition(
+            step.transition,
+            "start-gate",
+            TargetKind::ServerState,
+            step.trigger,
+            step.disposition,
+            LifecycleAuthorityTransition {
+                before: step.authority_before,
+                after: step.authority_after,
+            },
+            &[
+                ("media-generation", media_generation),
+                ("readiness-revision", readiness_revision),
+                ("playback-revision", playback_revision),
+            ],
+        );
+    }
+}
+
 impl ServerRuntime {
     pub(crate) fn attach_readiness_membership(
         &mut self,
@@ -272,6 +471,7 @@ impl ServerRuntime {
             .get(&session.room)
             .is_some_and(|room| room.participants.is_empty())
         {
+            outbound.extend(self.clear_readiness_gate(&session.room));
             self.room_readiness.remove(&session.room);
         }
         Ok(outbound)
@@ -468,13 +668,16 @@ impl ServerRuntime {
         let Some(room) = self.room_readiness.get_mut(room_name) else {
             return Vec::new();
         };
+        let previous = room.start_gate_phase.clone();
         room.revision = room.revision.saturating_add(1);
-        room.start_gate_phase = RoomStartGatePhase::Committed {
+        let next = RoomStartGatePhase::Committed {
             media_generation,
             readiness_revision,
             playback_revision,
         };
+        room.start_gate_phase = next.clone();
         room.pause_owner = RoomPauseOwner::None;
+        emit_start_gate_phase_change(&previous, &next);
         self.readiness_snapshot_fanout(room_name)
     }
 
@@ -489,11 +692,31 @@ impl ServerRuntime {
         let Some(media_generation) = room.media_generation else {
             return Vec::new();
         };
+        let previous = room.start_gate_phase.clone();
         room.revision = room.revision.saturating_add(1);
-        room.start_gate_phase = RoomStartGatePhase::Degraded {
+        let next = RoomStartGatePhase::Degraded {
             media_generation,
             reason,
         };
+        room.start_gate_phase = next.clone();
+        emit_start_gate_phase_change(&previous, &next);
+        self.readiness_snapshot_fanout(room_name)
+    }
+
+    pub(crate) fn clear_readiness_gate(&mut self, room_name: &str) -> Vec<DirectedProtocolMessage> {
+        let Some(room) = self.room_readiness.get_mut(room_name) else {
+            return Vec::new();
+        };
+        let previous = room.start_gate_phase.clone();
+        if matches!(previous, RoomStartGatePhase::Inactive) {
+            return Vec::new();
+        }
+        room.revision = room.revision.saturating_add(1);
+        room.start_gate_phase = RoomStartGatePhase::Inactive;
+        if matches!(room.pause_owner, RoomPauseOwner::ReadinessStartGate { .. }) {
+            room.pause_owner = RoomPauseOwner::None;
+        }
+        emit_start_gate_phase_change(&previous, &RoomStartGatePhase::Inactive);
         self.readiness_snapshot_fanout(room_name)
     }
 
@@ -1667,7 +1890,9 @@ impl ServerRuntime {
             | None => RoomStartGatePhase::Inactive,
         };
         if let Some(room) = self.room_readiness.get_mut(room_name) {
-            room.start_gate_phase = phase;
+            let previous = room.start_gate_phase.clone();
+            room.start_gate_phase = phase.clone();
+            emit_start_gate_phase_change(&previous, &phase);
         }
     }
 
@@ -1931,4 +2156,85 @@ fn generate_readiness_reconnect_token() -> SecretValue {
 
 fn readiness_reconnect_token_digest(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
+}
+
+#[cfg(test)]
+mod start_gate_evidence_tests {
+    use super::*;
+
+    fn transitions(previous: &RoomStartGatePhase, next: &RoomStartGatePhase) -> Vec<&'static str> {
+        start_gate_evidence_plan(previous, next)
+            .into_iter()
+            .map(|step| step.transition)
+            .collect()
+    }
+
+    #[test]
+    fn phase_plan_materializes_transient_start_path_without_duplicates() {
+        let inactive = RoomStartGatePhase::Inactive;
+        let waiting = RoomStartGatePhase::WaitingForIntent {
+            media_generation: 7,
+        };
+        let technical = RoomStartGatePhase::WaitingForTechnicalReadiness {
+            media_generation: 7,
+        };
+        let ready = RoomStartGatePhase::ReadyToCommit {
+            media_generation: 7,
+            readiness_revision: 11,
+        };
+        let committed = RoomStartGatePhase::Committed {
+            media_generation: 7,
+            readiness_revision: 11,
+            playback_revision: 13,
+        };
+
+        assert_eq!(transitions(&inactive, &waiting), ["GATE-PREPARE-001"]);
+        assert_eq!(transitions(&waiting, &technical), ["GATE-PLAYABILITY-001"]);
+        assert_eq!(transitions(&technical, &ready), ["GATE-READY-001"]);
+        assert_eq!(transitions(&ready, &committed), ["GATE-COMMIT-001"]);
+        assert!(transitions(&committed, &committed).is_empty());
+        assert_eq!(transitions(&committed, &inactive), ["GATE-CLEAR-001"]);
+    }
+
+    #[test]
+    fn phase_plan_exposes_logical_transients_when_the_server_commits_in_one_turn() {
+        let next = RoomStartGatePhase::Committed {
+            media_generation: 2,
+            readiness_revision: 3,
+            playback_revision: 4,
+        };
+        assert_eq!(
+            transitions(&RoomStartGatePhase::Inactive, &next),
+            [
+                "GATE-PREPARE-001",
+                "GATE-PLAYABILITY-001",
+                "GATE-READY-001",
+                "GATE-COMMIT-001",
+            ]
+        );
+    }
+
+    #[test]
+    fn phase_plan_distinguishes_timeout_degrade_and_generation_reprepare() {
+        let waiting = RoomStartGatePhase::WaitingForTechnicalReadiness {
+            media_generation: 3,
+        };
+        let degraded = RoomStartGatePhase::Degraded {
+            media_generation: 3,
+            reason: StartGateDegradedReason::TimedOut,
+        };
+        let steps = start_gate_evidence_plan(&waiting, &degraded);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].transition, "GATE-DEGRADE-001");
+        assert_eq!(steps[0].trigger, Trigger::Timer);
+        assert_eq!(steps[0].disposition, Disposition::TimedOut);
+
+        let new_generation = RoomStartGatePhase::WaitingForIntent {
+            media_generation: 4,
+        };
+        assert_eq!(
+            transitions(&degraded, &new_generation),
+            ["GATE-PREPARE-001"]
+        );
+    }
 }

@@ -931,6 +931,8 @@ class CiPolicyTests(unittest.TestCase):
             "checks",
             "Enforce public Rust API compatibility",
             """set -euo pipefail
+baseline_sha="${{ github.event.pull_request.base.sha }}"
+git cat-file -e "${baseline_sha}^{commit}"
 for package in \\
   sorotte-secret \\
   sorotte-protocol \\
@@ -941,15 +943,21 @@ for package in \\
   sorotte-client-app \\
   sorotte-player-api \\
   sorotte-player-mpv \\
+  sorotte-lifecycle-evidence \\
   sorotte-plex \\
   sorotte-cli \\
   sorotte-gui \\
   sorotte-sim \\
   sorotte-compat
 do
+  if ! git cat-file -e "${baseline_sha}:crates/${package}/Cargo.toml" 2>/dev/null
+  then
+    echo "Skipping new package absent from baseline: ${package}"
+    continue
+  fi
   cargo semver-checks \\
     --package "$package" \\
-    --baseline-rev "${{ github.event.pull_request.base.sha }}"
+    --baseline-rev "$baseline_sha"
 done""",
             allowed_if="github.event_name == 'pull_request'",
         )
@@ -3916,6 +3924,33 @@ done""",
                                     "cargo-mutants requests Default for a "
                                     "directed protocol message inside Ok, "
                                     "but every message requires an explicit "
+                                    "authenticated recipient and protocol "
+                                    "payload, so the generated replacement "
+                                    "cannot type-check"
+                                ),
+                            ),
+                            (
+                                (
+                                    "server-participant-status-barrier-"
+                                    "scope-message-default"
+                                ),
+                                "server-participant-status",
+                                (
+                                    "crates/sorotte-server/src/"
+                                    "runtime_playback_barrier.rs"
+                                ),
+                                (
+                                    "ServerRuntime::replace_room_barrier_"
+                                    "participant_status_scope"
+                                ),
+                                "-> Vec<DirectedProtocolMessage>",
+                                "FnValue",
+                                "vec![Default::default()]",
+                                (
+                                    "cargo-mutants requests Default for a "
+                                    "directed protocol message in the "
+                                    "barrier-scope replacement vector, but "
+                                    "every message requires an explicit "
                                     "authenticated recipient and protocol "
                                     "payload, so the generated replacement "
                                     "cannot type-check"
