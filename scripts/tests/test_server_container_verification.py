@@ -1500,6 +1500,11 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_latest_promotion_is_one_explicit_disabled_dispatch_choice(
         self,
     ) -> None:
+        # Tag refs implicitly add latest unless the action's auto flavor is disabled.
+        self.assertEqual(
+            self.by_name["Define publication tags and OCI labels"]["with"].get("flavor"),
+            "latest=false",
+        )
         push_latest = self.workflow["on"]["workflow_dispatch"]["inputs"][
             "push_latest"
         ]
