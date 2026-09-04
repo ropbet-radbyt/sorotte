@@ -178,6 +178,23 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertIn("--loop-report", attestation)
         self.assertIn("--start-report", attestation)
 
+    def test_windows_ffmpeg_pin_uses_the_reviewed_release_archive(self) -> None:
+        # A fixed digest on the rolling gyan.dev URL fails after the next build.
+        self.assertEqual(
+            self.windows["env"]["FFMPEG_ARCHIVE_URL"],
+            "https://github.com/GyanD/codexffmpeg/releases/download/"
+            "2026-08-27-git-a6f573a1db/"
+            "ffmpeg-2026-08-27-git-a6f573a1db-full_build.7z",
+        )
+        self.assertEqual(
+            self.windows["env"]["FFMPEG_ARCHIVE_SHA256"],
+            "64d2b339dc536808b7c155ebc4d41cc7940eab7277659e43a3979078d665ed13",
+        )
+        self.assertEqual(
+            self.windows["env"]["FFMPEG_BINARY_SHA256"],
+            "fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690",
+        )
+
     def test_windows_gate_pins_tools_and_consumes_exact_gui_status_candidate(self) -> None:
         preflight = normalized(
             named_step(self.windows, "Attest ephemeral interactive Windows runner")["run"]
