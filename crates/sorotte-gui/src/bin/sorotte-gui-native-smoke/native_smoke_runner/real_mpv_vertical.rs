@@ -1690,6 +1690,9 @@ fn handle_hard_failure_http_connection(
         ));
     }
     stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("failed setting hard-failure HTTP blocking mode: {error}"))?;
+    stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| format!("failed setting hard-failure HTTP read timeout: {error}"))?;
     stream
@@ -3707,9 +3710,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 Some("gui-remained-on-active-room-during-automatic-relaunch"),
             )?;
 
-            // Automatic recovery restores the selected media itself. Retain
-            // its event even when it arrived during ownership/screenshot
-            // attestation; reopening the same selection may correctly be a no-op.
+            // Process relaunch is automatic; reopening the selected media is
+            // a separate user action. A load can also arrive during ownership
+            // attestation, so retain observations from the relaunch boundary.
+            invoke_real_mpv_menu_action_with_evidence(
+                &driver,
+                launched_window,
+                FILE_MENU_AUTOMATION_ID,
+                OPEN_MEDIA_MENU_AUTOMATION_ID,
+                step_timeout,
+                &mut menu_interactions,
+                &menu_interactions_path,
+            )?;
             let (recovered_file_loaded_index, recovered_file_loaded) =
                 wait_for_replacement_media_loaded(
                     &observation_path,
@@ -6261,6 +6273,32 @@ mod tests {
             release_error.contains("playlistIndex did not match the exact closed request schema"),
             "unexpected rejection reason: {release_error}"
         );
+    }
+
+    #[test]
+    fn hard_failure_http_connection_waits_for_headers_on_a_nonblocking_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, peer) = listener.accept().unwrap();
+        // Windows accepts inherit the listener's nonblocking mode. Set it
+        // explicitly so this regression also exercises that state on Unix.
+        stream.set_nonblocking(true).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            handle_hard_failure_http_connection(stream, peer, 1)
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(
+                format!("GET {REAL_MPV_MEDIA_FAILURE_ROUTE} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        let evidence = server.join().unwrap().unwrap();
+        assert_eq!(evidence.status_code, 404);
+        assert_eq!(evidence.method, "GET");
     }
 
     #[test]
