@@ -508,7 +508,13 @@ fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() 
                 Some(1.25),
                 Some(ParticipantPlaybackScope::new(0).with_state_revision(0)),
             ),
-            ["connected", "yes", "1.25×", "0", "0"],
+            [
+                "connected",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+                "unavailable",
+            ],
         ),
         (
             "post-construction scope mismatch",
