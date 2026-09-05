@@ -397,11 +397,6 @@ def extend_with_owned_mpv_recovery(
     )
     write_json(session_exchange_path, session_exchange)
 
-    menu = json.loads(menu_path.read_text(encoding="utf-8"))
-    replacement_open = copy.deepcopy(menu["interactions"][0])
-    menu["interactions"].insert(1, replacement_open)
-    write_json(menu_path, menu)
-
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["recovered_mpv_pid"] = recovered_pid
     state["assertions"] = list(contract.RECOVERY_REQUIRED_ASSERTIONS)
@@ -1914,6 +1909,19 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                         **arguments,
                         expect_recovery=True,
                     )
+
+    def test_recovery_contract_rejects_reopening_media_after_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "artifacts"
+            report, arguments = build_valid_fixture(root)
+            extend_with_owned_mpv_recovery(report, arguments)
+            menu_path = root / "menu-interactions.json"
+            menu = json.loads(menu_path.read_text(encoding="utf-8"))
+            menu["interactions"].insert(1, copy.deepcopy(menu["interactions"][0]))
+            write_json(menu_path, menu)
+            report["artifacts"]["menu_interactions"] = identity(menu_path, relative_to=root)
+            with self.assertRaisesRegex(ValueError, "menu action inventory or order drifted"):
+                contract.validate_report(report, **arguments, expect_recovery=True)
 
     def test_recovery_contract_rejects_old_generation_after_termination_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

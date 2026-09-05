@@ -3707,31 +3707,18 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 Some("gui-remained-on-active-room-during-automatic-relaunch"),
             )?;
 
-            let observations_before_recovered_open =
-                read_mpv_observations(&observation_path)?.len();
-            invoke_real_mpv_menu_action_with_evidence(
-                &driver,
-                launched_window,
-                FILE_MENU_AUTOMATION_ID,
-                OPEN_MEDIA_MENU_AUTOMATION_ID,
-                step_timeout,
-                &mut menu_interactions,
-                &menu_interactions_path,
-            )?;
-            let (recovered_file_loaded_index, recovered_file_loaded) = wait_for_mpv_observation(
-                &observation_path,
-                observations_before_recovered_open,
-                step_timeout,
-                "file-loaded for generated local media from the replacement real mpv",
-                |observation| {
-                    observation.event == "file-loaded"
-                        && observation.pid == Some(recovered_mpv_pid)
-                        && observation.path.as_deref().is_some_and(|observed| {
-                            observed_media_path_matches(Path::new(observed), &media_path)
-                        })
-                        && observation.ipc_endpoint.as_deref() == Some(&recovered_ipc_endpoint)
-                },
-            )?;
+            // Automatic recovery restores the selected media itself. Retain
+            // its event even when it arrived during ownership/screenshot
+            // attestation; reopening the same selection may correctly be a no-op.
+            let (recovered_file_loaded_index, recovered_file_loaded) =
+                wait_for_replacement_media_loaded(
+                    &observation_path,
+                    automatic_relaunch_observation_index,
+                    recovered_mpv_pid,
+                    &recovered_ipc_endpoint,
+                    &media_path,
+                    step_timeout,
+                )?;
             if recovered_file_loaded.filename.as_deref() != Some(expected_file_name) {
                 return Err(format!(
                     "replacement real mpv reported filename {:?}; expected {expected_file_name:?}",
@@ -4817,6 +4804,30 @@ where
     }
 }
 
+fn wait_for_replacement_media_loaded(
+    observation_path: &Path,
+    relaunch_index: usize,
+    recovered_pid: u32,
+    recovered_ipc_endpoint: &str,
+    media_path: &Path,
+    timeout: Duration,
+) -> Result<(usize, MpvObservation), String> {
+    wait_for_mpv_observation(
+        observation_path,
+        relaunch_index.saturating_add(1),
+        timeout,
+        "file-loaded for generated local media from the replacement real mpv",
+        |observation| {
+            observation.event == "file-loaded"
+                && observation.pid == Some(recovered_pid)
+                && observation.path.as_deref().is_some_and(|observed| {
+                    observed_media_path_matches(Path::new(observed), media_path)
+                })
+                && observation.ipc_endpoint.as_deref() == Some(recovered_ipc_endpoint)
+        },
+    )
+}
+
 fn wait_for_automatic_replacement_observation(
     path: &Path,
     start_index: usize,
@@ -5784,6 +5795,53 @@ mod tests {
         fs::write(&path, "{invalid}\n").expect("malformed observations");
         assert!(read_mpv_observations(&path).is_err());
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn replacement_media_already_observed_during_attestation_is_retained() {
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-replacement-observation-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let media = root.join("media.wav");
+        fs::write(&media, b"fixture").unwrap();
+        let path = root.join("observations.jsonl");
+        let loaded = serde_json::json!({
+            "event": "file-loaded", "pid": 72, "path": media,
+            "ipc_endpoint": "replacement"
+        });
+        let mut rows = vec![
+            loaded.clone(), // A matching record before the relaunch is stale.
+            serde_json::json!({"event":"pause","pid":72,"pause":true,"ipc_endpoint":"replacement"}),
+            serde_json::json!({"event":"file-loaded","pid":71,"path":media,"ipc_endpoint":"replacement"}),
+            serde_json::json!({"event":"file-loaded","pid":72,"path":media,"ipc_endpoint":"old-endpoint"}),
+            serde_json::json!({"event":"file-loaded","pid":72,"path":root.join("other.wav"),"ipc_endpoint":"replacement"}),
+            loaded,
+        ];
+        let write_rows = |rows: &[serde_json::Value]| {
+            fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        };
+        write_rows(&rows);
+        // All events arrived before ownership and screenshot checks finished.
+        let (index, _) =
+            wait_for_replacement_media_loaded(&path, 1, 72, "replacement", &media, Duration::ZERO)
+                .unwrap();
+        assert_eq!(index, 5);
+        rows.pop();
+        write_rows(&rows);
+        assert!(
+            wait_for_replacement_media_loaded(&path, 1, 72, "replacement", &media, Duration::ZERO)
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

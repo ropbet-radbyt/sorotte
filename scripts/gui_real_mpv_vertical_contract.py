@@ -2050,11 +2050,8 @@ def validate_report(
     require(menu_interactions.get("error") is None, "menu interactions retained an error")
     interaction_rows = menu_interactions.get("interactions")
     require(isinstance(interaction_rows, list), "menu interactions must be an array")
-    expected_menu_actions = (
-        ["menu.open_media", "menu.open_media", "menu.exit"]
-        if expect_recovery
-        else ["menu.open_media", "menu.exit"]
-    )
+    # Recovery must restore media without another native Open Media action.
+    expected_menu_actions = ["menu.open_media", "menu.exit"]
     require(
         [row.get("action_automation_id") for row in interaction_rows]
         == expected_menu_actions,
