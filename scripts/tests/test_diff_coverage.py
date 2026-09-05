@@ -1180,7 +1180,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(status, 2)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(report["status"], "error")
-        self.assertIn("cannot stat critical path policy", report["errors"][0])
+        self.assertIn("io: cannot read critical path policy", report["errors"][0])
 
     def test_empty_diff_is_a_valid_no_rust_change_result(self) -> None:
         report = self.build(self.lcov(), "")

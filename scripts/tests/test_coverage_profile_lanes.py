@@ -587,7 +587,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "duplicate key",
+            "duplicate_key",
         ):
             lanes.semantic_oracle(raw.encode("utf-8"))
 
@@ -790,7 +790,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         path.write_text(raw, encoding="utf-8")
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "duplicate key",
+            "duplicate_key",
         ):
             lanes.strict_load_report(path)
 

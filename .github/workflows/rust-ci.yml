@@ -89,6 +89,12 @@ jobs:
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
+      - name: Validate critical responsibility coverage
+        run: python scripts/critical_boundaries.py --repo-root .
+
+      - name: Validate current architecture references
+        run: python scripts/architecture_index.py --repo-root .
+
       - name: Behavior evidence self-tests
         run: python -m unittest discover -s scripts/tests -p "test_*.py" -v
 

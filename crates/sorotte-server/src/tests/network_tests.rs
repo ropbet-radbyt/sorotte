@@ -2725,3 +2725,287 @@ async fn server_network_loop_tls_upgrade_recovers_after_invalid_rotation_bundle_
 
     fs::remove_dir_all(&cert_path).expect("tls cert temp directory should be removable");
 }
+
+#[tokio::test]
+async fn resource_capacity_partial_hello_and_excess_connections_leave_healthy_peer_live() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut model = ServerRuntime::new();
+    model
+        .set_resource_limits(crate::ServerResourceLimits {
+            active_connections: 3,
+            unauthenticated_connections: 1,
+            connections_per_address: 3,
+            ..crate::ServerResourceLimits::default()
+        })
+        .unwrap();
+    let actor = ServerActorHandle::spawn(model);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        actor.clone(),
+        None,
+        shutdown_rx,
+    ));
+    let mut healthy = TcpStream::connect(address).await.unwrap();
+    healthy.write_all(b"{\"Hello\":{\"username\":\"healthy\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n").await.unwrap();
+    let mut reader = BufReader::new(healthy);
+    let mut line = String::new();
+    timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        while actor.resource_snapshot().unauthenticated_connections != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut partial = TcpStream::connect(address).await.unwrap();
+    partial.write_all(b"{\"Hello\":").await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        while actor.resource_snapshot().unauthenticated_connections != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    for _ in 0..8 {
+        let mut excess = TcpStream::connect(address).await.unwrap();
+        let mut byte = [0_u8];
+        let result = timeout(Duration::from_secs(2), excess.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(result, Ok(0) | Err(_)));
+    }
+    let snapshot = actor.resource_snapshot();
+    assert_eq!(snapshot.active_connections, 2);
+    assert_eq!(snapshot.unauthenticated_connections, 1);
+    assert_eq!(snapshot.rejected_connections, 8);
+    assert!(actor.session("client-1").await.unwrap().is_some());
+    drop(partial);
+    drop(reader);
+    shutdown_tx.send(true).unwrap();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let snapshot = actor.resource_snapshot();
+    assert_eq!(
+        (
+            snapshot.active_connections,
+            snapshot.unauthenticated_connections,
+            snapshot.address_buckets,
+            snapshot.queued_bytes
+        ),
+        (0, 0, 0, 0)
+    );
+    actor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_loopback_ancient_ping_does_not_amplify_an_authorized_seek() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut model = ServerRuntime::new();
+    model.set_time_now_override_seconds(Some(crate::current_unix_timestamp_seconds()));
+    let actor = ServerActorHandle::spawn(model);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let task = tokio::spawn(run_server_network_loop_until_shutdown(
+        listener,
+        actor.clone(),
+        None,
+        shutdown_rx,
+    ));
+    let stream = TcpStream::connect(address).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let mut read = BufReader::new(read);
+    write.write_all(b"{\"Hello\":{\"username\":\"peer\",\"room\":{\"name\":\"room\"},\"version\":\"1.7.5\"}}\n").await.unwrap();
+    let mut line = String::new();
+    timeout(Duration::from_secs(2), read.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    write.write_all(b"{\"State\":{\"playstate\":{\"position\":30,\"paused\":false,\"doSeek\":true},\"ping\":{\"latencyCalculation\":-1000,\"clientRtt\":0}}}\n").await.unwrap();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            line.clear();
+            assert!(read.read_line(&mut line).await.unwrap() > 0);
+            if let ProtocolMessage::State(state) = decode_message_line(line.trim_end()).unwrap()
+                && let Some(playstate) = state.state.playstate
+                && playstate.do_seek == Some(true)
+            {
+                assert_eq!(playstate.position, Some(30.0));
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    shutdown_tx.send(true).unwrap();
+    task.await.unwrap().unwrap();
+    actor.shutdown().await.unwrap();
+}
+
+#[test]
+fn persistence_shutdown_held_lock_subprocess_finishes_without_durability_claim() {
+    run_persistence_shutdown_held_lock_subprocess(false);
+}
+
+#[test]
+fn persistence_shutdown_includes_preceding_flush_in_total_budget() {
+    run_persistence_shutdown_held_lock_subprocess(true);
+}
+
+fn run_persistence_shutdown_held_lock_subprocess(preceding_flush: bool) {
+    let db = temporary_sqlite_path("bounded-shutdown");
+    let log = db.with_extension("log");
+    let output = fs::File::create(&log).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "tests::network_tests::persistence_shutdown_held_lock_helper",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("SOROTTE_TEST_SHUTDOWN_DB", &db)
+        .env(
+            "SOROTTE_TEST_SHUTDOWN_PRECEDING_FLUSH",
+            if preceding_flush { "1" } else { "0" },
+        )
+        .stdout(output.try_clone().unwrap())
+        .stderr(output)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!(
+                "held-lock shutdown exceeded outer process deadline: {}",
+                fs::read_to_string(&log).unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success(), "{}", fs::read_to_string(&log).unwrap());
+    let connection = Connection::open(&db).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    let playlists = connection
+        .prepare("SELECT playlistJson FROM persistent_rooms")
+        .unwrap()
+        .query_map([], |row| row.get::<_, Option<String>>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(playlists.len(), 4);
+    for playlist in playlists {
+        let playlist: Vec<String> = serde_json::from_str(&playlist.unwrap()).unwrap();
+        assert!(
+            playlist == ["old.mkv"] || playlist == ["new.mkv"],
+            "transaction must remain complete"
+        );
+    }
+    drop(connection);
+    fs::remove_file(db).unwrap();
+    fs::remove_file(log).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn persistence_shutdown_held_lock_helper() {
+    let Some(db) = std::env::var_os("SOROTTE_TEST_SHUTDOWN_DB") else {
+        return;
+    };
+    let db = PathBuf::from(db);
+    let mut model = ServerRuntime::with_persistent_rooms_enabled(true);
+    model.set_persistent_room_creation_cooldown_seconds(0.0);
+    model
+        .set_persistent_rooms_db_path(Some(db.clone()))
+        .unwrap();
+    for index in 0..4 {
+        model.handle_line(&format!("client-{index}"), &json!({"Hello":{"username":format!("peer-{index}"),"room":{"name":format!("room-{index}")},"version":"1.7.5"}}).to_string()).unwrap();
+        model
+            .handle_line(
+                &format!("client-{index}"),
+                r#"{"Set":{"playlistChange":{"files":["old.mkv"]}}}"#,
+            )
+            .unwrap();
+    }
+    model.flush_persistence().unwrap();
+    let blocker = Connection::open(&db).unwrap();
+    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let actor = ServerActorHandle::spawn(model);
+    for index in 0..4 {
+        actor
+            .handle_line(
+                &format!("client-{index}"),
+                r#"{"Set":{"playlistChange":{"files":["new.mkv"]}}}"#,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let clock_ticks = ticks.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            clock_ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let start = std::time::Instant::now();
+    let flush_actor = actor.clone();
+    let mut preceding_flush = Box::pin(flush_actor.flush_persistence());
+    let queued_flush = std::env::var("SOROTTE_TEST_SHUTDOWN_PRECEDING_FLUSH").as_deref() == Ok("1");
+    if queued_flush {
+        // Poll exactly once: sending into the empty command queue completes,
+        // then the future waits for its acknowledgement. Shutdown follows it.
+        std::future::poll_fn(|context| {
+            use std::future::Future;
+            assert!(preceding_flush.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    let result = actor
+        .shutdown_with_timeout(Duration::from_millis(500))
+        .await;
+    let elapsed = start.elapsed();
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("durability deadline exceeded")),
+        "{result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "shutdown including Drop took {elapsed:?}"
+    );
+    assert!(
+        ticks.load(std::sync::atomic::Ordering::Relaxed) >= 5,
+        "blocking persistence stalled unrelated tasks on the one-thread runtime"
+    );
+    assert_eq!(crate::persistence_workers_awaiting_join(), 0);
+    if queued_flush {
+        assert!(
+            preceding_flush.await.is_err(),
+            "a cancelled flush must not attest durability"
+        );
+    }
+    ticker.abort();
+    let _ = ticker.await;
+    // The lock stays held until after both the explicit outcome and worker
+    // joins. Recovery is not manufactured by releasing contention early.
+    blocker.execute_batch("ROLLBACK").unwrap();
+}

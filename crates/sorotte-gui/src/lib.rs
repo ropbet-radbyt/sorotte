@@ -45,6 +45,17 @@ pub use app::run_sorotte_gui;
 
 #[cfg(feature = "gui-semantic-smoke")]
 pub mod semantic_smoke {
+    pub use super::app::semantic_driver::GuiProjectionMeasurement;
+
+    /// Measures repeated shell snapshot application and widget projection on one initialized
+    /// headless driver. Parsing, startup and native rendering are outside the timed pumps.
+    pub fn measure_projection(
+        script: &str,
+        pumps: usize,
+    ) -> Result<GuiProjectionMeasurement, String> {
+        super::app::semantic_driver::measure_projection(script, pumps)
+    }
+
     pub use super::app::semantic_smoke::{
         GuiSemanticOutputFormat, GuiSemanticScenarioDescriptor, GuiSemanticScenarioReport,
         GuiSemanticScenarioSource,

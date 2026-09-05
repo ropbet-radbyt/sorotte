@@ -139,8 +139,23 @@ pub fn parse_server_runtime_scenario_steps(
         }
         let request_line = serde_json::to_string(request_value)?;
 
-        // Validate each scripted request decodes as a typed protocol message.
-        let _ = decode_message_line(&request_line)?;
+        // The reserved client action is resolved from captured output at replay
+        // time. Validate the rest of its message without inventing an echo.
+        let mut validated_request = request_value.clone();
+        if validated_request
+            .pointer("/State/ping/latencyCalculation")
+            .and_then(Value::as_str)
+            .is_some_and(|marker| {
+                marker == "$lastServerChallenge"
+                    || marker
+                        .strip_prefix("$serverChallenge:")
+                        .and_then(|step| step.parse::<usize>().ok())
+                        .is_some_and(|step| step > 0)
+            })
+        {
+            validated_request["State"]["ping"]["latencyCalculation"] = Value::from(0.0);
+        }
+        let _ = decode_message_line(&serde_json::to_string(&validated_request)?)?;
 
         steps.push(ServerRuntimeScenarioStep {
             client_id: client_id.to_owned(),

@@ -175,26 +175,36 @@ fn scripted_server_runtime_state_latency_metrics_scenario_applies_forward_delay_
     let events =
         replay_server_runtime_scenario_fixture("server_runtime_state_latency_metrics.jsonl")
             .expect("state latency-metrics scenario fixture should replay through runtime");
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 13);
 
-    let state_event = events.get(2).expect("step 3 state event should be present");
+    let state_event = events
+        .last()
+        .expect("final step state event should be present");
     assert_eq!(state_event.client_id, "client-1");
-    assert_eq!(state_event.outbound_lines.len(), 2);
+    let seek_outputs: Vec<_> = state_event
+        .outbound_lines
+        .iter()
+        .filter(|outbound| {
+            let value: Value = serde_json::from_str(&outbound.line).expect("valid State output");
+            value.pointer("/State/playstate/doSeek") == Some(&Value::Bool(true))
+        })
+        .collect();
+    assert_eq!(seek_outputs.len(), 2);
 
     let mut saw_sender = false;
     let mut saw_peer = false;
 
-    for outbound in &state_event.outbound_lines {
+    for outbound in seek_outputs {
         let message =
-            decode_message_line(&outbound.line).expect("step 3 outbound line should decode");
+            decode_message_line(&outbound.line).expect("final step outbound line should decode");
         let ProtocolMessage::State(payload) = message else {
-            panic!("step 3 outputs should be state updates");
+            panic!("final step outputs should be state updates");
         };
         let playstate = payload
             .state
             .playstate
             .as_ref()
-            .expect("step 3 state update should include playstate");
+            .expect("final step state update should include playstate");
         assert_eq!(playstate.set_by.as_deref(), Some("alice"));
         assert_eq!(playstate.paused, Some(false));
         assert_eq!(playstate.do_seek, Some(true));
@@ -212,7 +222,7 @@ fn scripted_server_runtime_state_latency_metrics_scenario_applies_forward_delay_
             .state
             .ping
             .as_ref()
-            .expect("step 3 state update should include ping");
+            .expect("final step state update should include ping");
         let server_rtt = ping
             .server_rtt
             .expect("state update should include serverRtt");
@@ -236,9 +246,12 @@ fn scripted_server_runtime_state_latency_metrics_scenario_applies_forward_delay_
 
     assert!(
         saw_sender,
-        "step 3 should include sender-directed state update"
+        "final step should include sender-directed state update"
     );
-    assert!(saw_peer, "step 3 should include peer-directed state update");
+    assert!(
+        saw_peer,
+        "final step should include peer-directed state update"
+    );
 }
 
 #[test]

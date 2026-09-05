@@ -183,11 +183,11 @@ fn legacy_server_state_latency_metrics_matches_runtime_core_behavior() {
     };
 
     let rust_state_event = rust_events
-        .get(2)
-        .expect("step 3 state event should exist for runtime replay");
+        .last()
+        .expect("final step state event should exist for runtime replay");
     let legacy_state_event = legacy_events
-        .get(2)
-        .expect("step 3 state event should exist for legacy replay");
+        .last()
+        .expect("final step state event should exist for legacy replay");
 
     let parse_summary = |line: &str| -> Option<(String, bool, bool, f64, f64)> {
         let message = decode_message_line(line).ok()?;
@@ -198,6 +198,9 @@ fn legacy_server_state_latency_metrics_matches_runtime_core_behavior() {
             return None;
         };
         let playstate = payload.state.playstate?;
+        if playstate.do_seek != Some(true) {
+            return None;
+        }
         let ping = payload.state.ping?;
         Some((
             playstate.set_by.unwrap_or_default(),
@@ -282,8 +285,18 @@ fn legacy_server_state_latency_metrics_matches_runtime_core_behavior() {
         );
     }
     assert!(
-        legacy_sender.3 > 18.0 && legacy_peer.3 > 18.0,
-        "legacy forward-delay position should remain positive and above base position"
+        (10.0..12.0).contains(&legacy_sender.4),
+        "the live echo must measure the actual ten-second client delay: {:?}",
+        legacy_sender
+    );
+    let expected_live_position = 5.0 + legacy_sender.4 / 2.0 + (legacy_sender.4 - 2.0);
+    assert!(
+        (legacy_sender.3 - expected_live_position).abs() <= 0.01,
+        "live upstream must apply its measured RTT and clientRtt to forward delay"
+    );
+    assert_eq!(
+        legacy_peer.4, 0.0,
+        "the peer has not echoed a ping challenge"
     );
     assert!(
         (legacy_sender.3 - legacy_peer.3).abs() <= 0.01,

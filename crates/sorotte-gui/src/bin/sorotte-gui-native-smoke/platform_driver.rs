@@ -45,6 +45,10 @@ pub(super) struct NativeAccessibilityNode {
 pub(super) trait NativeGuiDriver {
     type WindowHandle: Copy;
 
+    fn native_window_dpi(&self, _window: Self::WindowHandle) -> Result<u32, String> {
+        Err("native window DPI measurement is unavailable on this driver".to_owned())
+    }
+
     fn find_main_window(&self, pid: u32) -> Result<Option<Self::WindowHandle>, String>;
     fn prepare_window_for_smoke(&self, window: Self::WindowHandle) -> Result<(), String>;
     fn prepare_window_for_dimensions(
@@ -68,6 +72,18 @@ pub(super) trait NativeGuiDriver {
         name: &str,
         control_kind: NativeControlKind,
     ) -> Result<(), String>;
+    fn scroll_named_content_page(
+        &self,
+        window: Self::WindowHandle,
+        anchor: &NativeAccessibilityNode,
+        wheel_delta: i32,
+    ) -> Result<(), String> {
+        if wheel_delta < 0 {
+            self.scroll_named_control_down(window, &anchor.name, NativeControlKind::Any)
+        } else {
+            self.scroll_named_control_up(window, &anchor.name, NativeControlKind::Any)
+        }
+    }
     fn window_title(&self, window: Self::WindowHandle) -> Result<String, String>;
     fn accessible_names(&self, window: Self::WindowHandle) -> Result<Vec<String>, String>;
     fn accessibility_nodes(

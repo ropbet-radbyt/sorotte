@@ -1,3 +1,4 @@
+use rustls_pki_types::pem::PemObject;
 use std::{
     env, fs, io,
     io::{BufRead, BufReader, Read, Write},
@@ -549,7 +550,7 @@ pub fn write_valid_tls_bundle(path: &Path) {
 
 pub fn tls_client_config() -> Arc<ClientConfig> {
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
-    let certs = rustls_pemfile::certs(&mut cert_reader)
+    let certs = rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .expect("test certificate fixture should parse");
     let mut roots = RootCertStore::empty();

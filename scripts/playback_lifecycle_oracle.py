@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import playback_lifecycle_model as lifecycle_model
+import artifact_input
+
+MAX_LEDGER_BYTES = 128 * 1024 * 1024
 
 
 SAFE_TOKEN = re.compile(r"[a-z0-9][a-z0-9.-]{0,127}")
@@ -602,7 +605,7 @@ class CausalOracle:
             allowed=EVENT_KEYS,
             context=context,
         )
-        if raw_event["schema_version"] != 1:
+        if not artifact_input.is_json_integer(raw_event["schema_version"]) or raw_event["schema_version"] != 1:
             raise OracleError(f"{context}.schema_version must be 1")
         event_id = require_token(raw_event["event_id"], f"{context}.event_id")
         if event_id in self.events:
@@ -857,7 +860,7 @@ def load_schedule(path: pathlib.Path) -> dict[str, Any]:
         allowed={"schema_version", "schedule_id", "title", "model", "step", "expect"},
         context="schedule",
     )
-    if raw["schema_version"] != 1:
+    if not artifact_input.is_json_integer(raw["schema_version"]) or raw["schema_version"] != 1:
         raise OracleError("schedule.schema_version must be 1")
     require_token(raw["schedule_id"], "schedule.schedule_id")
     lifecycle_model.require_string(raw["title"], "schedule.title")
@@ -969,29 +972,12 @@ def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def load_ledger(path: pathlib.Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as error:
-        raise OracleError(f"failed to read lifecycle ledger {path}: {error}") from error
-    if not lines:
+        events = artifact_input.strict_jsonl_load(path, max_bytes=MAX_LEDGER_BYTES, label="lifecycle ledger", allow_blank_lines=False)
+    except artifact_input.ArtifactInputError as error:
+        raise OracleError(str(error)) from error
+    if not events:
         raise OracleError("lifecycle ledger must not be empty")
-    for index, line in enumerate(lines, start=1):
-        if not line.strip():
-            raise OracleError(f"lifecycle ledger line {index} is blank")
-        try:
-            value = json.loads(
-                line,
-                object_pairs_hook=strict_json_object,
-                parse_constant=lambda constant: (_ for _ in ()).throw(
-                    OracleError(f"nonstandard JSON number {constant}")
-                ),
-            )
-        except (json.JSONDecodeError, OracleError) as error:
-            raise OracleError(f"invalid lifecycle ledger line {index}: {error}") from error
-        if not isinstance(value, dict):
-            raise OracleError(f"lifecycle ledger line {index} must be an object")
-        events.append(value)
     return events
 
 

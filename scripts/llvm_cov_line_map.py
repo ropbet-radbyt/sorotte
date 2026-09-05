@@ -36,6 +36,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import artifact_input
+
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-llvm-line-map"
@@ -145,14 +147,10 @@ def read_bounded(path: pathlib.Path, *, limit: int, description: str) -> bytes:
         raise LlvmCovLineMapError(f"{description} is not a regular file: {path}")
     if stat.st_size <= 0:
         raise LlvmCovLineMapError(f"{description} is empty: {path}")
-    if stat.st_size > limit:
-        raise LlvmCovLineMapError(
-            f"{description} exceeds the {limit}-byte safety limit: {stat.st_size} bytes"
-        )
     try:
-        return path.read_bytes()
-    except OSError as error:
-        raise LlvmCovLineMapError(f"cannot read {description} {path}: {error}") from error
+        return artifact_input.read_bounded(path, max_bytes=limit, label=description)
+    except artifact_input.ArtifactInputError as error:
+        raise LlvmCovLineMapError(str(error)) from error
 
 
 def decode_utf8(value: bytes, *, description: str) -> str:
@@ -191,17 +189,10 @@ def reject_json_constant(value: str) -> None:
 
 
 def parse_json(value: bytes) -> dict[str, Any]:
-    text = decode_utf8(value, description="LLVM JSON")
     try:
-        parsed = json.loads(
-            text,
-            object_pairs_hook=duplicate_rejecting_object,
-            parse_constant=reject_json_constant,
-        )
-    except LlvmCovLineMapError:
-        raise
-    except json.JSONDecodeError as error:
-        raise LlvmCovLineMapError(f"LLVM JSON is malformed: {error}") from error
+        parsed = artifact_input.strict_json_loads(value, max_bytes=MAX_LLVM_JSON_BYTES, label="LLVM JSON")
+    except artifact_input.ArtifactInputError as error:
+        raise LlvmCovLineMapError(str(error)) from error
     return require_object(parsed, context="LLVM JSON root")
 
 

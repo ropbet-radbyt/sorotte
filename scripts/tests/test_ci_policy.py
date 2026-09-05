@@ -2188,8 +2188,9 @@ done""",
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),
             [
-                "twisted==25.5.0",
-                "pyopenssl==25.3.0",
+                "twisted==26.4.0",
+                "pyopenssl==26.4.0",
+                "cryptography==50.0.1",
                 "service_identity==24.2.0",
             ],
         )
@@ -2346,7 +2347,7 @@ done""",
 
     def test_scheduled_mutation_shard_is_pinned_bounded_and_fail_closed(self) -> None:
         jobs = self.mutation_workflow["jobs"]
-        self.assertEqual(set(jobs), {"mutation", "participant-status-evidence-set"})
+        self.assertEqual(set(jobs), {"selection", "mutation", "participant-status-evidence-set"})
         self.assertEqual(self.mutation_workflow["permissions"], {"contents": "read"})
         self.assertEqual(
             self.mutation_workflow["on"],
@@ -2358,6 +2359,15 @@ done""",
                         "coverage/mutation-policy.toml",
                         "coverage/mutation-report-set.json",
                         "scripts/mutation_ci.py",
+                        "scripts/mutation_selection.py",
+                        "scripts/artifact_input.py",
+                        "coverage/mutation-selection.toml",
+                        "Cargo.toml",
+                        "Cargo.lock",
+                        "rust-toolchain.toml",
+                        ".cargo/**",
+                        "crates/**",
+                        "fixtures/**",
                         "crates/sorotte-protocol/src/lib.rs",
                         "crates/sorotte-protocol/src/state.rs",
                         "crates/sorotte-protocol/src/participant_status.rs",
@@ -2371,6 +2381,8 @@ done""",
                         "crates/sorotte-cli/src/**",
                         "crates/sorotte-server/src/**",
                         "crates/sorotte-gui/src/**",
+                        "!crates/**/*.md",
+                        "!fixtures/**/*.md",
                     ]
                 },
                 "schedule": [{"cron": "15 4 * * 0"}],
@@ -2387,7 +2399,8 @@ done""",
         self.assertEqual(job["name"], "Mutation (${{ matrix.shard }})")
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], "120")
-        self.assertNotIn("if", job, "job-level if cannot access matrix context")
+        self.assertEqual(job["needs"], "selection")
+        self.assertEqual(job["if"], "${{ needs.selection.outputs.shards != '[]' }}")
         pull_request_shards = [
             "participant-status-protocol",
             "client-participant-status",
@@ -2413,14 +2426,7 @@ done""",
             "client-playlist-shuffle",
             "cli-framing",
         ]
-        compact_json = lambda values: '["' + '","'.join(values) + '"]'
-        matrix_expression = (
-            "${{ fromJSON(\n"
-            "  github.event_name == 'pull_request'\n"
-            f"  && '{compact_json(pull_request_shards)}'\n"
-            f"  || '{compact_json(all_shards)}'\n"
-            ") }}"
-        )
+        matrix_expression = "${{ fromJSON(needs.selection.outputs.shards) }}"
 
         participant_status_boundaries = {
             "crates/sorotte-protocol/src/lib.rs",
@@ -2536,8 +2542,8 @@ done""",
 
         evidence_job = jobs["participant-status-evidence-set"]
         self.assertEqual(evidence_job["name"], "Participant-status mutation evidence set")
-        self.assertEqual(evidence_job["if"], "${{ always() }}")
-        self.assertEqual(evidence_job["needs"], "mutation")
+        self.assertEqual(evidence_job["if"], "${{ always() && (needs.selection.result != 'success' || needs.selection.outputs.shards != '[]') }}")
+        self.assertEqual(evidence_job["needs"], ["selection", "mutation"])
         self.assertEqual(evidence_job["runs-on"], "ubuntu-latest")
         self.assertEqual(evidence_job["timeout-minutes"], "30")
         evidence_checkout = named_step(
@@ -2576,7 +2582,11 @@ done""",
         )
 
         self.assertEqual(
-            self.mutation_policy,
+            {
+                **self.mutation_policy,
+                "shard": [shard for shard in self.mutation_policy["shard"] if shard["id"] not in {"plex-http-origin", "settings-duplicate-keys", "server-local-clock", "server-resource-permits"}],
+                "accepted_unviable": [item for item in self.mutation_policy["accepted_unviable"] if item["id"] not in {"settings-duplicate-let-chain-or", "server-resource-connection-permit-default", "server-resource-byte-reservation-default"}],
+            },
             {
                 "schema_version": 3,
                 "cargo_mutants_version": "27.1.0",
@@ -2704,6 +2714,10 @@ done""",
                             "accessors.rs",
                             "crates/sorotte-client-core/src/runtime/"
                             "playback_coordination.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/ordered_events.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/barrier.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
                             "crates/sorotte-client-core/src/runtime/"
                             "queued_control.rs",
                         ],
@@ -2761,7 +2775,7 @@ done""",
                             "crates/sorotte-server/src/runtime_playback_barrier.rs",
                         ],
                         "mutant_filter": (
-                            "(participant_status|ParticipantStatus|"
+                            "(ingest_client_ping_metrics|record_ping_challenge|forward_delay_seconds|participant_status|ParticipantStatus|"
                             "collect_due_periodic_updates_at|"
                             "delete field (set_by|"
                             "transport_revision|"
@@ -2772,7 +2786,7 @@ done""",
                             "periodic_state_sync_message_for_client_at)"
                         ),
                         "test_target": "lib",
-                        "test_filter": "tests::participant_status_tests::",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 120,
                         "build_timeout_seconds": 240,
@@ -3516,7 +3530,7 @@ done""",
                         "shard": "client-participant-status-runtime",
                         "file": (
                             "crates/sorotte-client-core/src/runtime/"
-                            "playback_coordination.rs"
+                            "playback_coordination/participant_status.rs"
                         ),
                         "function": (
                             "RuntimePlaybackCoordination::"
@@ -3541,7 +3555,7 @@ done""",
                         "shard": "client-participant-status-runtime",
                         "file": (
                             "crates/sorotte-client-core/src/runtime/"
-                            "playback_coordination.rs"
+                            "playback_coordination/participant_status.rs"
                         ),
                         "function": (
                             "RuntimePlaybackCoordination::"
@@ -4203,7 +4217,7 @@ done""",
                                 "client-participant-status-runtime",
                                 (
                                     "crates/sorotte-client-core/src/runtime/"
-                                    "playback_coordination.rs"
+                                    "playback_coordination/participant_status.rs"
                                 ),
                                 (
                                     "RuntimePlaybackCoordination::"

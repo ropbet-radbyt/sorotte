@@ -379,7 +379,7 @@ class GuiArtifactHappyPathTests(unittest.TestCase):
             package_root = root / "package"
             payloads = {
                 relative: f"packaged {relative}\n".encode()
-                for relative in artifact.PACKAGE_PAYLOADS
+                for relative in artifact.PACKAGE_PAYLOADS | artifact.dependency_files_for_version("1.0.0")
             }
             for relative, body in payloads.items():
                 destination = artifact._path(package_root, relative)

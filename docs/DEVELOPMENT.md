@@ -2,6 +2,13 @@
 
 This guide covers the local workflow for contributors and agents working on `sorotte`.
 
+Use the [current architecture and verification index](CURRENT_ARCHITECTURE.md)
+for crate responsibilities, owned boundaries, normative contracts, and proof
+entrypoints. Historical audits and release ledgers describe their recorded
+snapshots; they do not replace the current source or attest later candidates.
+The [0.2.9 implementation ledger](audits/v0.2.9-implementation.md) records the
+current audit closure, executed validation, and unavailable environments.
+
 ## Workspace Layout
 
 - `sorotte-protocol`: typed protocol models and fixture coverage
@@ -158,14 +165,15 @@ Generate the deterministic native Settings review packet on Windows with:
 powershell -ExecutionPolicy Bypass -File scripts/gui-visual-suite.ps1
 ```
 
-The suite writes `window.png`, `semantic-tree.json`, and `manifest.json` for
-`settings.first-run.player-missing`, `settings.connection.clean`,
-`settings.connection.dirty`, and `settings.validation-errors` beneath
-`target/gui-visual/`. Each run uses an isolated configuration fixture and the native smoke
-driver's fixed 1700x1100 window bounds. The manifest records the remaining environmental
-inputs: the GUI currently follows the Windows theme, DPI scale, and egui system fonts because
-there are no application test overrides for those values. Use `-Scenario <id>` for a focused
-capture and `-NoBuild` only when `target/debug/sorotte-gui.exe` is already current.
+The suite writes `window.png`, `semantic-tree.json`, and `manifest.json` beneath
+`target/gui-visual/` using isolated local fixtures. Theme and window size are
+explicit. Each schema-3 capture measures native Windows DPI and records the
+separate application zoom input. Fonts remain an environmental/build input.
+Use `-Scenario <id>`, `-Theme light|dark`, `-UiScale 1.5`, and
+`-ExpectedNativeDpi 144` for focused captures; `-NoBuild` requires a current
+binary. The [display matrix](GUI_DISPLAY_MATRIX.md) defines native DPI profiles,
+long-content scroll/focus and modal/error checks, artifact identities, visual
+review, and the distinction from screen-reader evidence.
 
 For agent-driven UI inspection through the egui MCP server, opt in when launching the app:
 

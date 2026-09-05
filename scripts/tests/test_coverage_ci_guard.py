@@ -893,7 +893,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         result, report = self.invoke()
         self.assertEqual(result, 1)
         self.assertEqual(report["phases"]["diff-policy"]["status"], "failed")
-        self.assertIn("not valid UTF-8 JSON", report["errors"][-1])
+        self.assertIn("not one complete JSON value", report["errors"][-1])
 
     def test_duplicate_keys_and_nonstandard_numbers_fail_closed(self) -> None:
         raw = self.policy.read_text(encoding="utf-8")
@@ -908,7 +908,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         result, report = self.invoke()
         self.assertEqual(result, 1)
         self.assertTrue(
-            any("duplicates object key" in error for error in report["errors"])
+            any("duplicate_key" in error for error in report["errors"])
         )
 
         self.write_policy()
@@ -917,7 +917,7 @@ class CoverageFinalizerTests(unittest.TestCase):
         result, report = self.invoke()
         self.assertEqual(result, 1)
         self.assertTrue(
-            any("numeric constant" in error for error in report["errors"])
+            any("nonfinite" in error for error in report["errors"])
         )
 
 

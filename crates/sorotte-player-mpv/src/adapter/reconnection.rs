@@ -47,8 +47,8 @@ impl MpvAdapter {
             return;
         }
         let connected = connect(&endpoint);
-        let retry_from = completed_at().max(attempt_started_at);
         let Ok(client) = connected else {
+            let retry_from = completed_at().max(attempt_started_at);
             self.ipc_reconnect_not_before = Some(retry_from + IPC_RECONNECT_INTERVAL);
             return;
         };
@@ -56,6 +56,9 @@ impl MpvAdapter {
             .initialize_json_ipc_attachment(endpoint, client)
             .is_err()
         {
+            // Connecting and the fallible version/attachment initialization are
+            // one attempt. A slow version response must not consume its backoff.
+            let retry_from = completed_at().max(attempt_started_at);
             self.ipc_reconnect_not_before = Some(retry_from + IPC_RECONNECT_INTERVAL);
         }
     }

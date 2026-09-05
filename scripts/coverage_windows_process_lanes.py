@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 import coverage_profile_lanes as common
+import artifact_input
 
 
 SCHEMA_VERSION = 1
@@ -990,7 +991,8 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
         label="Windows process coverage report",
     )
     if (
-        report.get("schema_version") != SCHEMA_VERSION
+        not artifact_input.is_json_integer(report.get("schema_version"))
+        or report.get("schema_version") != SCHEMA_VERSION
         or report.get("kind") != REPORT_KIND
     ):
         raise common.CoverageProfileLaneError(
@@ -1225,15 +1227,9 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
 
 def strict_load_report(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise common.CoverageProfileLaneError(
-            f"cannot read Windows process coverage report {path}: {error}"
-        ) from error
-    if len(data) > common.MAX_REPORT_BYTES:
-        raise common.CoverageProfileLaneError(
-            "Windows process coverage report exceeds size bound"
-        )
+        data = artifact_input.read_bounded(path, max_bytes=common.MAX_REPORT_BYTES, label="Windows process coverage report")
+    except artifact_input.ArtifactInputError as error:
+        raise common.CoverageProfileLaneError(str(error)) from error
     return validate_report_document(
         common.parse_json(data, label="Windows process coverage report")
     )

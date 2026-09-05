@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_player_api::PlayerAdapter;
-use sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+use sorotte_protocol::SOROTTE_MAX_PROTOCOL_LINE_BYTES;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
 
 use crate::local_runtime_actions::PLAYER_CHAT_INPUT_POLL_INTERVAL_MS;
 
-pub const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES;
+pub const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = SOROTTE_MAX_PROTOCOL_LINE_BYTES;
 
 const LIFECYCLE_WRITE_BARRIER_ENV: &str = "SOROTTE_LIFECYCLE_WRITE_BARRIER";
 const LIFECYCLE_WRITE_BARRIER_MODE: &str = "leased-oversized-frame";
@@ -405,6 +405,50 @@ mod tests {
     };
     use tokio::io::AsyncReadExt;
     use tokio::io::BufReader;
+
+    #[tokio::test]
+    async fn server_generated_large_roster_crosses_loopback_cli_reader_with_both_delimiters() {
+        use tokio::io::AsyncWriteExt;
+        let mut server = sorotte_server::ServerRuntime::new();
+        for username in ["alice", "reader"] {
+            server.handle_line(username, &serde_json::json!({"Hello":{"username":username,"room":{"name":"room"},"version":"1.7.5","features":{"sorotteLargeProtocolFramesV1":true}}}).to_string()).unwrap();
+        }
+        server.handle_line("alice", &serde_json::json!({"Set":{"file":{"name":"episode.mkv","extension":"\u{754c}\n\"".repeat(20_000)}}}).to_string()).unwrap();
+        let expected = server
+            .handle_line("reader", r#"{"List":null}"#)
+            .unwrap()
+            .remove(0);
+        assert!(expected.len() > sorotte_protocol::DEFAULT_MAX_PROTOCOL_LINE_BYTES);
+        for delimiter in [b"\n".as_slice(), b"\r\n".as_slice()] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let framed = [expected.as_bytes(), delimiter].concat();
+            let writer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                for fragment in framed.chunks(997) {
+                    socket.write_all(fragment).await.unwrap();
+                }
+            });
+            let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let actual = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                InboundProtocolLineReader::default().read_line(&mut reader),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                sorotte_protocol::decode_message_line(&actual)
+                    .unwrap()
+                    .kind(),
+                "List"
+            );
+            writer.await.unwrap();
+        }
+    }
 
     struct ProtocolIoTestPlayer;
 

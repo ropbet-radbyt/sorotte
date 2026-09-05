@@ -216,8 +216,14 @@ Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "READ
 Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $packageRoot "SERVER_RELEASE.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "LICENSE") (Join-Path $packageRoot "LICENSE")
 
+$dependencyTarget = if ($packageForWindows) { "x86_64-pc-windows-msvc" } else { "x86_64-unknown-linux-gnu" }
+& python (Join-Path $RepoRoot "scripts/dependency_policy.py") inventory --repo-root $RepoRoot --package sorotte-server --target $dependencyTarget --payload $packageRoot --output (Join-Path $packageRoot "DEPENDENCIES.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "Server dependency inventory generation failed with exit code $LASTEXITCODE"
+}
+
 $manifestFiles = @()
-foreach ($relativePath in @($binaryName, "README.md", "SERVER_RELEASE.md", "LICENSE")) {
+foreach ($relativePath in @($binaryName, "README.md", "SERVER_RELEASE.md", "LICENSE", "DEPENDENCIES.json", "THIRD-PARTY-NOTICES.txt")) {
     $payloadPath = Join-Path $packageRoot $relativePath
     $payloadItem = Get-Item -LiteralPath $payloadPath
     $payloadHash = Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256

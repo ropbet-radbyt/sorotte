@@ -195,6 +195,14 @@ pub(in crate::app) trait GuiNativeRuntimePump {
 }
 
 pub(in crate::app) trait GuiQueuedRuntimeOwner {
+    /// Gives the UI shutdown path independent access to already launched players.
+    fn register_owned_processes(
+        &self,
+        _scope: &sorotte_player_mpv::managed_process::ManagedMpvShutdownScope,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Compatibility entry point for direct, single-threaded runtime tests.
     /// Production worker code uses `input_changed` and `poll` separately.
     #[cfg(test)]

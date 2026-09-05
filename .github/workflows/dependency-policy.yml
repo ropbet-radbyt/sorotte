@@ -1,0 +1,92 @@
+name: Dependency advisory and source policy
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**/Cargo.toml"
+      - ".cargo/**"
+      - "deny.toml"
+      - "requirements/**"
+      - "coverage/dependency-policy.toml"
+      - "coverage/native-components.toml"
+      - "scripts/dependency_policy.py"
+      - "scripts/artifact_input.py"
+      - "scripts/tests/test_dependency_policy.py"
+      - ".github/workflows/dependency-policy.yml"
+      - ".github/dependabot.yml"
+  schedule:
+    - cron: "40 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependencies-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust locked advisory and source policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned cargo-deny
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - name: Check locked graph and record database identity
+        run: python scripts/dependency_policy.py scan --ecosystem rust --output target/dependencies/rust/report.json
+      - name: Preserve dependency evidence including failed or unavailable scans
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-rust-${{ github.sha }}
+          path: |
+            target/dependencies/rust/report.json
+            target/dependencies/rust/cargo-deny.jsonl
+            target/dependencies/rust/effective-deny.toml
+            target/dependencies/rust/rustsec-fetch.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  python:
+    name: Python verification dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned verification scanner
+        run: python -m pip install --disable-pip-version-check -r requirements/dependency-audit.txt
+      - name: Audit resolved verification requirements
+        run: python scripts/dependency_policy.py scan --ecosystem python --output target/dependencies/python/report.json
+      - name: Preserve Python database responses and resolved versions
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-python-${{ github.sha }}
+          path: target/dependencies/python/
+          if-no-files-found: error
+          retention-days: 30

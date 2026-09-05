@@ -445,6 +445,20 @@ impl ServerRuntime {
             None
         };
         if let Some(reconnect_identity) = reconnect_identity {
+            self.prune_readiness_reconnect_cache();
+            while self.readiness_reconnect_cache.len() >= READINESS_RECONNECT_MAX_RETAINED {
+                let oldest = self
+                    .readiness_reconnect_cache
+                    .iter()
+                    .min_by(|(_, left), (_, right)| {
+                        left.detached_at_seconds
+                            .total_cmp(&right.detached_at_seconds)
+                    })
+                    .map(|(key, _)| *key);
+                if let Some(oldest) = oldest {
+                    self.readiness_reconnect_cache.remove(&oldest);
+                }
+            }
             let record = participant.record;
             self.readiness_reconnect_cache.insert(
                 readiness_reconnect_token_digest(reconnect_identity.expose_secret()),
@@ -459,7 +473,7 @@ impl ServerRuntime {
                     initialization_open: participant.initialization_open,
                     accepted_operations: participant.accepted_operations,
                     room_readiness_revision: room_revision,
-                    detached_at_seconds: self.current_time_seconds(),
+                    detached_at_seconds: self.local_time_seconds(),
                 },
             );
         }
@@ -1018,8 +1032,7 @@ impl ServerRuntime {
             self.pending_user_transport_by_client.remove(client_id);
             return;
         };
-        let expires_at_seconds =
-            self.current_time_seconds() + READINESS_USER_TRANSPORT_GRACE_SECONDS;
+        let expires_at_seconds = self.local_time_seconds() + READINESS_USER_TRANSPORT_GRACE_SECONDS;
         self.pending_user_transport_by_client.insert(
             client_id.to_owned(),
             PendingUserTransportTransition {
@@ -1041,7 +1054,7 @@ impl ServerRuntime {
         desired_paused: bool,
         evidence: PendingUserTransportEvidence,
     ) -> bool {
-        let now_seconds = self.current_time_seconds();
+        let now_seconds = self.local_time_seconds();
         let current_transport_authority_revision = self
             .room_readiness
             .get(room_name)
@@ -1055,7 +1068,7 @@ impl ServerRuntime {
                     && pending.evidence == evidence
                     && Some(pending.transport_authority_revision)
                         == current_transport_authority_revision
-                    && now_seconds <= pending.expires_at_seconds
+                    && now_seconds < pending.expires_at_seconds
             })
     }
 
@@ -2073,10 +2086,12 @@ impl ServerRuntime {
         epoch
     }
 
-    fn prune_readiness_reconnect_cache(&mut self) {
-        let now_seconds = self.current_time_seconds();
+    pub(crate) fn prune_readiness_reconnect_cache(&mut self) {
+        let now_seconds = self.local_time_seconds();
+        self.pending_user_transport_by_client
+            .retain(|_, pending| now_seconds < pending.expires_at_seconds);
         self.readiness_reconnect_cache.retain(|_, membership| {
-            now_seconds - membership.detached_at_seconds <= READINESS_RECONNECT_TTL_SECONDS
+            now_seconds - membership.detached_at_seconds < READINESS_RECONNECT_TTL_SECONDS
         });
     }
 }

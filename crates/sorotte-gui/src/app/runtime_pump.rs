@@ -27,6 +27,16 @@ impl GuiPersistedConfigRuntimeOwner {
 }
 
 impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
+    fn register_owned_processes(
+        &self,
+        scope: &sorotte_player_mpv::managed_process::ManagedMpvShutdownScope,
+    ) -> Result<(), String> {
+        if let Some(process) = &self.managed_mpv_process {
+            process.register_shutdown_scope(scope)?;
+        }
+        Ok(())
+    }
+
     fn input_changed(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle, input: &GuiRuntimeInput) {
         self.update_runtime.reconcile(input.updates());
         self.legacy_projection = Some(input.to_compatibility_projection());

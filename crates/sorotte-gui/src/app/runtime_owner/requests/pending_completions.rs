@@ -374,8 +374,12 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         };
-        match upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &settings) {
-            Ok(()) => {
+        match merge_sorotte_ini_stored_client_settings_mvp_at_path(
+            &path,
+            &previous_settings,
+            &settings,
+        ) {
+            Ok(settings) => {
                 self.config_path = Some(path);
                 self.promote_on_save_runtime_fields(&settings);
                 if self.apply_saved_player_settings_in_place(&settings) {
@@ -564,56 +568,23 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
-        let previous_config_contents = match std::fs::read(&paths.config_path) {
-            Ok(contents) => Some(contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        let source = self.persisted_settings_config_path_for_request(projected_state);
+        let settings = match relocate_sorotte_ini_stored_client_settings_mvp_at_path(
+            source.as_deref(),
+            &paths.config_path,
+            &projected_state.saved_configuration,
+            &settings,
+            || persist_sorotte_client_install_locator(&install_root, &paths.storage_root),
+        ) {
+            Ok(settings) => settings,
             Err(error) => {
                 return self.cancel_config_storage_change_with_error(
                     handle,
                     projected_state,
-                    format!(
-                        "Cannot prepare configuration relocation from {}: {error}",
-                        paths.config_path.display()
-                    ),
+                    error.to_string(),
                 );
             }
         };
-
-        if let Err(error) =
-            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&paths.config_path, &settings)
-        {
-            return self.cancel_config_storage_change_with_error(
-                handle,
-                projected_state,
-                format!("Configuration save failed: {error}"),
-            );
-        }
-
-        if let Err(error) =
-            persist_sorotte_client_install_locator(&install_root, &paths.storage_root)
-        {
-            let rollback_error = match previous_config_contents {
-                Some(contents) => {
-                    write_sorotte_ini_contents_atomically_at_path(&paths.config_path, &contents)
-                        .err()
-                }
-                None => match std::fs::remove_file(&paths.config_path) {
-                    Ok(()) => None,
-                    Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
-                        None
-                    }
-                    Err(remove_error) => Some(remove_error.into()),
-                },
-            };
-            let message = match rollback_error {
-                Some(rollback_error) => format!(
-                    "{error}. Restoring {} also failed: {rollback_error}",
-                    paths.config_path.display()
-                ),
-                None => error.to_string(),
-            };
-            return self.cancel_config_storage_change_with_error(handle, projected_state, message);
-        }
 
         let copy_warnings =
             Self::copy_known_storage_entries_best_effort(old_root.as_deref(), &paths.storage_root);

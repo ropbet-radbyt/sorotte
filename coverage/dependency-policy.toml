@@ -1,0 +1,7 @@
+schema_version = 1
+cargo_deny_version = "0.20.2"
+pip_audit_version = "2.10.1"
+advisory_database = "https://github.com/RustSec/advisory-db"
+# No policy exceptions have been accepted. Any addition requires an exact
+# advisory ID, rationale, owner and YYYY-MM-DD expiry, reviewed in the PR.
+exception = []

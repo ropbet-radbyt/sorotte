@@ -37,30 +37,42 @@ impl fmt::Debug for MpvAdapter {
             )
             .field(
                 "network_media_option_count",
-                &self.network_media_options.len(),
+                &self.network_options.network_media_options.len(),
             )
             .field(
                 "network_media_options_embedded_generation",
                 &self
+                    .network_options
                     .network_media_options_embedded_load
                     .as_ref()
                     .map(|embedded| embedded.media_generation),
             )
             .field(
                 "network_media_options_apply_identity_present",
-                &self.network_media_options_apply_identity.is_some(),
+                &self
+                    .network_options
+                    .network_media_options_apply_identity
+                    .is_some(),
             )
             .field(
                 "pending_network_options_hook_health_transition_count",
-                &self.pending_network_options_hook_health_transitions.len(),
+                &self
+                    .network_options
+                    .pending_network_options_hook_health_transitions
+                    .len(),
             )
             .field(
                 "pending_network_media_policy_outcome_count",
-                &self.pending_network_media_policy_outcomes.len(),
+                &self
+                    .network_options
+                    .pending_network_media_policy_outcomes
+                    .len(),
             )
             .field(
                 "network_media_options_runtime_health_revision",
-                &self.network_media_options_runtime_health_revision,
+                &self
+                    .network_options
+                    .network_media_options_runtime_health_revision,
             )
             .field("pending_local_file_update", &self.pending_local_file_update)
             .field(
@@ -118,13 +130,16 @@ impl fmt::Debug for MpvAdapter {
             )
             .field(
                 "interrupted_network_stream_recovery",
-                &self.interrupted_network_stream_recovery,
+                &self.stream_recovery.interrupted_network_stream_recovery,
             )
             .field(
                 "network_stream_recovery_evidence",
-                &self.network_stream_recovery_evidence,
+                &self.stream_recovery.network_stream_recovery_evidence,
             )
-            .field("network_cache_stall", &self.network_cache_stall)
+            .field(
+                "network_cache_stall",
+                &self.stream_recovery.network_cache_stall,
+            )
             .field(
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
@@ -244,6 +259,8 @@ impl fmt::Debug for MpvAdapter {
 impl Default for MpvAdapter {
     fn default() -> Self {
         Self {
+            stream_recovery: StreamRecoveryState::default(),
+            network_options: NetworkOptionsState::default(),
             paused: false,
             logical_pause_explicit: false,
             position_seconds: 0.0,
@@ -268,40 +285,6 @@ impl Default for MpvAdapter {
             window_maximized: false,
             window_minimized: false,
             current_path: None,
-            network_media_options: BTreeMap::new(),
-            network_media_options_hook_enabled: true,
-            network_media_options_hook_loaded: false,
-            network_media_options_generation: 1,
-            network_media_options_hook_configured_generation: None,
-            network_media_options_hook_configuration_error: None,
-            network_media_options_hook_last_heartbeat_at: None,
-            network_media_options_hook_pending_heartbeat: None,
-            network_media_options_hook_pending_event_poll_command_id: None,
-            next_network_media_options_hook_heartbeat_nonce: 1,
-            network_media_options_hook_instance_id: None,
-            network_media_options_hook_last_accepted_load_sequence: None,
-            network_media_options_hook_latest_started_load_sequence: None,
-            network_media_options_expected_transition: None,
-            network_media_options_hook_health: MpvNetworkOptionsHookHealth::Pending,
-            network_media_options_hook_ownership_possible: false,
-            network_media_options_hook_configuration_in_progress: false,
-            network_media_options_policy_state: MpvNetworkMediaPolicyState::Unknown,
-            network_media_options_runtime_health_revision: 0,
-            network_media_options_application_state: None,
-            network_media_options_diagnostic_load_sequence: None,
-            network_media_options_verification_complete: false,
-            network_media_options_option_results: Vec::new(),
-            network_media_options_effective_cache_options: BTreeMap::new(),
-            pending_network_media_options_hook_active_result: None,
-            deferred_network_media_options_hook_transition_result: None,
-            network_media_options_embedded_load: None,
-            network_media_options_apply_identity: None,
-            next_network_media_options_apply_attempt_id: 1,
-            network_media_options_event_batch_depth: 0,
-            deferred_network_media_options_observation: None,
-            next_network_options_event_sequence: 1,
-            pending_network_options_hook_health_transitions: VecDeque::new(),
-            pending_network_media_policy_outcomes: VecDeque::new(),
             pending_local_file_update: None,
             pending_local_file_generation: None,
             pending_local_file_observed_at: None,
@@ -340,9 +323,6 @@ impl Default for MpvAdapter {
             next_media_generation: 1,
             player_lifecycle: PlayerLifecycleState::default(),
             lifecycle_reconciliation_due: false,
-            interrupted_network_stream_recovery: None,
-            network_stream_recovery_evidence: None,
-            network_cache_stall: None,
             active_load_attempt_id: None,
             active_media_generation: None,
             active_playlist_entry_id: None,
@@ -497,14 +477,15 @@ mod credential_debug_tests {
             &target,
             std::collections::BTreeSet::new(),
         );
-        adapter.network_stream_recovery_evidence = Some(NetworkStreamRecoveryEvidence {
-            attachment_epoch: adapter.lifecycle_epoch(),
-            media_generation: generation,
-            load_attempt_id: attempt_id,
-            path: target.clone(),
-            duration_seconds: 120.0,
-            position_seconds: 30.0,
-        });
+        adapter.stream_recovery.network_stream_recovery_evidence =
+            Some(NetworkStreamRecoveryEvidence {
+                attachment_epoch: adapter.lifecycle_epoch(),
+                media_generation: generation,
+                load_attempt_id: attempt_id,
+                path: target.clone(),
+                duration_seconds: 120.0,
+                position_seconds: 30.0,
+            });
         adapter.pending_local_file_update =
             Some(sorotte_player_api::LocalFileUpdate::new(target.clone()).with_path(target));
 

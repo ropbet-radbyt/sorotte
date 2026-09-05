@@ -724,7 +724,7 @@ pub(super) fn read_mock_session_startup_hello_line(
 }
 
 pub(super) fn start_mock_session_server(
-    initial_lines: &'static [&'static str],
+    initial_lines: &[&str],
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
 ) -> Result<MockSessionServer, String> {
@@ -732,30 +732,26 @@ pub(super) fn start_mock_session_server(
         initial_lines,
         first_chat_followup_lines,
         second_chat_followup_lines,
-        None,
+        false,
     )
 }
 
-pub(super) fn start_mock_session_server_with_hold_timeout(
-    initial_lines: &'static [&'static str],
-    first_chat_followup_lines: &'static [&'static str],
-    second_chat_followup_lines: &'static [&'static str],
-    hold_timeout: Duration,
+pub(super) fn start_mock_session_server_with_keepalive(
+    initial_lines: &[&str],
 ) -> Result<MockSessionServer, String> {
-    start_mock_session_server_with_release_policy(
-        initial_lines,
-        first_chat_followup_lines,
-        second_chat_followup_lines,
-        Some(hold_timeout),
-    )
+    start_mock_session_server_with_release_policy(initial_lines, &[], &[], true)
 }
 
 fn start_mock_session_server_with_release_policy(
-    initial_lines: &'static [&'static str],
+    initial_lines: &[&str],
     first_chat_followup_lines: &'static [&'static str],
     second_chat_followup_lines: &'static [&'static str],
-    hold_timeout: Option<Duration>,
+    keepalive: bool,
 ) -> Result<MockSessionServer, String> {
+    let initial_lines = initial_lines
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect::<Vec<_>>();
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("failed to bind mock TCP listener: {error}"))?;
     listener
@@ -882,17 +878,20 @@ fn start_mock_session_server_with_release_policy(
         process_followup("first", first_chat_followup_lines)?;
         process_followup("second", second_chat_followup_lines)?;
 
-        match hold_timeout {
-            Some(hold_timeout) => {
-                let _ = release_rx.recv_timeout(hold_timeout);
+        // Keep the fixture live until its owner closes the disposable GUI.
+        if keepalive {
+            let started = Instant::now();
+            while let Err(mpsc::RecvTimeoutError::Timeout) =
+                release_rx.recv_timeout(Duration::from_secs(1))
+            {
+                // Keep transport liveness active without resetting UI state.
+                let ping = serde_json::json!({"State":{"ping":{"latencyCalculation":started.elapsed().as_secs_f64() + 1.0}}});
+                if writeln!(stream, "{ping}").is_err() {
+                    break;
+                }
             }
-            None => {
-                // Scenario-owned fixtures stay connected until the scenario
-                // has closed and joined the GUI process. This prevents slow
-                // native interaction from turning a test fixture's timeout
-                // into a product reconnect failure.
-                let _ = release_rx.recv();
-            }
+        } else {
+            let _ = release_rx.recv();
         }
         Ok(())
     });
@@ -1944,6 +1943,34 @@ pub(super) fn wait_for_accessible_name_with_named_control_scroll_up<D: NativeGui
     Err(format!(
         "timed out waiting for accessible name {name:?} after {max_scrolls} upward scrolls on {scroll_control_name:?}"
     ))
+}
+
+#[cfg(test)]
+mod visual_server_lifetime_tests {
+    use super::*;
+
+    #[test]
+    fn visual_server_keeps_transport_live_until_explicit_fixture_release() {
+        let mut server = start_mock_session_server_with_keepalive(&[]).unwrap();
+        let mut stream = std::net::TcpStream::connect(&server.address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        writeln!(stream, "{{\"Hello\":{{\"username\":\"fixture\"}}}}").unwrap();
+        let mut reader = BufReader::new(stream);
+        for _ in 0..2 {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert!(message["State"]["ping"]["latencyCalculation"].is_number());
+            assert_eq!(message.as_object().unwrap().len(), 1);
+            assert_eq!(message["State"].as_object().unwrap().len(), 1);
+        }
+        server.release_tx.send(()).unwrap();
+        server.join_handle.take().unwrap().join().unwrap().unwrap();
+        let mut line = String::new();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,9 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
         }
         ServerRuntimeError::MissingSession(_) => Some(LEGACY_SERVER_NOT_KNOWN_ERROR.to_owned()),
         ServerRuntimeError::InvalidHello => Some(LEGACY_SERVER_HELLO_ERROR.to_owned()),
+        ServerRuntimeError::Protocol(ProtocolError::ServerError { message }) => {
+            Some(message.clone())
+        }
         _ => None,
     }
 }
@@ -148,11 +151,18 @@ impl LineFanoutFailure {
 
 impl ServerRuntime {
     fn encode_directed_protocol_messages(
+        &self,
         messages: Vec<DirectedProtocolMessage>,
     ) -> Result<Vec<DirectedOutboundLine>, ServerRuntimeError> {
         messages
             .into_iter()
             .map(|message| {
+                if !message_fits_line_limit(
+                    &message.message,
+                    self.recipient_frame_limit(&message.client_id),
+                )? {
+                    return Err(frame_limits::frame_capacity_error());
+                }
                 Ok(DirectedOutboundLine {
                     client_id: message.client_id,
                     line: encode_message_line(&message.message)?,
@@ -264,7 +274,7 @@ impl ServerRuntime {
                 let LineFanoutFailure { error, .. } = *failure;
                 error
             })?;
-        Self::encode_directed_protocol_messages(outbound_messages)
+        self.encode_directed_protocol_messages(outbound_messages)
     }
 
     pub fn handle_transport_disconnect_fanout(
@@ -301,7 +311,7 @@ impl ServerRuntime {
         let outbound_lines = match self
             .handle_line_fanout_messages_for_peer(client_id, json_line, peer_ip)
         {
-            Ok(outbound_messages) => Self::encode_directed_protocol_messages(outbound_messages)?,
+            Ok(outbound_messages) => self.encode_directed_protocol_messages(outbound_messages)?,
             Err(failure) => {
                 let LineFanoutFailure {
                     outbound_messages,
@@ -309,7 +319,7 @@ impl ServerRuntime {
                     protocol_error_message,
                 } = *failure;
                 let mut outbound_lines =
-                    Self::encode_directed_protocol_messages(outbound_messages)?;
+                    self.encode_directed_protocol_messages(outbound_messages)?;
                 let Some(error_message) = protocol_error_message
                     .or_else(|| protocol_drop_error_message(&error, json_line))
                 else {
@@ -371,6 +381,9 @@ impl ServerRuntime {
         if self.reject_fenced_playback_barrier_transport(client_id) {
             return Ok(Vec::new());
         }
+        if !message_fits_line_limit(&message, MAX_PROTOCOL_LINE_BYTES)? {
+            return Err(frame_limits::frame_capacity_error());
+        }
         let normalized = normalize_server_protocol_message(message);
         const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
         let remaining = MAX_PENDING_COMPATIBILITY_FALLBACKS
@@ -412,6 +425,13 @@ impl ServerRuntime {
         };
         let message = truncate_text_to_max_chars(&message, self.max_chat_message_length);
         let outbound_message = ProtocolMessage::chat_message(username, message);
+        let recipients = self.chat_clients_in_room(&room_name);
+        self.check_fanout_allocation(&outbound_message, recipients.len())?;
+        for peer in &recipients {
+            if !message_fits_line_limit(&outbound_message, self.recipient_frame_limit(peer))? {
+                return Err(frame_limits::frame_capacity_error());
+            }
+        }
         Ok(self
             .chat_clients_in_room(&room_name)
             .into_iter()
@@ -491,6 +511,61 @@ impl ServerRuntime {
 
         let readiness_reconnect_token = hello.readiness_reconnect_token;
         let capabilities = hello.capabilities;
+        let username = self
+            .find_free_username(&requested_username, Some(client_id))
+            .ok_or(ServerRuntimeError::InvalidHello)?;
+        if version.len() > 128 {
+            return Err(frame_limits::frame_capacity_error());
+        }
+        let base_motd = motd_for_client_context(
+            version,
+            self.motd_template.as_deref(),
+            peer_ip.unwrap_or_default(),
+            &username,
+            &room_name,
+        );
+        let motd = persistent_rooms_notice_motd(
+            base_motd,
+            self.persistent_rooms_enabled,
+            capabilities.persistent_rooms,
+        );
+        let mut response = HelloPayload::new(username.clone(), room_name.clone(), version)
+            .with_realversion(SERVER_REAL_VERSION)
+            .with_features(server_feature_list(
+                self.persistent_rooms_enabled,
+                self.isolate_rooms,
+                self.chat_enabled,
+                self.readiness_enabled,
+                self.max_chat_message_length,
+                self.max_username_length,
+            ));
+        response
+            .extra
+            .insert("motd".to_owned(), Value::String(motd));
+        let mut admission_response = response.clone();
+        if capabilities.readiness_v2 {
+            admission_response.extra.insert(
+                SOROTTE_READINESS_RECONNECT_TOKEN.to_owned(),
+                Value::String("x".repeat(READINESS_MAX_OPERATION_ID_BYTES)),
+            );
+        }
+        if !message_fits_line_limit(
+            &ProtocolMessage::hello(admission_response),
+            capabilities.frame_limit(),
+        )? {
+            return Err(frame_limits::frame_capacity_error());
+        }
+
+        self.check_session_frame_projection(
+            client_id,
+            &ServerSession {
+                username: username.clone(),
+                room: room_name.clone(),
+                version: version.to_owned(),
+                capabilities: capabilities.clone(),
+                file: None,
+            },
+        )?;
         let mut replacement_outbound = Vec::new();
         if let Some(previous_session) = self.sessions.get(client_id).cloned() {
             replacement_outbound.extend(self.detach_readiness_membership(client_id, true)?);
@@ -516,9 +591,6 @@ impl ServerRuntime {
                 .extend(self.refresh_mixed_readiness_cohort(&previous_session.room)?);
             self.cleanup_room_if_empty(&previous_session.room)?;
         }
-        let username = self
-            .find_free_username(&requested_username, Some(client_id))
-            .ok_or(ServerRuntimeError::InvalidHello)?;
         if let Some(peer_ip) = peer_ip.filter(|peer_ip| !peer_ip.is_empty()) {
             self.client_peer_ips
                 .insert(client_id.to_owned(), peer_ip.to_owned());
@@ -591,10 +663,10 @@ impl ServerRuntime {
         self.client_state_counters
             .insert(client_id.to_owned(), ClientStateCounters::default());
         self.client_last_state_update_at
-            .insert(client_id.to_owned(), now);
+            .insert(client_id.to_owned(), self.local_time_seconds());
         self.client_next_periodic_state_at.insert(
             client_id.to_owned(),
-            now + INITIAL_SERVER_STATE_DELAY_SECONDS,
+            self.local_time_seconds() + INITIAL_SERVER_STATE_DELAY_SECONDS,
         );
 
         let mut outbound = replacement_outbound;
@@ -646,18 +718,6 @@ impl ServerRuntime {
             ),
         ));
 
-        let base_motd = motd_for_client_context(
-            version,
-            self.motd_template.as_deref(),
-            peer_ip.unwrap_or_default(),
-            &username,
-            &room_name,
-        );
-        let motd = persistent_rooms_notice_motd(
-            base_motd,
-            self.persistent_rooms_enabled,
-            capabilities.persistent_rooms,
-        );
         let readiness_attach_outbound = if self.readiness_enabled && capabilities.readiness_v2 {
             self.attach_readiness_membership(
                 client_id,
@@ -668,19 +728,6 @@ impl ServerRuntime {
         } else {
             Vec::new()
         };
-        let mut response = HelloPayload::new(username.clone(), room_name.clone(), version)
-            .with_realversion(SERVER_REAL_VERSION)
-            .with_features(server_feature_list(
-                self.persistent_rooms_enabled,
-                self.isolate_rooms,
-                self.chat_enabled,
-                self.readiness_enabled,
-                self.max_chat_message_length,
-                self.max_username_length,
-            ));
-        response
-            .extra
-            .insert("motd".to_owned(), Value::String(motd));
         if let Some(reconnect_identity) = self.readiness_reconnect_identity_by_client.get(client_id)
         {
             response.extra.insert(
@@ -759,6 +806,83 @@ impl ServerRuntime {
             .ok_or_else(|| ServerRuntimeError::MissingSession(client_id.to_owned()))?;
 
         let mut outbound_messages = Vec::new();
+
+        // Validate every roster-affecting command in the batch before the
+        // first mutation, including a capability downgrade or isolated move.
+        let mut projected = session.clone();
+        let mut projected_playlists = BTreeMap::new();
+        let mut projected_rooms = self.known_rooms_for_frame_projection();
+        for command in &commands {
+            match command {
+                ServerSetCommand::Room(room) => {
+                    projected.room = truncate_text_to_max_chars(room, DEFAULT_MAX_ROOM_NAME_LENGTH);
+                    projected_rooms.insert(projected.room.clone());
+                }
+                ServerSetCommand::File(file) => projected.file = file.clone(),
+                ServerSetCommand::Features(features) => projected.capabilities = features.clone(),
+                ServerSetCommand::ControllerAuth { room, password } => {
+                    let room = room.as_deref().unwrap_or(&projected.room);
+                    let password = password.expose_secret();
+                    match self.room_password_provider.check(room, password) {
+                        Err(RoomPasswordCheckError::NotControlledRoom) => {
+                            let name = self
+                                .room_password_provider
+                                .controlled_room_name_for(room, password);
+                            let response = new_controlled_room_message(&name, password);
+                            self.check_fanout_allocation(&response, 1)?;
+                            if !message_fits_line_limit(
+                                &response,
+                                self.frame_limit_for_capabilities(&projected.capabilities),
+                            )? {
+                                return Err(frame_limits::frame_capacity_error());
+                            }
+                        }
+                        result => {
+                            let success = matches!(result, Ok(true));
+                            if success {
+                                // Successful authentication creates visible room state even
+                                // when the controller has not joined that room.
+                                projected_rooms.insert(room.to_owned());
+                            }
+                            let response =
+                                controller_auth_status_message(&projected.username, room, success);
+                            for peer in self
+                                .sessions
+                                .iter()
+                                .filter(|(id, _)| id.as_str() != client_id)
+                                .map(|(_, peer)| peer)
+                                .chain(std::iter::once(&projected))
+                                .filter(|peer| peer.room == room)
+                            {
+                                if !message_fits_line_limit(
+                                    &response,
+                                    self.frame_limit_for_capabilities(&peer.capabilities),
+                                )? {
+                                    return Err(frame_limits::frame_capacity_error());
+                                }
+                            }
+                        }
+                    }
+                }
+                ServerSetCommand::PlaylistChange(files) => {
+                    projected_playlists.insert(projected.room.clone(), files.clone());
+                    self.check_projected_playlist_frames(
+                        client_id,
+                        &projected,
+                        &projected_playlists,
+                    )?;
+                    continue;
+                }
+                _ => continue,
+            }
+            self.check_frame_projection_with_config(
+                client_id,
+                &projected,
+                self.isolate_rooms,
+                &projected_rooms,
+            )?;
+            self.check_projected_playlist_frames(client_id, &projected, &projected_playlists)?;
+        }
 
         for command in commands {
             let mut room = None;
@@ -925,7 +1049,8 @@ impl ServerRuntime {
                         .extend(self.refresh_mixed_readiness_cohort(&session.room)?);
                     self.client_next_periodic_state_at.insert(
                         client_id.to_owned(),
-                        now_seconds + SERVER_STATE_INTERVAL_SECONDS,
+                        self.local_time_for_wall_sample(now_seconds)
+                            + SERVER_STATE_INTERVAL_SECONDS,
                     );
                     self.cleanup_room_if_empty(&previous_room)?;
 

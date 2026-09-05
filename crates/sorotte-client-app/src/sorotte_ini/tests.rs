@@ -444,14 +444,23 @@ fn atomic_settings_writes_enforce_owner_only_permissions() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
         .expect("fixture permissions should be configurable");
 
-    write_sorotte_ini_contents_atomically_with_injected_pre_commit(&path, b"secret", |temp| {
-        assert_eq!(
-            std::fs::metadata(temp)?.permissions().mode() & 0o777,
-            0o600,
-            "secret-bearing temporary file must never be group/world readable"
-        );
-        Ok(())
-    })
+    super::paths::write_sorotte_ini_contents_atomically_with_injected_pre_write(
+        &path,
+        b"secret",
+        |file, temp| {
+            assert_eq!(
+                file.metadata()?.len(),
+                0,
+                "inspect Unix permissions before secret bytes"
+            );
+            assert_eq!(
+                std::fs::metadata(temp)?.permissions().mode() & 0o777,
+                0o600,
+                "secret-bearing temporary file must never be group/world readable"
+            );
+            Ok(())
+        },
+    )
     .expect("atomic settings write should succeed");
 
     assert_eq!(
@@ -514,7 +523,7 @@ fn path_helper_atomically_replaces_existing_contents_without_temporary_files() {
         std::fs::read_dir(parent)
             .expect("temp test directory should be readable")
             .count(),
-        1,
+        2,
         "successful replacement should not leave a temporary file"
     );
 

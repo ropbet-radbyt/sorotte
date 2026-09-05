@@ -1,6 +1,10 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -32,6 +36,15 @@ pub(super) trait GuiUpdateService: Send + Sync {
         gui_config_root: Option<&Path>,
     ) -> UpdateDownloadResult;
 
+    fn download_and_stage_update_cancellable(
+        &self,
+        candidate: &UpdateCandidate,
+        gui_config_root: Option<&Path>,
+        _cancelled: &AtomicBool,
+    ) -> UpdateDownloadResult {
+        self.download_and_stage_update(candidate, gui_config_root)
+    }
+
     fn launch_staged_update(&self, staged_update: &StagedUpdate) -> UpdateApplyLaunchResult;
 }
 
@@ -54,6 +67,19 @@ impl GuiUpdateService for SystemGuiUpdateService {
         gui_config_root: Option<&Path>,
     ) -> UpdateDownloadResult {
         remote_services::download_and_stage_update(candidate, gui_config_root)
+    }
+
+    fn download_and_stage_update_cancellable(
+        &self,
+        candidate: &UpdateCandidate,
+        gui_config_root: Option<&Path>,
+        cancelled: &AtomicBool,
+    ) -> UpdateDownloadResult {
+        remote_services::download_and_stage_update_cancellable(
+            candidate,
+            gui_config_root,
+            cancelled,
+        )
     }
 
     fn launch_staged_update(&self, staged_update: &StagedUpdate) -> UpdateApplyLaunchResult {
@@ -139,14 +165,21 @@ struct UpdateWorkerResult {
     output: UpdateWorkerOutput,
 }
 
-type UpdateJobWork = Box<dyn FnOnce() -> UpdateWorkerOutput + Send>;
+type UpdateJobWork = Box<dyn FnOnce(Arc<AtomicBool>) -> UpdateWorkerOutput + Send>;
 
 struct ActiveUpdateJob {
     id: u64,
     kind: UpdateJobKind,
     config_generation: u64,
     cancelled_by_config: bool,
+    cancelled: Arc<AtomicBool>,
     result_rx: mpsc::Receiver<UpdateWorkerResult>,
+}
+
+impl Drop for ActiveUpdateJob {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +244,7 @@ impl GuiUpdateRuntime {
                         .expect("cancellable update job should still be active");
                     let first_cancellation = !active.cancelled_by_config;
                     active.cancelled_by_config = true;
+                    active.cancelled.store(true, Ordering::Release);
                     first_cancellation
                 } else {
                     self.active_job = None;
@@ -232,8 +266,7 @@ impl GuiUpdateRuntime {
             self.job_configuration = next_job_configuration;
             self.config_generation = self.config_generation.wrapping_add(1);
             // Checks have no persistent side effects and can be detached. Downloads retain
-            // their active slot until their staging worker exits so a replacement cannot race
-            // the old worker in the deterministic staging directory. ApplyStaged is also
+            // their active slot until their staging worker finishes cleanup. ApplyStaged is also
             // retained: once helper launch has been accepted, settings changes cannot cancel
             // that irreversible operation or hide its result.
             self.background_check_next_due_at = None;
@@ -264,7 +297,7 @@ impl GuiUpdateRuntime {
                         origin,
                         user_initiated,
                     },
-                    Box::new(move || {
+                    Box::new(move |_cancelled| {
                         UpdateWorkerOutput::Actions(vec![GuiShellAction::ApplyUpdateCheckResult(
                             service.check_for_updates(
                                 &language,
@@ -280,11 +313,14 @@ impl GuiUpdateRuntime {
                 let config_root = self.config_root.clone();
                 (
                     UpdateJobKind::Download,
-                    Box::new(move || {
+                    Box::new(move |_cancelled| {
                         UpdateWorkerOutput::Actions(vec![
                             GuiShellAction::ApplyUpdateDownloadResult(
-                                service
-                                    .download_and_stage_update(&candidate, config_root.as_deref()),
+                                service.download_and_stage_update_cancellable(
+                                    &candidate,
+                                    config_root.as_deref(),
+                                    &_cancelled,
+                                ),
                             ),
                         ])
                     }),
@@ -295,9 +331,13 @@ impl GuiUpdateRuntime {
                 let config_root = self.config_root.clone();
                 (
                     UpdateJobKind::DownloadAndInstall,
-                    Box::new(move || {
+                    Box::new(move |_cancelled| {
                         UpdateWorkerOutput::DownloadAndInstall(Box::new(
-                            service.download_and_stage_update(&candidate, config_root.as_deref()),
+                            service.download_and_stage_update_cancellable(
+                                &candidate,
+                                config_root.as_deref(),
+                                &_cancelled,
+                            ),
                         ))
                     }),
                 )
@@ -306,7 +346,7 @@ impl GuiUpdateRuntime {
                 let service = self.service.clone();
                 (
                     UpdateJobKind::ApplyStaged,
-                    Box::new(move || {
+                    Box::new(move |_cancelled| {
                         UpdateWorkerOutput::Actions(vec![
                             GuiShellAction::ApplyStagedUpdateLaunchResult(
                                 service.launch_staged_update(&staged_update),
@@ -465,7 +505,7 @@ impl GuiUpdateRuntime {
                 origin,
                 user_initiated,
             },
-            Box::new(move || {
+            Box::new(move |_cancelled| {
                 UpdateWorkerOutput::Actions(vec![GuiShellAction::ApplyUpdateCheckResult(
                     service.check_for_updates(&language, user_initiated, update_channel.as_deref()),
                 )])
@@ -483,10 +523,12 @@ impl GuiUpdateRuntime {
         let id = self.next_job_id;
         let config_generation = self.config_generation;
         let (tx, result_rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
         let spawn_result = std::thread::Builder::new()
             .name(kind.thread_name().to_owned())
             .spawn(move || {
-                let output = work();
+                let output = work(worker_cancelled);
                 let _ = tx.send(UpdateWorkerResult {
                     id,
                     config_generation,
@@ -501,6 +543,7 @@ impl GuiUpdateRuntime {
                     kind,
                     config_generation,
                     cancelled_by_config: false,
+                    cancelled,
                     result_rx,
                 });
             }
@@ -581,7 +624,7 @@ impl GuiUpdateRuntime {
                     self.spawn_job(
                         handle,
                         UpdateJobKind::ApplyStaged,
-                        Box::new(move || {
+                        Box::new(move |_cancelled| {
                             UpdateWorkerOutput::Actions(vec![
                                 GuiShellAction::ApplyStagedUpdateLaunchResult(
                                     service.launch_staged_update(&staged_update),

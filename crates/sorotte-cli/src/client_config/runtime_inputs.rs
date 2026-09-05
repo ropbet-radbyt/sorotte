@@ -52,5 +52,9 @@ pub(crate) fn client_hello_features_legacy_compatible(config: &ClientLoopConfig)
     ClientSession::advertise_playback_barrier_v1(&mut features);
     ClientSession::advertise_readiness_v2(&mut features);
     ClientSession::advertise_participant_status_v1(&mut features);
+    features.insert(
+        sorotte_protocol::SOROTTE_LARGE_PROTOCOL_FRAMES_V1.to_owned(),
+        serde_json::Value::Bool(true),
+    );
     Value::Object(features)
 }

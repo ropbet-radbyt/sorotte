@@ -1,0 +1,394 @@
+schema_version = 1
+
+[release]
+version = "0.2.9"
+base_sha = "af226f1a6402c17d563c08cb7627af052c318254"
+fixing_sha = "pending"
+hosted = "pending"
+note = "The landed v0.2.8 main tree equals audit base 8b9ee43. v0.2.9 changes remain uncommitted; local results below describe their recorded implementation inputs, not a published release."
+
+[[crate]]
+name = "sorotte-secret"
+responsibility = "Typed sensitive values and redacted formatting."
+
+[[crate]]
+name = "sorotte-protocol"
+responsibility = "Wire schemas, compatibility decoding, and encoded byte budgets."
+
+[[crate]]
+name = "sorotte-core"
+responsibility = "Shared room and synchronization domain types."
+
+[[crate]]
+name = "sorotte-lifecycle-evidence"
+responsibility = "Causal records, bounded serialization, and observable recorder failure."
+
+[[crate]]
+name = "sorotte-server"
+responsibility = "Room authority, fanout, admission/byte permits, clocks, and durable server state."
+
+[[crate]]
+name = "sorotte-media-match"
+responsibility = "Media identity/indexing and owned cancellable extraction processes."
+
+[[crate]]
+name = "sorotte-client-core"
+responsibility = "Connection-scoped authority, ordered player observations, barriers, and local intent."
+
+[[crate]]
+name = "sorotte-client-app"
+responsibility = "Shared application configuration, settings transactions, and presentation boundaries."
+
+[[crate]]
+name = "sorotte-player-api"
+responsibility = "Player commands, physical observations, and lifecycle contracts."
+
+[[crate]]
+name = "sorotte-player-mpv"
+responsibility = "mpv attachment, process containment, IPC recovery, and trusted Lua leases."
+
+[[crate]]
+name = "sorotte-plex"
+responsibility = "Credentialed Plex discovery, bounded requests, and logical media resolution."
+
+[[crate]]
+name = "sorotte-cli"
+responsibility = "CLI startup, session ownership, user commands, and bounded readers."
+
+[[crate]]
+name = "sorotte-gui"
+responsibility = "GUI intent/projection, worker ownership, native accessibility, and update staging."
+
+[[crate]]
+name = "sorotte-sim"
+responsibility = "Deterministic simulations and generated lifecycle histories."
+
+[[crate]]
+name = "sorotte-compat"
+responsibility = "Pinned independent Python interoperability and honest prerequisite accounting."
+
+[[boundary]]
+id = "Wire framing and room capacity"
+tasks = ["A02"]
+contract = "Every accepted shared state fits each recipient framing contract; over-budget changes are rejected before canonical state commits."
+owners = ["crates/sorotte-protocol/src/codec.rs", "crates/sorotte-server/src/frame_limits.rs", "crates/sorotte-server/src/runtime_handlers.rs"]
+normative = ["docs/SERVER_BOUNDARIES.md"]
+proof = [
+  { source = "crates/sorotte-protocol/src/codec.rs", symbol = "encoded_frame_budget_tracks_utf8_and_json_escaping_at_exact_boundary", kind = "rust-test", command = "cargo test --locked -p sorotte-protocol --lib encoded_frame_budget_tracks_utf8_and_json_escaping_at_exact_boundary" },
+  { source = "crates/sorotte-server/src/tests/frame_capacity_tests.rs", symbol = "late_legacy_join_and_capability_downgrade_preserve_existing_sessions", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib late_legacy_join_and_capability_downgrade_preserve_existing_sessions" },
+]
+catalog = [
+]
+environment = ["Windows and Linux", "Pinned live Python peer for interoperability"]
+capability = "implemented"
+local_evidence = "Whole-batch ControllerAuth, generated-room naming, and recipient byte-ceiling regressions passed. Windows pinned compatibility executed 145 tests with no skips; final report paths are in the implementation ledger."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Server resource ownership"
+tasks = ["A10"]
+contract = "Admission happens before workers; encoded queued/in-flight bytes retain permits until completion or cleanup."
+owners = ["crates/sorotte-server/src/resources.rs", "crates/sorotte-server/src/network.rs", "crates/sorotte-server/src/backpressure.rs"]
+normative = ["docs/SERVER_BOUNDARIES.md"]
+proof = [
+  { source = "crates/sorotte-server/src/resources.rs", symbol = "concurrent_byte_ownership_never_oversubscribes_and_releases_on_panic", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib concurrent_byte_ownership_never_oversubscribes_and_releases_on_panic" },
+  { source = "crates/sorotte-server/src/network/resource_tests.rs", symbol = "queued_bytes_follow_coalescing_write_ownership_and_receiver_drop", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib queued_bytes_follow_coalescing_write_ownership_and_receiver_drop" },
+]
+catalog = [
+  { path = "coverage/mutation-policy.toml", id = "server-resource-permits" },
+]
+environment = ["Windows and Linux loopback/process fixtures"]
+capability = "implemented"
+local_evidence = "Server suite passed 462 tests after framing/shutdown repairs. Final isolated resource campaign caught 41/41 viable mutants; two exact Default/E0277 unviable exceptions remain separately accounted."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Local deadlines and issued ping identities"
+tasks = ["A08", "A09"]
+contract = "Monotonic local time fences expiry; ping compensation accepts only a fresh once-consumed challenge issued to that connection."
+owners = ["crates/sorotte-server/src/local_clock.rs", "crates/sorotte-server/src/runtime_maintenance.rs"]
+normative = ["docs/SERVER_BOUNDARIES.md"]
+proof = [
+  { source = "crates/sorotte-server/src/tests/ping_timing_tests.rs", symbol = "matching_echo_uses_elapsed_time_across_wall_jumps_and_only_once", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib matching_echo_uses_elapsed_time_across_wall_jumps_and_only_once" },
+  { source = "crates/sorotte-server/src/local_clock.rs", symbol = "invalid_override_resumes_elapsed_time_without_poisoning_or_freezing_it", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib invalid_override_resumes_elapsed_time_without_poisoning_or_freezing_it" },
+]
+catalog = [
+  { path = "coverage/mutation-policy.toml", id = "server-local-clock" },
+]
+environment = ["Windows and Linux", "Independent wall/elapsed overrides; ordinary legacy ping echo scenario"]
+capability = "implemented"
+local_evidence = "Windows and Linux regression suites passed. Final isolated server-local-clock campaign caught 10/10 viable mutants; latency traces echo issued challenges."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Private settings transactions"
+tasks = ["A03", "A05", "A06"]
+contract = "Duplicate INI keys share read/write semantics; pre-write private permissions and a cross-process transaction merge preserve current values and cleared credentials."
+owners = ["crates/sorotte-client-app/src/sorotte_ini.rs", "crates/sorotte-client-app/src/sorotte_ini/transaction.rs", "crates/sorotte-gui/src/app/runtime_owner/requests/pending_completions.rs"]
+normative = ["docs/design/settings-transactions.md"]
+proof = [
+  { source = "crates/sorotte-client-app/src/sorotte_ini/transaction_tests.rs", symbol = "stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets", kind = "rust-test", command = "cargo test --locked -p sorotte-client-app --lib stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets" },
+  { source = "crates/sorotte-client-app/src/sorotte_ini/windows_tests.rs", symbol = "windows_new_file_and_empty_temporary_file_are_private_under_permissive_parent", kind = "rust-test", command = "cargo test --locked -p sorotte-client-app --lib windows_new_file_and_empty_temporary_file_are_private_under_permissive_parent" },
+]
+catalog = [
+  { path = "coverage/mutation-policy.toml", id = "settings-duplicate-keys" },
+]
+environment = ["Windows protected DACL tests", "Windows and Linux transaction/process tests"]
+capability = "implemented"
+local_evidence = "Windows protected-DACL and process transaction suites and Linux owner/mode/process suites passed. Final isolated duplicate-key campaign caught 12/12 viable mutants; two exact let-chain unviable exceptions remain separate."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Owned player shutdown"
+tasks = ["A04"]
+contract = "A blocked player worker cannot outlive independent owned-process cleanup; externally attached players never enter the ownership scope."
+owners = ["crates/sorotte-player-mpv/src/managed_process.rs", "crates/sorotte-gui/src/app/runtime_queue.rs"]
+normative = ["crates/sorotte-player-mpv/src/managed_process.rs"]
+proof = [
+  { source = "crates/sorotte-gui/src/app/runtime_queue/tests/process_shutdown.rs", symbol = "gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib --features gui-semantic-smoke gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player" },
+]
+catalog = [
+]
+environment = ["Windows job containment", "Linux process containment", "Disposable owned and external process fixtures"]
+capability = "implemented"
+local_evidence = "Windows and Linux abrupt-parent and blocked-owner subprocess fixtures passed, preserving externally attached player processes. Required native Exit lifecycle evidence also passed."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Media extraction cancellation"
+tasks = ["A07"]
+contract = "Cancellation precedes filesystem/probe work, spans every tool and pipe drain, and reaps the owned process tree under one deadline."
+owners = ["crates/sorotte-media-match/src/extraction.rs", "crates/sorotte-media-match/src/extraction/process.rs"]
+normative = ["crates/sorotte-media-match/src/extraction.rs", "crates/sorotte-media-match/src/extraction/process.rs"]
+proof = [
+  { source = "crates/sorotte-media-match/src/extraction/process/tests.rs", symbol = "cancellation_reaps_descendant_that_holds_an_exited_childs_pipes", kind = "rust-test", command = "cargo test --locked -p sorotte-media-match --lib cancellation_reaps_descendant_that_holds_an_exited_childs_pipes" },
+]
+catalog = [
+]
+environment = ["Windows and Linux disposable tool/process fixtures"]
+capability = "implemented"
+local_evidence = "Windows adversarial process fixtures and final Linux cancellation/descendant/pipe fixtures passed. The final Linux generated-media integration passed with real ffmpeg/ffprobe."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Credentialed HTTP origins and budgets"
+tasks = ["A01", "A15"]
+contract = "Plex retains credentials only within the canonical origin and bounds metadata bytes plus aggregate multi-request work."
+owners = ["crates/sorotte-plex/src/http.rs", "crates/sorotte-plex/src/library.rs", "crates/sorotte-plex/src/discovery.rs"]
+normative = ["docs/HTTP_INGRESS_LIMITS.md"]
+proof = [
+  { source = "crates/sorotte-plex/src/tests/http_boundaries.rs", symbol = "every_credentialed_operation_rejects_cross_origin_redirects", kind = "rust-test", command = "cargo test --locked -p sorotte-plex --lib every_credentialed_operation_rejects_cross_origin_redirects" },
+  { source = "crates/sorotte-plex/src/tests/http_boundaries.rs", symbol = "search_body_budget_is_shared_across_individually_valid_responses", kind = "rust-test", command = "cargo test --locked -p sorotte-plex --lib search_body_budget_is_shared_across_individually_valid_responses" },
+]
+catalog = [
+  { path = "coverage/mutation-policy.toml", id = "plex-http-origin" },
+]
+environment = ["Windows and Linux loopback HTTP/TLS"]
+capability = "implemented"
+local_evidence = "Windows and Linux loopback origin/body/search tests passed. Final isolated Plex origin campaign caught 10/10 viable mutants."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Private update staging"
+tasks = ["A15"]
+contract = "Update metadata, archives, and downloads have separate quotas; a protected stage remains owned until validated updater handoff."
+owners = ["crates/sorotte-gui/src/update_limits.rs", "crates/sorotte-gui/src/app/remote_services/download.rs"]
+normative = ["docs/HTTP_INGRESS_LIMITS.md"]
+proof = [
+  { source = "crates/sorotte-gui/src/app/remote_services/ingress_tests.rs", symbol = "quota_failure_cleans_only_its_stage_and_retains_install_and_rollback", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib --features gui-semantic-smoke quota_failure_cleans_only_its_stage_and_retains_install_and_rollback" },
+]
+catalog = [
+]
+environment = ["Windows updater replacement integration", "Cross-platform ZIP and loopback unit fixtures"]
+capability = "implemented"
+local_evidence = "Quota/staging and recovery tests passed. The actual local development GUI archive passed independent inventory, launch, updater success, and rollback verification."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Trusted executable Lua leases"
+tasks = ["A13"]
+contract = "Executable resources require a private trusted cache and handles retained across the materialize-to-load seam; corrupt or untrusted paths fail or repair under ownership."
+owners = ["crates/sorotte-player-mpv/src/bridge_resource.rs", "crates/sorotte-player-mpv/src/adapter/bridge_settings.rs", "crates/sorotte-player-mpv/src/adapter/network_options.rs"]
+normative = ["crates/sorotte-player-mpv/src/bridge_resource.rs", "crates/sorotte-player-mpv/src/bridge_resource/windows.rs", "crates/sorotte-player-mpv/src/bridge_resource/unix.rs"]
+proof = [
+  { source = "crates/sorotte-player-mpv/src/bridge_resource/security_tests.rs", symbol = "materialize_to_load_seam_cannot_redirect_through_replaced_ancestor", kind = "rust-test", command = "cargo test --locked -p sorotte-player-mpv --lib materialize_to_load_seam_cannot_redirect_through_replaced_ancestor" },
+  { source = "crates/sorotte-player-mpv/src/tests/ipc_tests.rs", symbol = "core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_superseded", kind = "rust-test", command = "cargo test --locked -p sorotte-player-mpv --lib core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_superseded" },
+]
+catalog = [
+]
+environment = ["Windows protected directory handles", "Linux owner/mode/reparse boundaries", "Concurrent disposable cache fixtures"]
+capability = "implemented"
+local_evidence = "Windows trust/race tests and real mpv passed. Linux concurrent repair and delayed-open transport regressions, supported real-mpv bridge lifecycle, and cache-cap integration passed after retaining the network-hook lease through acknowledgement."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Player retry and physical recovery"
+tasks = ["A14"]
+contract = "A failed initialization completes before its full reconnect delay begins; recovery keeps attachment and media identities explicit."
+owners = ["crates/sorotte-player-mpv/src/adapter/reconnection.rs", "crates/sorotte-player-mpv/src/adapter/stream_recovery.rs"]
+normative = ["crates/sorotte-player-mpv/src/adapter/reconnection.rs", "docs/STREAM_SYNCHRONIZATION.md"]
+proof = [
+  { source = "crates/sorotte-player-mpv/src/adapter/version_policy_tests.rs", symbol = "explicit_json_ipc_retry_waits_a_full_interval_after_slow_version_failure", kind = "rust-test", command = "cargo test --locked -p sorotte-player-mpv --lib explicit_json_ipc_retry_waits_a_full_interval_after_slow_version_failure" },
+  { source = "crates/sorotte-player-mpv/src/tests/smoke_tests.rs", symbol = "real_mpv_bridge_lifecycle_over_json_ipc", kind = "rust-test", command = "cargo test --locked -p sorotte-player-mpv --lib -- --ignored real_mpv_bridge_lifecycle_over_json_ipc" },
+]
+catalog = [
+  { path = "coverage/mutation-policy.toml", id = "player-mpv-explicit-ipc-retry" },
+]
+environment = ["Scripted slow-initialization clock", "Installed supported mpv and generated media for real-player proof"]
+capability = "implemented"
+local_evidence = "Slow-initialization retry tests passed. Supported real mpv passed on Windows and Linux; all four Linux playback/recovery contracts passed. Final isolated retry campaign caught 11/11 viable mutants, with two reviewed unviable cases."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Ordered client ownership"
+tasks = ["A19"]
+contract = "Ordered physical observations, participant advisory state, barriers, and local intent remain separate owned states after extraction."
+owners = ["crates/sorotte-client-core/src/runtime/playback_coordination/ordered_events.rs", "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs", "crates/sorotte-client-core/src/runtime/playback_coordination/barrier.rs", "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs"]
+normative = ["docs/PLAYBACK_LIFECYCLE_ASSURANCE.md", "crates/sorotte-client-core/src/runtime/playback_coordination.rs"]
+proof = [
+  { source = "crates/sorotte-client-core/src/runtime/playback_coordination/tests.rs", symbol = "ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample", kind = "rust-test", command = "cargo test --locked -p sorotte-client-core --lib ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample" },
+]
+catalog = [
+  { path = "coverage/playback-lifecycle.toml", id = "LIFE-AUTH-001" },
+  { path = "coverage/mutation-policy.toml", id = "client-participant-status-runtime" },
+]
+environment = ["Windows and Linux unit/generated-history suites", "Adapter-to-consumer and real-player seams"]
+capability = "implemented"
+local_evidence = "Windows client-core suite passed 861 tests plus integration tests; final Linux all-feature workspace and real-player recovery suites passed. Source/test identities remain stable after extraction."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Sticky evidence finalization"
+tasks = ["A11"]
+contract = "Ignored producer failures remain observable at finalization; invalid or partially serialized records cannot produce a successful evidence claim."
+owners = ["crates/sorotte-lifecycle-evidence/src/lib.rs"]
+normative = ["docs/VERIFICATION_INPUTS.md"]
+proof = [
+  { source = "crates/sorotte-lifecycle-evidence/src/failure_tests.rs", symbol = "concurrent_emitters_observe_one_sticky_failure_without_further_writes", kind = "rust-test", command = "cargo test --locked -p sorotte-lifecycle-evidence --lib concurrent_emitters_observe_one_sticky_failure_without_further_writes" },
+  { source = "crates/sorotte-lifecycle-evidence/src/failure_tests.rs", symbol = "product_writer_faults_reach_the_python_lifecycle_consumer", kind = "rust-test", command = "cargo test --locked -p sorotte-lifecycle-evidence --lib product_writer_faults_reach_the_python_lifecycle_consumer" },
+]
+catalog = [
+]
+environment = ["Windows and Linux", "Python for actual Rust-producer-to-consumer fault proof"]
+capability = "implemented"
+local_evidence = "Sticky validation/I/O/privacy/concurrency and Rust-to-Python fault cases passed. All 15 public crates passed the 0.2.8 semver comparison after RecordingFailure was carried through the existing Io variant."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Strict verification input boundaries"
+tasks = ["A12"]
+contract = "Actual input reads, JSON records, and integer domains are bounded and strict before independent artifact oracles attest results."
+owners = ["scripts/artifact_input.py", "scripts/mutation_ci.py", "scripts/playback_lifecycle_oracle.py"]
+normative = ["docs/VERIFICATION_INPUTS.md"]
+proof = [
+  { source = "scripts/tests/test_artifact_entrypoints.py", symbol = "test_mutation_cli_rejects_matrix_before_source_and_proof_attestation", kind = "python-test", command = "python -m unittest scripts.tests.test_artifact_entrypoints" },
+  { source = "scripts/tests/test_artifact_entrypoints.py", symbol = "test_package_verifier_clis_reject_manifest_matrix_after_archive_hash_verification", kind = "python-test", command = "python -m unittest scripts.tests.test_artifact_entrypoints" },
+]
+catalog = [
+]
+environment = ["Python 3.11 through 3.13", "Windows process-wrapper tests require fixture process rights"]
+capability = "implemented"
+local_evidence = "Full Python discovery passed 751 tests. The final 47-test mutation runner suite additionally verifies bundled Lua resource changes invalidate a report; no malformed input is accepted as a producer status."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Critical coverage and mutation policy"
+tasks = ["A16"]
+contract = "Module extraction cannot silently demote critical responsibility, and immutable base/head selection cannot omit a required mutation report."
+owners = ["scripts/critical_boundaries.py", "scripts/mutation_selection.py", "scripts/mutation_ci.py"]
+normative = ["docs/design/verification-policy.md"]
+proof = [
+  { source = "scripts/tests/test_critical_boundaries.py", symbol = "test_extracted_critical_module_cannot_become_ordinary", kind = "python-test", command = "python -m unittest scripts.tests.test_critical_boundaries" },
+  { source = "scripts/tests/test_mutation_selection.py", symbol = "test_omitted_or_duplicate_selected_report_is_never_accepted", kind = "python-test", command = "python -m unittest scripts.tests.test_mutation_selection" },
+]
+catalog = [
+  { path = "coverage/critical-boundaries.toml", id = "client-runtime-1" },
+]
+environment = ["Python policy fixtures", "Pinned cargo-mutants 27.1.0 with independent target/build directories per worker"]
+capability = "implemented"
+local_evidence = "Critical inventory follows 87 production modules across 10 responsibilities. Final campaigns use independent worker targets and bind Rust, fixtures, bundled resources, manifests, and verification scripts; accepted counts are in the implementation ledger."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Dependency and archive provenance"
+tasks = ["A17"]
+contract = "Pinned scans record exact advisory evidence or fail unavailable; archive inventories bind resolved build inputs and actual payload hashes without replacing container signing."
+owners = ["scripts/dependency_policy.py", "deny.toml", "scripts/package-gui-release.ps1", "scripts/package-server-release.ps1"]
+normative = ["docs/design/verification-policy.md"]
+proof = [
+  { source = "scripts/tests/test_dependency_policy.py", symbol = "test_known_advisory_fixture_fails_even_with_valid_scanner_summary", kind = "python-test", command = "python -m unittest scripts.tests.test_dependency_policy" },
+  { source = "scripts/tests/test_dependency_policy.py", symbol = "test_unapproved_source_and_duplicate_package_are_detected", kind = "python-test", command = "python -m unittest scripts.tests.test_dependency_policy" },
+]
+catalog = [
+]
+environment = ["Online RustSec and PyPI metadata", "Pinned cargo-deny 0.20.2 and pip-audit 2.10.1", "Windows/Linux package target"]
+capability = "implemented"
+local_evidence = "Live Rust and Python scans passed without exceptions; target/verification/dependencies-resumed/report.json retains advisory/scanner inputs. Actual local GUI/server development archives passed independent payload inventory and runtime verification."
+remaining = "Refresh advisories when releasing; committed provenance, public assets, signing, and container publication are outside this local continuation. External native tools retain separate identities."
+
+[[boundary]]
+id = "Reproducible scaling measurements"
+tasks = ["A18"]
+contract = "Normal/large workloads and bounded churn report input identity, allocations, resource retention, and latency distributions against a named comparable baseline."
+owners = ["crates/sorotte-gui/examples/scaling_workloads.rs", "scripts/scaling_workloads.py", "crates/sorotte-gui/src/app/semantic_driver/scaling.rs"]
+normative = ["docs/SCALING_WORKLOADS.md"]
+proof = [
+  { source = "scripts/tests/test_scaling_workloads.py", symbol = "test_independent_resource_checks_reject_false_success_labels", kind = "python-test", command = "python -m unittest scripts.tests.test_scaling_workloads" },
+]
+catalog = [
+]
+environment = ["Windows and Linux headless native build prerequisites", "Stable worker for timing trends", "Separate candidate startup benchmark"]
+capability = "implemented"
+local_evidence = "Final fixture-v2 baseline/candidate comparisons passed on Windows and Linux, including clone sensitivity and bounded churn. Optimized GUI startup measured five samples in each of three scenarios; timings are advisory on this shared host."
+remaining = "Establish dedicated-runner timing noise before introducing p95 thresholds; these shared-host comparisons are advisory. Committed release identity remains a future obligation."
+
+[[boundary]]
+id = "Native GUI display and accessibility"
+tasks = ["A21"]
+contract = "Measured native DPI, app zoom, long-content reachability, validation labels, and keyboard focus remain distinct assertions."
+owners = ["crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/visual_artifacts/display_matrix.rs", "scripts/gui-display-matrix.ps1"]
+normative = ["docs/GUI_DISPLAY_MATRIX.md"]
+proof = [
+  { source = "crates/sorotte-gui/src/bin/sorotte-gui-native-smoke/visual_artifacts/display_matrix.rs", symbol = "display_options_reject_invalid_values_and_wrong_native_dpi", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --bin sorotte-gui-native-smoke --features gui-native-smoke display_options_reject_invalid_values_and_wrong_native_dpi" },
+  { source = "crates/sorotte-gui/src/app/render_egui/tests/action_mapping_surface.rs", symbol = "long_participant_names_keep_full_accessible_text_inside_narrow_rows", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib long_participant_names_keep_full_accessible_text_inside_narrow_rows" },
+  { source = "crates/sorotte-gui/src/app/render_egui/tests/playlist_interactions.rs", symbol = "narrow_playlist_rows_paint_a_readable_title_beside_compact_actions", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib narrow_playlist_rows_paint_a_readable_title_beside_compact_actions" },
+]
+catalog = [
+]
+environment = ["Windows interactive desktop and native UIA", "Separate measured 96, 144, 192 DPI profiles", "Explicit authorization for physical input on an active desktop"]
+capability = "implemented"
+local_evidence = "All six 144-DPI StrictPhysical display cases passed, and the 10-scenario native workflow plus 25 menu-input cycles passed. Visual review confirmed theme selection and compact title geometry; default CJK glyph fallback remains an explicit environment limit."
+remaining = "Native 96/192 DPI and actual screen-reader interaction require separate environments; 144 DPI and app zoom do not attest them. Default fonts show placeholder glyphs for the fixture's CJK character."
+
+[[boundary]]
+id = "Bounded persistence shutdown"
+tasks = ["A22"]
+contract = "SQLite contention shares a bounded flush/join budget without blocking the async runtime or claiming durability after a failed flush."
+owners = ["crates/sorotte-server/src/persistence_actor.rs", "crates/sorotte-server/src/persistence_actor/shutdown.rs"]
+normative = ["docs/SERVER_BOUNDARIES.md"]
+proof = [
+  { source = "crates/sorotte-server/src/tests/network_tests.rs", symbol = "persistence_shutdown_held_lock_subprocess_finishes_without_durability_claim", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib persistence_shutdown_held_lock_subprocess_finishes_without_durability_claim" },
+  { source = "crates/sorotte-server/src/tests/network_tests.rs", symbol = "persistence_shutdown_includes_preceding_flush_in_total_budget", kind = "rust-test", command = "cargo test --locked -p sorotte-server --lib persistence_shutdown_includes_preceding_flush_in_total_budget" },
+]
+catalog = [
+]
+environment = ["Windows and Linux SQLite/process fixtures"]
+capability = "implemented"
+local_evidence = "Windows and Linux held-lock subprocesses and the preceding-flush/full-actor-queue regressions passed. A 200 ms shutdown deadline covers already queued work; timed-out cleanup ownership remains observable."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+[[boundary]]
+id = "Current ownership and proof map"
+tasks = ["A20"]
+contract = "Every scoped audit task maps to source ownership, a normative contract, an executable proof, required environment, and explicitly limited evidence."
+owners = ["scripts/architecture_index.py", "coverage/current-architecture.toml"]
+normative = ["docs/CURRENT_ARCHITECTURE.md"]
+proof = [
+  { source = "scripts/tests/test_architecture_index.py", symbol = "test_representative_boundaries_have_live_source_and_executable_proof", kind = "python-test", command = "python -m unittest scripts.tests.test_architecture_index" },
+]
+catalog = [
+]
+environment = ["Python 3.11 or newer", "No hosted environment required for static reference validation"]
+capability = "implemented"
+local_evidence = "The index maps every A01-A22 task to current source/proof/environment ownership; CLI write/check coverage handles LF and CRLF checkouts. The implementation ledger records current working-tree evidence and superseded runs separately from future release provenance."
+remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."

@@ -54,6 +54,108 @@ fn gui_widget_egui_renderer_uses_focusable_noninteractive_playlist_keyboard_targ
 }
 
 #[test]
+fn narrow_playlist_rows_paint_a_readable_title_beside_compact_actions() {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut playlist = GuiWidgetNode::leaf(
+        "main-window:playlist",
+        "Playlist",
+        GuiWidgetKind::List,
+        None,
+        true,
+        false,
+    );
+    let mut row = GuiWidgetNode::leaf(
+        "main-window:playlist:0",
+        "Episode 001 with a long title.mkv",
+        GuiWidgetKind::ListItem,
+        None,
+        true,
+        false,
+    );
+    row.children = ["source", "remove"]
+        .into_iter()
+        .map(|action| {
+            GuiWidgetNode::leaf(
+                format!("main-window:playlist:0:{action}"),
+                action,
+                GuiWidgetKind::Button,
+                None,
+                true,
+                false,
+            )
+        })
+        .collect();
+    playlist.children.push(row);
+    for width in [207.0, 220.0] {
+        let context = egui::Context::default();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            ui.set_max_width(width);
+            renderer.render_playlist_list(ui, &playlist, &state);
+        });
+        assert!(
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.job.text.starts_with("Ep"))
+            }),
+            "the filename must retain visible letters at {width} points"
+        );
+    }
+}
+
+#[test]
+fn playlist_keyboard_owner_tracks_selected_row_in_the_accessibility_tree() {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut renderer = GuiWidgetEguiRenderer::default();
+    let mut playlist = GuiWidgetNode::leaf(
+        "main-window:playlist",
+        "Playlist",
+        GuiWidgetKind::List,
+        None,
+        true,
+        false,
+    );
+    playlist.children = ["first.mkv", "last-\u{754c}.mkv"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| {
+            GuiWidgetNode::leaf(
+                format!("main-window:playlist:{index}"),
+                label,
+                GuiWidgetKind::ListItem,
+                None,
+                true,
+                false,
+            )
+        })
+        .collect();
+    for (selection, expected) in [
+        (Some(0), "Playlist: first.mkv"),
+        (Some(1), "Playlist: last-\u{754c}.mkv"),
+        (None, "Playlist"),
+    ] {
+        for (index, row) in playlist.children.iter_mut().enumerate() {
+            row.selected = selection == Some(index);
+        }
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            renderer.render_playlist_list(ui, &playlist, &state);
+        });
+        let update = output.platform_output.accesskit_update.unwrap();
+        let owner = update
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.author_id() == Some("main-window:playlist:keyboard-focus")).then_some(node)
+            })
+            .expect("the real playlist keyboard owner must be accessible");
+        assert_eq!(owner.label(), Some(expected));
+    }
+}
+
+#[test]
 fn gui_widget_egui_renderer_maps_playlist_pointer_actions_to_local_select_and_double_click_activate()
  {
     assert_eq!(

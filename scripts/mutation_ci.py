@@ -32,6 +32,8 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import artifact_input
+
 
 SCHEMA_VERSION = 3
 REPORT_KIND = "sorotte-mutation-evidence"
@@ -193,7 +195,7 @@ def require_int(
     minimum: int = 0,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not artifact_input.is_json_integer(value):
         raise MutationCiError(f"{label} must be an integer")
     if value < minimum or (maximum is not None and value > maximum):
         bounds = f">= {minimum}"
@@ -236,17 +238,9 @@ def require_timestamp(value: Any, *, label: str) -> dt.datetime:
 
 def bounded_bytes(path: pathlib.Path, *, maximum: int, label: str) -> bytes:
     try:
-        size = path.stat().st_size
-    except OSError as error:
-        raise MutationCiError(f"cannot stat {label} {path}: {error}") from error
-    if size > maximum:
-        raise MutationCiError(
-            f"{label} exceeds the {maximum}-byte safety limit: {size}"
-        )
-    try:
-        return path.read_bytes()
-    except OSError as error:
-        raise MutationCiError(f"cannot read {label} {path}: {error}") from error
+        return artifact_input.read_bounded(path, max_bytes=maximum, label=label)
+    except artifact_input.ArtifactInputError as error:
+        raise MutationCiError(str(error)) from error
 
 
 def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -260,10 +254,9 @@ def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def parse_json_bytes(data: bytes, *, label: str) -> Any:
     try:
-        text = data.decode("utf-8", errors="strict")
-        return json.loads(text, object_pairs_hook=reject_duplicate_pairs)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise MutationCiError(f"{label} is not strict UTF-8 JSON: {error}") from error
+        return artifact_input.strict_json_loads(data, max_bytes=MAX_JSON_BYTES, label=label)
+    except artifact_input.ArtifactInputError as error:
+        raise MutationCiError(str(error)) from error
 
 
 def load_json(path: pathlib.Path, *, label: str) -> tuple[Any, bytes]:
@@ -754,13 +747,16 @@ def verification_input_files(
         "rust-toolchain.toml",
         ".cargo/config.toml",
         "scripts/mutation_ci.py",
+        "scripts/mutation_selection.py",
+        "scripts/artifact_input.py",
+        "coverage/mutation-selection.toml",
         "coverage/mutation-report-set.json",
     ):
         candidate = repo_root / relative
         if candidate.is_file() and not candidate.is_symlink():
             candidates.add(candidate)
     candidates.add(policy_path)
-    for relative_root in ("crates", "fixtures"):
+    for relative_root in ("crates", "fixtures", "resources"):
         root = repo_root / relative_root
         if not root.is_dir():
             continue
@@ -1040,9 +1036,13 @@ def process_status(value: Any, *, label: str) -> str:
     code = require_int(
         mapping["Failure"],
         label=f"{label}.Failure",
-        minimum=1,
-        maximum=255,
+        # cargo-mutants 27.1.0 serializes Exit::Failure(i32), including signed
+        # Windows NTSTATUS values. Zero is always Exit::Success.
+        minimum=-(2**31),
+        maximum=2**31 - 1,
     )
+    if code == 0:
+        raise MutationCiError(f"{label}.Failure must be nonzero")
     return f"Failure({code})"
 
 
@@ -1619,6 +1619,15 @@ def run_process(
     *,
     cwd: pathlib.Path,
 ) -> subprocess.CompletedProcess[str]:
+    environment = None
+    if list(argv[:2]) == ["cargo", "mutants"]:
+        # Each cargo-mutants worker owns a copied workspace. An inherited
+        # absolute target/build directory can make two workers overwrite the
+        # same test binary between compilation and execution. Relative paths
+        # resolve inside each worker and override Cargo's user/global config.
+        environment = os.environ.copy()
+        for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
+            environment[key] = "target"
     try:
         return subprocess.run(
             list(argv),
@@ -1628,6 +1637,7 @@ def run_process(
             text=True,
             encoding="utf-8",
             errors="strict",
+            env=environment,
         )
     except (OSError, UnicodeError) as error:
         raise MutationCiError(f"cannot run {argv[0]!r}: {error}") from error
@@ -1893,7 +1903,7 @@ def verify_report(args: argparse.Namespace) -> int:
             raise MutationCiError("mutation evidence report must be an existing file")
         report_value, _ = load_json(report_path, label="mutation evidence report")
         report = require_mapping(report_value, label="mutation evidence report")
-        if report.get("schema_version") != SCHEMA_VERSION:
+        if not artifact_input.is_json_integer(report.get("schema_version")) or report.get("schema_version") != SCHEMA_VERSION:
             raise MutationCiError("mutation evidence report has the wrong schema version")
         if report.get("kind") != REPORT_KIND:
             raise MutationCiError("mutation evidence report has the wrong kind")
@@ -1972,7 +1982,7 @@ def verify_report_set(args: argparse.Namespace) -> int:
                 "mutation report-set manifest fields do not match schema: "
                 f"expected {sorted(expected_keys)!r}, got {sorted(manifest)!r}"
             )
-        if manifest.get("schema_version") != 1:
+        if not artifact_input.is_json_integer(manifest.get("schema_version")) or manifest.get("schema_version") != 1:
             raise MutationCiError("mutation report-set manifest has the wrong schema version")
         if manifest.get("kind") != "sorotte-mutation-report-set":
             raise MutationCiError("mutation report-set manifest has the wrong kind")

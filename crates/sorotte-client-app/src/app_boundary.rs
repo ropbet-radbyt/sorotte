@@ -88,9 +88,12 @@ pub mod persistence {
         parse_serialized_string_list_legacy_compatible,
     };
     pub use crate::sorotte_ini::{
-        clear_sorotte_ini_stored_client_settings_mvp_at_path,
+        clear_sorotte_ini_stored_client_settings_mvp_at_path, create_private_directory,
+        edit_sorotte_ini_stored_client_settings_mvp_at_path,
         load_sorotte_ini_stored_client_settings_mvp_from_path,
+        merge_sorotte_ini_stored_client_settings_mvp_at_path,
         parse_sorotte_ini_stored_client_settings_mvp,
+        relocate_sorotte_ini_stored_client_settings_mvp_at_path,
         update_sorotte_ini_stored_client_settings_mvp_at_path,
         upsert_sorotte_ini_stored_client_settings_mvp,
         upsert_sorotte_ini_stored_client_settings_mvp_at_path,

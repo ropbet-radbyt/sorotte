@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeSet,
     fmt::Write as _,
     fs,
-    io::Cursor,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
-    sync::OnceLock,
+    sync::{OnceLock, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -17,7 +18,15 @@ use sha2::{Digest, Sha256};
 use sorotte_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
 use sorotte_client_app::app_boundary::persistence::parse_serialized_public_servers_list_legacy_compatible;
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
-use zip::ZipArchive;
+
+mod download;
+#[cfg(test)]
+mod ingress_tests;
+#[path = "../update_limits.rs"]
+mod update_limits;
+use update_limits::{
+    ExtractionBudget, METADATA_BYTES, check_cancelled, open_bounded_zip, read_limited,
+};
 
 use super::child_process::configure_gui_child_process;
 
@@ -291,9 +300,7 @@ fn fetch_public_servers_from_url(
         ));
     }
 
-    let body = response
-        .text()
-        .map_err(|error| format!("failed to read public server list response: {error}"))?;
+    let body = read_metadata_response(response)?;
     parse_public_server_response(&body)
 }
 
@@ -346,7 +353,15 @@ pub(crate) fn download_and_stage_update(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,
 ) -> UpdateDownloadResult {
-    match download_and_stage_update_inner(candidate, gui_config_root) {
+    download_and_stage_update_cancellable(candidate, gui_config_root, &AtomicBool::new(false))
+}
+
+pub(crate) fn download_and_stage_update_cancellable(
+    candidate: &UpdateCandidate,
+    gui_config_root: Option<&Path>,
+    cancelled: &AtomicBool,
+) -> UpdateDownloadResult {
+    match download_and_stage_update_inner(candidate, gui_config_root, cancelled) {
         Ok(staged_update) => UpdateDownloadResult {
             state: UpdateDownloadState::Staged,
             message: "Update downloaded and staged. Restart Sorotte to apply it.".to_owned(),
@@ -791,31 +806,9 @@ where
             response.status()
         ));
     }
-    let body = response
-        .text()
-        .map_err(|error| format!("failed to read GitHub update metadata: {error}"))?;
+    let body = read_metadata_response(response)?;
     serde_json::from_str::<T>(&body)
         .map_err(|error| format!("failed to parse GitHub update metadata: {error}"))
-}
-
-fn github_download_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
-    let mut request = client.get(url).header("Accept", "application/octet-stream");
-    if let Some(token) = env_trimmed(SOROTTE_GUI_GITHUB_TOKEN_ENV) {
-        request = request.bearer_auth(token);
-    }
-    let response = request
-        .send()
-        .map_err(|error| format!("failed to download update package: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "failed to download update package: HTTP {}",
-            response.status()
-        ));
-    }
-    response
-        .bytes()
-        .map(|bytes| bytes.to_vec())
-        .map_err(|error| format!("failed to read update package bytes: {error}"))
 }
 
 fn release_manifest_and_package_url(
@@ -1262,49 +1255,42 @@ fn github_update_check_failed_message(language: Option<&str>) -> String {
 fn download_and_stage_update_inner(
     candidate: &UpdateCandidate,
     gui_config_root: Option<&Path>,
+    cancelled: &AtomicBool,
 ) -> Result<StagedUpdate, String> {
+    check_cancelled(cancelled)?;
     let capability = self_update_capability_current_install();
     if !capability.supported() {
         return Err(capability.unavailable_message().to_owned());
     }
-    let Some(gui_config_root) = gui_config_root else {
-        return Err(
-            "Cannot stage update because the Sorotte GUI config root is unavailable.".to_owned(),
-        );
-    };
-    let client = github_http_client()?;
+    let gui_config_root = gui_config_root.ok_or_else(|| {
+        "Cannot stage update because the Sorotte GUI config root is unavailable.".to_owned()
+    })?;
     let updates_root = gui_config_root.join("updates");
-    fs::create_dir_all(&updates_root).map_err(|error| {
-        format!(
-            "failed to create update staging directory {}: {error}",
-            updates_root.display()
-        )
-    })?;
-    let stage_dir = updates_root.join(format!(
-        "{}-{}",
-        candidate.channel.label(),
-        sanitize_stage_name(&candidate.created_at_utc)
-    ));
-    cleanup_updates_root(&updates_root, &stage_dir)?;
-    if stage_dir.exists() {
-        fs::remove_dir_all(&stage_dir).map_err(|error| {
-            format!(
-                "failed to clear previous staged update {}: {error}",
-                stage_dir.display()
-            )
-        })?;
+    fs::create_dir_all(&updates_root)
+        .map_err(|error| format!("failed creating update staging root: {error}"))?;
+    let metadata = fs::symlink_metadata(&updates_root)
+        .map_err(|error| format!("failed inspecting update staging root: {error}"))?;
+    if !metadata.is_dir() || metadata_is_link_or_reparse(&metadata) {
+        return Err("Update staging root is not a regular directory.".to_owned());
     }
-    fs::create_dir_all(&stage_dir).map_err(|error| {
-        format!(
-            "failed to create staged update directory {}: {error}",
-            stage_dir.display()
-        )
-    })?;
-
-    stage_update_payload(candidate, &client, &stage_dir)
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Cannot generate update stage identity.".to_owned())?
+        .as_nanos();
+    let stage_dir = updates_root.join(format!(
+        "{}-{}-{}-{nonce}",
+        candidate.channel.label(),
+        sanitize_stage_name(&candidate.created_at_utc),
+        std::process::id()
+    ));
+    sorotte_client_app::app_boundary::persistence::create_private_directory(&stage_dir)
+        .map_err(|error| format!("failed creating private update stage: {error}"))?;
+    // Each attempt owns a fresh stage; a failed download never removes an older stage or rollback.
+    stage_update_payload(candidate, &stage_dir, cancelled)
         .map_err(|error| cleanup_failed_stage_dir(&stage_dir, error))
 }
 
+#[cfg(test)]
 fn cleanup_updates_root(updates_root: &Path, active_stage_dir: &Path) -> Result<(), String> {
     let active_stage_name = active_stage_dir
         .file_name()
@@ -1391,31 +1377,32 @@ fn cleanup_failed_stage_dir(stage_dir: &Path, error: String) -> String {
 
 fn stage_update_payload(
     candidate: &UpdateCandidate,
-    client: &Client,
     stage_dir: &Path,
+    cancelled: &AtomicBool,
 ) -> Result<StagedUpdate, String> {
-    let downloaded_bytes = github_download_bytes(client, &candidate.download_url)?;
-    let (package_bytes, staged_candidate) = match candidate.source {
+    if candidate.source == UpdateCandidateSource::ReleaseAsset {
+        validate_candidate_target(candidate)?;
+    }
+    let downloaded_path = stage_dir.join("download.tmp");
+    let digest = download::download_package(&candidate.download_url, &downloaded_path, cancelled)?;
+    let mut budget = ExtractionBudget::default();
+    let (source_package, staged_candidate) = match candidate.source {
         UpdateCandidateSource::ReleaseAsset => {
-            validate_sha256_bytes(&downloaded_bytes, &candidate.sha256)?;
-            (downloaded_bytes, candidate.clone())
+            validate_sha256_digest(&digest, &candidate.sha256)?;
+            (downloaded_path, candidate.clone())
         }
         UpdateCandidateSource::ActionsArtifact => {
             let artifact_dir = stage_dir.join("artifact");
-            extract_zip_bytes_safe(&downloaded_bytes, &artifact_dir)?;
-            let manifest_path = artifact_dir.join(SOROTTE_UPDATE_MANIFEST_NAME);
-            let manifest = read_manifest_file(&manifest_path)?;
+            extract_zip_file_safe(&downloaded_path, &artifact_dir, &mut budget, cancelled)?;
+            let manifest = read_manifest_file(&artifact_dir.join(SOROTTE_UPDATE_MANIFEST_NAME))?;
             validate_manifest(&manifest, UpdateChannel::Dev)?;
             let package_path = artifact_dir.join(&manifest.package);
-            let package_bytes = fs::read(&package_path).map_err(|error| {
-                format!(
-                    "failed to read update package from artifact {}: {error}",
-                    package_path.display()
-                )
-            })?;
-            validate_sha256_bytes(&package_bytes, &manifest.sha256)?;
+            validate_sha256_digest(
+                &hash_package_file(&package_path, cancelled)?,
+                &manifest.sha256,
+            )?;
             (
-                package_bytes,
+                package_path,
                 candidate_from_manifest(
                     manifest,
                     candidate.download_url.clone(),
@@ -1426,16 +1413,14 @@ fn stage_update_payload(
         }
     };
     validate_candidate_target(&staged_candidate)?;
+    check_cancelled(cancelled)?;
     let package_path = stage_dir.join(&staged_candidate.package);
-    fs::write(&package_path, &package_bytes).map_err(|error| {
-        format!(
-            "failed to write staged update package {}: {error}",
-            package_path.display()
-        )
-    })?;
+    fs::rename(&source_package, &package_path)
+        .map_err(|error| format!("failed staging authenticated update package: {error}"))?;
     let source_dir = stage_dir.join("extracted");
-    extract_zip_bytes_safe(&package_bytes, &source_dir)?;
+    extract_zip_file_safe(&package_path, &source_dir, &mut budget, cancelled)?;
     validate_extracted_update_payload(&source_dir)?;
+    check_cancelled(cancelled)?;
 
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("failed to resolve current GUI executable: {error}"))?;
@@ -1476,13 +1461,17 @@ fn validate_candidate_target(candidate: &UpdateCandidate) -> Result<(), String> 
             candidate.target, SOROTTE_GUI_TARGET
         ));
     }
+    if !normal_package_basename(&candidate.package) {
+        return Err("Update package has an unsafe filename.".to_owned());
+    }
     validate_sha256_hex(&candidate.sha256)
 }
 
 fn read_manifest_file(path: &Path) -> Result<UpdateManifest, String> {
-    let contents = fs::read_to_string(path)
+    let file = fs::File::open(path)
         .map_err(|error| format!("failed to read update manifest {}: {error}", path.display()))?;
-    serde_json::from_str(&contents).map_err(|error| {
+    let contents = read_limited(file, METADATA_BYTES)?;
+    serde_json::from_slice(&contents).map_err(|error| {
         format!(
             "failed to parse update manifest {}: {error}",
             path.display()
@@ -1490,72 +1479,104 @@ fn read_manifest_file(path: &Path) -> Result<UpdateManifest, String> {
     })
 }
 
+#[cfg(test)]
 fn validate_sha256_bytes(bytes: &[u8], expected: &str) -> Result<(), String> {
+    validate_sha256_digest(&lowercase_hex(Sha256::digest(bytes)), expected)
+}
+
+fn validate_sha256_digest(actual: &str, expected: &str) -> Result<(), String> {
     validate_sha256_hex(expected)?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let actual = lowercase_hex(hasher.finalize());
     if actual.eq_ignore_ascii_case(expected.trim()) {
         Ok(())
     } else {
         Err(format!(
-            "update package SHA-256 mismatch: expected {}, got {}",
-            expected.trim(),
-            actual
+            "update package SHA-256 mismatch: expected {}, got {actual}",
+            expected.trim()
         ))
     }
 }
 
-fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String> {
-    fs::create_dir_all(destination).map_err(|error| {
-        format!(
-            "failed to create zip extraction directory {}: {error}",
-            destination.display()
-        )
-    })?;
-    let reader = Cursor::new(bytes);
-    let mut archive =
-        ZipArchive::new(reader).map_err(|error| format!("failed to open update zip: {error}"))?;
+fn hash_package_file(path: &Path, cancelled: &AtomicBool) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("failed opening staged package: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    let mut bytes = 0u64;
+    loop {
+        check_cancelled(cancelled)?;
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed reading staged package: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        if bytes > update_limits::ARCHIVE_BYTES {
+            return Err("Update archive exceeded its byte budget.".to_owned());
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(lowercase_hex(digest.finalize()))
+}
+
+fn extract_zip_file_safe(
+    path: &Path,
+    destination: &Path,
+    budget: &mut ExtractionBudget,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    check_cancelled(cancelled)?;
+    let file =
+        fs::File::open(path).map_err(|error| format!("failed opening update archive: {error}"))?;
+    let mut archive = open_bounded_zip(file)?;
+    budget.admit_archive(&mut archive)?;
+    let mut seen = BTreeSet::new();
+    let mut paths = Vec::new();
     for index in 0..archive.len() {
+        check_cancelled(cancelled)?;
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("failed reading update entry: {error}"))?;
+        let relative = safe_zip_relative_path(entry.name())
+            .ok_or_else(|| "Update archive contains an unsafe path.".to_owned())?;
+        let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
+        if !seen.insert(normalized) {
+            return Err("Update archive contains duplicate normalized entries.".to_owned());
+        }
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("Update archive contains a symbolic-link entry.".to_owned());
+        }
+        paths.push(relative);
+    }
+    fs::create_dir(destination)
+        .map_err(|error| format!("failed creating extraction directory: {error}"))?;
+    for (index, relative) in paths.into_iter().enumerate() {
+        check_cancelled(cancelled)?;
         let mut entry = archive
             .by_index(index)
-            .map_err(|error| format!("failed to read update zip entry {index}: {error}"))?;
-        let Some(relative_path) = safe_zip_relative_path(entry.name()) else {
-            return Err(format!(
-                "update zip contains unsafe path {:?}",
-                entry.name()
-            ));
-        };
-        let output_path = destination.join(relative_path);
+            .map_err(|error| format!("failed reading update entry: {error}"))?;
+        let output_path = destination.join(relative);
         if entry.is_dir() {
-            fs::create_dir_all(&output_path).map_err(|error| {
-                format!(
-                    "failed to create update zip directory {}: {error}",
-                    output_path.display()
-                )
-            })?;
+            fs::create_dir_all(&output_path)
+                .map_err(|error| format!("failed creating update directory: {error}"))?;
             continue;
         }
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "failed to create update zip parent directory {}: {error}",
-                    parent.display()
-                )
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed creating update parent: {error}"))?;
         }
-        let mut output = fs::File::create(&output_path).map_err(|error| {
-            format!(
-                "failed to create update zip output {}: {error}",
-                output_path.display()
-            )
-        })?;
-        std::io::copy(&mut entry, &mut output).map_err(|error| {
-            format!(
-                "failed to extract update zip entry {}: {error}",
-                output_path.display()
-            )
-        })?;
+        let mut output = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&output_path)
+            .map_err(|error| format!("failed creating update entry: {error}"))?;
+        budget.copy_entry(&mut entry, &mut output, cancelled)?;
+        output
+            .flush()
+            .map_err(|error| format!("failed flushing update entry: {error}"))?;
     }
     Ok(())
 }
@@ -1573,7 +1594,7 @@ fn safe_zip_relative_path(name: &str) -> Option<PathBuf> {
         match part {
             "" | "." => {}
             ".." => return None,
-            _ if part.contains(':') => return None,
+            _ if !update_limits::unambiguous_output_component(part) => return None,
             _ => {
                 let path = Path::new(part);
                 let mut components = path.components();
@@ -1757,9 +1778,7 @@ fn fetch_update_check_result_from_url(
         ));
     }
 
-    let body = response
-        .text()
-        .map_err(|error| format!("failed to read update-check response: {error}"))?;
+    let body = read_metadata_response(response)?;
     parse_update_check_response(&body, Some(language), user_initiated)
 }
 
@@ -1817,10 +1836,45 @@ fn parse_update_check_response(
     })
 }
 
+fn read_metadata_response(response: reqwest::blocking::Response) -> Result<String, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > METADATA_BYTES)
+    {
+        return Err("Remote metadata exceeded its byte budget.".to_owned());
+    }
+    // Blocking reqwest times each Read separately. Preserve a total body deadline
+    // as well, so a lengthless trickle cannot occupy a metadata worker forever.
+    struct MetadataBody {
+        response: reqwest::blocking::Response,
+        deadline: std::time::Instant,
+    }
+    impl Read for MetadataBody {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if std::time::Instant::now() >= self.deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Remote metadata body deadline exceeded",
+                ));
+            }
+            self.response.read(buffer)
+        }
+    }
+    let bytes = read_limited(
+        MetadataBody {
+            response,
+            deadline: std::time::Instant::now() + Duration::from_secs(10),
+        },
+        METADATA_BYTES,
+    )?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn http_client() -> Result<Client, reqwest::Error> {
     ensure_rustls_crypto_provider();
     Client::builder()
         .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
         .user_agent(format!("sorotte-gui/{}", env!("CARGO_PKG_VERSION")))
         .build()
 }

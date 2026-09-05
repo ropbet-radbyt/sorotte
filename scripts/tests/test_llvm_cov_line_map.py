@@ -387,7 +387,7 @@ class LlvmCovLineMapTests(unittest.TestCase):
         self.json_path.write_text(duplicated, encoding="utf-8")
         with self.assertRaisesRegex(
             line_map.LlvmCovLineMapError,
-            "duplicates object key",
+            "duplicate_key",
         ):
             line_map.build_report(
                 repo_root=self.repo,

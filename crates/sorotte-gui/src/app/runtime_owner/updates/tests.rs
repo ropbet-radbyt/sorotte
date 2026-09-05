@@ -68,9 +68,35 @@ struct FakeUpdateService {
     check_gate: Option<Arc<BlockGate>>,
     download_gate: Option<Arc<BlockGate>>,
     launch_gate: Option<Arc<BlockGate>>,
+    cancellation_signals: Option<(mpsc::Sender<()>, mpsc::Sender<()>)>,
 }
 
 impl GuiUpdateService for FakeUpdateService {
+    fn download_and_stage_update_cancellable(
+        &self,
+        candidate: &UpdateCandidate,
+        gui_config_root: Option<&Path>,
+        cancelled: &AtomicBool,
+    ) -> UpdateDownloadResult {
+        if let Some((started, stopped)) = &self.cancellation_signals {
+            started.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !cancelled.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "update worker must receive cancellation"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            stopped.send(()).unwrap();
+            return UpdateDownloadResult {
+                state: UpdateDownloadState::Failed,
+                message: "cancelled".to_owned(),
+                staged_update: None,
+            };
+        }
+        self.download_and_stage_update(candidate, gui_config_root)
+    }
     fn check_for_updates(
         &self,
         language: &str,
@@ -171,6 +197,7 @@ fn check_result() -> LegacyUpdateCheckResult {
 
 fn fake_service(calls: Arc<Mutex<Vec<String>>>) -> FakeUpdateService {
     FakeUpdateService {
+        cancellation_signals: None,
         calls,
         check_result: check_result(),
         download_result: UpdateDownloadResult {
@@ -973,4 +1000,46 @@ fn config_generation_change_terminates_active_download_state() {
     std::thread::sleep(Duration::from_millis(20));
     runtime.pump_background_check(&handle);
     assert!(handle.drain_actions().is_empty());
+}
+
+#[test]
+fn download_cancellation_reaches_worker_on_settings_change_and_owner_drop() {
+    for settings_change in [true, false] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let mut service = fake_service(calls.clone());
+        service.cancellation_signals = Some((started_tx, stopped_tx));
+        let mut runtime = runtime_with_service(service);
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        runtime.reconcile(&update_view(false, "en", Some("stable")));
+        runtime.handle_command(&handle, Command::DownloadAndInstall(candidate()));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        if settings_change {
+            runtime.reconcile(&update_view(false, "en", Some("dev")));
+            stopped_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while runtime.active_job.is_some() {
+                assert!(Instant::now() < deadline);
+                runtime.pump_background_check(&handle);
+                std::thread::yield_now();
+            }
+            assert!(
+                !handle
+                    .drain_actions()
+                    .iter()
+                    .any(|action| matches!(action, GuiShellAction::BeginStagedUpdateApply))
+            );
+        } else {
+            drop(runtime);
+            stopped_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|call| !call.starts_with("launch:"))
+        );
+    }
 }

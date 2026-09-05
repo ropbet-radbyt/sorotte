@@ -6,6 +6,10 @@ pub mod library;
 pub mod resolver;
 pub mod timeline;
 
+#[cfg(test)]
+#[path = "tests/http_boundaries.rs"]
+mod http_boundary_tests;
+
 use std::{
     collections::BTreeMap,
     fmt, fs,
@@ -862,6 +866,10 @@ impl PlexHttpClient {
         ensure_rustls_crypto_provider();
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            // PIN authentication also stays on its configured origin. Playback URLs are
+            // validated separately by build_part_stream_url and consumed by the player.
+            .redirect(http::redirect_policy())
             .user_agent(format!("sorotte-plex/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
@@ -882,13 +890,12 @@ impl PlexHttpClient {
             .query(&[("strong", "true")])
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "PIN auth start returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         parse_auth_session_response(
             &json,
             &self.auth_app_url,
@@ -905,13 +912,12 @@ impl PlexHttpClient {
             .headers(self.plex_headers(None))
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "PIN auth poll returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         Ok(PlexAuthPollResult {
             auth_token: json
                 .get("authToken")
@@ -991,13 +997,12 @@ impl PlexHttpClient {
             ])
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "server discovery returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         Ok(parse_server_resources_response(&json))
     }
 
@@ -1040,13 +1045,13 @@ impl PlexHttpClient {
             return Ok(Vec::new());
         }
 
-        let sections = self.fetch_library_sections(server_url, token)?;
+        let mut search = http::SearchContext::new(server_url, token);
+        let sections = self.fetch_library_sections(&mut search)?;
         let mut output = Vec::new();
         for section in sections {
             for media_type in library_section_media_type_filters(&section.library_type) {
                 let results = self.fetch_library_section_media_by_file_name(
-                    server_url,
-                    token,
+                    &mut search,
                     &section.key,
                     media_type,
                     file_name,
@@ -1067,7 +1072,8 @@ impl PlexHttpClient {
             return Ok(Vec::new());
         }
         let (server_url, token) = configured_server_url_and_token(config)?;
-        let sections = self.fetch_library_sections(&server_url, &token)?;
+        let mut search = http::SearchContext::new(&server_url, &token);
+        let sections = self.fetch_library_sections(&mut search)?;
         let mut output = Vec::new();
         let query = query.trim();
         for section in sections {
@@ -1075,16 +1081,14 @@ impl PlexHttpClient {
                 let remaining = limit.saturating_sub(output.len()).max(1);
                 let results = if query.is_empty() {
                     self.fetch_recent_library_section_media(
-                        &server_url,
-                        &token,
+                        &mut search,
                         &section.key,
                         media_type,
                         remaining,
                     )?
                 } else {
                     self.fetch_library_section_media_by_query(
-                        &server_url,
-                        &token,
+                        &mut search,
                         &section.key,
                         media_type,
                         query,
@@ -1125,76 +1129,59 @@ impl PlexHttpClient {
             .headers(self.plex_headers(Some(token)))
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "server identity lookup returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         parse_server_machine_identifier_response(&json)
     }
 
     fn fetch_library_sections(
         &self,
-        server_url: &str,
-        token: &str,
+        search: &mut http::SearchContext<'_>,
     ) -> PlexResult<Vec<PlexLibrarySection>> {
-        let url = format!("{}/library/sections", server_url.trim_end_matches('/'));
-        let response = self
+        let url = format!(
+            "{}/library/sections",
+            search.server_url.trim_end_matches('/')
+        );
+        let request = self
             .client
             .get(url)
-            .headers(self.plex_headers(Some(token)))
-            .send()?;
-        let status = response.status();
-        let body = response.text()?;
-        if !status.is_success() {
-            return Err(PlexError::InvalidResponse(format!(
-                "library sections lookup returned HTTP {status}"
-            )));
-        }
-        let json: Value = serde_json::from_str(&body)?;
+            .headers(self.plex_headers(Some(search.token)));
+        let json = search.send_json(request, "Plex library search")?;
         Ok(parse_library_sections_response(&json))
     }
 
     fn fetch_library_section_media_by_file_name(
         &self,
-        server_url: &str,
-        token: &str,
+        search: &mut http::SearchContext<'_>,
         section_key: &str,
         media_type: &str,
         file_name: &str,
     ) -> PlexResult<Vec<PlexMediaSearchResult>> {
         let url = format!(
             "{}/library/sections/{}/all",
-            server_url.trim_end_matches('/'),
+            search.server_url.trim_end_matches('/'),
             percent_encode_path_segment(section_key)
         );
-        let response = self
+        let request = self
             .client
             .get(url)
-            .headers(self.plex_headers(Some(token)))
+            .headers(self.plex_headers(Some(search.token)))
             .query(&[
                 ("type", media_type),
                 ("includeGuids", "1"),
                 ("file", file_name),
-            ])
-            .send()?;
-        let status = response.status();
-        let body = response.text()?;
-        if !status.is_success() {
-            return Err(PlexError::InvalidResponse(format!(
-                "library file lookup returned HTTP {status}"
-            )));
-        }
-        let json: Value = serde_json::from_str(&body)?;
+            ]);
+        let json = search.send_json(request, "Plex library search")?;
         Ok(parse_search_response(&json))
     }
 
     fn fetch_library_section_media_by_query(
         &self,
-        server_url: &str,
-        token: &str,
+        search: &mut http::SearchContext<'_>,
         section_key: &str,
         media_type: &str,
         query: &str,
@@ -1203,8 +1190,7 @@ impl PlexHttpClient {
         let mut output = Vec::new();
         for query_filter in library_section_text_query_filters(media_type) {
             let results = self.fetch_library_section_media(
-                server_url,
-                token,
+                search,
                 section_key,
                 &[
                     ("type".to_owned(), media_type.to_owned()),
@@ -1213,7 +1199,6 @@ impl PlexHttpClient {
                     ("X-Plex-Container-Start".to_owned(), "0".to_owned()),
                     ("X-Plex-Container-Size".to_owned(), limit.max(1).to_string()),
                 ],
-                "library text lookup",
             )?;
             merge_media_search_results(
                 &mut output,
@@ -1230,15 +1215,13 @@ impl PlexHttpClient {
 
     fn fetch_recent_library_section_media(
         &self,
-        server_url: &str,
-        token: &str,
+        search: &mut http::SearchContext<'_>,
         section_key: &str,
         media_type: &str,
         limit: usize,
     ) -> PlexResult<Vec<PlexMediaSearchResult>> {
         self.fetch_library_section_media(
-            server_url,
-            token,
+            search,
             section_key,
             &[
                 ("type".to_owned(), media_type.to_owned()),
@@ -1247,37 +1230,26 @@ impl PlexHttpClient {
                 ("X-Plex-Container-Start".to_owned(), "0".to_owned()),
                 ("X-Plex-Container-Size".to_owned(), limit.max(1).to_string()),
             ],
-            "library recent lookup",
         )
     }
 
     fn fetch_library_section_media(
         &self,
-        server_url: &str,
-        token: &str,
+        search: &mut http::SearchContext<'_>,
         section_key: &str,
         query: &[(String, String)],
-        label: &str,
     ) -> PlexResult<Vec<PlexMediaSearchResult>> {
         let url = format!(
             "{}/library/sections/{}/all",
-            server_url.trim_end_matches('/'),
+            search.server_url.trim_end_matches('/'),
             percent_encode_path_segment(section_key)
         );
-        let response = self
+        let request = self
             .client
             .get(url)
-            .headers(self.plex_headers(Some(token)))
-            .query(query)
-            .send()?;
-        let status = response.status();
-        let body = response.text()?;
-        if !status.is_success() {
-            return Err(PlexError::InvalidResponse(format!(
-                "{label} returned HTTP {status}"
-            )));
-        }
-        let json: Value = serde_json::from_str(&body)?;
+            .headers(self.plex_headers(Some(search.token)))
+            .query(query);
+        let json = search.send_json(request, "Plex library search")?;
         Ok(parse_search_response(&json))
     }
 
@@ -1306,7 +1278,6 @@ impl PlexHttpClient {
             .headers(self.plex_headers(Some(token)))
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if matches!(status.as_u16(), 404 | 410) {
             return Err(metadata_not_found_error());
         }
@@ -1315,7 +1286,7 @@ impl PlexHttpClient {
                 "metadata lookup returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         parse_metadata_response(&json, rating_key)
     }
 
@@ -1349,12 +1320,7 @@ impl PlexHttpClient {
         let mut url = reqwest::Url::parse(&candidate).map_err(|_| {
             PlexError::InvalidResponse("metadata part included an invalid stream URL".to_owned())
         })?;
-        if absolute_part
-            && (url.scheme() != server_origin.scheme()
-                || url.host_str().map(str::to_ascii_lowercase)
-                    != server_origin.host_str().map(str::to_ascii_lowercase)
-                || url.port_or_known_default() != server_origin.port_or_known_default())
-        {
+        if absolute_part && !http::same_origin(&server_origin, &url) {
             return Err(PlexError::InvalidResponse(
                 "metadata part stream URL is outside the configured Plex server origin".to_owned(),
             ));
@@ -1400,6 +1366,9 @@ impl PlexHttpClient {
         );
         if let Some(token) = token {
             insert_header_value(&mut headers, HeaderName::from_static("x-plex-token"), token);
+            if let Some(value) = headers.get_mut("x-plex-token") {
+                value.set_sensitive(true);
+            }
         }
         headers
     }
@@ -1432,13 +1401,12 @@ impl PlexSyncTransport for PlexHttpClient {
             .query(&[("query", query)])
             .send()?;
         let status = response.status();
-        let body = response.text()?;
         if !status.is_success() {
             return Err(PlexError::InvalidResponse(format!(
                 "media search returned HTTP {status}"
             )));
         }
-        let json: Value = serde_json::from_str(&body)?;
+        let json = http::read_json(response, "Plex metadata")?;
         Ok(parse_search_response(&json))
     }
 

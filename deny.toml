@@ -1,0 +1,22 @@
+# cargo-deny 0.20.2. Run through scripts/dependency_policy.py so every result
+# records the fetched RustSec revision and validates expiring exceptions.
+[graph]
+all-features = true
+
+[advisories]
+db-path = "$SOROTTE_ADVISORY_DB"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+git-fetch-with-cli = true
+maximum-db-staleness = "P2D"
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+unused-ignored-advisory = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+required-git-spec = "rev"
+unused-allowed-source = "deny"

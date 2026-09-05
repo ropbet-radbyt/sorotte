@@ -34,6 +34,8 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+import artifact_input
+
 
 SCHEMA_VERSION = 2
 REPORT_KIND = "sorotte-coverage-profile-lanes"
@@ -229,20 +231,9 @@ def reject_json_constant(value: str) -> None:
 
 def parse_json(data: bytes, *, label: str) -> Any:
     try:
-        text = data.decode("utf-8", errors="strict")
-        return json.loads(
-            text,
-            object_pairs_hook=reject_duplicate_pairs,
-            parse_constant=reject_json_constant,
-        )
-    except UnicodeError as error:
-        raise CoverageProfileLaneError(
-            f"{label} is not valid UTF-8: {error}"
-        ) from error
-    except json.JSONDecodeError as error:
-        raise CoverageProfileLaneError(
-            f"{label} is not valid JSON: {error}"
-        ) from error
+        return artifact_input.strict_json_loads(data, max_bytes=MAX_REPORT_BYTES, label=label)
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
 
 
 def require_mapping(value: Any, *, label: str) -> Mapping[str, Any]:
@@ -838,11 +829,10 @@ def file_metadata(
     *,
     repo_root: pathlib.Path,
 ) -> dict[str, Any]:
-    data = path.read_bytes()
-    if len(data) > MAX_LOG_BYTES:
-        raise CoverageProfileLaneError(
-            f"coverage lane log exceeds {MAX_LOG_BYTES} bytes: {path}"
-        )
+    try:
+        data = artifact_input.read_bounded(path, max_bytes=MAX_LOG_BYTES, label="coverage lane log")
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
     return {
         "path": repo_relative(repo_root, path),
         "size_bytes": len(data),
@@ -1081,7 +1071,8 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
         label="coverage profile report",
     )
     if (
-        report.get("schema_version") != SCHEMA_VERSION
+        not artifact_input.is_json_integer(report.get("schema_version"))
+        or report.get("schema_version") != SCHEMA_VERSION
         or report.get("kind") != REPORT_KIND
     ):
         raise CoverageProfileLaneError(
@@ -1329,21 +1320,9 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
 
 def strict_load_report(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        size = path.stat().st_size
-    except OSError as error:
-        raise CoverageProfileLaneError(
-            f"cannot stat coverage profile report {path}: {error}"
-        ) from error
-    if size > MAX_REPORT_BYTES:
-        raise CoverageProfileLaneError(
-            f"coverage profile report exceeds {MAX_REPORT_BYTES} bytes"
-        )
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise CoverageProfileLaneError(
-            f"cannot read coverage profile report {path}: {error}"
-        ) from error
+        data = artifact_input.read_bounded(path, max_bytes=MAX_REPORT_BYTES, label="coverage profile report")
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
     return validate_report_document(parse_json(data, label="coverage profile report"))
 
 

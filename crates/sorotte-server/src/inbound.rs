@@ -150,6 +150,7 @@ pub struct ServerClientCapabilities {
     pub ui_mode: Option<String>,
     pub ui_mode_advertised: bool,
     pub(crate) advertised_fields: BTreeSet<&'static str>,
+    pub(crate) large_protocol_frames_v1: bool,
 }
 
 impl ServerClientCapabilities {
@@ -168,6 +169,10 @@ impl ServerClientCapabilities {
             (SOROTTE_PLAYBACK_BARRIER_V1, self.playback_barrier_v1),
             (SOROTTE_READINESS_V2, self.readiness_v2),
             (SOROTTE_PARTICIPANT_STATUS_V1, self.participant_status_v1),
+            (
+                SOROTTE_LARGE_PROTOCOL_FRAMES_V1,
+                self.large_protocol_frames_v1,
+            ),
         ] {
             if self.advertised_fields.contains(name) {
                 features.insert(name.to_owned(), Value::Bool(enabled));
@@ -357,6 +362,7 @@ fn legacy_capabilities(version: &str) -> ServerClientCapabilities {
         playback_barrier_v1: false,
         readiness_v2: false,
         participant_status_v1: false,
+        large_protocol_frames_v1: false,
         ui_mode: Some(LEGACY_UI_MODE_UNKNOWN.to_owned()),
         ui_mode_advertised: true,
         advertised_fields: BTreeSet::from([
@@ -406,6 +412,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         SOROTTE_PLAYBACK_BARRIER_V1,
         SOROTTE_READINESS_V2,
         SOROTTE_PARTICIPANT_STATUS_V1,
+        SOROTTE_LARGE_PROTOCOL_FRAMES_V1,
     ]
     .into_iter()
     .filter(|name| features.contains_key(*name))
@@ -423,6 +430,7 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
         playback_barrier_v1: bool_feature(&features, SOROTTE_PLAYBACK_BARRIER_V1),
         readiness_v2: bool_feature(&features, SOROTTE_READINESS_V2),
         participant_status_v1: bool_feature(&features, SOROTTE_PARTICIPANT_STATUS_V1),
+        large_protocol_frames_v1: bool_feature(&features, SOROTTE_LARGE_PROTOCOL_FRAMES_V1),
         ui_mode: features
             .get("uiMode")
             .and_then(Value::as_str)

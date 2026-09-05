@@ -30,6 +30,64 @@ const TEST_COMPLETION_BUDGET: Duration = Duration::from_secs(1);
 
 static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+fn windows_named_pipe_terminal_cleanup_cancels_pending_heartbeat_and_readback_first() {
+    for readback in [false, true] {
+        let server = NamedPipeServer::unique("terminal-pending");
+        let pipe_name = server.pipe_name().to_owned();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let peer = server.spawn("terminal-pending", move |peer| {
+            peer.read_request();
+            seen_tx.send(()).unwrap();
+            // No response to the outstanding five-second command. Terminal
+            // writes can arrive only once production native I/O is cancelled.
+            peer.read_request();
+            peer.read_request();
+        });
+        let mut client = MpvJsonIpcClient::connect_with_command_timeout(
+            Path::new(&pipe_name),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        if readback {
+            client
+                .try_get_property_nonblocking("pause", 1)
+                .unwrap()
+                .unwrap();
+        } else {
+            client
+                .try_send_command_expect_success_nonblocking(
+                    json!(["script-message-to", "sorotte_network_options", "heartbeat"]),
+                    1,
+                )
+                .unwrap()
+                .unwrap();
+        }
+        seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let started = Instant::now();
+        client.send_final_commands_best_effort(vec![
+            json!(["set_property", "pause", false]),
+            json!(["script-message", "release"]),
+        ]);
+        drop(client);
+        assert!(
+            started.elapsed() < Duration::from_millis(750),
+            "shutdown waited for pending command"
+        );
+        let observed = join_peer(peer);
+        assert_eq!(observed.requests.len(), 3);
+        assert_eq!(
+            observed.requests[1].value["command"],
+            json!(["set_property", "pause", false])
+        );
+        assert_eq!(
+            observed.requests[2].value["command"],
+            json!(["script-message", "release"])
+        );
+        let _reused = NamedPipeServer::with_name(pipe_name);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum DeliveryMode {
     OneByteWrites,

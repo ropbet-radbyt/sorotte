@@ -55,6 +55,10 @@ use sorotte_protocol::{
     UserReadinessMutationSource, UserSetPayload, canonical_playlist_files_from_change, decode_line,
     decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
+use sorotte_protocol::{
+    LEGACY_MAX_PROTOCOL_LINE_BYTES, SOROTTE_LARGE_PROTOCOL_FRAMES_V1,
+    SOROTTE_MAX_PROTOCOL_LINE_BYTES, message_fits_line_limit,
+};
 use sorotte_secret::SecretValue;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -254,6 +258,7 @@ const PLAYBACK_BARRIER_MAX_REQUEST_ID_BYTES: usize = 128;
 const READINESS_MAX_OPERATION_ID_BYTES: usize = 128;
 const READINESS_MAX_RETAINED_OPERATIONS_PER_MEMBERSHIP: usize = 256;
 const READINESS_RECONNECT_TTL_SECONDS: f64 = PROTOCOL_TIMEOUT_SECONDS * 2.0;
+const READINESS_RECONNECT_MAX_RETAINED: usize = 4_096;
 const READINESS_USER_TRANSPORT_GRACE_SECONDS: f64 = 5.0;
 const PARTICIPANT_STATUS_MAX_ABSOLUTE_ROOM_OFFSET_SECONDS: f64 = 86_400.0;
 const PARTICIPANT_STATUS_FRESH_MILLIS: u64 = 3_000;
@@ -285,7 +290,7 @@ const ROOM_BUFFERING_MAX_MAX_PAUSE_SECONDS: f64 = 60.0;
 const ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS: f64 = SERVER_STATE_INTERVAL_SECONDS * 3.0;
 // Media-match signatures can push otherwise valid Set/List lines above the
 // base Syncplay line size, especially when multiple users publish signatures.
-const MAX_PROTOCOL_LINE_BYTES: usize = DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
+const MAX_PROTOCOL_LINE_BYTES: usize = SOROTTE_MAX_PROTOCOL_LINE_BYTES;
 const PROTOCOL_LINE_TOO_LONG_ERROR: &str = "Protocol line too long";
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 // A reliable line gets a short chance to enter a temporarily full queue. If
@@ -312,11 +317,14 @@ mod app;
 mod auth;
 mod backpressure;
 mod compat;
+mod frame_limits;
 mod inbound;
+mod local_clock;
 mod messages;
 mod network;
 mod persistence;
 mod persistence_actor;
+mod resources;
 mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
@@ -335,7 +343,9 @@ pub use network::{
 pub use persistence::{RoomPersistenceError, StatsPersistenceError};
 pub use persistence_actor::{
     ServerPersistenceEffect, ServerPersistenceEvent, ServerPersistenceWorkerKind,
+    persistence_workers_awaiting_join,
 };
+pub use resources::{ServerResourceLimits, ServerResourceSnapshot};
 
 pub(crate) use auth::{
     RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt_legacy_compatible,
@@ -556,9 +566,11 @@ pub struct ServerRuntime {
     /// Last wall-clock value observed by the periodic scheduler. Network
     /// cadence is driven by a monotonic timer, but protocol timestamps are
     /// wall-clock seconds, so a rollback must rebase every pending deadline.
-    last_periodic_schedule_observed_at_seconds: Option<f64>,
     client_peer_ips: BTreeMap<String, String>,
     time_now_override_seconds: Option<f64>,
+    local_clock: local_clock::ServerLocalClock,
+    last_ping_challenge_timestamp: Option<f64>,
+    resource_limits: ServerResourceLimits,
     room_password_provider: RoomPasswordProvider,
     server_password_token: Option<SecretValue>,
     motd_template: Option<String>,
@@ -870,6 +882,8 @@ struct ClientStateCounters {
     ping_average_rtt_seconds: f64,
     ping_forward_delay_seconds: f64,
     ping_metrics_observed_at_seconds: Option<f64>,
+    ping_metrics_wall_observed_at_seconds: Option<f64>,
+    outstanding_ping_challenges: VecDeque<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

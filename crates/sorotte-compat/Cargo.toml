@@ -20,5 +20,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 rustls.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 sorotte-client-core = { path = "../sorotte-client-core" }

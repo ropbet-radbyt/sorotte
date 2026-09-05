@@ -4,6 +4,8 @@ use crate::app::runtime_owner::{GuiActivePlexPlaylistResolveJob, GuiActivePlexPl
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
 use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
 
+mod concurrent_writers;
+
 fn stage_unrelated_plex_draft(state: &mut SorotteGuiShellAppState) {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::GeneralLanguage,

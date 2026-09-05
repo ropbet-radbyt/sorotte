@@ -12,10 +12,10 @@ use sorotte_client_app::app_boundary::{
         plan_local_offset_runtime_dispatch_legacy_compatible,
     },
     persistence::{
+        edit_sorotte_ini_stored_client_settings_mvp_at_path,
         load_sorotte_ini_stored_client_settings_mvp_from_path,
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path,
-        upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
-        write_sorotte_ini_contents_atomically_at_path,
+        merge_sorotte_ini_stored_client_settings_mvp_at_path,
+        relocate_sorotte_ini_stored_client_settings_mvp_at_path,
     },
     state::stored_client_settings_runtime_snapshot_legacy_compatible,
     storage::{
@@ -85,17 +85,11 @@ impl GuiPersistedConfigRuntimeOwner {
         else {
             return Err("no writable GUI config path is available".to_owned());
         };
-        let mut settings = projected_state.saved_configuration.clone();
-        patch.apply_to(&mut settings);
-        let persist_result = if patch.clears_plex_identity_on_disk() {
-            upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path(
-                &config_path,
-                &settings,
-            )
-        } else {
-            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &settings)
-        };
-        persist_result.map_err(|error| error.to_string())?;
+        let settings =
+            edit_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, |settings| {
+                patch.apply_to(settings);
+            })
+            .map_err(|error| error.to_string())?;
         self.config_path = Some(config_path);
         self.apply_patch_to_active_session_settings(patch);
         Ok(settings)

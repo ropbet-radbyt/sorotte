@@ -50,6 +50,7 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
         "SOROTTE_GUI_TEST_DROP_TARGET",
         "SOROTTE_GUI_UPDATE_CHECK_RESPONSE",
         "SOROTTE_GUI_TEST_THEME",
+        "SOROTTE_GUI_TEST_UI_SCALE",
         "SOROTTE_GUI_TEST_PLAYER_SETTINGS_DEGRADED",
         "SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH",
         "SOROTTE_GUI_TEST_DISABLE_STARTUP_SAVED_CONNECT",
@@ -79,6 +80,9 @@ pub(super) fn launch_sorotte_gui_with_test_overrides(
     }
     if let Some(theme) = test_overrides.theme {
         command.env("SOROTTE_GUI_TEST_THEME", theme);
+    }
+    if let Some(scale) = test_overrides.ui_scale {
+        command.env("SOROTTE_GUI_TEST_UI_SCALE", scale.to_string());
     }
     if let Some(path) = test_overrides.config_storage_browse_path {
         command.env("SOROTTE_GUI_TEST_CONFIG_ROOT_BROWSE_PATH", path);

@@ -1,9 +1,9 @@
 use super::*;
+use sorotte_player_mpv::managed_process::{ManagedMpvCommand, OwnedMpvProcess};
 
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
-    child: Child,
-    ipc_cleanup_path: Option<PathBuf>,
+    child: OwnedMpvProcess,
 }
 
 struct FinishedClientRuntime {
@@ -11,16 +11,6 @@ struct FinishedClientRuntime {
     managed_guard: Option<ManagedMpvProcessGuard>,
     bridge_health: SorotteBridgeHealth,
     streaming_warning: Option<String>,
-}
-
-impl Drop for ManagedMpvProcessGuard {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(path) = self.ipc_cleanup_path.as_ref() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 }
 
 pub(crate) fn create_client_runtime_with_managed_mpv_support(
@@ -316,7 +306,7 @@ fn spawn_managed_mpv_and_attach(
         config.connect_poll_interval_ms.unwrap_or(50).max(1),
     ));
 
-    let mut command = Command::new(&mpv_bin);
+    let mut command = ManagedMpvCommand::new(&mpv_bin);
     if let Some(parent) = mpv_bin.parent() {
         command.current_dir(parent);
     }
@@ -324,15 +314,8 @@ fn spawn_managed_mpv_and_attach(
     if !config.extra_args.is_empty() {
         command.args(&config.extra_args);
     }
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let mut guard = ManagedMpvProcessGuard {
-        child,
-        ipc_cleanup_path,
-    };
+    let child = command.spawn(ipc_cleanup_path)?;
+    let mut guard = ManagedMpvProcessGuard { child };
     let adapter = connect_managed_mpv_adapter_with_retry(
         &ipc_path,
         connect_timeout,
@@ -385,7 +368,7 @@ fn connect_managed_mpv_adapter_with_retry(
     ipc_path: &str,
     timeout: Duration,
     poll_interval: Duration,
-    child: &mut Child,
+    child: &mut OwnedMpvProcess,
 ) -> anyhow::Result<MpvAdapter> {
     connect_mpv_adapter_with_retry_using_and_health_check(
         ipc_path,
@@ -650,8 +633,7 @@ mod process_supervision_tests {
         std::fs::write(&ipc_artifact, b"stale endpoint")
             .expect("test IPC artifact should be created");
         let guard = ManagedMpvProcessGuard {
-            child,
-            ipc_cleanup_path: Some(ipc_artifact.clone()),
+            child: OwnedMpvProcess::from_test_child(child, Some(ipc_artifact.clone())).unwrap(),
         };
 
         assert!(
@@ -684,8 +666,7 @@ mod process_supervision_tests {
             .expect("test IPC artifact should be created");
 
         drop_guard_with_deadline(ManagedMpvProcessGuard {
-            child,
-            ipc_cleanup_path: Some(ipc_artifact.clone()),
+            child: OwnedMpvProcess::from_test_child(child, Some(ipc_artifact.clone())).unwrap(),
         });
 
         assert!(

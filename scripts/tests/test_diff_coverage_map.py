@@ -314,7 +314,7 @@ class DiffCoverageMapTests(unittest.TestCase):
             '"kind": "sorotte-llvm-line-map"',
         )
         self.map_path.write_text(raw, encoding="utf-8")
-        with self.assertRaisesRegex(coverage.DiffCoverageError, "duplicates object key"):
+        with self.assertRaisesRegex(coverage.DiffCoverageError, "duplicate_key"):
             coverage.build_report(
                 repo_root=self.repo,
                 lcov_path=None,

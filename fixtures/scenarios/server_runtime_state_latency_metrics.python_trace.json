@@ -168,11 +168,435 @@
           "client": "client-1",
           "message": {
             "State": {
+              "ping": {
+                "latencyCalculation": 1.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 1.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 3
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 2.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 2.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 4
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 3.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 3.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 5
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 4.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 4.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 6
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 5.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 5.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 7
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 6.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 6.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 8
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 7.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 7.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 9
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 8.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 8.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 10
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 9.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 9.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 11
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 10.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 10.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        }
+      ],
+      "step": 12
+    },
+    {
+      "outputs": [
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 11.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-2",
+          "message": {
+            "State": {
+              "ping": {
+                "latencyCalculation": 11.0,
+                "serverRtt": 0.0
+              },
+              "playstate": {
+                "doSeek": false,
+                "paused": true,
+                "position": 0.0,
+                "setBy": "alice"
+              }
+            }
+          }
+        },
+        {
+          "client": "client-1",
+          "message": {
+            "State": {
               "ignoringOnTheFly": {
                 "server": 1
               },
               "ping": {
-                "latencyCalculation": 0.0,
+                "latencyCalculation": 11.0,
                 "serverRtt": 10.0
               },
               "playstate": {
@@ -192,7 +616,7 @@
                 "server": 1
               },
               "ping": {
-                "latencyCalculation": 0.0,
+                "latencyCalculation": 11.0,
                 "serverRtt": 0.0
               },
               "playstate": {
@@ -205,7 +629,7 @@
           }
         }
       ],
-      "step": 3
+      "step": 13
     }
   ]
 }

@@ -242,17 +242,30 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     }
 
     wait_for_accessible_name(driver, window, "Public Servers", step_timeout)?;
-    wait_for_accessible_name(driver, window, "2", step_timeout)?;
 
-    navigate_to_view_with_fallback(
+    invoke_menu_command_once(
         driver,
         window,
-        "Public Servers",
-        "view: setup",
         "File",
         "Open Public Server Browser",
         step_timeout,
     )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "Refresh",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_pending_operation_to_finish(
+        driver,
+        window,
+        "pending: refresh-public-servers",
+        step_timeout,
+    )?;
+    for name in ["Alpha: alpha.example:8999", "Beta: beta.example:9000"] {
+        wait_for_accessible_name(driver, window, name, step_timeout)?;
+    }
     steps.push("surface-public-servers".to_owned());
 
     invoke_named_control_with_wait(

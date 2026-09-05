@@ -20,9 +20,10 @@ mod state;
 
 pub use chat::{ChatMessagePayload, ChatPayload, ErrorPayload, TlsPayload};
 pub use codec::{
-    DEFAULT_MAX_PROTOCOL_LINE_BYTES, DecodedMessageLineItem, ProtocolError, decode_line,
+    DEFAULT_MAX_PROTOCOL_LINE_BYTES, DecodedMessageLineItem, LEGACY_MAX_PROTOCOL_LINE_BYTES,
+    ProtocolError, SOROTTE_LARGE_PROTOCOL_FRAMES_V1, SOROTTE_MAX_PROTOCOL_LINE_BYTES, decode_line,
     decode_message_line, decode_message_line_items, decode_message_lines, encode_line,
-    encode_message_line, extract_hello, extract_hello_from_message,
+    encode_message_line, extract_hello, extract_hello_from_message, message_fits_line_limit,
 };
 pub use envelope::{
     ChatMessage, ErrorMessage, HelloMessage, ListMessage, SetMessage, StateMessage, TlsMessage,

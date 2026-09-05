@@ -1,3 +1,4 @@
+use rustls_pki_types::pem::PemObject;
 use std::{
     collections::BTreeSet,
     fs, io,
@@ -39,6 +40,29 @@ use sorotte_protocol::{
     ChatPayload, ListPayload, PlaylistChangePayload, PlaylistIndexPayload, ProtocolMessage,
     SetPayload, decode_message_line, extract_hello_from_message,
 };
+
+mod frame_capacity_tests;
+mod ping_timing_tests;
+
+// Projection unit tests install a previously issued challenge as a fixture.
+// Actual issuance, wire roundtrips, replay and reconnect are tested separately
+// in ping_timing_tests; these tests focus on consuming the resulting estimate.
+fn fixture_issued_ping_echo(
+    runtime: &mut ServerRuntime,
+    client: &str,
+    timestamp: f64,
+    sender_rtt: f64,
+) {
+    let rtt = runtime.current_time_seconds() - timestamp;
+    let sent_at = runtime.local_time_seconds() - rtt;
+    runtime
+        .client_state_counters
+        .get_mut(client)
+        .unwrap()
+        .outstanding_ping_challenges
+        .push_back((timestamp, sent_at));
+    runtime.ingest_client_ping_metrics(client, Some(timestamp), Some(sender_rtt));
+}
 
 const TEST_TLS_CERT_PEM: &str = include_str!("../../../fixtures/tls/test_cert.pem");
 const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../fixtures/tls/test_chain.pem");
@@ -573,7 +597,7 @@ fn server_runtime_with_tls_metadata_clock(
 
 fn tls_client_connector_for_test_fixture() -> TlsConnector {
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
-    let certs = rustls_pemfile::certs(&mut cert_reader)
+    let certs = rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .expect("test certificate fixture should parse");
     let mut roots = RootCertStore::empty();

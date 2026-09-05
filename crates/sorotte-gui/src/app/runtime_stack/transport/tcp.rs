@@ -16,7 +16,7 @@ use sorotte_client_app::app_boundary::state::{
     TlsPolicy, parse_host_and_optional_port_from_host_arg_legacy_compatible,
 };
 use sorotte_protocol::{
-    DEFAULT_MAX_PROTOCOL_LINE_BYTES, PingPayload, ProtocolMessage, StatePayload,
+    PingPayload, ProtocolMessage, SOROTTE_MAX_PROTOCOL_LINE_BYTES, StatePayload,
     decode_message_line_items, encode_message_line,
 };
 
@@ -27,7 +27,7 @@ use super::handle::{
 pub(in crate::app::runtime_stack::transport) const MAX_INBOUND_PROTOCOL_LINE_BYTES: usize =
     // Server List snapshots aggregate per-user file metadata; media-match signatures are capped
     // per file, so a valid multi-user snapshot can exceed the base single-line protocol default.
-    DEFAULT_MAX_PROTOCOL_LINE_BYTES * 8;
+    SOROTTE_MAX_PROTOCOL_LINE_BYTES;
 
 enum GuiTcpSessionNetworkTransport {
     Plain(TcpStream),

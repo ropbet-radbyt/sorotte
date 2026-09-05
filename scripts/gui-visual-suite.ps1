@@ -2,6 +2,9 @@ param(
     [string]$BinaryPath,
     [string]$OutputDir = "target/gui-visual",
     [int]$TimeoutMs = 20000,
+    [ValidateRange(1.0, 3.0)][double]$UiScale = 1.0,
+    [ValidateRange(0, 384)][int]$ExpectedNativeDpi = 0,
+    [ValidateSet("", "light", "dark")][string]$Theme = "",
     [string[]]$Scenario = @(),
     [switch]$NoBuild
 )
@@ -53,6 +56,13 @@ try {
         "--timeout-ms",
         [string]$TimeoutMs
     )
+    $suiteArgs += @("--ui-scale", $UiScale.ToString([Globalization.CultureInfo]::InvariantCulture))
+    if ($ExpectedNativeDpi -ne 0) {
+        $suiteArgs += @("--expected-native-dpi", [string]$ExpectedNativeDpi)
+    }
+    if ($Theme) {
+        $suiteArgs += @("--theme", $Theme)
+    }
     foreach ($scenarioId in $Scenario) {
         if (-not [string]::IsNullOrWhiteSpace($scenarioId)) {
             $suiteArgs += "--scenario"

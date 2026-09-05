@@ -13,7 +13,11 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::platform_driver::NativeAccessibilityNode;
 
-const VISUAL_SCHEMA_VERSION: u32 = 2;
+#[path = "visual_artifacts/display_matrix.rs"]
+mod display_matrix;
+use display_matrix::{content_stress_frames, exercise_content_stress};
+
+const VISUAL_SCHEMA_VERSION: u32 = 3;
 const VISUAL_SETTLE_DELAY: Duration = Duration::from_millis(800);
 const VISUAL_WIDE_VIEWPORT: (i32, i32) = (1700, 1100);
 const VISUAL_RECOVERY_VIEWPORT: (i32, i32) = (1700, 1300);
@@ -81,10 +85,11 @@ enum VisualScenario {
     StreamingAdvanced,
     StorageLocationPending,
     DataDangerZone,
+    ContentStress,
 }
 
 impl VisualScenario {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 19] = [
         Self::FirstRunPlayerMissing,
         Self::PlayerSettingsDegraded,
         Self::ConnectionClean,
@@ -103,6 +108,7 @@ impl VisualScenario {
         Self::StreamingAdvanced,
         Self::StorageLocationPending,
         Self::DataDangerZone,
+        Self::ContentStress,
     ];
 
     fn id(self) -> &'static str {
@@ -125,6 +131,7 @@ impl VisualScenario {
             Self::StreamingAdvanced => "settings.streaming-advanced",
             Self::StorageLocationPending => "settings.storage-location-pending",
             Self::DataDangerZone => "settings.data-danger-zone",
+            Self::ContentStress => "room.content-stress",
         }
     }
 
@@ -152,6 +159,7 @@ impl VisualScenario {
         match self {
             Self::FirstRunPlayerMissing => "first-run-player-remediation",
             Self::PlayerSettingsDegraded => "room-playback-recovery",
+            Self::ContentStress => "room",
             Self::PluginToggleDirty => "plugins",
             Self::StreamingAdvanced => "playback-search",
             Self::StorageLocationPending | Self::DataDangerZone => "interface-system",
@@ -185,7 +193,7 @@ impl VisualScenario {
 
     fn viewport(self) -> (i32, i32) {
         match self {
-            Self::NarrowLight => VISUAL_NARROW_VIEWPORT,
+            Self::NarrowLight | Self::ContentStress => VISUAL_NARROW_VIEWPORT,
             Self::PlayerSettingsDegraded => VISUAL_RECOVERY_VIEWPORT,
             _ => VISUAL_WIDE_VIEWPORT,
         }
@@ -195,6 +203,7 @@ impl VisualScenario {
         match self {
             Self::FirstRunPlayerMissing
             | Self::PlayerSettingsDegraded
+            | Self::ContentStress
             | Self::PluginToggleDirty => None,
             Self::StreamingAdvanced => Some("playback-search"),
             Self::StorageLocationPending | Self::DataDangerZone => Some("interface-system"),
@@ -216,14 +225,17 @@ impl VisualScenario {
     fn uses_loopback_session(self) -> bool {
         !matches!(
             self,
-            Self::FirstRunPlayerMissing | Self::SaveAndConnect | Self::ConnectOnceDirty
+            Self::FirstRunPlayerMissing
+                | Self::SaveAndConnect
+                | Self::ConnectOnceDirty
+                | Self::ContentStress
         )
     }
 
     fn session_fixture(self) -> &'static str {
         match self {
             Self::FirstRunPlayerMissing => "none",
-            Self::SaveAndConnect | Self::ConnectOnceDirty => {
+            Self::SaveAndConnect | Self::ConnectOnceDirty | Self::ContentStress => {
                 "reachable local TCP mock on an OS-assigned loopback port"
             }
             _ => "in-process client-core loopback session",
@@ -303,6 +315,7 @@ impl VisualScenario {
                 STREAM_SUPPORT_ENABLED_AUTOMATION_ID,
                 PLUGINS_SURFACE_AUTOMATION_ID,
             ],
+            Self::ContentStress => &[MAIN_WINDOW_SURFACE_AUTOMATION_ID],
             Self::StreamingAdvanced => &[STREAMING_ADVANCED_AUTOMATION_ID],
             Self::StorageLocationPending => &[STORAGE_BROWSE_AUTOMATION_ID],
             Self::DataDangerZone => &[
@@ -318,6 +331,39 @@ struct VisualSuiteOptions {
     output_dir: PathBuf,
     timeout: Duration,
     scenarios: Vec<VisualScenario>,
+    display: DisplayCondition,
+}
+
+#[derive(Clone, Copy)]
+struct DisplayCondition {
+    ui_scale: f32,
+    expected_native_dpi: Option<u32>,
+    theme: Option<&'static str>,
+}
+
+impl Default for DisplayCondition {
+    fn default() -> Self {
+        Self {
+            ui_scale: 1.0,
+            expected_native_dpi: None,
+            theme: None,
+        }
+    }
+}
+
+impl DisplayCondition {
+    fn check_native_dpi(self, observed: u32) -> Result<(), String> {
+        if self
+            .expected_native_dpi
+            .is_some_and(|expected| expected != observed)
+        {
+            return Err(format!(
+                "native DPI mismatch: expected {:?}, observed {observed}; configure the isolated runner display before capture",
+                self.expected_native_dpi
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -325,6 +371,8 @@ struct ViewportManifest {
     width: i32,
     height: i32,
     scale: &'static str,
+    native_dpi: u32,
+    ui_scale: f32,
 }
 
 #[derive(Serialize)]
@@ -436,6 +484,7 @@ pub(super) fn run_visual_suite_from_args(args: &[String]) -> Result<String, Stri
             options.timeout,
             &git_sha,
             git_dirty,
+            options.display,
         )?;
     }
 
@@ -463,6 +512,7 @@ fn parse_visual_suite_options(args: &[String]) -> Result<VisualSuiteOptions, Str
     let mut output_dir = PathBuf::from("target").join("gui-visual");
     let mut timeout = Duration::from_millis(20_000);
     let mut scenarios = Vec::new();
+    let mut display = DisplayCondition::default();
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -488,6 +538,33 @@ fn parse_visual_suite_options(args: &[String]) -> Result<VisualSuiteOptions, Str
                 timeout = parse_timeout_ms(value)?;
                 index += 2;
             }
+            "--ui-scale" => {
+                display.ui_scale = args
+                    .get(index + 1)
+                    .and_then(|value| value.parse::<f32>().ok())
+                    .filter(|value| value.is_finite() && (1.0..=3.0).contains(value))
+                    .ok_or_else(|| "--ui-scale requires a finite number from 1 to 3".to_owned())?;
+                index += 2;
+            }
+            "--expected-native-dpi" => {
+                display.expected_native_dpi = Some(
+                    args.get(index + 1)
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .filter(|value| (72..=384).contains(value))
+                        .ok_or_else(|| {
+                            "--expected-native-dpi requires an integer from 72 to 384".to_owned()
+                        })?,
+                );
+                index += 2;
+            }
+            "--theme" => {
+                display.theme = Some(match args.get(index + 1).map(String::as_str) {
+                    Some("light") => "light",
+                    Some("dark") => "dark",
+                    _ => return Err("--theme requires light or dark".to_owned()),
+                });
+                index += 2;
+            }
             "--scenario" => {
                 let value = args
                     .get(index + 1)
@@ -496,7 +573,7 @@ fn parse_visual_suite_options(args: &[String]) -> Result<VisualSuiteOptions, Str
                 index += 2;
             }
             "--help" | "-h" => {
-                return Err("usage: sorotte-gui-native-smoke --visual-suite [--binary PATH] [--output-dir PATH] [--timeout-ms N] [--scenario ID]".to_owned());
+                return Err("usage: sorotte-gui-native-smoke --visual-suite [--binary PATH] [--output-dir PATH] [--timeout-ms N] [--scenario ID] [--ui-scale 1..3] [--expected-native-dpi N] [--theme light|dark]".to_owned());
             }
             argument => return Err(format!("unknown visual suite argument {argument:?}")),
         }
@@ -510,6 +587,7 @@ fn parse_visual_suite_options(args: &[String]) -> Result<VisualSuiteOptions, Str
         output_dir,
         timeout,
         scenarios,
+        display,
     })
 }
 
@@ -520,6 +598,7 @@ fn capture_visual_scenario(
     timeout: Duration,
     git_sha: &str,
     git_dirty: bool,
+    display: DisplayCondition,
 ) -> Result<(), String> {
     let artifact_dir = output_root.join(scenario.id());
     fs::create_dir_all(&artifact_dir).map_err(|error| {
@@ -574,7 +653,10 @@ fn capture_visual_scenario(
     fs::write(&open_media_path, b"visual-open-target")
         .map_err(|error| format!("failed to seed visual media fixture: {error}"))?;
     seed_visual_scenario_config(scenario, &config_path)?;
-    let active_view = if scenario == VisualScenario::PlayerSettingsDegraded {
+    let active_view = if matches!(
+        scenario,
+        VisualScenario::PlayerSettingsDegraded | VisualScenario::ContentStress
+    ) {
         "room"
     } else {
         "setup"
@@ -589,6 +671,8 @@ fn capture_visual_scenario(
         &[("MainWindow", main_window_entries)],
     )?;
 
+    let content_lines = content_stress_frames();
+    let content_refs = content_lines.iter().map(String::as_str).collect::<Vec<_>>();
     let mut session_server = match scenario {
         VisualScenario::SaveAndConnect => Some(
             native_smoke_runner::start_visual_mock_session_server(SAVE_AND_CONNECT_SERVER_LINES)
@@ -597,6 +681,9 @@ fn capture_visual_scenario(
         VisualScenario::ConnectOnceDirty => Some(
             native_smoke_runner::start_visual_mock_session_server(CONNECT_ONCE_SERVER_LINES)
                 .map_err(|error| format!("{} server setup failed: {error}", scenario.id()))?,
+        ),
+        VisualScenario::ContentStress => Some(
+            native_smoke_runner::start_visual_mock_session_server(&content_refs)?,
         ),
         _ => None,
     };
@@ -615,7 +702,19 @@ fn capture_visual_scenario(
         media_search_browse_path: &media_search_path,
         open_media_file_path: &open_media_path,
         public_servers_spec,
-        network_mode: if scenario.uses_loopback_session() {
+        network_mode: if scenario == VisualScenario::ContentStress {
+            NativeNetworkMode::TcpLoopback {
+                bootstrap: NativeTcpBootstrap::Environment(TcpSessionBootstrap {
+                    host: "127.0.0.1",
+                    port: session_server
+                        .as_ref()
+                        .expect("content fixture server")
+                        .port,
+                    username: CONFIG_USERNAME_VALUE,
+                    room: CONFIG_ROOM_VALUE,
+                }),
+            }
+        } else if scenario.uses_loopback_session() {
             NativeNetworkMode::InProcessLoopback {
                 username: CONFIG_USERNAME_VALUE,
                 room: CONFIG_ROOM_VALUE,
@@ -634,7 +733,8 @@ fn capture_visual_scenario(
         launch,
         timeout,
         GuiLaunchTestOverrides {
-            theme: Some(scenario.theme()),
+            theme: Some(display.theme.unwrap_or_else(|| scenario.theme())),
+            ui_scale: Some(display.ui_scale),
             appdata_root: scenario
                 .uses_default_storage_root()
                 .then_some(runtime_root.as_path()),
@@ -669,6 +769,8 @@ fn capture_visual_scenario(
         let (viewport_width, viewport_height) = scenario.viewport();
         driver.prepare_window_for_dimensions(window, viewport_width, viewport_height)?;
         thread::sleep(VISUAL_SETTLE_DELAY);
+        let native_dpi = driver.native_window_dpi(window)?;
+        display.check_native_dpi(native_dpi)?;
         let interaction_target = if scenario.first_run() {
             wait_for_semantic_name(
                 &driver,
@@ -678,7 +780,10 @@ fn capture_visual_scenario(
             )?;
             None
         } else {
-            let initial_surface_id = if scenario == VisualScenario::PlayerSettingsDegraded {
+            let initial_surface_id = if matches!(
+                scenario,
+                VisualScenario::PlayerSettingsDegraded | VisualScenario::ContentStress
+            ) {
                 MAIN_WINDOW_SURFACE_AUTOMATION_ID
             } else {
                 CONFIGURATION_SURFACE_AUTOMATION_ID
@@ -742,11 +847,13 @@ fn capture_visual_scenario(
             scenario: scenario.id(),
             git_sha,
             git_dirty,
-            theme: scenario.theme(),
+            theme: display.theme.unwrap_or_else(|| scenario.theme()),
             viewport: ViewportManifest {
                 width: viewport_width,
                 height: viewport_height,
-                scale: "system",
+                scale: "native DPI multiplied by application zoom",
+                native_dpi,
+                ui_scale: display.ui_scale,
             },
             selected_page: scenario.selected_page(),
             dirty_settings: scenario.dirty_settings(),
@@ -765,13 +872,24 @@ fn capture_visual_scenario(
                 public_servers: "fixed local response fixture",
                 session: scenario.session_fixture(),
                 theme: "forced light/dark by native visual test override",
-                scale: "system-following; application exposes no native test override",
+                scale: "native DPI measured with GetDpiForWindow; explicit application zoom",
                 fonts: "egui system defaults; application exposes no font fixture hook",
             },
         };
         write_json(&artifact_dir.join("manifest.json"), &manifest)
     })();
 
+    if result.is_err() {
+        // Preserve the failing frame before closing its disposable process.
+        let _ = driver.capture_window_png(window, &artifact_dir.join("failure-window.png"));
+        if let Ok(nodes) = driver.accessibility_nodes(window) {
+            let title = driver.window_title(window).unwrap_or_default();
+            let _ = write_json(
+                &artifact_dir.join("failure-semantic-tree.json"),
+                &semantic_tree(scenario, &title, &nodes),
+            );
+        }
+    }
     close_visual_child(&driver, window, &mut child, timeout);
     let server_release_result = session_server.take().map_or(Ok(()), |server| {
         native_smoke_runner::release_visual_mock_session_server(server, scenario.id())
@@ -912,6 +1030,10 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
             Ok(Some(
                 MAIN_WINDOW_PLAYER_SETUP_RETRY_AUTOMATION_ID.to_owned(),
             ))
+        }
+        VisualScenario::ContentStress => {
+            exercise_content_stress(driver, window, viewport_height, timeout)?;
+            Ok(Some("main-window:playlist:255".to_owned()))
         }
         VisualScenario::ConnectionClean
         | VisualScenario::NarrowLight
@@ -1442,6 +1564,41 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
                 driver,
                 window,
                 "This permanently removes saved settings",
+                timeout,
+            )?;
+            driver.activate_named_control_by_keyboard(
+                window,
+                CONFIG_CANCEL_CLEAR_GUI_DATA_AUTOMATION_ID,
+                NativeControlKind::Button,
+            )?;
+            let deadline = Instant::now() + timeout;
+            loop {
+                let nodes = driver.accessibility_nodes(window)?;
+                if !nodes.iter().any(|node| {
+                    node.automation_id == CONFIG_CANCEL_CLEAR_GUI_DATA_AUTOMATION_ID
+                        && !node.offscreen
+                }) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(
+                        "keyboard cancellation did not dismiss data confirmation".to_owned()
+                    );
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            invoke_visible_control(
+                driver,
+                window,
+                CONFIG_CLEAR_GUI_DATA_AUTOMATION_ID,
+                viewport_height,
+                timeout,
+            )?;
+            wait_for_visible_semantic_id(
+                driver,
+                window,
+                CONFIG_CANCEL_CLEAR_GUI_DATA_AUTOMATION_ID,
+                viewport_height,
                 timeout,
             )?;
             Ok(Some(CONFIG_CONFIRM_CLEAR_GUI_DATA_AUTOMATION_ID.to_owned()))
@@ -1981,7 +2138,9 @@ mod tests {
             viewport: ViewportManifest {
                 width: VISUAL_WIDE_VIEWPORT.0,
                 height: VISUAL_WIDE_VIEWPORT.1,
-                scale: "system",
+                scale: "native DPI multiplied by application zoom",
+                native_dpi: 144,
+                ui_scale: 1.5,
             },
             selected_page: VisualScenario::PluginToggleDirty.selected_page(),
             dirty_settings: VisualScenario::PluginToggleDirty.dirty_settings(),

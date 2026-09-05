@@ -40,7 +40,7 @@ pub use extraction::{
     MediaFingerprintError, MediaFingerprintExtractionOptions, MediaFingerprintExtractionReport,
     MediaMatchToolPaths, MediaToolInvocationCounts, fingerprint_media_file,
     fingerprint_media_file_cancellable, fingerprint_media_file_cancellable_with_report,
-    fingerprint_media_file_with_report,
+    fingerprint_media_file_with_report, probe_media_duration_seconds,
 };
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};

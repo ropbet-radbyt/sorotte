@@ -271,13 +271,13 @@ fn set_file_keeps_media_match_self_echo_compact_for_large_signatures() {
     runtime
         .handle_line(
             "client-1",
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true,"sorotteLargeProtocolFramesV1":true}}}"#,
         )
         .expect("alice hello should establish session");
     runtime
         .handle_line(
             "client-2",
-            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true}}}"#,
+            r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255","features":{"mediaMatch":true,"sorotteLargeProtocolFramesV1":true}}}"#,
         )
         .expect("bob hello should establish session");
 

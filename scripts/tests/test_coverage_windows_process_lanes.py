@@ -554,7 +554,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         path.write_text(raw, encoding="utf-8")
         with self.assertRaisesRegex(
             common.CoverageProfileLaneError,
-            "duplicate key",
+            "duplicate_key",
         ):
             lanes.strict_load_report(path)
 

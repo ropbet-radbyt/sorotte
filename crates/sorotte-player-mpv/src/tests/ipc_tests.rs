@@ -79,6 +79,7 @@ impl MpvJsonIpcTransport for FramedWireTransport {
 struct NetworkOptionsHookSupersessionTransport {
     writes: Arc<Mutex<Vec<String>>>,
     responses: VecDeque<String>,
+    pending_script_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -501,6 +502,13 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
             .as_array()
             .expect("test request should contain a command");
         match command.first().and_then(Value::as_str) {
+            Some("load-script") => {
+                self.pending_script_path = Some(std::path::PathBuf::from(
+                    command[1].as_str().expect("load-script path"),
+                ));
+                // mpv acknowledges this command before its Lua worker opens the file.
+                self.push(json!({"request_id": request_id, "error": "success"}));
+            }
             Some("get_property") if command.get(1).and_then(Value::as_str) == Some("path") => {
                 self.push(json!({
                     "request_id": request_id,
@@ -512,6 +520,18 @@ impl MpvJsonIpcTransport for NetworkOptionsHookSupersessionTransport {
                 if command.get(2).and_then(Value::as_str)
                     == Some("sorotte_network_options_configure") =>
             {
+                if let Some(path) = self.pending_script_path.take() {
+                    let script = std::fs::read(&path).expect(
+                        "the Lua resource lease must survive the load-script response until configuration acknowledgement",
+                    );
+                    assert_eq!(
+                        script,
+                        include_bytes!(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../resources/sorotte_network_options.lua"
+                        ))
+                    );
+                }
                 let payload: Value = serde_json::from_str(
                     command
                         .get(3)
@@ -689,6 +709,69 @@ fn mpv_ipc_client_joins_worker_during_shutdown() {
     assert!(
         dropped.load(Ordering::SeqCst),
         "transport should be dropped before client shutdown returns"
+    );
+}
+
+#[test]
+fn terminal_cleanup_shares_one_deadline_across_all_final_writes() {
+    #[derive(Debug)]
+    struct DeadlineWriteTransport {
+        deadlines: Arc<Mutex<Vec<Instant>>>,
+        dropped: std::sync::mpsc::Sender<()>,
+    }
+
+    impl MpvJsonIpcTransport for DeadlineWriteTransport {
+        fn send_line_until(&mut self, _line: &str, deadline: Instant) -> io::Result<()> {
+            self.deadlines.lock().unwrap().push(deadline);
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "each final write consumes its entire independent budget",
+            ))
+        }
+
+        fn read_line_until(&mut self, _line: &mut String, _deadline: Instant) -> io::Result<usize> {
+            panic!("terminal cleanup must never wait for a response");
+        }
+    }
+
+    impl Drop for DeadlineWriteTransport {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    let deadlines = Arc::new(Mutex::new(Vec::new()));
+    let (dropped, completion) = std::sync::mpsc::channel();
+    let mut client = MpvJsonIpcClient::new(Box::new(DeadlineWriteTransport {
+        deadlines: Arc::clone(&deadlines),
+        dropped,
+    }));
+    let started = Instant::now();
+    client.send_final_commands_best_effort(
+        (0..12)
+            .map(|index| json!(["set_property", format!("restore-{index}"), true]))
+            .collect(),
+    );
+    drop(client);
+    assert!(
+        started.elapsed() < Duration::from_millis(750),
+        "terminal cleanup and Drop must not multiply the 500 ms overall budget"
+    );
+    completion
+        .recv_timeout(Duration::from_millis(500))
+        .expect("the deadline-limited transport must also finish its last bounded write");
+    let deadlines = deadlines.lock().unwrap();
+    assert!(!deadlines.is_empty());
+    assert!(
+        deadlines.len() <= 5,
+        "later restoration writes must stop when the shared deadline expires"
+    );
+    assert!(
+        deadlines
+            .iter()
+            .all(|deadline| *deadline <= started + Duration::from_millis(510)),
+        "every final write must be clipped to the same overall terminal deadline"
     );
 }
 
@@ -2816,6 +2899,7 @@ fn core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_sup
     let transport = NetworkOptionsHookSupersessionTransport {
         writes: Arc::clone(&writes),
         responses: VecDeque::new(),
+        pending_script_path: None,
     };
     let mut adapter = MpvAdapter::with_network_options_hook_test_transport(transport);
     adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);

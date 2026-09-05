@@ -381,7 +381,7 @@ class MutationEvaluationTests(unittest.TestCase):
     def test_duplicate_json_keys_are_rejected(self) -> None:
         with self.assertRaisesRegex(
             mutation_ci.MutationCiError,
-            "duplicate key",
+            "duplicate_key",
         ):
             mutation_ci.parse_json_bytes(
                 b'{"caught": 1, "caught": 0}',
@@ -404,6 +404,21 @@ class MutationEvaluationTests(unittest.TestCase):
             "exited nonzero despite complete",
         ):
             self.evaluate(exit_code=1)
+
+    def test_nonzero_i32_process_failures_follow_the_producer_schema(self) -> None:
+        for code in [1, 101, 255, 256, 2**31 - 1, -1, -1073740791, -(2**31)]:
+            with self.subTest(code=code):
+                self.fixture.outcomes["outcomes"][1]["phase_results"][1]["process_status"] = {"Failure": code}
+                self.fixture.write()
+                self.assertEqual(self.evaluate(exit_code=0)["status"], "passed")
+
+    def test_failure_process_status_rejects_zero_wrong_types_and_out_of_range(self) -> None:
+        for value in [0, True, False, 1.0, "101", None, 2**31, -(2**31)-1]:
+            with self.subTest(value=value):
+                self.fixture.outcomes["outcomes"][1]["phase_results"][1]["process_status"] = {"Failure": value}
+                self.fixture.write()
+                with self.assertRaises(mutation_ci.MutationCiError):
+                    self.evaluate(exit_code=0)
 
     def test_survivor_is_a_policy_failure_and_requires_nonzero_producer(self) -> None:
         outcome = self.fixture.outcomes["outcomes"][1]
@@ -1246,31 +1261,32 @@ require_baseline = true
         self.assertEqual(stale_inventory, 2)
         self.assertIn("test inventory is stale", inventory_stderr.getvalue())
 
-        added_test = self.repo / "crates" / "demo" / "tests" / "status.rs"
-        added_test.parent.mkdir()
-        added_test.write_text("#[test]\nfn added_status_test() {}\n", encoding="utf-8")
-        verification_input_stderr = io.StringIO()
-        with contextlib.redirect_stderr(verification_input_stderr):
-            stale_verification_input = mutation_ci.main(
-                [
-                    "verify-report",
-                    "--repo-root",
-                    str(self.repo),
-                    "--policy",
-                    "coverage/mutation-policy.toml",
-                    "--shard",
-                    "demo",
-                    "--report",
-                    "target/verification/mutation.json",
-                ]
+        for relative in ("crates/demo/tests/status.rs", "resources/bundled_hook.lua"):
+            added_input = self.repo / relative
+            added_input.parent.mkdir()
+            added_input.write_text("changed verification input\n", encoding="utf-8")
+            verification_input_stderr = io.StringIO()
+            with contextlib.redirect_stderr(verification_input_stderr):
+                stale_verification_input = mutation_ci.main(
+                    [
+                        "verify-report",
+                        "--repo-root",
+                        str(self.repo),
+                        "--policy",
+                        "coverage/mutation-policy.toml",
+                        "--shard",
+                        "demo",
+                        "--report",
+                        "target/verification/mutation.json",
+                    ]
+                )
+            self.assertEqual(stale_verification_input, 2, relative)
+            self.assertIn(
+                "verification inputs are stale",
+                verification_input_stderr.getvalue(),
             )
-        self.assertEqual(stale_verification_input, 2)
-        self.assertIn(
-            "verification inputs are stale",
-            verification_input_stderr.getvalue(),
-        )
-        added_test.unlink()
-        added_test.parent.rmdir()
+            added_input.unlink()
+            added_input.parent.rmdir()
 
         (self.repo / MutationFixture.source).write_bytes(
             b"pub fn demo() -> bool {\n    false\n}\n"

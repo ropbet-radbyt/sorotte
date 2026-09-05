@@ -14,6 +14,21 @@ use crate::app::{
 use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
 
 #[test]
+fn display_fixture_theme_selects_the_matching_global_palette() {
+    let context = egui::Context::default();
+    for (requested, expected) in [("dark", egui::Theme::Dark), ("light", egui::Theme::Light)] {
+        GuiNativeApp::apply_test_theme_override_from_lookup(&context, &|key| {
+            (key == "SOROTTE_GUI_TEST_THEME").then(|| requested.to_owned())
+        });
+        assert_eq!(context.theme(), expected);
+        assert_eq!(
+            context.global_style().visuals.dark_mode,
+            expected == egui::Theme::Dark
+        );
+    }
+}
+
+#[test]
 fn gui_text_preview_host_uses_summary_and_widget_tree_output() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
     let mut host = GuiTextPreviewHost;

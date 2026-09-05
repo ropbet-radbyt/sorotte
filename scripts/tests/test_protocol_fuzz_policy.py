@@ -830,7 +830,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         protocol_io = CLI_PROTOCOL_IO_PATH.read_text(encoding="utf-8")
         self.assertIn(
             "MAX_INBOUND_PROTOCOL_LINE_BYTES: usize = "
-            "DEFAULT_MAX_PROTOCOL_LINE_BYTES",
+            "SOROTTE_MAX_PROTOCOL_LINE_BYTES",
             protocol_io,
         )
         self.assertIn("pub struct InboundProtocolLineReader", protocol_io)
