@@ -128,14 +128,16 @@ fn lease_resource_in(
     loop {
         match try_lease_resource_in(cache_root, file_name, content) {
             Err(error)
-                if ((cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33)))
+                if ((cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33)))
                     || (cfg!(unix) && error.kind() == io::ErrorKind::NotFound))
                     && std::time::Instant::now() < deadline =>
             {
                 // Readers keep published Lua immutable through load-script.
                 // A concurrent repair may hold a short read lease on corrupt
                 // bytes; Unix may unlink an already-open old inode while
-                // replacing its canonical name. Retry publication without
+                // replacing its canonical name. Windows also returns native
+                // ACCESS_DENIED while a replaced file is delete-pending until
+                // its last handle closes. Retry publication without
                 // relaxing ownership, hard-link, or load-time identity checks.
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
@@ -407,8 +409,10 @@ mod tests {
                 let barrier = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    let path = materialize_bundled_sorotte_bridge_in(&cache_root)?;
-                    let content = fs::read(&path)?;
+                    let path = materialize_bundled_sorotte_bridge_in(&cache_root)
+                        .expect("concurrent resource lease should succeed");
+                    let content = fs::read(&path)
+                        .expect("published canonical resource should remain readable");
                     if content != BUNDLED_SOROTTE_BRIDGE {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -432,5 +436,68 @@ mod tests {
         assert_eq!(fs::read(&resource_path).unwrap(), BUNDLED_SOROTTE_BRIDGE);
 
         let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_delete_pending_resource_repair_waits_for_the_last_handle() {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_DISPOSITION_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FileDispositionInfo, SetFileInformationByHandle,
+        };
+
+        let cache_root = unique_cache_root("resource-delete-pending");
+        let path = materialize_bundled_sorotte_bridge_in(&cache_root).unwrap();
+        let deleting = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: The owned file handle and correctly sized native information
+        // buffer remain valid. Legacy deletion deliberately stays pending
+        // until this handle closes, unlike POSIX unlink semantics.
+        let marked = unsafe {
+            SetFileInformationByHandle(
+                deleting.as_raw_handle(),
+                FileDispositionInfo,
+                &disposition as *const _ as *const _,
+                std::mem::size_of_val(&disposition) as u32,
+            )
+        };
+        assert_ne!(marked, 0);
+        assert_eq!(
+            platform::open_resource(&path).unwrap_err().raw_os_error(),
+            Some(5)
+        );
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let repair_root = cache_root.clone();
+        let repairer = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(materialize_bundled_sorotte_bridge_in(&repair_root))
+                .unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let pending = result_rx.recv_timeout(Duration::from_millis(100));
+        drop(deleting);
+        let repaired = match pending {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                result_rx.recv_timeout(Duration::from_secs(2)).unwrap()
+            }
+            result => {
+                repairer.join().unwrap();
+                panic!("repair must wait for deletion to finish: {result:?}");
+            }
+        };
+        repairer.join().unwrap();
+        assert_eq!(repaired.unwrap(), path);
+        assert_eq!(fs::read(path).unwrap(), BUNDLED_SOROTTE_BRIDGE);
+        fs::remove_dir_all(cache_root).unwrap();
     }
 }

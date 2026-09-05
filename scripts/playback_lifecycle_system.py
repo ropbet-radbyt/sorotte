@@ -221,12 +221,18 @@ def canonical_playstate_matches_snapshot(
     """Recognize unchanged authority after a failed, uncommitted local write."""
     expected_position = _safe_number(snapshot.get("position_seconds"))
     position = _safe_number(event.get("position_seconds"))
+    expected_revision = snapshot.get("transport_revision")
     return (
         event.get("event") == snapshot.get("event") == "playstate"
         and isinstance(snapshot.get("paused"), bool)
         and event.get("paused") is snapshot["paused"]
-        and event.get("set_by") == snapshot.get("set_by")
-        and event.get("transport_revision") == snapshot.get("transport_revision")
+        # Periodic state refresh selects the slowest reporting client as
+        # set_by, even while paused, without advancing transport authority.
+        # Bind unchanged authority to its revision and physical state instead.
+        and type(expected_revision) is int
+        and expected_revision >= 0
+        and type(event.get("transport_revision")) is int
+        and event.get("transport_revision") == expected_revision
         and expected_position is not None
         and position is not None
         and abs(position - expected_position) <= 0.75

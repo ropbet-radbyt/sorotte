@@ -215,6 +215,7 @@ AUDIT_EXPECTED_TESTS = {
         "bridge_resource::tests::bundled_bridge_materializes_under_hash_with_canonical_file_name",
         "bridge_resource::tests::bundled_network_options_hook_materializes_independently_from_the_optional_bridge",
         "bridge_resource::tests::concurrent_corrupt_materialization_repair_converges_on_the_embedded_resource",
+        "bridge_resource::tests::concurrent_delete_pending_resource_repair_waits_for_the_last_handle",
         "bridge_resource::windows::tests::windows_private_cache_rejects_broad_root_and_resource_acls",
         "bridge_resource::windows::tests::windows_private_descriptor_rejects_foreign_owner_even_with_restrictive_acl",
     ),
@@ -242,7 +243,7 @@ AUDIT_EXPECTED_TESTS = {
 }
 
 AUDIT_FILTERED_OUT = {
-    "mpv-owned-process": 453,
+    "mpv-owned-process": 454,
     "mpv-bridge-resources": 447,
     "media-owned-process": 79,
     "private-settings": 228,
@@ -369,7 +370,7 @@ EXPECTED_TESTS = {
     ),
 }
 EXPECTED_TESTS.update(AUDIT_EXPECTED_TESTS)
-MPV_LIBTEST_INVENTORY_SIZE = 458
+MPV_LIBTEST_INVENTORY_SIZE = 459
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
