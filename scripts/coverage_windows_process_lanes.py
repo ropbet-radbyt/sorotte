@@ -233,6 +233,7 @@ EXPECTED_TESTS = {
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_response_correlation_matrix_is_terminal_and_at_most_once",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_server_disconnect_before_request_fails_the_write_and_fences_reuse",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_truncated_and_closed_responses_fail_boundedly_and_terminally",
+        "tests::ipc_named_pipe_fault_tests::windows_named_pipe_terminal_cleanup_cancels_pending_heartbeat_and_readback_first",
         "tests::ipc_named_pipe_fault_tests::windows_named_pipe_withheld_response_honors_deadline_and_fences_later_writes",
         "tests::ipc_tests::windows_named_pipe_read_is_cancelled_at_command_deadline",
     ),

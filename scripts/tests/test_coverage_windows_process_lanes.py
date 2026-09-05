@@ -351,7 +351,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     sorted(lanes.EXPECTED_TESTS[lane]),
                 )
                 total += oracle["passed"]
-        self.assertEqual(total, 64)
+        self.assertEqual(total, 65)
 
     def test_mpv_lane_filtered_counts_share_reviewed_inventory_size(self) -> None:
         for lane in ("mpv-named-pipe", "mpv-external-process"):

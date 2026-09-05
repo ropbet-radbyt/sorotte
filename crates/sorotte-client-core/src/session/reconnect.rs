@@ -1,5 +1,14 @@
 use super::*;
 
+fn rejects_transport_revision(candidate: Option<u64>, current: Option<u64>) -> bool {
+    match (candidate, current) {
+        (Some(0), _) => true,
+        (Some(candidate), Some(current)) => candidate < current,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
 impl ClientSession {
     pub fn reset_sync_state_for_reconnect(&mut self) {
         self.reset_sync_state_for_reconnect_with_attempt(0);
@@ -229,12 +238,7 @@ impl ClientSession {
         let current_transport_revision = self.current_room_transport_revision();
         let transport_revision_is_rejected =
             inbound_state.playstate.as_ref().is_some_and(|playstate| {
-                match (playstate.transport_revision, current_transport_revision) {
-                    (Some(0), _) => true,
-                    (Some(candidate), Some(current)) => candidate < current,
-                    (None, Some(_)) => true,
-                    _ => false,
-                }
+                rejects_transport_revision(playstate.transport_revision, current_transport_revision)
             });
         let revision_or_seek_edge = inbound_state.playstate.as_ref().is_some_and(|playstate| {
             playstate.transport_revision.is_some_and(|revision| {
@@ -350,12 +354,7 @@ impl ClientSession {
             .is_some_and(|playstate| playstate.position.is_some() && playstate.paused.is_some());
         let transport_revision_is_rejected =
             inbound_state.playstate.as_ref().is_some_and(|playstate| {
-                match (playstate.transport_revision, current_transport_revision) {
-                    (Some(0), _) => true,
-                    (Some(candidate), Some(current)) => candidate < current,
-                    (None, Some(_)) => true,
-                    _ => false,
-                }
+                rejects_transport_revision(playstate.transport_revision, current_transport_revision)
             });
         let revision_or_seek_edge = inbound_state.playstate.as_ref().is_some_and(|playstate| {
             playstate.transport_revision.is_some_and(|revision| {

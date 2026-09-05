@@ -618,12 +618,14 @@ mod tests {
         const CHILD_ENV: &str = "SOROTTE_TEST_WRITE_BARRIER_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
             use sorotte_lifecycle_evidence::{ProcessInventorySpec, ProcessRole};
+            eprintln!("barrier fixture: initializing evidence");
             assert!(
                 sorotte_lifecycle_evidence::init_global_from_env(
                     ProcessInventorySpec::new(ProcessRole::Client, [ProcessRole::Client]).unwrap(),
                 )
                 .unwrap()
             );
+            eprintln!("barrier fixture: evidence initialized");
             assert!(
                 lifecycle_write_barrier_for_frame(262_143)
                     .unwrap()
@@ -647,6 +649,7 @@ mod tests {
             assert!(!waiting.is_finished());
             std::fs::write(&barrier.release_path, b"release\n").unwrap();
             waiting.await.unwrap().unwrap();
+            eprintln!("barrier fixture: completed");
             return;
         }
 
@@ -670,7 +673,10 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let mut child = child.spawn().unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        // Startup hashes the entire test executable and coverage builds flush
+        // their profiles at exit. Bound that process lifetime separately from
+        // the two-second readiness assertion inside the fixture.
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
         loop {
             if child.try_wait().unwrap().is_some() {
                 break;
@@ -678,7 +684,12 @@ mod tests {
             if std::time::Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("the isolated barrier check must terminate");
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "the isolated barrier check must terminate: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
