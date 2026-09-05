@@ -42,7 +42,7 @@ FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
 CORPUS_PATH = "crates/sorotte-protocol/tests/corpus/protocol_parser"
 CORPUS_FILE_COUNT = 16
 FRAMED_SESSION_CORPUS_PATH = "crates/sorotte-cli/tests/corpus/framed_session"
-FRAMED_SESSION_CORPUS_FILE_COUNT = 17
+FRAMED_SESSION_CORPUS_FILE_COUNT = 18
 FRAMED_SESSION_CORPUS_DIRECTORY = REPO_ROOT / FRAMED_SESSION_CORPUS_PATH
 MPV_FRAMED_TRANSCRIPT_CORPUS_PATH = (
     "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript"
@@ -675,7 +675,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             original.replace("--sanitizer address", "--sanitizer none"),
             original.replace('--source-sha "${{ github.sha }}"', "--source-sha bad"),
             original.replace("--expected-seed-count 16", "--expected-seed-count 1"),
-            original.replace("--expected-seed-count 17", "--expected-seed-count 1"),
+            original.replace("--expected-seed-count 18", "--expected-seed-count 1"),
             original.replace("--target framed_session", "--target protocol_line"),
             original.replace(
                 "target/fuzz-ci/framed-session",
@@ -1028,6 +1028,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             MPV_FRAMED_TRANSCRIPT_TARGET,
         )
         self.assertIn(MPV_FRAMED_TRANSCRIPT_TARGET, mpv_minimize)
+        for command in (minimize, framed_minimize, mpv_minimize):
+            self.assertFalse(any(arg.startswith("-max_len=") for arg in command))
+            self.assertIn("-timeout=5", command)
 
     def test_runner_rejects_untrusted_source_identity_before_writing_evidence(
         self,

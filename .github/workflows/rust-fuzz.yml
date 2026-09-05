@@ -163,7 +163,7 @@ jobs:
           --source-sha "${{ github.sha }}"
           --seconds "${FUZZ_SECONDS}"
           --seed-corpus crates/sorotte-cli/tests/corpus/framed_session
-          --expected-seed-count 17
+          --expected-seed-count 18
           --output-root target/fuzz-ci/framed-session
 
       - name: Upload framed-session fuzz evidence

@@ -213,6 +213,94 @@ fn participant_status_direct_aging_fails_closed_for_invalid_elapsed_time() {
 }
 
 #[test]
+fn participant_status_row_zero_scope_components_redact_media_evidence() {
+    use sorotte_protocol::ParticipantPlaybackScope;
+
+    let baseline: ParticipantStatusView = serde_json::from_value(serde_json::json!({
+        "availability": "fresh", "playerConnection": "connected", "phase": "playing",
+        "timelineKind": "vod", "positionSeconds": 42.5, "logicalPaused": false,
+        "playbackRate": 1.0, "pausedForCache": false, "cachePercent": 35.0,
+        "bufferedAheadSeconds": 8.0, "sampleAgeMs": 100, "positionSampleAgeMs": 100,
+        "reportAgeMs": 0, "roomOffsetSeconds": -0.25,
+    }))
+    .unwrap();
+    for scope in [
+        ParticipantPlaybackScope::new(0),
+        ParticipantPlaybackScope::new(7).with_state_revision(0),
+        ParticipantPlaybackScope::new(7).with_transport_revision(0),
+    ] {
+        for correlation in [
+            None,
+            Some(ParticipantStatusCorrelation::Exact),
+            Some(ParticipantStatusCorrelation::Uncorrelated),
+        ] {
+            let mut wire = baseline.clone();
+            wire.playback_scope = Some(scope);
+            wire.correlation = correlation;
+            let view = crate::ClientParticipantStatusView::from_wire(wire);
+            assert_eq!(view.status.playback_scope, None, "scope {scope:?}");
+            assert_eq!(view.status.timeline_kind, None);
+            assert_eq!(view.status.position_seconds, None);
+            assert_eq!(view.status.logical_paused, None);
+            assert_eq!(view.status.playback_rate, None);
+            assert_eq!(view.status.paused_for_cache, None);
+            assert_eq!(view.status.cache_percent, None);
+            assert_eq!(view.status.buffered_ahead_seconds, None);
+            assert_eq!(view.status.sample_age_ms, None);
+            assert_eq!(view.status.position_sample_age_ms, None);
+            assert_eq!(view.status.room_offset_seconds, None);
+            assert_ne!(
+                view.status.correlation,
+                Some(ParticipantStatusCorrelation::Exact)
+            );
+            assert_eq!(view.status.player_connection, baseline.player_connection);
+            assert_eq!(view.status.phase, baseline.phase);
+            assert_eq!(view.freshness, ClientParticipantStatusFreshness::Fresh);
+        }
+    }
+    for scope in [
+        ParticipantPlaybackScope::new(7),
+        ParticipantPlaybackScope::new(7).with_state_revision(19),
+        ParticipantPlaybackScope::new(7).with_transport_revision(5),
+    ] {
+        let mut wire = baseline.clone();
+        wire.playback_scope = Some(scope);
+        let view = crate::ClientParticipantStatusView::from_wire(wire);
+        assert_eq!(view.status.playback_scope, Some(scope));
+        assert_eq!(view.status.position_seconds, baseline.position_seconds);
+    }
+}
+
+#[test]
+fn participant_status_replays_fuzzed_zero_transport_row_scope() {
+    let seed = include_str!(
+        "../../../../sorotte-cli/tests/corpus/framed_session/participant-status-zero-row-scope.txt"
+    );
+    let mut session = ClientSession::default();
+    for (index, line) in seed[4..].lines().enumerate() {
+        session
+            .apply_message_json_at(line, index as f64 + 1.0)
+            .unwrap();
+    }
+    assert_eq!(session.participant_status_snapshot_revision(), Some(900));
+    assert_eq!(
+        session
+            .participant_status_authoritative_scope()
+            .and_then(|scope| scope.transport_revision),
+        Some(7)
+    );
+    let status = session.user_participant_status_at("alice", 2.0).unwrap();
+    assert_eq!(status.freshness, ClientParticipantStatusFreshness::Fresh);
+    assert_eq!(status.status.playback_scope, None);
+    assert_eq!(status.status.position_seconds, None);
+    assert_eq!(status.status.room_offset_seconds, None);
+    assert_eq!(
+        status.status.phase,
+        Some(ParticipantPlaybackPhase::Rebuffering)
+    );
+}
+
+#[test]
 fn participant_status_direct_aging_adds_elapsed_time_to_each_evidence_clock() {
     let sample_boundary: ParticipantStatusView = serde_json::from_value(serde_json::json!({
         "availability": "fresh",
