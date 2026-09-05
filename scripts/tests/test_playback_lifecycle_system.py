@@ -42,6 +42,47 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         self.assertEqual(len(set(usernames)), len(usernames))
         self.assertTrue(all(1 <= len(username) <= 16 for username in usernames))
 
+    def test_write_failure_reconnect_preserves_canonical_authority(self) -> None:
+        baseline = {
+            "event": "playstate",
+            "paused": True,
+            "position_seconds": 7.0,
+            "set_by": "controller",
+            "transport_revision": 27,
+        }
+        self.assertTrue(system.canonical_playstate_matches_snapshot(baseline, baseline))
+        self.assertTrue(
+            system.canonical_playstate_matches_snapshot(
+                {**baseline, "position_seconds": 7.1}, baseline
+            )
+        )
+        for change in (
+            {"event": "playlist-index"},
+            {"paused": False},
+            {"paused": 1},
+            {"position_seconds": 0},
+            {"position_seconds": 7.76},
+            {"position_seconds": float("nan")},
+            {"position_seconds": float("inf")},
+            {"position_seconds": True},
+            {"set_by": "follower"},
+            {"transport_revision": 26},
+            {"transport_revision": 28},
+        ):
+            with self.subTest(change=change):
+                self.assertFalse(
+                    system.canonical_playstate_matches_snapshot(
+                        {**baseline, **change}, baseline
+                    )
+                )
+        for change in ({"paused": 1}, {"position_seconds": None}):
+            with self.subTest(baseline_change=change):
+                self.assertFalse(
+                    system.canonical_playstate_matches_snapshot(
+                        baseline, {**baseline, **change}
+                    )
+                )
+
     def test_partition_status_authority_accepts_absence_or_nonfresh_projection(self) -> None:
         fresh = {
             "event": "participant-status-snapshot",

@@ -145,6 +145,17 @@ def logical_shell_commands(run: str) -> list[list[str]]:
 def ignored_test_cargo_command(entry: dict[str, Any]) -> list[str]:
     source = pathlib.PurePosixPath(entry["source"])
     parts = source.parts
+    if entry["tier"] == "subprocess-fixture":
+        if len(parts) < 4 or parts[0] != "crates" or parts[2] != "src":
+            raise AssertionError(f"{entry['id']} fixture must belong to a library source")
+        manifest_path = REPO_ROOT / parts[0] / parts[1] / "Cargo.toml"
+        with manifest_path.open("rb") as handle:
+            package = tomllib.load(handle)["package"]["name"]
+        return [
+            "cargo", "nextest", "run", "--locked", "-p", package, "--lib",
+            "--all-features", "--no-tests", "fail", "-E",
+            f"test(={entry['parent_test']})",
+        ]
     if (
         len(parts) != 4
         or parts[0] != "crates"
@@ -182,7 +193,7 @@ def validate_pull_request_ignored_bindings(
     entries = [
         entry
         for entry in ignored_tests["ignored_test"]
-        if entry["tier"] == "pull-request"
+        if entry["tier"] in {"pull-request", "subprocess-fixture"}
     ]
     if not entries:
         raise AssertionError("ignored-test registry must contain pull-request entries")
@@ -1878,6 +1889,19 @@ done""",
             self.ignored_tests,
         )
 
+    def test_fixture_bindings_reject_missing_parent_and_zero_test_success(self) -> None:
+        entry = next(item for item in self.ignored_tests["ignored_test"] if item["tier"] == "subprocess-fixture")
+        for before, after in [
+            (entry["parent_test"], "missing::parent"),
+            ("--no-tests fail", "--no-tests pass"),
+            ("cargo nextest run", "echo cargo nextest run"),
+        ]:
+            jobs = copy.deepcopy(self.jobs)
+            step = named_step(jobs, entry["required_job"], "Execute subprocess-fixture parent contracts")
+            step["run"] = step["run"].replace(before, after)
+            with self.subTest(change=after), self.assertRaises(AssertionError):
+                validate_pull_request_ignored_bindings(jobs, self.catalog, self.ignored_tests)
+
     def test_ignored_test_bindings_reject_adversarial_workflow_mutations(self) -> None:
         first_entry = next(
             entry
@@ -2968,7 +2992,7 @@ done""",
                         ],
                         "mutant_filter": "",
                         "test_target": "lib",
-                        "test_filter": "session::tests::",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -3095,6 +3119,42 @@ done""",
                     },
                 ],
                 "accepted_unviable": [
+                    *[
+                        {
+                            "id": identifier,
+                            "shard": "cli-framing",
+                            "file": "crates/sorotte-cli/src/protocol_io.rs",
+                            "function": function,
+                            "return_type": "-> anyhow::Result<Option<LifecycleWriteBarrier>>",
+                            "genre": "FnValue",
+                            "replacement": "Ok(Some(Default::default()))",
+                            "reason": (
+                                "The hosted campaign reports rustc E0277 because "
+                                "LifecycleWriteBarrier has no Default; its readiness "
+                                "and release paths require explicit evidence ownership"
+                            ),
+                            "review_by": "2026-10-31",
+                        }
+                        for identifier, function in (
+                            ("cli-barrier-parse-default", "parse_lifecycle_write_barrier"),
+                            ("cli-barrier-environment-default", "lifecycle_write_barrier_for_frame"),
+                        )
+                    ],
+                    {
+                        "id": "cli-barrier-instant-multiply",
+                        "shard": "cli-framing",
+                        "file": "crates/sorotte-cli/src/protocol_io.rs",
+                        "function": "await_configured_lifecycle_write_barrier",
+                        "return_type": "-> anyhow::Result<()>",
+                        "genre": "BinaryOperator",
+                        "replacement": "*",
+                        "reason": (
+                            "The hosted campaign reports rustc E0369 because "
+                            "tokio::time::Instant cannot be multiplied by "
+                            "std::time::Duration when calculating the deadline"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
                     {
                         "id": "const-default-is-not-const",
                         "shard": "privacy-secret",
@@ -3257,6 +3317,7 @@ done""",
                     },
                     {
                         "id": "client-reconnect-ping-let-chain-or",
+                        "expected_count": 4,
                         "shard": "client-reconnect-state",
                         "file": (
                             "crates/sorotte-client-core/src/session/reconnect.rs"
@@ -3296,6 +3357,7 @@ done""",
                     },
                     {
                         "id": "client-runtime-config-host-let-chain-or",
+                        "expected_count": 2,
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
@@ -3317,6 +3379,7 @@ done""",
                     },
                     {
                         "id": "client-runtime-config-room-let-chain-or",
+                        "expected_count": 2,
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
@@ -3422,6 +3485,7 @@ done""",
                             "so both generated mutants cannot parse"
                         ),
                         "review_by": "2026-10-31",
+                        "expected_count": 2,
                     },
                     *[
                         {

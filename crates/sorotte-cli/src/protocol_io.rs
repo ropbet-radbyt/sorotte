@@ -527,7 +527,7 @@ mod tests {
                 true,
                 Some(LIFECYCLE_WRITE_BARRIER_MODE),
                 Some(evidence_path),
-                LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES - 1,
+                262_143,
             )
             .expect("ordinary frames must bypass the barrier"),
             None
@@ -537,7 +537,7 @@ mod tests {
             true,
             Some(LIFECYCLE_WRITE_BARRIER_MODE),
             Some(evidence_path),
-            LIFECYCLE_WRITE_BARRIER_MIN_FRAME_BYTES,
+            262_144,
         )
         .expect("valid barrier configuration")
         .expect("the threshold frame must be gated");
@@ -595,6 +595,102 @@ mod tests {
         .expect("a semantic retry must bypass the one-shot barrier")
         .expect("a semantic retry must remain valid");
         std::fs::remove_dir_all(root).expect("barrier test directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_write_barrier_rejects_readiness_creation_errors() {
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-cli-barrier-missing-parent-{}",
+            std::process::id()
+        ));
+        assert!(!root.exists());
+        let error = await_configured_lifecycle_write_barrier(LifecycleWriteBarrier {
+            ready_path: root.join("ready"),
+            release_path: root.join("release"),
+        })
+        .await
+        .expect_err("missing parent must not be treated as a previously completed barrier");
+        assert!(error.to_string().contains("failed to create"));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_write_barrier_environment_reaches_the_configured_gate() {
+        const CHILD_ENV: &str = "SOROTTE_TEST_WRITE_BARRIER_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            use sorotte_lifecycle_evidence::{ProcessInventorySpec, ProcessRole};
+            assert!(
+                sorotte_lifecycle_evidence::init_global_from_env(
+                    ProcessInventorySpec::new(ProcessRole::Client, [ProcessRole::Client]).unwrap(),
+                )
+                .unwrap()
+            );
+            assert!(
+                lifecycle_write_barrier_for_frame(262_143)
+                    .unwrap()
+                    .is_none()
+            );
+            let barrier = lifecycle_write_barrier_for_frame(262_144)
+                .unwrap()
+                .expect("the configured threshold must produce the barrier");
+            let waiting = tokio::spawn(await_lifecycle_write_barrier(262_144));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !barrier.ready_path.is_file() {
+                    assert!(
+                        !waiting.is_finished(),
+                        "the gate cannot return before readiness"
+                    );
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the environment-configured gate must publish readiness");
+            assert!(!waiting.is_finished());
+            std::fs::write(&barrier.release_path, b"release\n").unwrap();
+            waiting.await.unwrap().unwrap();
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-cli-barrier-environment-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "protocol_io::tests::lifecycle_write_barrier_environment_reaches_the_configured_gate",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env(LIFECYCLE_WRITE_BARRIER_ENV, LIFECYCLE_WRITE_BARRIER_MODE)
+            .env(sorotte_lifecycle_evidence::EVIDENCE_PATH_ENV, root.join("client.jsonl"))
+            .env(sorotte_lifecycle_evidence::RUN_ID_ENV, "write-barrier-test")
+            .env(sorotte_lifecycle_evidence::EMITTER_ENV, "client-test")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = child.spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the isolated barrier check must terminate");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "isolated barrier failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

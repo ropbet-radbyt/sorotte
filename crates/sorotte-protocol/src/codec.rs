@@ -17,6 +17,13 @@ pub fn message_fits_line_limit(
     message: &ProtocolMessage,
     limit: usize,
 ) -> Result<bool, ProtocolError> {
+    serialized_value_fits_line_limit(message, limit)
+}
+
+fn serialized_value_fits_line_limit(
+    message: &impl serde::Serialize,
+    limit: usize,
+) -> Result<bool, ProtocolError> {
     struct Budget {
         remaining: usize,
         exceeded: bool,
@@ -459,6 +466,44 @@ pub fn extract_hello_from_message(message: ProtocolMessage) -> Result<HelloPaylo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn advertised_protocol_limits_accept_the_exact_payload_and_reject_one_more_byte() {
+        let empty: super::ProtocolMessage =
+            serde_json::from_value(serde_json::json!({"Chat": ""})).unwrap();
+        let overhead = super::encode_message_line(&empty).unwrap().len();
+        for (limit, expected_bytes) in [
+            (super::SOROTTE_MAX_PROTOCOL_LINE_BYTES, 524_288),
+            (super::LEGACY_MAX_PROTOCOL_LINE_BYTES, 16_384),
+        ] {
+            for extra in [0, 1] {
+                let message: super::ProtocolMessage = serde_json::from_value(
+                    serde_json::json!({"Chat": "x".repeat(expected_bytes - overhead + extra)}),
+                )
+                .unwrap();
+                assert_eq!(
+                    super::encode_message_line(&message).unwrap().len(),
+                    expected_bytes + extra
+                );
+                assert_eq!(
+                    super::message_fits_line_limit(&message, limit).unwrap(),
+                    extra == 0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_budget_preserves_serialization_errors_that_are_not_capacity_failures() {
+        struct Rejected;
+        impl serde::Serialize for Rejected {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("rejected serialization fixture"))
+            }
+        }
+        let error = super::serialized_value_fits_line_limit(&Rejected, 1024).unwrap_err();
+        assert!(matches!(error, super::ProtocolError::InvalidJson(error) if error.is_data()));
+    }
+
     #[test]
     fn encoded_frame_budget_tracks_utf8_and_json_escaping_at_exact_boundary() {
         for atom in ["a", "界", "🙂", "\n", "\"", "\\", "\u{0001}"] {

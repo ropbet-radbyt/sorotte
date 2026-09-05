@@ -265,6 +265,12 @@ Useful Python reference files:
 
 ## Test Placement
 
+Every ignored Rust test is registered in `coverage/ignored-tests.toml`.
+Subprocess helpers use the `subprocess-fixture` tier, which binds a nonignored
+parent test in the same source file. Required CI invokes that exact parent with
+nextest and `--no-tests fail`; the helper's ignore marker keeps it from running
+without the parent's role variables, temporary paths, and cleanup ownership.
+
 - Protocol, wire format, server state, room fanout, and TLS behavior: `sorotte-protocol`, `sorotte-server`, or `sorotte-compat`
 - Client session, reconnect, readiness, playlist, controller, and desync behavior: `sorotte-client-core`
 - CLI parsing, stored settings, `sorotte.ini`, local commands, language, and startup compatibility: `sorotte-client-app` or `sorotte-cli`

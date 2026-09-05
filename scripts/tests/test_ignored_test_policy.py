@@ -202,6 +202,40 @@ fn external_contract() {}
             as_of=dt.date(2026, 7, 28),
         )
 
+    def test_subprocess_fixture_requires_a_source_bound_ordinary_parent(self) -> None:
+        registry = self.registry()
+        entry = registry["ignored_test"][0]
+        entry.update(tier="subprocess-fixture", required_job="checks", parent_test="tests::parent_contract")
+        source = self.source.read_text(encoding="utf-8")
+        self.source.write_text(source + "\n#[test]\nfn parent_contract() {}\n", encoding="utf-8")
+        self.assertEqual(
+            policy.validate_registry(registry, self.discovered(), repo_root=self.repo),
+            {"subprocess-fixture": 1},
+        )
+        with self.assertRaisesRegex(policy.IgnoredTestPolicyError, "source root"):
+            policy.validate_registry(registry, self.discovered())
+        for parent in ["parent_contract", "tests::external_contract", "tests::missing"]:
+            invalid = copy.deepcopy(registry)
+            invalid["ignored_test"][0]["parent_test"] = parent
+            with self.subTest(parent=parent), self.assertRaises(policy.IgnoredTestPolicyError):
+                policy.validate_registry(invalid, self.discovered(), repo_root=self.repo)
+
+    def test_subprocess_parent_cannot_be_a_comment_string_or_plain_function(self) -> None:
+        registry = self.registry()
+        registry["ignored_test"][0].update(
+            tier="subprocess-fixture", required_job="checks", parent_test="tests::parent_contract"
+        )
+        source = self.source.read_text(encoding="utf-8")
+        for parent in [
+            "// #[test]\n// fn parent_contract() {}\n",
+            'const EXAMPLE: &str = r#"#[test]\nfn parent_contract() {}"#;\n',
+            "fn parent_contract() {}\n",
+            "#[test]\nfn parent_contract() {}\n#[test]\nfn parent_contract() {}\n",
+        ]:
+            self.source.write_text(source + "\n" + parent, encoding="utf-8")
+            with self.subTest(parent=parent), self.assertRaises(policy.IgnoredTestPolicyError):
+                policy.validate_registry(registry, self.discovered(), repo_root=self.repo)
+
 
 if __name__ == "__main__":
     unittest.main()

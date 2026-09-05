@@ -215,6 +215,24 @@ def bounded_playback_frame_delivery(
     )
 
 
+def canonical_playstate_matches_snapshot(
+    event: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> bool:
+    """Recognize unchanged authority after a failed, uncommitted local write."""
+    expected_position = _safe_number(snapshot.get("position_seconds"))
+    position = _safe_number(event.get("position_seconds"))
+    return (
+        event.get("event") == snapshot.get("event") == "playstate"
+        and isinstance(snapshot.get("paused"), bool)
+        and event.get("paused") is snapshot["paused"]
+        and event.get("set_by") == snapshot.get("set_by")
+        and event.get("transport_revision") == snapshot.get("transport_revision")
+        and expected_position is not None
+        and position is not None
+        and abs(position - expected_position) <= 0.75
+    )
+
+
 def exact_leased_frame_failure(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -3509,6 +3527,16 @@ class PlaybackLifecycleHarness:
         previous_connections = proxy.upstream_connection_count
         previous_completed_connections = proxy.completed_connection_count
         observer_cursor = self.observer.cursor()
+        prior_playstate = next(
+            (
+                event.fields
+                for event in reversed(self.observer.events_after(0))
+                if event.fields.get("event") == "playstate"
+            ),
+            None,
+        )
+        if prior_playstate is None or prior_playstate.get("paused") is not True:
+            raise HarnessFailure("scheduled-write-failure", "a paused canonical baseline is required")
         barrier_ready_path, barrier_release_path = lifecycle_write_barrier_paths(
             lifecycle_path
         )
@@ -3587,15 +3615,10 @@ class PlaybackLifecycleHarness:
             timeout=6.0,
         )
 
-        # Replace the failed oversized local mutation before the next transport
-        # is released, so the retry can only carry the bounded prior snapshot.
-        self.clients["follower"].process.write_line("undo")
-        self._emit(
-            event="local-command-issued",
-            role="follower",
-            detail="playlist-undo-after-write-failure",
-        )
-        settle_cursors = {role: self._player_cursor(role) for role in roles}
+        # Disconnect retires local undo history. Reconnect must reacquire the
+        # unchanged server state; no local undo or new selection is implied by
+        # a frame that failed before reaching canonical authority.
+        recovery_cursor = self.observer.cursor()
         proxy.apply_scheduled_write_failure_release()
         self._wait(
             "the follower to reconnect after the deterministic write failure",
@@ -3603,33 +3626,37 @@ class PlaybackLifecycleHarness:
             timeout=8.0,
         )
 
-        # The undo is the first authoritative follower mutation on the new
-        # connection. Its canonical same-index selection resets playstate to
-        # the beginning, and every client must finish applying that remote
-        # correction before a fresh local command can be meaningfully tested.
-        restored_selection = self._observer_event(
-            observer_cursor,
-            lambda event: event.get("event") == "playlist-index"
-            and event.get("playlist_index") == 0
-            and event.get("set_by") == "follower",
+        def follower_rejoined(event: dict[str, Any]) -> bool:
+            if event.get("event") != "participant-status-snapshot":
+                return False
+            views = event.get("participant_views", {})
+            follower = views.get("follower") if isinstance(views, dict) else None
+            return (
+                isinstance(follower, dict)
+                and follower.get("playerConnection") == "connected"
+                and follower.get("availability") == "fresh"
+            )
+
+        rejoined = self._observer_event(recovery_cursor, follower_rejoined, timeout=8.0)
+        self._observer_event(
+            rejoined.sequence,
+            lambda event: canonical_playstate_matches_snapshot(event, prior_playstate),
             timeout=8.0,
         )
-        self._canonical_playstate(
-            restored_selection.sequence,
-            paused=True,
-            set_by="controller",
-            position=0.0,
-            require_seek=False,
-            timeout=8.0,
-        )
-        self._wait_player_state(
-            roles,
-            settle_cursors,
-            media_slot="media-1",
-            paused=True,
-            position=0.0,
-            timeout=8.0,
-        )
+        # The mpv trace records property changes, so an unchanged paused player
+        # need not emit a new event during the reconnect. Check its latest
+        # observation here; the next commands require fresh physical events.
+        for role in roles:
+            records = read_jsonl(self.clients[role].player_trace)
+            latest = records[-1] if records else {}
+            position = _safe_number(latest.get("position_seconds"))
+            if (
+                latest.get("media_slot") != "media-1"
+                or latest.get("paused") is not True
+                or position is None
+                or abs(position - prior_playstate["position_seconds"]) > 0.75
+            ):
+                raise HarnessFailure(self.stage, f"{role} lost the paused canonical baseline")
         leaked_playlist = next(
             (
                 event

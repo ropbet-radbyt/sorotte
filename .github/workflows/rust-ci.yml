@@ -152,6 +152,13 @@ jobs:
           --registry coverage/known-defects.toml
           --catalog coverage/behaviors.toml
 
+      - name: Execute subprocess-fixture parent contracts
+        run: |
+          cargo nextest run --locked -p sorotte-gui --lib --all-features --no-tests fail -E 'test(=app::runtime_queue::tests::process_shutdown::gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player)'
+          cargo nextest run --locked -p sorotte-media-match --lib --all-features --no-tests fail -E 'test(=extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint)'
+          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication)'
+          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits)'
+
       - name: Enforce public Rust API compatibility
         if: github.event_name == 'pull_request'
         shell: bash
