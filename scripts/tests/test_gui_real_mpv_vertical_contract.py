@@ -421,6 +421,13 @@ def extend_with_owned_mpv_recovery(
         "initial_sha256": report["mpv"]["sha256"],
         "initial_ipc_endpoint": initial_ipc,
         "initial_process_terminated": True,
+        "missing_media": {
+            "path": str(root / "missing-generated-media.wav"),
+            "event_id": "gui-missing-media-event",
+            "emitter": "gui-real-mpv",
+            "process_role": "client",
+            "initial_pid": initial_pid,
+        },
         "automatic_relaunch_observation_index": boundary,
         "automatic_relaunch_observation_event": "pause",
         "gui_room_remained_active": True,
@@ -1913,6 +1920,31 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                         **arguments,
                         expect_recovery=True,
                     )
+
+    def test_recovery_contract_rejects_missing_media_evidence_drift(self) -> None:
+        for field, value in (
+            ("path", "some-other-missing-file.wav"),
+            ("event_id", ""),
+            ("emitter", "unrelated-producer"),
+            ("process_role", "server"),
+            ("initial_pid", 999),
+            ("existing_target", None),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary) / "artifacts"
+                report, arguments = build_valid_fixture(root)
+                extend_with_owned_mpv_recovery(report, arguments)
+                if field == "existing_target":
+                    (root / "missing-generated-media.wav").write_bytes(b"unexpected")
+                else:
+                    report["recovery"]["missing_media"][field] = (
+                        str(root / value) if field == "path" else value
+                    )
+                path = root / "owned-mpv-recovery.json"
+                write_json(path, report["recovery"])
+                report["artifacts"]["owned_mpv_recovery"] = identity(path, relative_to=root)
+                with self.assertRaisesRegex(ValueError, "missing-media target or resolver"):
+                    contract.validate_report(report, **arguments, expect_recovery=True)
 
     def test_recovery_contract_requires_media_open_after_relaunch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

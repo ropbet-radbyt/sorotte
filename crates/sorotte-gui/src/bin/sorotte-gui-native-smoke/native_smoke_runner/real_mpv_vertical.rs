@@ -1768,6 +1768,15 @@ fn handle_hard_failure_http_connection(
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct MissingMediaEvidence {
+    path: String,
+    event_id: String,
+    emitter: String,
+    process_role: String,
+    initial_pid: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct MpvRecoveryEvidence {
     schema_version: u32,
     kind: &'static str,
@@ -1781,6 +1790,7 @@ struct MpvRecoveryEvidence {
     initial_sha256: String,
     initial_ipc_endpoint: String,
     initial_process_terminated: bool,
+    missing_media: Option<MissingMediaEvidence>,
     automatic_relaunch_observation_index: Option<usize>,
     automatic_relaunch_observation_event: &'static str,
     gui_room_remained_active: bool,
@@ -1824,6 +1834,7 @@ impl MpvRecoveryEvidence {
             initial_sha256: initial_sha256.to_owned(),
             initial_ipc_endpoint: initial_ipc_endpoint.to_owned(),
             initial_process_terminated: false,
+            missing_media: None,
             automatic_relaunch_observation_index: None,
             automatic_relaunch_observation_event: "pause",
             gui_room_remained_active: false,
@@ -3590,6 +3601,24 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         let mut active_mpv_pid = mpv_pid;
         let mut recovered_mpv_identity = None;
         if options.exercise_recovery {
+            let missing_media = exercise_missing_media_resolution(
+                session_server
+                    .as_ref()
+                    .expect("session server remains live"),
+                &shared_lifecycle_path,
+                &artifact_root.join("missing-generated-media.wav"),
+                &media_path,
+                mpv_pid,
+                step_timeout,
+            )?;
+            let recovery = recovery_evidence.as_mut().expect("recovery is initialized");
+            recovery.missing_media = Some(missing_media);
+            write_json_file(&recovery_path, recovery)?;
+            state.advance(
+                &state_path,
+                "missing-playlist-target-observed",
+                Some("missing-playlist-target-is-reported"),
+            )?;
             terminate_test_process(mpv_pid)?;
             wait_for_process_termination(mpv_pid, step_timeout)?;
             if process_is_running(mpv_pid) {
@@ -4814,6 +4843,65 @@ where
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn send_selected_media(
+    server: &MockSessionServer,
+    target: &Path,
+    phase: &str,
+) -> Result<(), String> {
+    for message in [
+        serde_json::json!({"Set":{"playlistChange":{"files":[target],"user":"remote-controller"}}}),
+        serde_json::json!({"Set":{"playlistIndex":{"index":0,"user":"remote-controller"}}}),
+        serde_json::json!({"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"remote-controller"}}}),
+    ] {
+        server.send_authoritative_line(message.to_string(), phase)?;
+    }
+    Ok(())
+}
+
+fn exercise_missing_media_resolution(
+    server: &MockSessionServer,
+    lifecycle_path: &Path,
+    missing_path: &Path,
+    restored_path: &Path,
+    initial_pid: u32,
+    timeout: Duration,
+) -> Result<MissingMediaEvidence, String> {
+    if missing_path
+        .try_exists()
+        .map_err(|error| error.to_string())?
+    {
+        return Err("missing-media fixture target unexpectedly exists".to_owned());
+    }
+    let boundary = wait_for_lifecycle_snapshot(lifecycle_path, timeout)?.len();
+    send_selected_media(server, missing_path, "missing-media resolution selection")?;
+    let (missing_index, record) =
+        wait_for_lifecycle_transition(lifecycle_path, boundary, "MEDIA-MISSING-001", timeout)?;
+    let event_id = required_lifecycle_string(&record, "event_id", "MEDIA-MISSING-001")?;
+    let emitter = required_lifecycle_string(&record, "emitter", "MEDIA-MISSING-001")?;
+    let process_role = required_lifecycle_string(&record, "process_role", "MEDIA-MISSING-001")?;
+    if emitter != "gui-real-mpv" || process_role != "client" {
+        return Err("missing-media transition was not emitted by the GUI resolver".to_owned());
+    }
+    send_selected_media(
+        server,
+        restored_path,
+        "restore media before owned-player loss",
+    )?;
+    wait_for_lifecycle_transition(
+        lifecycle_path,
+        missing_index.saturating_add(1),
+        "MEDIA-RESOLVE-001",
+        timeout,
+    )?;
+    Ok(MissingMediaEvidence {
+        path: missing_path.display().to_string(),
+        event_id,
+        emitter,
+        process_role,
+        initial_pid,
+    })
 }
 
 fn wait_for_replacement_media_loaded(

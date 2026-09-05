@@ -127,6 +127,7 @@ REQUIRED_ASSERTIONS = (
 )
 RECOVERY_REQUIRED_ASSERTIONS = (
     *REQUIRED_ASSERTIONS[:-2],
+    "missing-playlist-target-is-reported",
     "exact-attested-owned-mpv-terminated",
     "automatic-relaunch-distinct-owned-exact-mpv",
     "gui-remained-on-active-room-during-automatic-relaunch",
@@ -209,6 +210,7 @@ HTTP_STALL_REQUIRED_ARTIFACTS = (
     "stalled_http",
 )
 RECOVERY_KEYS = {
+    "missing_media",
     "schema_version",
     "kind",
     "result",
@@ -2140,6 +2142,24 @@ def validate_report(
         )
         require(recovery.get("kind") == RECOVERY_KIND, "recovery kind mismatch")
         require(recovery.get("result") == "passed", "recovery did not finish passed")
+        missing_media = recovery.get("missing_media")
+        require(
+            isinstance(missing_media, dict)
+            and set(missing_media)
+            == {"path", "event_id", "emitter", "process_role", "initial_pid"},
+            "missing-media evidence inventory drifted",
+        )
+        require(
+            normalized_resolved_path(missing_media.get("path", ""))
+            == expected_media.with_name("missing-generated-media.wav")
+            and not expected_media.with_name("missing-generated-media.wav").exists()
+            and isinstance(missing_media.get("event_id"), str)
+            and bool(missing_media["event_id"])
+            and missing_media.get("emitter") == "gui-real-mpv"
+            and missing_media.get("process_role") == "client"
+            and missing_media.get("initial_pid") == mpv["pid"],
+            "missing-media target or resolver attribution drifted",
+        )
         require(
             recovery.get("fault") == "terminate-exact-attested-gui-owned-mpv",
             "recovery fault contract drifted",
