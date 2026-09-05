@@ -1,3 +1,13 @@
 {"client":"client-1","message":{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}}
 {"client":"client-2","message":{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}}
-{"client":"client-1","message":{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":-10.0,"clientRtt":2.0}}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{}}}
+{"client":"client-1","advanceSeconds":1.0,"message":{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":"$serverChallenge:3","clientRtt":2.0}}}}

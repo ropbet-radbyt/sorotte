@@ -1,24 +1,15 @@
-use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::process::Output;
+use std::sync::atomic::AtomicBool;
+use std::time::{Instant, UNIX_EPOCH};
 
 #[cfg(windows)]
-use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+use std::os::windows::ffi::OsStrExt;
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(windows)]
-const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+mod process;
+use process::{Deadline, PROBE_STDOUT_LIMIT};
 
 use crate::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION,
@@ -29,9 +20,9 @@ use crate::{
     },
     identity::{container_fingerprint_from_metadata, normalize_media_path},
     tuning::{
-        FFMPEG_AUDIO_V3_TIMEOUT, FFPROBE_TIMEOUT, MEDIA_TOOL_POLL_INTERVAL,
-        V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT, V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
-        V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT, V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
+        FFMPEG_AUDIO_V3_TIMEOUT, FFPROBE_TIMEOUT, V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
+        V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE, V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT,
+        V3_AUDIO_SAMPLED_FAST_WINDOW_SECONDS,
     },
     types::{MediaFileIdentity, MediaFingerprintRecord},
 };
@@ -260,8 +251,29 @@ pub fn fingerprint_media_file_with_report_and_options(
     cancel_flag: Option<&AtomicBool>,
     _options: &MediaFingerprintExtractionOptions,
 ) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
+    // Retain the supported worst-case probe plus three-window audio budget, but
+    // do not renew it between subprocess execution, pipe draining, and analysis.
+    let deadline = Deadline::after(
+        FFPROBE_TIMEOUT + FFMPEG_AUDIO_V3_TIMEOUT * V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT as u32,
+    );
+    fingerprint_media_file_before_deadline(
+        path.as_ref(),
+        tools,
+        extraction_settings,
+        cancel_flag,
+        deadline,
+    )
+}
+
+fn fingerprint_media_file_before_deadline(
+    path: &Path,
+    tools: &MediaMatchToolPaths,
+    extraction_settings: &crate::MediaExtractionSettings,
+    cancel_flag: Option<&AtomicBool>,
+    deadline: Deadline,
+) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
     let total_started_at = Instant::now();
-    let path = path.as_ref();
+    deadline.check("ffprobe", cancel_flag)?;
     let metadata = fs::metadata(path).map_err(|error| MediaFingerprintError::FileMetadata {
         path: path.display().to_string(),
         error: error.to_string(),
@@ -277,7 +289,12 @@ pub fn fingerprint_media_file_with_report_and_options(
     let mut report = MediaFingerprintExtractionReport::default();
 
     let started_at = Instant::now();
-    let duration_seconds = probe_media_duration_seconds(&tools.ffprobe, path)?;
+    let duration_seconds = probe_media_duration_seconds_cancellable(
+        &tools.ffprobe,
+        path,
+        cancel_flag,
+        deadline.capped(FFPROBE_TIMEOUT),
+    )?;
     report.invocations.ffprobe = 1;
     report.timings.ffprobe_millis = started_at.elapsed().as_millis();
 
@@ -289,8 +306,13 @@ pub fn fingerprint_media_file_with_report_and_options(
     );
 
     let started_at = Instant::now();
-    let audio_result =
-        extract_fixed_sampled_fast_audio(&tools.ffmpeg, path, duration_seconds, cancel_flag);
+    let audio_result = extract_fixed_sampled_fast_audio(
+        &tools.ffmpeg,
+        path,
+        duration_seconds,
+        cancel_flag,
+        deadline,
+    );
     report.invocations.ffmpeg = V3_AUDIO_SAMPLED_FAST_WINDOW_COUNT as u32;
     report.timings.audio_millis = started_at.elapsed().as_millis();
     let (audio_anchors, metrics) = match audio_result {
@@ -308,7 +330,17 @@ pub fn fingerprint_media_file_with_report_and_options(
         Err(MediaFingerprintError::Cancelled { tool }) => {
             return Err(MediaFingerprintError::Cancelled { tool });
         }
+        Err(
+            error @ (MediaFingerprintError::TimedOut { .. }
+            | MediaFingerprintError::ToolFailed { status: None, .. }),
+        ) => {
+            return Err(error);
+        }
         Err(error) => {
+            // A racing cancellation must not become an apparently successful,
+            // degraded fingerprint after an audio error. Preserve a cleanup
+            // failure's diagnostic instead of declaring cancellation complete.
+            deadline.check("ffmpeg", cancel_flag)?;
             report.audio_error = Some(error.to_string());
             (Vec::new(), MediaAudioStreamMetrics::default())
         }
@@ -336,6 +368,7 @@ pub fn fingerprint_media_file_with_report_and_options(
         .unwrap_or(0);
     report.audio_summary_bytes = summary.audio_summary.as_ref().map(Vec::len).unwrap_or(0);
     report.timings.total_millis = total_started_at.elapsed().as_millis();
+    deadline.check("ffmpeg", cancel_flag)?;
     Ok(InstrumentedMediaFingerprint { record, report })
 }
 
@@ -343,20 +376,38 @@ pub fn probe_media_duration_seconds(
     ffprobe: impl AsRef<Path>,
     media_path: impl AsRef<Path>,
 ) -> Result<Option<f64>, MediaFingerprintError> {
-    let output = run_tool_output(
-        "ffprobe",
+    probe_media_duration_seconds_cancellable(
         ffprobe.as_ref(),
-        [
-            "-v".into(),
-            "error".into(),
-            "-show_entries".into(),
-            "format=duration".into(),
-            "-of".into(),
-            "default=noprint_wrappers=1:nokey=1".into(),
-            media_path.as_ref().as_os_str().to_os_string(),
-        ],
+        media_path.as_ref(),
         None,
-        FFPROBE_TIMEOUT,
+        Deadline::after(FFPROBE_TIMEOUT),
+    )
+}
+
+fn probe_media_duration_seconds_cancellable(
+    ffprobe: &Path,
+    media_path: &Path,
+    cancel_flag: Option<&AtomicBool>,
+    deadline: Deadline,
+) -> Result<Option<f64>, MediaFingerprintError> {
+    deadline.check("ffprobe", cancel_flag)?;
+    let (output, _) = process::run_output(
+        "ffprobe",
+        process::command(
+            ffprobe,
+            [
+                "-v".into(),
+                "error".into(),
+                "-show_entries".into(),
+                "format=duration".into(),
+                "-of".into(),
+                "default=noprint_wrappers=1:nokey=1".into(),
+                media_path.as_os_str().to_os_string(),
+            ],
+        ),
+        cancel_flag,
+        deadline,
+        PROBE_STDOUT_LIMIT,
     )?;
     ensure_tool_success("ffprobe", &output)?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -364,6 +415,7 @@ pub fn probe_media_duration_seconds(
         .lines()
         .find_map(|line| line.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
+    deadline.check("ffprobe", cancel_flag)?;
     Ok(value)
 }
 
@@ -372,7 +424,9 @@ fn extract_fixed_sampled_fast_audio(
     media_path: &Path,
     duration_seconds: Option<f64>,
     cancel_flag: Option<&AtomicBool>,
+    deadline: Deadline,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
+    deadline.check("ffmpeg", cancel_flag)?;
     let windows = sampled_audio_windows_v3(duration_seconds);
     if windows.is_empty() {
         return Err(MediaFingerprintError::InvalidToolOutput {
@@ -402,6 +456,7 @@ fn extract_fixed_sampled_fast_audio(
             window_seconds,
             V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE,
             cancel_flag,
+            deadline.capped(FFMPEG_AUDIO_V3_TIMEOUT),
         )?;
         process_wall_millis = process_wall_millis.saturating_add(window_wall);
         metrics.ffmpeg_invocation_count += 1;
@@ -423,8 +478,13 @@ fn extract_fixed_sampled_fast_audio(
             .ffmpeg_exit_millis
             .saturating_add(streaming_output.exit_millis);
 
-        let (mut landmarks, window_metrics) =
-            analyze_sampled_window_pcm_bytes(&window_pcm, window_seconds)?;
+        deadline.check("ffmpeg", cancel_flag)?;
+        let (mut landmarks, window_metrics) = analyze_sampled_window_pcm_bytes_cancellable(
+            &window_pcm,
+            window_seconds,
+            cancel_flag,
+            deadline,
+        )?;
         let start_ms = (start_seconds * 1000.0)
             .round()
             .clamp(0.0, f64::from(u32::MAX)) as u32;
@@ -459,6 +519,7 @@ fn extract_fixed_sampled_fast_audio(
             reason: "sampled decoded audio did not produce constellation landmarks".to_owned(),
         });
     }
+    deadline.check("ffmpeg", cancel_flag)?;
     Ok((bounded, metrics))
 }
 
@@ -491,10 +552,10 @@ fn decode_sampled_window_pcm_bytes(
     window_seconds: u32,
     sample_rate: u32,
     cancel_flag: Option<&AtomicBool>,
+    deadline: Deadline,
 ) -> Result<(Vec<u8>, MediaToolStreamingOutput, u128), MediaFingerprintError> {
+    deadline.check("ffmpeg", cancel_flag)?;
     let started_at = Instant::now();
-    let pcm = Arc::new(Mutex::new(Vec::<u8>::new()));
-    let pcm_writer = Arc::clone(&pcm);
     let args = vec![
         "-v".into(),
         "error".into(),
@@ -520,46 +581,46 @@ fn decode_sampled_window_pcm_bytes(
         "s16le".into(),
         "-".into(),
     ];
-    let streaming_output = run_tool_streaming_stdout(
-        "ffmpeg",
-        ffmpeg,
-        args,
-        cancel_flag,
-        FFMPEG_AUDIO_V3_TIMEOUT,
-        move |chunk| {
-            pcm_writer
-                .lock()
-                .map_err(|_| MediaFingerprintError::InvalidToolOutput {
-                    tool: "ffmpeg",
-                    reason: "sampled PCM buffer was poisoned".to_owned(),
-                })?
-                .extend_from_slice(chunk);
-            Ok(())
-        },
-    )?;
-    let pcm = Arc::try_unwrap(pcm)
+    // Mono signed 16-bit PCM has exactly two bytes per requested output sample.
+    let pcm_limit = usize::try_from(u64::from(window_seconds) * u64::from(sample_rate) * 2)
         .map_err(|_| MediaFingerprintError::InvalidToolOutput {
             tool: "ffmpeg",
-            reason: "sampled PCM buffer was still shared".to_owned(),
-        })?
-        .into_inner()
-        .map_err(|_| MediaFingerprintError::InvalidToolOutput {
-            tool: "ffmpeg",
-            reason: "sampled PCM buffer was poisoned".to_owned(),
+            reason: "requested PCM window is too large".to_owned(),
         })?;
-    Ok((pcm, streaming_output, started_at.elapsed().as_millis()))
+    let (output, streaming_output) = process::run_output(
+        "ffmpeg",
+        process::command(ffmpeg, args),
+        cancel_flag,
+        deadline,
+        pcm_limit,
+    )?;
+    ensure_tool_success("ffmpeg", &output)?;
+    deadline.check("ffmpeg", cancel_flag)?;
+    Ok((
+        output.stdout,
+        streaming_output,
+        started_at.elapsed().as_millis(),
+    ))
 }
 
-fn analyze_sampled_window_pcm_bytes(
+fn analyze_sampled_window_pcm_bytes_cancellable(
     pcm: &[u8],
     window_seconds: u32,
+    cancel_flag: Option<&AtomicBool>,
+    deadline: Deadline,
 ) -> Result<(Vec<AudioLandmarkV3>, MediaAudioStreamMetrics), MediaFingerprintError> {
     let mut stream = AudioConstellationV3PcmStream::with_config(
         AudioConstellationV3Config::with_sample_rate(V3_AUDIO_SAMPLED_FAST_SAMPLE_RATE),
         V3_AUDIO_SAMPLED_FAST_INDEX_LANDMARK_LIMIT,
     );
-    stream.push_bytes(pcm)?;
-    stream.finish(Some(f64::from(window_seconds)))
+    for chunk in pcm.chunks(16 * 1024) {
+        deadline.check("ffmpeg", cancel_flag)?;
+        stream.push_bytes(chunk)?;
+    }
+    deadline.check("ffmpeg", cancel_flag)?;
+    let result = stream.finish(Some(f64::from(window_seconds)))?;
+    deadline.check("ffmpeg", cancel_flag)?;
+    Ok(result)
 }
 
 fn merge_audio_stream_metrics(
@@ -710,269 +771,6 @@ fn media_source_path_kind(root: &str) -> String {
     }
 }
 
-pub(crate) fn run_tool_output<I>(
-    tool: &'static str,
-    executable: &Path,
-    args: I,
-    cancel_flag: Option<&AtomicBool>,
-    timeout: Duration,
-) -> Result<Output, MediaFingerprintError>
-where
-    I: IntoIterator<Item = OsString>,
-{
-    let mut command = hidden_media_match_command(executable);
-    let mut child = command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: error.to_string(),
-        })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: "failed capturing stdout".to_owned(),
-        })?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: "failed capturing stderr".to_owned(),
-        })?;
-    let stdout_reader = thread::spawn(move || read_pipe_to_end(stdout));
-    let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
-    let started_at = Instant::now();
-
-    loop {
-        if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_pipe_reader(stdout_reader, tool, "stdout");
-            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-            return Err(MediaFingerprintError::Cancelled { tool });
-        }
-        if started_at.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_pipe_reader(stdout_reader, tool, "stdout");
-            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-            return Err(MediaFingerprintError::TimedOut {
-                tool,
-                timeout_seconds: timeout.as_secs().max(1),
-            });
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = join_pipe_reader(stdout_reader, tool, "stdout")?;
-                let stderr = join_pipe_reader(stderr_reader, tool, "stderr")?;
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_pipe_reader(stdout_reader, tool, "stdout");
-                let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-                return Err(MediaFingerprintError::ToolFailed {
-                    tool,
-                    status: None,
-                    stderr: error.to_string(),
-                });
-            }
-        }
-    }
-}
-
-pub(crate) fn run_tool_streaming_stdout<I, F>(
-    tool: &'static str,
-    executable: &Path,
-    args: I,
-    cancel_flag: Option<&AtomicBool>,
-    timeout: Duration,
-    mut on_stdout_chunk: F,
-) -> Result<MediaToolStreamingOutput, MediaFingerprintError>
-where
-    I: IntoIterator<Item = OsString>,
-    F: FnMut(&[u8]) -> Result<(), MediaFingerprintError> + Send + 'static,
-{
-    let mut command = hidden_media_match_command(executable);
-    let mut child = command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: error.to_string(),
-        })?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: "failed capturing stdout".to_owned(),
-        })?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: "failed capturing stderr".to_owned(),
-        })?;
-    let (stdout_error_sender, stdout_error_receiver) = mpsc::channel::<MediaFingerprintError>();
-    let stdout_bytes = Arc::new(AtomicU64::new(0));
-    let stdout_byte_counter = Arc::clone(&stdout_bytes);
-    let stdout_reader = thread::spawn(move || {
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let count = match stdout.read(&mut buffer) {
-                Ok(count) => count,
-                Err(error) => {
-                    let error = MediaFingerprintError::ToolFailed {
-                        tool,
-                        status: None,
-                        stderr: format!("failed reading stdout: {error}"),
-                    };
-                    let _ = stdout_error_sender.send(error.clone());
-                    return Err(error);
-                }
-            };
-            if count == 0 {
-                return Ok(());
-            }
-            stdout_byte_counter.fetch_add(count as u64, Ordering::Relaxed);
-            if let Err(error) = on_stdout_chunk(&buffer[..count]) {
-                let _ = stdout_error_sender.send(error.clone());
-                return Err(error);
-            }
-            thread::yield_now();
-        }
-    });
-    let stderr_reader = thread::spawn(move || read_pipe_to_end(stderr));
-    let started_at = Instant::now();
-
-    loop {
-        match stdout_error_receiver.try_recv() {
-            Ok(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_streaming_stdout_reader(stdout_reader, tool);
-                let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-                return Err(error);
-            }
-            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => {}
-        }
-        if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_streaming_stdout_reader(stdout_reader, tool);
-            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-            return Err(MediaFingerprintError::Cancelled { tool });
-        }
-        if started_at.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = join_streaming_stdout_reader(stdout_reader, tool);
-            let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-            return Err(MediaFingerprintError::TimedOut {
-                tool,
-                timeout_seconds: timeout.as_secs().max(1),
-            });
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let exit_millis = started_at.elapsed().as_millis();
-                let process_io = process_io_counters(&child);
-                let stdout_result = join_streaming_stdout_reader(stdout_reader, tool);
-                let stderr = join_pipe_reader(stderr_reader, tool, "stderr")?;
-                if !status.success() {
-                    return Err(MediaFingerprintError::ToolFailed {
-                        tool,
-                        status: status.code(),
-                        stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
-                    });
-                }
-                stdout_result?;
-                return Ok(MediaToolStreamingOutput {
-                    stdout_bytes: stdout_bytes.load(Ordering::Relaxed),
-                    process_io,
-                    exit_millis,
-                });
-            }
-            Ok(None) => thread::sleep(MEDIA_TOOL_POLL_INTERVAL),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = join_streaming_stdout_reader(stdout_reader, tool);
-                let _ = join_pipe_reader(stderr_reader, tool, "stderr");
-                return Err(MediaFingerprintError::ToolFailed {
-                    tool,
-                    status: None,
-                    stderr: error.to_string(),
-                });
-            }
-        }
-    }
-}
-
-fn join_streaming_stdout_reader(
-    reader: thread::JoinHandle<Result<(), MediaFingerprintError>>,
-    tool: &'static str,
-) -> Result<(), MediaFingerprintError> {
-    match reader.join() {
-        Ok(result) => result,
-        Err(_) => Err(MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: "stdout reader thread panicked".to_owned(),
-        }),
-    }
-}
-
-fn read_pipe_to_end(mut pipe: impl Read) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    pipe.read_to_end(&mut bytes)
-        .map(|_| bytes)
-        .map_err(|error| error.to_string())
-}
-
-fn join_pipe_reader(
-    reader: thread::JoinHandle<Result<Vec<u8>, String>>,
-    tool: &'static str,
-    pipe: &'static str,
-) -> Result<Vec<u8>, MediaFingerprintError> {
-    match reader.join() {
-        Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(error)) => Err(MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: format!("failed reading {pipe}: {error}"),
-        }),
-        Err(_) => Err(MediaFingerprintError::ToolFailed {
-            tool,
-            status: None,
-            stderr: format!("{pipe} reader thread panicked"),
-        }),
-    }
-}
-
 fn ensure_tool_success(tool: &'static str, output: &Output) -> Result<(), MediaFingerprintError> {
     if output.status.success() {
         return Ok(());
@@ -985,61 +783,8 @@ fn ensure_tool_success(tool: &'static str, output: &Output) -> Result<(), MediaF
 }
 
 #[cfg(windows)]
-fn hidden_media_match_command(executable: &Path) -> Command {
-    let mut command = Command::new(executable);
-    command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
-    command
-}
-
-#[cfg(not(windows))]
-fn hidden_media_match_command(executable: &Path) -> Command {
-    Command::new(executable)
-}
-
-#[cfg(windows)]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-struct WindowsIoCounters {
-    read_operation_count: u64,
-    write_operation_count: u64,
-    other_operation_count: u64,
-    read_transfer_count: u64,
-    write_transfer_count: u64,
-    other_transfer_count: u64,
-}
-
-#[cfg(windows)]
 unsafe extern "system" {
     fn GetDriveTypeW(root_path_name: *const u16) -> u32;
-    fn GetProcessIoCounters(
-        process: *mut std::ffi::c_void,
-        counters: *mut WindowsIoCounters,
-    ) -> i32;
-}
-
-#[cfg(windows)]
-fn process_io_counters(child: &std::process::Child) -> MediaToolProcessIoMetrics {
-    let mut counters = WindowsIoCounters::default();
-    // SAFETY: `child.as_raw_handle()` is a live process handle while `child` is alive, and
-    // `counters` points to writable memory with the Windows `IO_COUNTERS` layout.
-    let ok = unsafe {
-        GetProcessIoCounters(
-            child.as_raw_handle().cast::<std::ffi::c_void>(),
-            &mut counters,
-        )
-    };
-    if ok == 0 {
-        return MediaToolProcessIoMetrics::default();
-    }
-    MediaToolProcessIoMetrics {
-        read_bytes: Some(counters.read_transfer_count),
-        read_ops: Some(counters.read_operation_count),
-    }
-}
-
-#[cfg(not(windows))]
-fn process_io_counters(_child: &std::process::Child) -> MediaToolProcessIoMetrics {
-    MediaToolProcessIoMetrics::default()
 }
 
 #[cfg(test)]

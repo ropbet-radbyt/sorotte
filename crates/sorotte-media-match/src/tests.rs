@@ -106,6 +106,32 @@ fn media_index_inventory_change_invalidates_fingerprint_and_anchors() {
 }
 
 #[test]
+fn media_index_stats_refresh_without_fingerprints_preserves_inventory() {
+    let root = media_index_test_root("inventory-without-settings");
+    let session = MediaIndexService::new(&root).open().unwrap();
+    session
+        .refresh_inventory(
+            &[MediaIndexInventoryEntry::new("/media/episode.mkv", 1, 3)],
+            &["/media/episode.mkv".into()],
+            &["/media".into()],
+            || false,
+        )
+        .unwrap();
+    let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    let hash = crate::media_extraction_settings_hash(&settings);
+    session.refresh_anchor_stats(&hash, 1).unwrap();
+    assert_eq!(session.inventory_paths().unwrap(), ["/media/episode.mkv"]);
+    assert!(session.load_cache(&settings).unwrap().records.is_empty());
+    assert!(!session.anchor_stats_dirty(&hash).unwrap());
+    assert_eq!(
+        session.summary(&settings).unwrap().v3_fingerprint_row_count,
+        0
+    );
+    drop(session);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn media_index_inventory_prunes_only_scanned_roots_and_reports_summary() {
     let root = media_index_test_root("prune-summary");
     let session = MediaIndexService::new(&root)

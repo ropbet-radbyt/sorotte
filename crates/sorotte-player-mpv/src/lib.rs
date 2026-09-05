@@ -5,6 +5,7 @@ mod constants;
 mod ipc;
 mod legacy_ui;
 pub mod lifecycle;
+pub mod managed_process;
 mod players;
 #[cfg(feature = "test-support")]
 mod test_support;

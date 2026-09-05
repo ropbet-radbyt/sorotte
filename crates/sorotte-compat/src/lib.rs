@@ -169,7 +169,10 @@ impl std::fmt::Debug for ServerRuntimeScenarioEvent {
 
 // This value is part of controlled-room hash compatibility; keep it byte-stable.
 const DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT: &str = "syncplay-rs-controlled-room-v1";
-const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(6);
+// A cold Python/Twisted import under hosted all-feature test load can exceed
+// six seconds. Keep a bounded process-start allowance separate from the
+// protocol response deadlines below.
+const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(15);
 const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
 const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
 const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);

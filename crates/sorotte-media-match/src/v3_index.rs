@@ -1178,7 +1178,6 @@ pub fn refresh_anchor_stats_v3(
     settings_hash: &[u8; 32],
     _now: i64,
 ) -> Result<(), String> {
-    let settings_id = media_match_v3_settings_id_for_hash(connection, settings_hash)?;
     connection
         .execute(
             "UPDATE audio_anchor_buckets_v3
@@ -1187,8 +1186,8 @@ pub fn refresh_anchor_stats_v3(
                 FROM audio_anchor_occurrences_v3 occurrence
                 WHERE occurrence.bucket_id = audio_anchor_buckets_v3.bucket_id
              )
-             WHERE settings_id = ?1",
-            [settings_id],
+             WHERE settings_id = (SELECT settings_id FROM settings_v3 WHERE settings_hash = ?1)",
+            [settings_hash.as_slice()],
         )
         .map_err(|error| format!("failed refreshing V3 anchor stats: {error}"))?;
     clear_anchor_stats_v3_dirty(connection, settings_hash)

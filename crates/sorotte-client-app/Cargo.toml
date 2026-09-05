@@ -20,7 +20,7 @@ sorotte-secret = { path = "../sorotte-secret" }
 tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Security_Authorization"] }
 
 [dev-dependencies]
 proptest.workspace = true

@@ -279,13 +279,14 @@ fn commandless_recovery_load_deadline_retains_started_physical_state() {
         current_path: Some("https://media.invalid/recovery".to_owned()),
     });
     adapter.handle_start_file_observation(77);
-    adapter.interrupted_network_stream_recovery = Some(InterruptedNetworkStreamRecovery {
-        media_generation: generation,
-        latest_attempt_id: attempt_id,
-        resume_position_seconds: 42.0,
-        consecutive_attempts: 1,
-        total_attempts: 1,
-    });
+    adapter.stream_recovery.interrupted_network_stream_recovery =
+        Some(InterruptedNetworkStreamRecovery {
+            media_generation: generation,
+            latest_attempt_id: attempt_id,
+            resume_position_seconds: 42.0,
+            consecutive_attempts: 1,
+            total_attempts: 1,
+        });
     adapter.lifecycle_reconciliation_due = true;
     let accepted_at_tick = adapter.player_lifecycle.now_tick;
 
@@ -308,7 +309,7 @@ fn commandless_recovery_load_deadline_retains_started_physical_state() {
             )
     )));
     assert_eq!(
-        adapter.interrupted_network_stream_recovery,
+        adapter.stream_recovery.interrupted_network_stream_recovery,
         Some(InterruptedNetworkStreamRecovery {
             media_generation: generation,
             latest_attempt_id: attempt_id,

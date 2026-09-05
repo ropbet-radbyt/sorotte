@@ -142,3 +142,339 @@ category = "privacy"
 owner = "player-runtime"
 match = "file"
 path = "crates/sorotte-player-mpv/src/transcript.rs"
+
+[[critical_path]]
+id = "audit-0-0"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/adapter.rs"
+
+[[critical_path]]
+id = "audit-0-1"
+category = "lifecycle"
+owner = "player-runtime"
+match = "directory"
+path = "crates/sorotte-player-mpv/src/adapter/"
+
+[[critical_path]]
+id = "audit-0-2"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/ipc.rs"
+
+[[critical_path]]
+id = "audit-0-3"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/bridge.rs"
+
+[[critical_path]]
+id = "audit-0-4"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/bridge_resource.rs"
+
+[[critical_path]]
+id = "audit-0-5"
+category = "lifecycle"
+owner = "player-runtime"
+match = "file"
+path = "crates/sorotte-player-mpv/src/players.rs"
+
+[[critical_path]]
+id = "audit-1-0"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/playback_coordinator.rs"
+
+[[critical_path]]
+id = "audit-1-1"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+
+[[critical_path]]
+id = "audit-1-2"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/player_transition.rs"
+
+[[critical_path]]
+id = "audit-1-3"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/ping.rs"
+
+[[critical_path]]
+id = "audit-1-4"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/config.rs"
+
+[[critical_path]]
+id = "audit-1-5"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/outbox.rs"
+
+[[critical_path]]
+id = "audit-1-6"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/inbound_order.rs"
+
+[[critical_path]]
+id = "audit-1-7"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/session/playback.rs"
+
+[[critical_path]]
+id = "audit-1-8"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/session/playback_barrier.rs"
+
+[[critical_path]]
+id = "audit-1-9"
+category = "lifecycle"
+owner = "client-runtime"
+match = "file"
+path = "crates/sorotte-client-core/src/session/reconnect.rs"
+
+[[critical_path]]
+id = "audit-2-0"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/network.rs"
+
+[[critical_path]]
+id = "audit-2-1"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/backpressure.rs"
+
+[[critical_path]]
+id = "audit-2-2"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/resources.rs"
+
+[[critical_path]]
+id = "audit-2-3"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/local_clock.rs"
+
+[[critical_path]]
+id = "audit-2-4"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/frame_limits.rs"
+
+[[critical_path]]
+id = "audit-2-5"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/inbound.rs"
+
+[[critical_path]]
+id = "audit-2-6"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/actor.rs"
+
+[[critical_path]]
+id = "audit-2-7"
+category = "protocol-parsing"
+owner = "server-security"
+match = "file"
+path = "crates/sorotte-server/src/tls.rs"
+
+[[critical_path]]
+id = "audit-3-0"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/lib.rs"
+
+[[critical_path]]
+id = "audit-3-1"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/http.rs"
+
+[[critical_path]]
+id = "audit-3-2"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/discovery.rs"
+
+[[critical_path]]
+id = "audit-3-3"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/library.rs"
+
+[[critical_path]]
+id = "audit-3-4"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/resolver.rs"
+
+[[critical_path]]
+id = "audit-3-5"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/cache.rs"
+
+[[critical_path]]
+id = "audit-3-6"
+category = "privacy"
+owner = "plex"
+match = "file"
+path = "crates/sorotte-plex/src/timeline.rs"
+
+[[critical_path]]
+id = "audit-4-0"
+category = "persistence-arbitration"
+owner = "client-settings"
+match = "file"
+path = "crates/sorotte-client-app/src/sorotte_ini.rs"
+
+[[critical_path]]
+id = "audit-4-1"
+category = "persistence-arbitration"
+owner = "client-settings"
+match = "directory"
+path = "crates/sorotte-client-app/src/sorotte_ini/"
+
+[[critical_path]]
+id = "audit-5-0"
+category = "lifecycle"
+owner = "media-runtime"
+match = "file"
+path = "crates/sorotte-media-match/src/extraction.rs"
+
+[[critical_path]]
+id = "audit-5-1"
+category = "lifecycle"
+owner = "media-runtime"
+match = "directory"
+path = "crates/sorotte-media-match/src/extraction/"
+
+[[critical_path]]
+id = "audit-6-0"
+category = "lifecycle"
+owner = "gui-runtime"
+match = "file"
+path = "crates/sorotte-gui/src/app/runtime_owner/player.rs"
+
+[[critical_path]]
+id = "audit-6-1"
+category = "lifecycle"
+owner = "gui-runtime"
+match = "directory"
+path = "crates/sorotte-gui/src/app/runtime_owner/player/"
+
+[[critical_path]]
+id = "audit-6-2"
+category = "lifecycle"
+owner = "gui-runtime"
+match = "file"
+path = "crates/sorotte-gui/src/app/runtime_owner/session_transport.rs"
+
+[[critical_path]]
+id = "audit-6-3"
+category = "lifecycle"
+owner = "gui-runtime"
+match = "file"
+path = "crates/sorotte-gui/src/app/runtime_stack/transport.rs"
+
+[[critical_path]]
+id = "audit-6-4"
+category = "lifecycle"
+owner = "gui-runtime"
+match = "directory"
+path = "crates/sorotte-gui/src/app/runtime_stack/transport/"
+
+[[critical_path]]
+id = "audit-7-0"
+category = "updater-trust"
+owner = "release-security"
+match = "file"
+path = "crates/sorotte-gui/src/update_limits.rs"
+
+[[critical_path]]
+id = "audit-7-1"
+category = "updater-trust"
+owner = "release-security"
+match = "directory"
+path = "crates/sorotte-gui/src/app/remote_services/"
+
+[[critical_path]]
+id = "audit-8-0"
+category = "persistence-arbitration"
+owner = "server-persistence"
+match = "directory"
+path = "crates/sorotte-server/src/persistence_actor/"
+
+[[critical_path]]
+id = "audit-9-0"
+category = "persistence-arbitration"
+owner = "client-settings"
+match = "file"
+path = "crates/sorotte-gui/src/app/runtime_owner/requests/pending_completions.rs"
+
+[[critical_path]]
+id="player-private-cache"
+category="lifecycle"
+owner="player-runtime"
+match="directory"
+path="crates/sorotte-player-mpv/src/bridge_resource/"
+
+[[critical_path]]
+id="player-managed-process"
+category="lifecycle"
+owner="player-runtime"
+match="file"
+path="crates/sorotte-player-mpv/src/managed_process.rs"
+
+[[critical_path]]
+id="player-managed-process-platform"
+category="lifecycle"
+owner="player-runtime"
+match="directory"
+path="crates/sorotte-player-mpv/src/managed_process/"
+
+[[critical_path]]
+id = "client-playback-coordination-extractions"
+category = "lifecycle"
+owner = "client-runtime"
+match = "directory"
+path = "crates/sorotte-client-core/src/runtime/playback_coordination/"

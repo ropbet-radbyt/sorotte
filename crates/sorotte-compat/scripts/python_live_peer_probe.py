@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -9,6 +10,70 @@ import ssl
 import sys
 import threading
 import time
+import types
+
+
+class _LegacySubjectAlternativeName:
+    """Read-only presentation consumed by pinned Syncplay 1.7.5."""
+
+    def __init__(self, names):
+        from cryptography import x509
+
+        rendered = []
+        for name in names:
+            prefixes = ((x509.DNSName, "DNS:"), (x509.IPAddress, "IP Address:"),
+                        (x509.UniformResourceIdentifier, "URI:"), (x509.RFC822Name, "email:"))
+            for kind, prefix in prefixes:
+                if isinstance(name, kind):
+                    rendered.append(prefix + str(name.value))
+                    break
+            else:
+                raise ValueError("unsupported SAN in legacy TLS probe certificate")
+        self._rendered = ", ".join(rendered)
+
+    def get_short_name(self):
+        return b"subjectAltName"
+
+    def __str__(self):
+        return self._rendered
+
+
+class _LegacyPeerCertificate:
+    """Adapt certificate display accessors, never the TLS verification decision.
+
+    The socket has already passed Python ssl CA and hostname verification.
+    Upstream handshakeCompleted remains unchanged; only the fixture transport's
+    certificate view replaces APIs removed from pyOpenSSL 26.2.
+    """
+
+    def __init__(self, der):
+        from cryptography import x509
+
+        self._certificate = x509.load_der_x509_certificate(der)
+        try:
+            san = self._certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        except x509.ExtensionNotFound:
+            self._extensions = []
+        else:
+            self._extensions = [_LegacySubjectAlternativeName(san.value)]
+
+    def get_extension_count(self):
+        return len(self._extensions)
+
+    def get_extension(self, index):
+        return self._extensions[index]
+
+    def get_issuer(self):
+        from cryptography.x509.oid import NameOID
+
+        names = self._certificate.issuer.get_attributes_for_oid(NameOID.COMMON_NAME)
+        return types.SimpleNamespace(CN=names[0].value if names else None)
+
+    def has_expired(self):
+        return datetime.datetime.now(datetime.timezone.utc) > self._certificate.not_valid_after_utc
+
+    def get_notAfter(self):
+        return self._certificate.not_valid_after_utc.strftime("%Y%m%d%H%M%SZ").encode("ascii")
 
 
 def _emit_json(payload):
@@ -928,14 +993,10 @@ class _SocketTransport:
         self._socket = tls_socket
         self.protocol._tlsConnection = _OpenSslConnectionInfo(tls_socket)
 
-        from OpenSSL import crypto  # type: ignore
-
         peer_certificate = tls_socket.getpeercert(binary_form=True)
         if not peer_certificate:
             raise RuntimeError("python live peer TLS server certificate was not available")
-        self._peer_certificate = crypto.load_certificate(
-            crypto.FILETYPE_ASN1, peer_certificate
-        )
+        self._peer_certificate = _LegacyPeerCertificate(peer_certificate)
         if self._sorotte_protocol is None:
             raise RuntimeError("python live peer TLS transport has no protocol")
         self._sorotte_protocol.handshakeCompleted()

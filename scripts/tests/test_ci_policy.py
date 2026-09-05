@@ -145,6 +145,17 @@ def logical_shell_commands(run: str) -> list[list[str]]:
 def ignored_test_cargo_command(entry: dict[str, Any]) -> list[str]:
     source = pathlib.PurePosixPath(entry["source"])
     parts = source.parts
+    if entry["tier"] == "subprocess-fixture":
+        if len(parts) < 4 or parts[0] != "crates" or parts[2] != "src":
+            raise AssertionError(f"{entry['id']} fixture must belong to a library source")
+        manifest_path = REPO_ROOT / parts[0] / parts[1] / "Cargo.toml"
+        with manifest_path.open("rb") as handle:
+            package = tomllib.load(handle)["package"]["name"]
+        return [
+            "cargo", "nextest", "run", "--locked", "-p", package, "--lib",
+            "--all-features", "--no-tests", "fail", "-E",
+            f"test(={entry['parent_test']})",
+        ]
     if (
         len(parts) != 4
         or parts[0] != "crates"
@@ -182,7 +193,7 @@ def validate_pull_request_ignored_bindings(
     entries = [
         entry
         for entry in ignored_tests["ignored_test"]
-        if entry["tier"] == "pull-request"
+        if entry["tier"] in {"pull-request", "subprocess-fixture"}
     ]
     if not entries:
         raise AssertionError("ignored-test registry must contain pull-request entries")
@@ -1878,6 +1889,19 @@ done""",
             self.ignored_tests,
         )
 
+    def test_fixture_bindings_reject_missing_parent_and_zero_test_success(self) -> None:
+        entry = next(item for item in self.ignored_tests["ignored_test"] if item["tier"] == "subprocess-fixture")
+        for before, after in [
+            (entry["parent_test"], "missing::parent"),
+            ("--no-tests fail", "--no-tests pass"),
+            ("cargo nextest run", "echo cargo nextest run"),
+        ]:
+            jobs = copy.deepcopy(self.jobs)
+            step = named_step(jobs, entry["required_job"], "Execute subprocess-fixture parent contracts")
+            step["run"] = step["run"].replace(before, after)
+            with self.subTest(change=after), self.assertRaises(AssertionError):
+                validate_pull_request_ignored_bindings(jobs, self.catalog, self.ignored_tests)
+
     def test_ignored_test_bindings_reject_adversarial_workflow_mutations(self) -> None:
         first_entry = next(
             entry
@@ -2188,8 +2212,9 @@ done""",
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),
             [
-                "twisted==25.5.0",
-                "pyopenssl==25.3.0",
+                "twisted==26.4.0",
+                "pyopenssl==26.4.0",
+                "cryptography==50.0.1",
                 "service_identity==24.2.0",
             ],
         )
@@ -2346,7 +2371,7 @@ done""",
 
     def test_scheduled_mutation_shard_is_pinned_bounded_and_fail_closed(self) -> None:
         jobs = self.mutation_workflow["jobs"]
-        self.assertEqual(set(jobs), {"mutation", "participant-status-evidence-set"})
+        self.assertEqual(set(jobs), {"selection", "mutation", "participant-status-evidence-set"})
         self.assertEqual(self.mutation_workflow["permissions"], {"contents": "read"})
         self.assertEqual(
             self.mutation_workflow["on"],
@@ -2358,6 +2383,15 @@ done""",
                         "coverage/mutation-policy.toml",
                         "coverage/mutation-report-set.json",
                         "scripts/mutation_ci.py",
+                        "scripts/mutation_selection.py",
+                        "scripts/artifact_input.py",
+                        "coverage/mutation-selection.toml",
+                        "Cargo.toml",
+                        "Cargo.lock",
+                        "rust-toolchain.toml",
+                        ".cargo/**",
+                        "crates/**",
+                        "fixtures/**",
                         "crates/sorotte-protocol/src/lib.rs",
                         "crates/sorotte-protocol/src/state.rs",
                         "crates/sorotte-protocol/src/participant_status.rs",
@@ -2371,6 +2405,8 @@ done""",
                         "crates/sorotte-cli/src/**",
                         "crates/sorotte-server/src/**",
                         "crates/sorotte-gui/src/**",
+                        "!crates/**/*.md",
+                        "!fixtures/**/*.md",
                     ]
                 },
                 "schedule": [{"cron": "15 4 * * 0"}],
@@ -2387,7 +2423,8 @@ done""",
         self.assertEqual(job["name"], "Mutation (${{ matrix.shard }})")
         self.assertEqual(job["runs-on"], "ubuntu-latest")
         self.assertEqual(job["timeout-minutes"], "120")
-        self.assertNotIn("if", job, "job-level if cannot access matrix context")
+        self.assertEqual(job["needs"], "selection")
+        self.assertEqual(job["if"], "${{ needs.selection.outputs.shards != '[]' }}")
         pull_request_shards = [
             "participant-status-protocol",
             "client-participant-status",
@@ -2413,14 +2450,7 @@ done""",
             "client-playlist-shuffle",
             "cli-framing",
         ]
-        compact_json = lambda values: '["' + '","'.join(values) + '"]'
-        matrix_expression = (
-            "${{ fromJSON(\n"
-            "  github.event_name == 'pull_request'\n"
-            f"  && '{compact_json(pull_request_shards)}'\n"
-            f"  || '{compact_json(all_shards)}'\n"
-            ") }}"
-        )
+        matrix_expression = "${{ fromJSON(needs.selection.outputs.shards) }}"
 
         participant_status_boundaries = {
             "crates/sorotte-protocol/src/lib.rs",
@@ -2536,8 +2566,8 @@ done""",
 
         evidence_job = jobs["participant-status-evidence-set"]
         self.assertEqual(evidence_job["name"], "Participant-status mutation evidence set")
-        self.assertEqual(evidence_job["if"], "${{ always() }}")
-        self.assertEqual(evidence_job["needs"], "mutation")
+        self.assertEqual(evidence_job["if"], "${{ always() && (needs.selection.result != 'success' || needs.selection.outputs.shards != '[]') }}")
+        self.assertEqual(evidence_job["needs"], ["selection", "mutation"])
         self.assertEqual(evidence_job["runs-on"], "ubuntu-latest")
         self.assertEqual(evidence_job["timeout-minutes"], "30")
         evidence_checkout = named_step(
@@ -2576,7 +2606,11 @@ done""",
         )
 
         self.assertEqual(
-            self.mutation_policy,
+            {
+                **self.mutation_policy,
+                "shard": [shard for shard in self.mutation_policy["shard"] if shard["id"] not in {"plex-http-origin", "settings-duplicate-keys", "server-local-clock", "server-resource-permits"}],
+                "accepted_unviable": [item for item in self.mutation_policy["accepted_unviable"] if item["id"] not in {"settings-duplicate-let-chain-or", "server-resource-connection-permit-default", "server-resource-byte-reservation-default"}],
+            },
             {
                 "schema_version": 3,
                 "cargo_mutants_version": "27.1.0",
@@ -2704,6 +2738,10 @@ done""",
                             "accessors.rs",
                             "crates/sorotte-client-core/src/runtime/"
                             "playback_coordination.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/ordered_events.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/barrier.rs",
+                            "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
                             "crates/sorotte-client-core/src/runtime/"
                             "queued_control.rs",
                         ],
@@ -2761,7 +2799,7 @@ done""",
                             "crates/sorotte-server/src/runtime_playback_barrier.rs",
                         ],
                         "mutant_filter": (
-                            "(participant_status|ParticipantStatus|"
+                            "(ingest_client_ping_metrics|record_ping_challenge|forward_delay_seconds|participant_status|ParticipantStatus|"
                             "collect_due_periodic_updates_at|"
                             "delete field (set_by|"
                             "transport_revision|"
@@ -2772,7 +2810,7 @@ done""",
                             "periodic_state_sync_message_for_client_at)"
                         ),
                         "test_target": "lib",
-                        "test_filter": "tests::participant_status_tests::",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 120,
                         "build_timeout_seconds": 240,
@@ -2954,7 +2992,7 @@ done""",
                         ],
                         "mutant_filter": "",
                         "test_target": "lib",
-                        "test_filter": "session::tests::",
+                        "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -3081,6 +3119,42 @@ done""",
                     },
                 ],
                 "accepted_unviable": [
+                    *[
+                        {
+                            "id": identifier,
+                            "shard": "cli-framing",
+                            "file": "crates/sorotte-cli/src/protocol_io.rs",
+                            "function": function,
+                            "return_type": "-> anyhow::Result<Option<LifecycleWriteBarrier>>",
+                            "genre": "FnValue",
+                            "replacement": "Ok(Some(Default::default()))",
+                            "reason": (
+                                "The hosted campaign reports rustc E0277 because "
+                                "LifecycleWriteBarrier has no Default; its readiness "
+                                "and release paths require explicit evidence ownership"
+                            ),
+                            "review_by": "2026-10-31",
+                        }
+                        for identifier, function in (
+                            ("cli-barrier-parse-default", "parse_lifecycle_write_barrier"),
+                            ("cli-barrier-environment-default", "lifecycle_write_barrier_for_frame"),
+                        )
+                    ],
+                    {
+                        "id": "cli-barrier-instant-multiply",
+                        "shard": "cli-framing",
+                        "file": "crates/sorotte-cli/src/protocol_io.rs",
+                        "function": "await_configured_lifecycle_write_barrier",
+                        "return_type": "-> anyhow::Result<()>",
+                        "genre": "BinaryOperator",
+                        "replacement": "*",
+                        "reason": (
+                            "The hosted campaign reports rustc E0369 because "
+                            "tokio::time::Instant cannot be multiplied by "
+                            "std::time::Duration when calculating the deadline"
+                        ),
+                        "review_by": "2026-10-31",
+                    },
                     {
                         "id": "const-default-is-not-const",
                         "shard": "privacy-secret",
@@ -3243,6 +3317,7 @@ done""",
                     },
                     {
                         "id": "client-reconnect-ping-let-chain-or",
+                        "expected_count": 4,
                         "shard": "client-reconnect-state",
                         "file": (
                             "crates/sorotte-client-core/src/session/reconnect.rs"
@@ -3282,6 +3357,7 @@ done""",
                     },
                     {
                         "id": "client-runtime-config-host-let-chain-or",
+                        "expected_count": 2,
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
@@ -3303,6 +3379,7 @@ done""",
                     },
                     {
                         "id": "client-runtime-config-room-let-chain-or",
+                        "expected_count": 2,
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
@@ -3408,6 +3485,7 @@ done""",
                             "so both generated mutants cannot parse"
                         ),
                         "review_by": "2026-10-31",
+                        "expected_count": 2,
                     },
                     *[
                         {
@@ -3516,7 +3594,7 @@ done""",
                         "shard": "client-participant-status-runtime",
                         "file": (
                             "crates/sorotte-client-core/src/runtime/"
-                            "playback_coordination.rs"
+                            "playback_coordination/participant_status.rs"
                         ),
                         "function": (
                             "RuntimePlaybackCoordination::"
@@ -3541,7 +3619,7 @@ done""",
                         "shard": "client-participant-status-runtime",
                         "file": (
                             "crates/sorotte-client-core/src/runtime/"
-                            "playback_coordination.rs"
+                            "playback_coordination/participant_status.rs"
                         ),
                         "function": (
                             "RuntimePlaybackCoordination::"
@@ -3981,6 +4059,21 @@ done""",
                                 ),
                             ),
                             (
+                                "server-ping-challenge-let-chain-or",
+                                "server-participant-status",
+                                "crates/sorotte-server/src/runtime_maintenance.rs",
+                                "ServerRuntime::record_ping_challenge",
+                                "-> f64",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the observed && "
+                                    "connector in a Rust let-chain to ||, "
+                                    "which rustc rejects because let-chain "
+                                    "conditions support only &&"
+                                ),
+                            ),
+                            (
                                 "server-participant-status-scope-default",
                                 "server-participant-status",
                                 (
@@ -4203,7 +4296,7 @@ done""",
                                 "client-participant-status-runtime",
                                 (
                                     "crates/sorotte-client-core/src/runtime/"
-                                    "playback_coordination.rs"
+                                    "playback_coordination/participant_status.rs"
                                 ),
                                 (
                                     "RuntimePlaybackCoordination::"

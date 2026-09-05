@@ -41,9 +41,9 @@ mod shared_helpers;
 use shared_helpers::*;
 
 pub(super) fn start_visual_mock_session_server(
-    initial_lines: &'static [&'static str],
+    initial_lines: &[&str],
 ) -> Result<MockSessionServer, String> {
-    start_mock_session_server_with_hold_timeout(initial_lines, &[], &[], Duration::from_secs(60))
+    start_mock_session_server_with_keepalive(initial_lines)
 }
 
 pub(super) fn visual_mock_session_server_port(server: &MockSessionServer) -> u16 {

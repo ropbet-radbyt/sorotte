@@ -86,6 +86,16 @@ unsafe extern "system" fn enum_windows_for_process(
 impl NativeGuiDriver for PlatformNativeGuiDriver {
     type WindowHandle = PlatformWindowHandle;
 
+    fn native_window_dpi(&self, window: Self::WindowHandle) -> Result<u32, String> {
+        // SAFETY: window is the live scenario-owned HWND returned by this driver.
+        let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window) };
+        if dpi == 0 {
+            Err("GetDpiForWindow could not measure the scenario window".to_owned())
+        } else {
+            Ok(dpi)
+        }
+    }
+
     fn find_main_window(&self, pid: u32) -> Result<Option<Self::WindowHandle>, String> {
         use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
 
@@ -174,6 +184,16 @@ impl NativeGuiDriver for PlatformNativeGuiDriver {
 
     fn window_title(&self, window: Self::WindowHandle) -> Result<String, String> {
         Ok(Self::window_text_for_handle(window))
+    }
+
+    fn scroll_named_content_page(
+        &self,
+        window: Self::WindowHandle,
+        anchor: &NativeAccessibilityNode,
+        wheel_delta: i32,
+    ) -> Result<(), String> {
+        let [left, top, right, bottom] = anchor.bounds.ok_or("scroll anchor has no bounds")?;
+        self.scroll_content_at(window, (left + right) / 2, (top + bottom) / 2, wheel_delta)
     }
 
     fn accessible_names(&self, window: Self::WindowHandle) -> Result<Vec<String>, String> {

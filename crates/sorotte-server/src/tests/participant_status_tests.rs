@@ -800,7 +800,7 @@ fn freshness_projection_and_server_derived_offsets_require_strict_correlation() 
         },
     );
     let transport_revision = runtime.room_participant_status_scopes["room"].transport_revision;
-    runtime.ingest_client_ping_metrics("alice", Some(99.75), Some(0.25));
+    fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
 
     send_status(
         &mut runtime,
@@ -1091,7 +1091,7 @@ fn freshness_projection_and_server_derived_offsets_require_strict_correlation() 
         None,
         "a fresh connection has no trustworthy delay evidence"
     );
-    runtime.ingest_client_ping_metrics("alice", Some(0.0), Some(0.0));
+    fixture_issued_ping_echo(&mut runtime, "alice", 0.0, 0.0);
     assert_eq!(
         runtime.participant_status_forward_delay_ms_at("alice", 200.0),
         None,
@@ -1201,7 +1201,7 @@ fn precise_offset_phase_gate_distinguishes_paused_rebuffering_and_unsafe_evidenc
         },
     );
     let scope = runtime.room_participant_status_scopes["room"];
-    runtime.ingest_client_ping_metrics("alice", Some(99.75), Some(0.25));
+    fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
     let view_for = |runtime: &mut ServerRuntime, report: ParticipantStatusReport| {
         send_status(
             runtime,
@@ -1325,6 +1325,36 @@ fn precise_offset_phase_gate_distinguishes_paused_rebuffering_and_unsafe_evidenc
 }
 
 #[test]
+fn participant_status_rejects_invalid_forward_delay_without_reviving_it() {
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.001, 90.001] {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_time_now_override_seconds(Some(100.0));
+        runtime
+            .handle_line("alice", &hello("alice", "room", true, false))
+            .unwrap();
+        fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
+        runtime
+            .client_state_counters
+            .get_mut("alice")
+            .unwrap()
+            .ping_forward_delay_seconds = invalid;
+        assert_eq!(
+            runtime.participant_status_forward_delay_ms_at("alice", 100.0),
+            None
+        );
+        runtime
+            .client_state_counters
+            .get_mut("alice")
+            .unwrap()
+            .ping_forward_delay_seconds = 0.125;
+        assert_eq!(
+            runtime.participant_status_forward_delay_ms_at("alice", 100.0),
+            None
+        );
+    }
+}
+
+#[test]
 fn participant_status_forward_delay_evidence_has_a_bounded_lifetime() {
     let mut runtime = ServerRuntime::default();
     let observed_at_seconds = 100.0;
@@ -1333,7 +1363,7 @@ fn participant_status_forward_delay_evidence_has_a_bounded_lifetime() {
         .handle_line("alice", &hello("alice", "room", true, false))
         .unwrap();
     acknowledge_current_server_counter(&mut runtime, "alice");
-    runtime.ingest_client_ping_metrics("alice", Some(99.75), Some(0.25));
+    fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
 
     let expires_at_seconds = observed_at_seconds + PROTOCOL_TIMEOUT_SECONDS;
     assert_eq!(
@@ -1369,7 +1399,7 @@ fn participant_status_forward_delay_evidence_fails_closed_on_clock_rollback() {
         .handle_line("alice", &hello("alice", "room", true, false))
         .unwrap();
     acknowledge_current_server_counter(&mut runtime, "alice");
-    runtime.ingest_client_ping_metrics("alice", Some(99.75), Some(0.25));
+    fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
 
     assert_eq!(
         runtime.participant_status_forward_delay_ms_at("alice", 99.999),
@@ -1395,7 +1425,7 @@ fn participant_status_forward_delay_evidence_fails_closed_on_clock_rollback() {
     );
 
     runtime.set_time_now_override_seconds(Some(100.0));
-    runtime.ingest_client_ping_metrics("alice", Some(99.75), Some(0.25));
+    fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
     assert_eq!(
         runtime.participant_status_forward_delay_ms_at("alice", 100.0),
         Some(125),
@@ -2141,13 +2171,27 @@ fn large_room_snapshots_use_only_the_coalescible_periodic_delivery_path() {
 #[test]
 fn oversized_full_room_snapshot_compacts_below_the_smallest_client_frame_limit() {
     let mut runtime = ServerRuntime::default();
+    // This test deliberately exceeds normal fanout capacity to test advisory
+    // representation at 600 members. Admission budgets have separate tests.
+    runtime
+        .set_resource_limits(crate::ServerResourceLimits {
+            queued_bytes_total: 1024 * 1024 * 1024,
+            ..crate::ServerResourceLimits::default()
+        })
+        .unwrap();
     runtime.set_time_now_override_seconds(Some(50.0));
     const PARTICIPANTS: usize = 240;
     for index in 0..PARTICIPANTS {
         let client_id = format!("client-{index:03}");
         let username = format!("participant{index:03}");
         runtime
-            .handle_line(&client_id, &hello(&username, "room", true, false))
+            .handle_line(
+                &client_id,
+                &hello(&username, "room", true, false).replace(
+                    "\"features\":{",
+                    "\"features\":{\"sorotteLargeProtocolFramesV1\":true,",
+                ),
+            )
             .unwrap();
         acknowledge_current_server_counter(&mut runtime, &client_id);
         let scope = runtime.room_participant_status_scopes["room"];
@@ -2227,7 +2271,13 @@ fn oversized_full_room_snapshot_compacts_below_the_smallest_client_frame_limit()
         let client_id = format!("client-{index:03}");
         let username = format!("participant{index:03}");
         runtime
-            .handle_line(&client_id, &hello(&username, "room", true, false))
+            .handle_line(
+                &client_id,
+                &hello(&username, "room", true, false).replace(
+                    "\"features\":{",
+                    "\"features\":{\"sorotteLargeProtocolFramesV1\":true,",
+                ),
+            )
             .unwrap();
         acknowledge_current_server_counter(&mut runtime, &client_id);
         let scope = runtime.room_participant_status_scopes["room"];
@@ -2723,7 +2773,7 @@ fn missed_periodic_slots_materialize_only_the_newest_state() {
 }
 
 #[test]
-fn periodic_scheduler_rebases_deadlines_after_wall_clock_rollback() {
+fn periodic_scheduler_preserves_elapsed_deadlines_across_wall_clock_rollback() {
     let mut runtime = ServerRuntime::default();
     runtime.set_time_now_override_seconds(Some(100.0));
     runtime
@@ -2761,10 +2811,11 @@ fn periodic_scheduler_rebases_deadlines_after_wall_clock_rollback() {
     let rollback = runtime.collect_dispatch_at(90.0).unwrap();
     assert!(rollback.outbound_lines.is_empty());
     assert_eq!(
-        runtime.client_next_periodic_state_at["alice"], 91.0,
-        "rollback must rebase the monotonic cadence instead of waiting for wall time to catch up"
+        runtime.client_next_periodic_state_at["alice"], 105.0,
+        "wall rollback must not change an existing elapsed deadline"
     );
 
+    runtime.set_clock_overrides_seconds(Some(91.0), Some(105.0));
     let resumed = runtime.collect_dispatch_at(91.0).unwrap();
     assert_eq!(
         resumed
@@ -2811,6 +2862,7 @@ fn fenced_periodic_ticks_still_advance_retained_report_age_monotonically() {
     runtime
         .client_last_state_update_at
         .insert("alice".to_owned(), 103.0);
+    runtime.set_clock_overrides_seconds(Some(103.0), Some(106.0));
     let resumed = runtime.collect_dispatch_at(103.0).unwrap();
     let snapshot = decode_directed_lines(&resumed.outbound_lines)
         .into_iter()
@@ -2843,7 +2895,7 @@ fn periodic_state_preserves_ping_metadata_and_honors_the_ignore_fence() {
         .handle_line("alice", &hello("alice", "room", true, false))
         .unwrap();
     acknowledge_current_server_counter(&mut runtime, "alice");
-    runtime.ingest_client_ping_metrics("alice", Some(90.0), Some(2.0));
+    fixture_issued_ping_echo(&mut runtime, "alice", 90.0, 2.0);
     runtime.queue_client_latency_calculation("alice", 124.1);
     runtime.queue_client_ignoring_counter("alice", 7);
 

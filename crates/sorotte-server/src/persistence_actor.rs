@@ -16,6 +16,10 @@ use crate::{
 };
 
 mod persistence_arbitration;
+mod shutdown;
+pub use shutdown::persistence_workers_awaiting_join;
+pub(crate) use shutdown::{WorkerControl, retain_async_cleanup};
+use std::time::{Duration, Instant};
 #[cfg(test)]
 mod persistence_arbitration_tests;
 
@@ -132,6 +136,7 @@ struct PersistenceEventReporter {
     events: broadcast::Sender<ServerPersistenceEvent>,
     worker_degraded: Arc<AtomicBool>,
     degraded_worker_count: Arc<AtomicUsize>,
+    control: Arc<WorkerControl>,
 }
 
 impl PersistenceEventReporter {
@@ -231,6 +236,7 @@ impl PersistenceWorkerService {
             events,
             worker_degraded: Arc::new(AtomicBool::new(false)),
             degraded_worker_count,
+            control: Arc::new(WorkerControl::default()),
         };
         let worker_reporter = reporter.clone();
         let join_handle = thread::Builder::new()
@@ -276,6 +282,14 @@ impl PersistenceWorkerService {
     }
 
     fn wake(&self) -> bool {
+        if self
+            .reporter
+            .control
+            .wake_pending
+            .swap(true, Ordering::AcqRel)
+        {
+            return true;
+        }
         match self.commands.try_send(PersistenceWorkerCommand::Wake) {
             Ok(()) | Err(TrySendError::Full(_)) => true,
             Err(TrySendError::Disconnected(_)) => false,
@@ -283,19 +297,76 @@ impl PersistenceWorkerService {
     }
 
     fn flush(&self) -> bool {
+        let result = self.flush_until(Instant::now() + Duration::from_secs(5));
+        self.reporter.control.set_deadline(None);
+        result
+    }
+
+    fn flush_until(&self, deadline: Instant) -> bool {
+        self.reporter.control.set_deadline(Some(deadline));
         let (acknowledge, acknowledgement) = mpsc::channel();
-        self.commands
-            .send(PersistenceWorkerCommand::Flush(acknowledge))
-            .is_ok()
-            && acknowledgement.recv().is_ok()
+        if !self.send_until(PersistenceWorkerCommand::Flush(acknowledge), deadline) {
+            return false;
+        }
+        loop {
+            // Shutdown can shorten an already queued barrier. Re-read its
+            // deadline while waiting, including when SQLite never replies.
+            let remaining = self
+                .reporter
+                .control
+                .effective_deadline(deadline)
+                .saturating_duration_since(Instant::now());
+            match acknowledgement.recv_timeout(remaining.min(Duration::from_millis(5))) {
+                Ok(()) => return true,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) if remaining.is_zero() => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    fn send_until(&self, mut command: PersistenceWorkerCommand, deadline: Instant) -> bool {
+        loop {
+            match self.commands.try_send(command) {
+                Ok(()) => return true,
+                Err(TrySendError::Disconnected(_)) => return false,
+                Err(TrySendError::Full(returned)) => command = returned,
+            }
+            if Instant::now() >= self.reporter.control.effective_deadline(deadline) {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn finish_until(&mut self, deadline: Instant) -> bool {
+        self.reporter.control.stop.store(true, Ordering::Release);
+        let _ = self.commands.try_send(PersistenceWorkerCommand::Shutdown);
+        let Some(handle) = self.join_handle.as_ref() else {
+            return true;
+        };
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        if handle.is_finished() {
+            return self.join_handle.take().unwrap().join().is_ok();
+        }
+        shutdown::retain_unjoined(self.join_handle.take().unwrap());
+        false
     }
 }
 
 impl Drop for PersistenceWorkerService {
     fn drop(&mut self) {
-        let _ = self.commands.send(PersistenceWorkerCommand::Shutdown);
-        if let Some(join_handle) = self.join_handle.take() {
-            let _ = join_handle.join();
+        if self.join_handle.is_some() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let _ = self.flush_until(deadline - Duration::from_millis(100));
+            if !self.finish_until(deadline) {
+                eprintln!(
+                    "Sorotte persistence {:?} worker remains owned but unjoined after forced shutdown",
+                    self.worker
+                );
+            }
         }
     }
 }
@@ -381,6 +452,9 @@ pub(crate) struct RoomPersistenceService {
 }
 
 impl RoomPersistenceService {
+    pub(crate) fn control(&self) -> Arc<WorkerControl> {
+        self.worker.reporter.control.clone()
+    }
     pub(crate) fn start(
         store: RoomPersistenceStore,
         events: broadcast::Sender<ServerPersistenceEvent>,
@@ -478,12 +552,31 @@ impl RoomPersistenceService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_settled()
     }
+
+    pub(crate) fn flush_until(&self, deadline: Instant) -> bool {
+        self.worker.flush_until(deadline)
+            && self
+                .desired_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_settled()
+    }
+
+    pub(crate) fn set_deadline(&self, deadline: Option<Instant>) {
+        self.worker.reporter.control.set_deadline(deadline);
+    }
+    pub(crate) fn finish_until(&mut self, deadline: Instant) -> bool {
+        self.worker.finish_until(deadline)
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct StatsPersistenceService(PersistenceWorkerService);
 
 impl StatsPersistenceService {
+    pub(crate) fn control(&self) -> Arc<WorkerControl> {
+        self.0.reporter.control.clone()
+    }
     pub(crate) fn start(
         store: StatsPersistenceStore,
         events: broadcast::Sender<ServerPersistenceEvent>,
@@ -502,8 +595,19 @@ impl StatsPersistenceService {
         self.0.enqueue(effect);
     }
 
+    #[cfg(test)]
     pub(crate) fn flush(&self) -> bool {
         self.0.flush()
+    }
+
+    pub(crate) fn flush_until(&self, deadline: Instant) -> bool {
+        self.0.flush_until(deadline) && !self.0.reporter.worker_degraded.load(Ordering::Acquire)
+    }
+    pub(crate) fn set_deadline(&self, deadline: Option<Instant>) {
+        self.0.reporter.control.set_deadline(deadline);
+    }
+    pub(crate) fn finish_until(&mut self, deadline: Instant) -> bool {
+        self.0.finish_until(deadline)
     }
 
     #[cfg(test)]
@@ -536,13 +640,23 @@ fn run_room_worker(
     desired_effects: DesiredRoomEffects,
     hooks: RoomPersistenceWorkerHooks,
 ) {
+    if shutdown::install_busy_handler(&connection, reporter.control.clone()).is_err() {
+        return;
+    }
     while let Ok(command) = commands.recv() {
+        if reporter.control.stop.load(Ordering::Acquire) {
+            break;
+        }
         match command {
             PersistenceWorkerCommand::Apply(effect) => reporter.failed(
                 effect,
                 "room persistence effects must be routed through the desired-state map",
             ),
             PersistenceWorkerCommand::Wake => {
+                reporter
+                    .control
+                    .wake_pending
+                    .store(false, Ordering::Release);
                 apply_desired_room_effects(&reporter, &store, &connection, &desired_effects, &hooks)
             }
             PersistenceWorkerCommand::Flush(acknowledge) => {
@@ -576,6 +690,9 @@ fn apply_desired_room_effects(
     desired_effects: &DesiredRoomEffects,
     hooks: &RoomPersistenceWorkerHooks,
 ) {
+    if reporter.control.expired() {
+        return;
+    }
     hooks.before_scan();
     let effects = {
         let arbitration = desired_effects
@@ -586,6 +703,9 @@ fn apply_desired_room_effects(
 
     let mut applied_any = false;
     for effect in effects {
+        if reporter.control.expired() {
+            break;
+        }
         let Some((room_name, version)) = room_effect_key_and_version(&effect) else {
             reporter.failed(effect, "stats effect was routed to the room worker");
             continue;
@@ -704,7 +824,13 @@ fn run_stats_worker(
     store: StatsPersistenceStore,
     mut connection: Connection,
 ) {
+    if shutdown::install_busy_handler(&connection, reporter.control.clone()).is_err() {
+        return;
+    }
     while let Ok(command) = commands.recv() {
+        if reporter.control.stop.load(Ordering::Acquire) {
+            break;
+        }
         match command {
             PersistenceWorkerCommand::Apply(effect) => {
                 apply_stats_effect(&reporter, &store, &mut connection, effect);
@@ -724,6 +850,10 @@ fn apply_stats_effect(
     connection: &mut Connection,
     effect: ServerPersistenceEffect,
 ) {
+    if reporter.control.expired() {
+        reporter.failed(effect, "persistence operation deadline exceeded");
+        return;
+    }
     let result = match &effect {
         ServerPersistenceEffect::RecordStatsSnapshot {
             snapshot_time,

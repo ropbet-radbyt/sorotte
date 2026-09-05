@@ -27,6 +27,8 @@ import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+import artifact_input
+
 
 EVIDENCE_KIND = "sorotte-behavior-evidence-shard"
 AGGREGATE_KIND = "sorotte-behavior-evidence-aggregate"
@@ -52,7 +54,7 @@ class EvidenceError(ValueError):
 
 def is_json_integer(value: Any) -> bool:
     """Return true only for JSON integer values, never booleans."""
-    return type(value) is int
+    return artifact_input.is_json_integer(value)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,7 +85,10 @@ def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def load_json_text(text: str) -> Any:
-    return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
+    try:
+        return artifact_input.strict_json_loads(text, max_bytes=MAX_EVIDENCE_BYTES, label="behavior evidence")
+    except artifact_input.ArtifactInputError as error:
+        raise EvidenceError(str(error)) from error
 
 
 def exact_keys(
@@ -918,18 +923,9 @@ def read_evidence(path: pathlib.Path) -> Mapping[str, Any]:
     if path.is_symlink():
         raise EvidenceError(f"refusing symlink evidence input {path}")
     try:
-        size = path.stat().st_size
-    except OSError as error:
-        raise EvidenceError(f"cannot inspect evidence {path}: {error}") from error
-    if size > MAX_EVIDENCE_BYTES:
-        raise EvidenceError(f"evidence input exceeds 1 MiB: {path}")
-    try:
-        value = load_json_text(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise EvidenceError(f"cannot read evidence {path}: {error}") from error
-    if not isinstance(value, dict):
-        raise EvidenceError(f"evidence {path} must contain a JSON object")
-    return value
+        return artifact_input.strict_json_load(path, max_bytes=MAX_EVIDENCE_BYTES, expected_type=dict, label="behavior evidence")
+    except artifact_input.ArtifactInputError as error:
+        raise EvidenceError(str(error)) from error
 
 
 def proof_evidence_errors(

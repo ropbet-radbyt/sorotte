@@ -241,7 +241,7 @@ class SystemCoverageRegistryTests(unittest.TestCase):
                 suites=suites,
             )
 
-    def test_media_missing_is_attributed_to_player_loss_not_resolution_failure(self) -> None:
+    def test_owned_recovery_fixture_must_exercise_missing_media_resolution(self) -> None:
         all_transitions, required_system = gate.model_transition_inventory(MODEL_PATH)
         _, suites = gate.model_system_suite_inventory(
             MODEL_PATH,

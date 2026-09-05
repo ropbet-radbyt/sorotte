@@ -1,0 +1,33 @@
+schema_version = 1
+# Review this inventory whenever package inputs or vendored features change.
+# RustSec examines Rust crates, not the native code inside a crate or an
+# independently installed executable. Their identities remain separate.
+[[component]]
+name = "Lua"
+delivery = "GUI linked native library through mlua/lua-src vendored feature"
+identity = "Resolved lua-src crate version and checksum in Cargo.lock"
+upstream = "https://www.lua.org/bugs.html"
+
+[[component]]
+name = "SQLite"
+delivery = "GUI linked native library through rusqlite/libsqlite3-sys bundled feature"
+identity = "Resolved libsqlite3-sys crate version and checksum in Cargo.lock"
+upstream = "https://www.sqlite.org/changes.html"
+
+[[component]]
+name = "ring cryptographic native code"
+delivery = "GUI/server linked C and assembly through the ring Rust crate"
+identity = "Resolved ring crate version and checksum in Cargo.lock; reviewed with rustls dependency updates"
+upstream = "https://github.com/briansmith/ring"
+
+[[component]]
+name = "mpv, FFmpeg/ffprobe, yt-dlp, ffsubsync"
+delivery = "External runtime executables; not bundled by GUI/server packaging"
+identity = "Installed executable identity is checked by runtime tooling; package inventory must not imply a RustSec scan of these tools"
+upstream = "https://github.com/mpv-player/mpv/security"
+
+[[component]]
+name = "Debian server runtime image"
+delivery = "Container only"
+identity = "Dockerfile.server pinned digest; existing Syft SPDX inventory and image-bound Cosign signatures"
+upstream = "https://security-tracker.debian.org/tracker/"

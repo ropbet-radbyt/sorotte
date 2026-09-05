@@ -31,6 +31,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import artifact_input
+
 import coverage_profile_lanes
 
 
@@ -380,26 +382,9 @@ def read_json(
     limit: int = MAX_JSON_BYTES,
 ) -> dict[str, Any]:
     try:
-        raw = path.read_bytes()
-    except OSError as error:
-        raise CoverageCiGuardError(f"cannot read {description} {path}: {error}") from error
-    if len(raw) > limit:
-        raise CoverageCiGuardError(
-            f"{description} exceeds the {limit}-byte safety limit"
-        )
-    try:
-        value = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=duplicate_rejecting_json_object,
-            parse_constant=reject_json_numeric_constant,
-        )
-    except CoverageCiGuardError:
-        raise
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise CoverageCiGuardError(f"{description} is not valid UTF-8 JSON: {error}") from error
-    if not isinstance(value, dict):
-        raise CoverageCiGuardError(f"{description} must contain a JSON object")
-    return value
+        return artifact_input.strict_json_load(path, max_bytes=limit, expected_type=dict, label=description)
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageCiGuardError(str(error)) from error
 
 
 def file_metadata(path: pathlib.Path, *, limit: int, description: str) -> dict[str, Any]:
@@ -542,7 +527,7 @@ def finalize(args: argparse.Namespace) -> int:
     ) -> Mapping[str, Any]:
         if (
             value.get("kind") != LINE_MAP_REPORT_KIND
-            or value.get("schema_version") != 1
+            or (not artifact_input.is_json_integer(value.get("schema_version")) or value.get("schema_version") != 1)
         ):
             raise CoverageCiGuardError(
                 f"{description} report has an unsupported schema"
@@ -578,7 +563,7 @@ def finalize(args: argparse.Namespace) -> int:
         try:
             base = read_json(pathlib.Path(args.base_report), description="base report")
             phases["resolve-base"]["report"] = base
-            if base.get("kind") != BASE_REPORT_KIND or base.get("schema_version") != 1:
+            if base.get("kind") != BASE_REPORT_KIND or (not artifact_input.is_json_integer(base.get("schema_version")) or base.get("schema_version") != 1):
                 raise CoverageCiGuardError("base report has an unsupported schema")
             if base.get("status") != "passed":
                 base_errors = base.get("errors")
@@ -808,7 +793,7 @@ def finalize(args: argparse.Namespace) -> int:
             phases["diff-policy"]["report"] = policy
             if (
                 policy.get("kind") != DIFF_REPORT_KIND
-                or policy.get("schema_version") != 1
+                or (not artifact_input.is_json_integer(policy.get("schema_version")) or policy.get("schema_version") != 1)
             ):
                 raise CoverageCiGuardError(
                     "diff-coverage report has an unsupported schema"

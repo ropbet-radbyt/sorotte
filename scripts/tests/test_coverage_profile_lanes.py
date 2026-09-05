@@ -44,6 +44,26 @@ class CoverageProfileLaneTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_external_profiles_share_the_cargo_report_directory(self) -> None:
+        for configured_target in (None, "target/windows-process", str(self.root / "custom")):
+            with self.subTest(configured_target=configured_target):
+                original = {"KEEP": "value"}
+                if configured_target is not None:
+                    original["CARGO_TARGET_DIR"] = configured_target
+                environment = lanes.show_env_environment(repo_root=self.root, environment=original)
+                base = pathlib.Path(configured_target or "target")
+                if not base.is_absolute():
+                    base = self.root / base
+                merged_directory = base / "llvm-cov-target"
+                for key in ("CARGO_TARGET_DIR", "CARGO_LLVM_COV_TARGET_DIR", "CARGO_LLVM_COV_BUILD_DIR"):
+                    self.assertEqual(pathlib.Path(environment[key]), merged_directory)
+                self.assertEqual(environment["KEEP"], "value")
+                self.assertNotIn("CARGO_LLVM_COV_TARGET_DIR", original)
+
+    def test_external_profile_directory_cannot_escape_the_checkout(self) -> None:
+        with self.assertRaises(lanes.CoverageProfileLaneError):
+            lanes.show_env_environment(repo_root=self.root, environment={"CARGO_TARGET_DIR": "../outside"})
+
     def test_show_env_requests_stable_posix_shell_output(self) -> None:
         self.assertEqual(
             lanes.SHOW_ENV_COMMAND,
@@ -587,14 +607,14 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "duplicate key",
+            "duplicate_key",
         ):
             lanes.semantic_oracle(raw.encode("utf-8"))
 
     def test_compatibility_oracle_requires_complete_live_inventory(self) -> None:
         expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
-        self.assertEqual(lanes.EXPECTED_COMPAT_TOTAL_TESTS, 150)
-        self.assertEqual(lanes.EXPECTED_COMPAT_FILTERED_OUT, 129)
+        self.assertEqual(lanes.EXPECTED_COMPAT_TOTAL_TESTS, 152)
+        self.assertEqual(lanes.EXPECTED_COMPAT_FILTERED_OUT, 131)
         self.assertEqual(
             expected_count + lanes.EXPECTED_COMPAT_FILTERED_OUT,
             lanes.EXPECTED_COMPAT_TOTAL_TESTS,
@@ -790,7 +810,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         path.write_text(raw, encoding="utf-8")
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "duplicate key",
+            "duplicate_key",
         ):
             lanes.strict_load_report(path)
 

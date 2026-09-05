@@ -1,5 +1,6 @@
 use super::tcp::MAX_INBOUND_PROTOCOL_LINE_BYTES;
 use super::*;
+use rustls_pki_types::pem::PemObject;
 
 use std::{
     io::{self, BufRead, BufReader, Write},
@@ -24,7 +25,7 @@ const TEST_TLS_PRIVATE_KEY_PEM: &str =
 fn test_tls_client_config() -> Arc<ClientConfig> {
     GuiTcpSessionTransportDriver::ensure_rustls_crypto_provider();
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
-    let certs = rustls_pemfile::certs(&mut cert_reader)
+    let certs = rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
         .collect::<Result<Vec<_>, _>>()
         .expect("test TLS certificate fixture should parse");
     let mut roots = RootCertStore::empty();
@@ -43,17 +44,19 @@ fn test_tls_client_config() -> Arc<ClientConfig> {
 fn test_tls_server_config() -> Arc<ServerConfig> {
     GuiTcpSessionTransportDriver::ensure_rustls_crypto_provider();
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
-    let mut certificate_chain = rustls_pemfile::certs(&mut cert_reader)
+    let mut certificate_chain = rustls_pki_types::CertificateDer::pem_reader_iter(&mut cert_reader)
         .collect::<Result<Vec<CertificateDer<'static>>, _>>()
         .expect("test TLS certificate fixture should parse");
     let mut chain_reader = io::BufReader::new(TEST_TLS_CHAIN_PEM.as_bytes());
     certificate_chain.extend(
-        rustls_pemfile::certs(&mut chain_reader)
+        rustls_pki_types::CertificateDer::pem_reader_iter(&mut chain_reader)
             .collect::<Result<Vec<CertificateDer<'static>>, _>>()
             .expect("test TLS chain fixture should parse"),
     );
     let mut key_reader = io::BufReader::new(TEST_TLS_PRIVATE_KEY_PEM.as_bytes());
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
+    let private_key = rustls_pki_types::PrivateKeyDer::pem_reader_iter(&mut key_reader)
+        .next()
+        .transpose()
         .expect("test TLS private key fixture should parse")
         .expect("test TLS private key fixture should contain a key");
     Arc::new(
@@ -85,10 +88,21 @@ fn valid_chat_line_with_len(line_len: usize) -> String {
 }
 
 fn oversized_media_match_list_snapshot_line() -> String {
-    let signature = "A".repeat(32 * 1024);
-    let line = format!(
-        r#"{{"List":{{"room1":{{"alice":{{"file":{{"name":"episode1.mkv","mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{signature}"}}}}]}}}}}},"bob":{{"file":{{"name":"episode2.mkv","mediaMatch":{{"schema":"sorotte.mediaMatch.v3","profiles":[{{"profile":"audio-constellation-v3","algorithmVersion":3,"durationMs":100000,"audio":{{"algorithm":"sorotte-audio-constellation-v3-sampled-fast","timeBaseMs":1,"anchors":"{signature}"}}}}]}}}}}}}}}}}}"#
-    );
+    let mut server = sorotte_server::ServerRuntime::new();
+    let signature: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../fixtures/media-match/maximum-valid-media-signature.json"
+    ))
+    .unwrap();
+    for username in ["alice", "bob", "reader"] {
+        server.handle_line(username, &serde_json::json!({"Hello":{"username":username,"room":{"name":"room1"},"version":"1.7.5","features":{"mediaMatch":true,"sorotteLargeProtocolFramesV1":true}}}).to_string()).unwrap();
+    }
+    for username in ["alice", "bob"] {
+        server.handle_line(username, &serde_json::json!({"Set":{"file":{"name":"episode.mkv","duration":100.0,"mediaMatch":signature,"extension":"\u{754c}".repeat(12_000)}}}).to_string()).unwrap();
+    }
+    let line = server
+        .handle_line("reader", r#"{"List":null}"#)
+        .unwrap()
+        .remove(0);
     assert!(line.len() > DEFAULT_MAX_PROTOCOL_LINE_BYTES);
     assert!(line.len() <= MAX_INBOUND_PROTOCOL_LINE_BYTES);
     line

@@ -4,6 +4,54 @@ use std::collections::BTreeSet;
 
 pub const DEFAULT_MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
+/// Maximum UTF-8 JSON payload, excluding LF or CRLF, accepted by current Rust
+/// transports. Larger server output requires explicit recipient support.
+pub const SOROTTE_MAX_PROTOCOL_LINE_BYTES: usize = 512 * 1024;
+pub const SOROTTE_LARGE_PROTOCOL_FRAMES_V1: &str = "sorotteLargeProtocolFramesV1";
+/// The pinned Python peer inherits Twisted LineReceiver's 16 KiB payload cap.
+pub const LEGACY_MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024;
+
+/// Measures encoded JSON without allocating a serialized copy, stopping as
+/// soon as it exceeds the byte budget. Delimiters are not counted.
+pub fn message_fits_line_limit(
+    message: &ProtocolMessage,
+    limit: usize,
+) -> Result<bool, ProtocolError> {
+    serialized_value_fits_line_limit(message, limit)
+}
+
+fn serialized_value_fits_line_limit(
+    message: &impl serde::Serialize,
+    limit: usize,
+) -> Result<bool, ProtocolError> {
+    struct Budget {
+        remaining: usize,
+        exceeded: bool,
+    }
+    impl std::io::Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.remaining {
+                self.exceeded = true;
+                return Err(std::io::Error::other("protocol frame exceeds byte budget"));
+            }
+            self.remaining -= bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut budget = Budget {
+        remaining: limit,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut budget, message) {
+        Ok(()) => Ok(true),
+        Err(_) if budget.exceeded => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub struct DecodedMessageLineItem {
     pub command: Option<String>,
     pub payload: Value,
@@ -418,6 +466,64 @@ pub fn extract_hello_from_message(message: ProtocolMessage) -> Result<HelloPaylo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn advertised_protocol_limits_accept_the_exact_payload_and_reject_one_more_byte() {
+        let empty: super::ProtocolMessage =
+            serde_json::from_value(serde_json::json!({"Chat": ""})).unwrap();
+        let overhead = super::encode_message_line(&empty).unwrap().len();
+        for (limit, expected_bytes) in [
+            (super::SOROTTE_MAX_PROTOCOL_LINE_BYTES, 524_288),
+            (super::LEGACY_MAX_PROTOCOL_LINE_BYTES, 16_384),
+        ] {
+            for extra in [0, 1] {
+                let message: super::ProtocolMessage = serde_json::from_value(
+                    serde_json::json!({"Chat": "x".repeat(expected_bytes - overhead + extra)}),
+                )
+                .unwrap();
+                assert_eq!(
+                    super::encode_message_line(&message).unwrap().len(),
+                    expected_bytes + extra
+                );
+                assert_eq!(
+                    super::message_fits_line_limit(&message, limit).unwrap(),
+                    extra == 0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn frame_budget_preserves_serialization_errors_that_are_not_capacity_failures() {
+        struct Rejected;
+        impl serde::Serialize for Rejected {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("rejected serialization fixture"))
+            }
+        }
+        let error = super::serialized_value_fits_line_limit(&Rejected, 1024).unwrap_err();
+        assert!(matches!(error, super::ProtocolError::InvalidJson(error) if error.is_data()));
+    }
+
+    #[test]
+    fn encoded_frame_budget_tracks_utf8_and_json_escaping_at_exact_boundary() {
+        for atom in ["a", "界", "🙂", "\n", "\"", "\\", "\u{0001}"] {
+            for repetitions in [1, 7, 100, 10_000] {
+                let message = super::decode_message_line(
+                    &serde_json::json!({"Chat":atom.repeat(repetitions)}).to_string(),
+                )
+                .unwrap();
+                let encoded = super::encode_message_line(&message).unwrap();
+                assert!(super::message_fits_line_limit(&message, encoded.len()).unwrap());
+                assert!(!super::message_fits_line_limit(&message, encoded.len() - 1).unwrap());
+                for delimiter in ["\n", "\r\n"] {
+                    let decoded =
+                        super::decode_message_line(&format!("{encoded}{delimiter}")).unwrap();
+                    assert!(super::message_fits_line_limit(&decoded, encoded.len()).unwrap());
+                }
+            }
+        }
+    }
+
     use std::error::Error as _;
 
     use super::*;

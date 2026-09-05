@@ -33,9 +33,10 @@ PINNED_LEGACY_SYNCPLAY_REPOSITORY = "Syncplay/syncplay"
 SUPPORTED_PYTHON_MINIMUM = (3, 11)
 SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE = (3, 14)
 PINNED_PACKAGES = {
-    "pyopenssl": ("pyopenssl", "25.3.0"),
+    "cryptography": ("cryptography", "50.0.1"),
+    "pyopenssl": ("pyopenssl", "26.4.0"),
     "service-identity": ("service_identity", "24.2.0"),
-    "twisted": ("twisted", "25.5.0"),
+    "twisted": ("twisted", "26.4.0"),
 }
 FIXTURE_ROOT_COUNTS = {
     "fixtures/protocol": 24,
@@ -79,7 +80,7 @@ REQUIRED_LIVE_SENTINELS = frozenset(
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
     }
 )
-EXPECTED_DISCOVERED_TESTS = 150
+EXPECTED_DISCOVERED_TESTS = 152
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60

@@ -80,6 +80,7 @@ EXPECTED_CLIENT_HELLO = {
             "readiness": True,
             "setOthersReadiness": True,
             "sharedPlaylists": True,
+            "sorotteLargeProtocolFramesV1": True,
             "sorotteParticipantStatusV1": True,
             "sorottePlaybackBarrierV1": True,
             "sorottePlexPlaylistUris": True,
@@ -126,6 +127,7 @@ REQUIRED_ASSERTIONS = (
 )
 RECOVERY_REQUIRED_ASSERTIONS = (
     *REQUIRED_ASSERTIONS[:-2],
+    "missing-playlist-target-is-reported",
     "exact-attested-owned-mpv-terminated",
     "automatic-relaunch-distinct-owned-exact-mpv",
     "gui-remained-on-active-room-during-automatic-relaunch",
@@ -208,6 +210,7 @@ HTTP_STALL_REQUIRED_ARTIFACTS = (
     "stalled_http",
 )
 RECOVERY_KEYS = {
+    "missing_media",
     "schema_version",
     "kind",
     "result",
@@ -546,9 +549,24 @@ def validate_playstate_exchange(
         f"{expected_action} request envelope drifted",
     )
     request_state = request.get("State")
+    require(isinstance(request_state, dict), f"{expected_action} request State schema drifted")
     expected_state_keys = (
         {"playstate"} if expected_mutation_kind == "seek" else {"playstate", "ping"}
     )
+    if "ping" in request_state:
+        expected_state_keys.add("ping")
+    client_counter = None
+    if "ignoringOnTheFly" in request_state:
+        counters = request_state["ignoringOnTheFly"]
+        require(
+            isinstance(counters, dict)
+            and set(counters) == {"client"}
+            and type(counters["client"]) is int
+            and 0 < counters["client"] <= 2**32 - 1,
+            f"{expected_action} request client counter was invalid",
+        )
+        client_counter = counters["client"]
+        expected_state_keys.add("ignoringOnTheFly")
     require(
         isinstance(request_state, dict) and set(request_state) == expected_state_keys,
         f"{expected_action} request State schema drifted",
@@ -573,7 +591,7 @@ def validate_playstate_exchange(
         and float(request_playstate["position"]) >= 0.0,
         f"{expected_action} request pause or position was invalid",
     )
-    if expected_mutation_kind == "pause":
+    if "ping" in request_state:
         require(
             isinstance(request_ping, dict)
             and set(request_ping) == {"clientLatencyCalculation", "clientRtt"}
@@ -588,10 +606,22 @@ def validate_playstate_exchange(
         f"{expected_action} authoritative echo envelope drifted",
     )
     echo_state = echo.get("State")
+    expected_echo_keys = {"playstate"}
+    if client_counter is not None:
+        expected_echo_keys.add("ignoringOnTheFly")
     require(
-        isinstance(echo_state, dict) and set(echo_state) == {"playstate"},
+        isinstance(echo_state, dict) and set(echo_state) == expected_echo_keys,
         f"{expected_action} authoritative echo State schema drifted",
     )
+    if client_counter is not None:
+        acknowledgement = echo_state["ignoringOnTheFly"]
+        require(
+            isinstance(acknowledgement, dict)
+            and set(acknowledgement) == {"client"}
+            and type(acknowledgement["client"]) is int
+            and acknowledgement["client"] == client_counter,
+            f"{expected_action} echo did not acknowledge the exact client counter",
+        )
     echo_playstate = echo_state.get("playstate")
     require(
         isinstance(echo_playstate, dict)
@@ -2139,6 +2169,24 @@ def validate_report(
         )
         require(recovery.get("kind") == RECOVERY_KIND, "recovery kind mismatch")
         require(recovery.get("result") == "passed", "recovery did not finish passed")
+        missing_media = recovery.get("missing_media")
+        require(
+            isinstance(missing_media, dict)
+            and set(missing_media)
+            == {"path", "event_id", "emitter", "process_role", "initial_pid"},
+            "missing-media evidence inventory drifted",
+        )
+        require(
+            normalized_resolved_path(missing_media.get("path", ""))
+            == expected_media.with_name("missing-generated-media.wav")
+            and not expected_media.with_name("missing-generated-media.wav").exists()
+            and isinstance(missing_media.get("event_id"), str)
+            and bool(missing_media["event_id"])
+            and missing_media.get("emitter") == "gui-real-mpv"
+            and missing_media.get("process_role") == "client"
+            and missing_media.get("initial_pid") == mpv["pid"],
+            "missing-media target or resolver attribution drifted",
+        )
         require(
             recovery.get("fault") == "terminate-exact-attested-gui-owned-mpv",
             "recovery fault contract drifted",

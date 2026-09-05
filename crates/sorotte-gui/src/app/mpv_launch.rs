@@ -1,9 +1,7 @@
 use std::{
     env,
     ffi::OsString,
-    fs,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,8 +15,12 @@ use sorotte_player_mpv::{
 };
 use sorotte_secret::RedactedCommandArgs;
 
-use super::child_process::configure_gui_child_process;
 use super::support::normalize_stored_player_argument_legacy_compatible;
+use sorotte_player_mpv::managed_process::{
+    ManagedMpvCommand, ManagedMpvShutdownScope, OwnedMpvProcess,
+};
+#[cfg(test)]
+use std::process::Child;
 
 const DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS: u64 = 50;
@@ -70,13 +72,21 @@ impl std::fmt::Debug for ManagedMpvLaunchConfig {
 
 #[derive(Debug)]
 pub(crate) struct ManagedMpvProcessGuard {
-    child: Child,
-    ipc_cleanup_path: Option<PathBuf>,
+    child: OwnedMpvProcess,
     #[cfg(test)]
     drop_observer: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ManagedMpvProcessGuard {
+    pub(crate) fn register_shutdown_scope(
+        &self,
+        scope: &ManagedMpvShutdownScope,
+    ) -> Result<(), String> {
+        scope
+            .register(&self.child)
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, String> {
         self.child
             .try_wait()
@@ -86,8 +96,8 @@ impl ManagedMpvProcessGuard {
     #[cfg(test)]
     pub(crate) fn from_test_child(child: Child) -> Self {
         Self {
-            child,
-            ipc_cleanup_path: None,
+            child: OwnedMpvProcess::from_test_child(child, None)
+                .expect("fixture child containment"),
             drop_observer: None,
         }
     }
@@ -98,8 +108,8 @@ impl ManagedMpvProcessGuard {
         drop_observer: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
-            child,
-            ipc_cleanup_path: None,
+            child: OwnedMpvProcess::from_test_child(child, None)
+                .expect("fixture child containment"),
             drop_observer: Some(drop_observer),
         }
     }
@@ -107,10 +117,11 @@ impl ManagedMpvProcessGuard {
 
 impl Drop for ManagedMpvProcessGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(path) = self.ipc_cleanup_path.as_ref() {
-            let _ = fs::remove_file(path);
+        if let Err(error) = self
+            .child
+            .terminate_until(std::time::Instant::now() + Duration::from_millis(500))
+        {
+            eprintln!("GUI-owned mpv cleanup incomplete: {error}");
         }
         #[cfg(test)]
         if let Some(observer) = self.drop_observer.as_ref() {
@@ -253,7 +264,7 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     let connect_timeout = Duration::from_millis(DEFAULT_MANAGED_MPV_CONNECT_TIMEOUT_MS);
     let connect_poll_interval = Duration::from_millis(DEFAULT_MANAGED_MPV_CONNECT_POLL_INTERVAL_MS);
 
-    let mut command = Command::new(&config.program);
+    let mut command = ManagedMpvCommand::new(&config.program);
     if let Some(parent) = config.program.parent() {
         command.current_dir(parent);
     }
@@ -271,22 +282,15 @@ pub(crate) fn spawn_managed_mpv_and_attach(
         &config.extra_args,
         downloader_path,
     ));
-    configure_gui_child_process(&mut command);
 
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to start managed mpv '{}': {error}",
-                config.program.display()
-            )
-        })?;
+    let child = command.spawn(ipc_cleanup_path).map_err(|error| {
+        format!(
+            "failed to start managed mpv '{}': {error}",
+            config.program.display()
+        )
+    })?;
     let guard = ManagedMpvProcessGuard {
         child,
-        ipc_cleanup_path,
         #[cfg(test)]
         drop_observer: None,
     };

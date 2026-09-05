@@ -1,4 +1,5 @@
 use super::*;
+use rustls_pki_types::pem::PemObject;
 use serde::Deserialize;
 use std::io::Read as _;
 
@@ -462,7 +463,9 @@ impl TlsCertificateBundleMetadataClock {
 
 fn tls_certificates_from_pem(pem: &[u8], path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
     let mut reader = io::BufReader::new(pem);
-    let certificates = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    let certificates = CertificateDer::pem_reader_iter(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if certificates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -474,12 +477,16 @@ fn tls_certificates_from_pem(pem: &[u8], path: &Path) -> io::Result<Vec<Certific
 
 fn tls_private_key_from_pem(pem: &[u8], path: &Path) -> io::Result<PrivateKeyDer<'static>> {
     let mut reader = io::BufReader::new(pem);
-    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("tls private key file '{}' has no key", path.display()),
-        )
-    })
+    PrivateKeyDer::pem_reader_iter(&mut reader)
+        .next()
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tls private key file '{}' has no key", path.display()),
+            )
+        })
 }
 
 pub(crate) fn load_tls_server_config(path: &Path) -> io::Result<Arc<ServerConfig>> {

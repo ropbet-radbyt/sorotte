@@ -204,9 +204,21 @@ impl ServerRuntime {
             .unwrap_or_else(current_unix_timestamp_seconds)
     }
 
+    pub(crate) fn local_time_seconds(&self) -> f64 {
+        self.local_clock.now()
+    }
+
+    pub(crate) fn local_time_for_wall_sample(&self, wall: f64) -> f64 {
+        if self.time_now_override_seconds.is_some() && !self.local_clock.independent_override {
+            self.local_clock.observe(wall)
+        } else {
+            self.local_time_seconds()
+        }
+    }
+
     pub(crate) fn record_client_state_update_now(&mut self, client_id: &str) {
         self.client_last_state_update_at
-            .insert(client_id.to_owned(), self.current_time_seconds());
+            .insert(client_id.to_owned(), self.local_time_seconds());
     }
 
     pub(crate) fn initialize_stats_snapshot_schedule(&mut self) {
@@ -309,28 +321,16 @@ impl ServerRuntime {
         now: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let mut outbound = self.collect_due_playback_barrier_updates_at(now)?;
+        let elapsed_now = self.local_time_for_wall_sample(now);
         if now.is_finite() {
-            // Advance every retained report's monotonic age whenever the
-            // scheduler observes time, even if its recipient is fenced and no
-            // snapshot is projected on this tick. Otherwise a later wall-clock
-            // rollback can make the unprojected interval disappear.
             for retained in self.client_participant_status.values() {
                 let _ = participant_status_report_age_ms(retained, now);
             }
-            if self
-                .last_periodic_schedule_observed_at_seconds
-                .is_some_and(|last_observed| now < last_observed)
-            {
-                for next_state_at in self.client_next_periodic_state_at.values_mut() {
-                    *next_state_at = now + SERVER_STATE_INTERVAL_SECONDS;
-                }
-            }
-            self.last_periodic_schedule_observed_at_seconds = Some(now);
         }
         let mut due_clients: Vec<String> = self
             .client_next_periodic_state_at
             .iter()
-            .filter(|(_, next_state_at)| **next_state_at <= now)
+            .filter(|(_, next_state_at)| **next_state_at <= elapsed_now)
             .map(|(client_id, _)| client_id.clone())
             .collect();
         due_clients.sort();
@@ -365,8 +365,10 @@ impl ServerRuntime {
             // Rebase the cadence from the one materialized update. This is
             // constant-time after any clock jump and prevents an immediate
             // second tick caused by floating-point catch-up arithmetic.
-            self.client_next_periodic_state_at
-                .insert(client_id.clone(), now + SERVER_STATE_INTERVAL_SECONDS);
+            self.client_next_periodic_state_at.insert(
+                client_id.clone(),
+                elapsed_now + SERVER_STATE_INTERVAL_SECONDS,
+            );
             outbound.extend(self.collect_periodic_tick_for_client_at(&client_id, now, now)?);
         }
 
@@ -467,6 +469,7 @@ impl ServerRuntime {
         let participant_status =
             self.participant_status_snapshot_for_client_at(client_id, now_seconds);
         let transport_revision = self.transport_authority_revision_for_room(&room);
+        let ping_timestamp = self.record_ping_challenge(client_id, now_seconds);
         let build_message = |participant_status| {
             state_sync_message(
                 position,
@@ -478,7 +481,7 @@ impl ServerRuntime {
                     client_latency_calculation: pending_client_latency,
                     client_ignoring_counter: pending_client_ignoring,
                     server_rtt_seconds,
-                    latency_calculation_seconds: Some(now_seconds),
+                    latency_calculation_seconds: Some(ping_timestamp),
                     participant_status,
                     ..StateSyncOptions::default()
                 },
@@ -547,7 +550,9 @@ impl ServerRuntime {
     pub(crate) fn client_timed_out(&self, client_id: &str, now_seconds: f64) -> bool {
         self.client_last_state_update_at
             .get(client_id)
-            .is_some_and(|updated_at| now_seconds - updated_at > PROTOCOL_TIMEOUT_SECONDS)
+            .is_some_and(|updated_at| {
+                self.local_time_for_wall_sample(now_seconds) - updated_at > PROTOCOL_TIMEOUT_SECONDS
+            })
     }
 
     pub(crate) fn timeout_disconnect_messages(
@@ -1699,20 +1704,39 @@ impl ServerRuntime {
             return;
         };
         let sender_rtt = client_rtt.unwrap_or(0.0);
-        if !latency_calculation.is_finite() || !sender_rtt.is_finite() || sender_rtt < 0.0 {
+        if ![latency_calculation, sender_rtt]
+            .into_iter()
+            .all(|value| value.is_finite() && value >= 0.0)
+            || sender_rtt > PROTOCOL_TIMEOUT_SECONDS
+        {
             return;
         }
 
-        let observed_at_seconds = self.current_time_seconds();
-        let current_rtt_seconds = observed_at_seconds - latency_calculation;
-        if !current_rtt_seconds.is_finite() || current_rtt_seconds < 0.0 {
+        let wall_now = self.current_time_seconds();
+        let elapsed_now = self.local_time_seconds();
+        let Some(state_counters) = self.client_state_counters.get_mut(client_id) else {
+            return;
+        };
+        state_counters
+            .outstanding_ping_challenges
+            .retain(|(_, sent)| (0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&(elapsed_now - sent)));
+        // Echoes are identities, not peer-provided elapsed durations. Removing
+        // the matched challenge makes duplicate/reordered delivery harmless.
+        let Some(index) = state_counters
+            .outstanding_ping_challenges
+            .iter()
+            .position(|(wire, _)| wire.to_bits() == latency_calculation.to_bits())
+        else {
+            return;
+        };
+        let (_, sent_at) = state_counters
+            .outstanding_ping_challenges
+            .remove(index)
+            .expect("matched challenge");
+        let current_rtt_seconds = elapsed_now - sent_at;
+        if !(0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&current_rtt_seconds) {
             return;
         }
-
-        let state_counters = self
-            .client_state_counters
-            .entry(client_id.to_owned())
-            .or_default();
         state_counters.ping_rtt_seconds = current_rtt_seconds;
         if state_counters.ping_average_rtt_seconds == 0.0 {
             state_counters.ping_average_rtt_seconds = current_rtt_seconds;
@@ -1720,14 +1744,41 @@ impl ServerRuntime {
         state_counters.ping_average_rtt_seconds = state_counters.ping_average_rtt_seconds
             * PING_MOVING_AVERAGE_WEIGHT
             + current_rtt_seconds * (1.0 - PING_MOVING_AVERAGE_WEIGHT);
-        if sender_rtt < current_rtt_seconds {
-            state_counters.ping_forward_delay_seconds =
-                state_counters.ping_average_rtt_seconds / 2.0 + (current_rtt_seconds - sender_rtt);
+        state_counters.ping_forward_delay_seconds = state_counters.ping_average_rtt_seconds / 2.0
+            + (current_rtt_seconds - sender_rtt).max(0.0);
+        state_counters.ping_forward_delay_seconds = state_counters
+            .ping_forward_delay_seconds
+            .clamp(0.0, PROTOCOL_TIMEOUT_SECONDS);
+        state_counters.ping_metrics_observed_at_seconds = Some(elapsed_now);
+        state_counters.ping_metrics_wall_observed_at_seconds = Some(wall_now);
+    }
+
+    fn record_ping_challenge(&mut self, client_id: &str, wire_timestamp: f64) -> f64 {
+        let mut wire_timestamp = if wire_timestamp.is_finite() && wire_timestamp > 0.0 {
+            wire_timestamp.min(1.0e15)
         } else {
-            state_counters.ping_forward_delay_seconds =
-                state_counters.ping_average_rtt_seconds / 2.0;
+            0.0
+        };
+        if let Some(previous) = self.last_ping_challenge_timestamp
+            && wire_timestamp <= previous
+        {
+            wire_timestamp = f64::from_bits(previous.to_bits().saturating_add(1));
         }
-        state_counters.ping_metrics_observed_at_seconds = Some(observed_at_seconds);
+        self.last_ping_challenge_timestamp = Some(wire_timestamp);
+        let sent_at = self.local_time_seconds();
+        let challenges = &mut self
+            .client_state_counters
+            .entry(client_id.to_owned())
+            .or_default()
+            .outstanding_ping_challenges;
+        challenges.retain(|(wire, sent)| {
+            (0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&(sent_at - sent))
+                && wire.to_bits() != wire_timestamp.to_bits()
+        });
+        let retired = challenges.len().saturating_sub(63);
+        challenges.drain(..retired);
+        challenges.push_back((wire_timestamp, sent_at));
+        wire_timestamp
     }
 
     pub(crate) fn server_rtt_seconds(&self, client_id: &str) -> f64 {
@@ -1740,6 +1791,14 @@ impl ServerRuntime {
     pub(crate) fn forward_delay_seconds(&self, client_id: &str) -> f64 {
         self.client_state_counters
             .get(client_id)
+            .filter(|state| {
+                state
+                    .ping_metrics_observed_at_seconds
+                    .is_some_and(|observed| {
+                        (0.0..=PROTOCOL_TIMEOUT_SECONDS)
+                            .contains(&(self.local_time_seconds() - observed))
+                    })
+            })
             .map(|state_counters| state_counters.ping_forward_delay_seconds)
             .unwrap_or_default()
     }
@@ -1754,11 +1813,15 @@ impl ServerRuntime {
         client_id: &str,
         now_seconds: f64,
     ) -> Option<u64> {
+        let elapsed = self.local_time_for_wall_sample(now_seconds);
         let state_counters = self.client_state_counters.get_mut(client_id)?;
         let observed_at_seconds = state_counters.ping_metrics_observed_at_seconds?;
-        let observation_age_seconds = now_seconds - observed_at_seconds;
+        let observation_age_seconds = elapsed - observed_at_seconds;
         if !observation_age_seconds.is_finite()
             || !(0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&observation_age_seconds)
+            || state_counters
+                .ping_metrics_wall_observed_at_seconds
+                .is_some_and(|observed| now_seconds < observed)
         {
             state_counters.ping_metrics_observed_at_seconds = None;
             return None;
@@ -1829,6 +1892,8 @@ impl ServerRuntime {
                     .with_scope(self.participant_status_scope_for_room(&session.room))
             })
         });
+        let wire_timestamp = self.current_time_seconds();
+        let wire_timestamp = self.record_ping_challenge(client_id, wire_timestamp);
         state_sync_message(
             position,
             paused,
@@ -1840,7 +1905,7 @@ impl ServerRuntime {
                 client_latency_calculation: pending_client_latency,
                 client_ignoring_counter: pending_client_ignoring,
                 server_rtt_seconds,
-                latency_calculation_seconds: Some(self.current_time_seconds()),
+                latency_calculation_seconds: Some(wire_timestamp),
                 participant_status,
             },
         )
@@ -2078,6 +2143,7 @@ impl ServerRuntime {
             self.add_empty_room_dummy_entries(&mut rooms);
         }
         self.sanitize_list_rooms_snapshot_for_client(client_id, &mut rooms);
+        self.compact_list_for_limit(client_id, &mut rooms);
         rooms
     }
 
@@ -2122,10 +2188,10 @@ impl ServerRuntime {
                 continue;
             }
             dummy_count = dummy_count.saturating_add(1);
-            rooms
-                .entry(room_name)
-                .or_default()
-                .insert(" ".repeat(dummy_count), legacy_dummy_list_entry());
+            rooms.entry(room_name).or_default().insert(
+                frame_limits::empty_room_identity(dummy_count),
+                legacy_dummy_list_entry(),
+            );
         }
     }
 
@@ -2184,5 +2250,23 @@ impl ServerRuntime {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod ping_challenge_tests {
+    use super::*;
+
+    #[test]
+    fn wire_challenges_canonicalize_invalid_clocks_and_remain_unique() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0, 0.0] {
+            let mut runtime = ServerRuntime::new();
+            assert_eq!(runtime.record_ping_challenge("peer", invalid).to_bits(), 0);
+            let next = runtime.record_ping_challenge("peer", invalid);
+            assert!(next.is_finite() && next > 0.0);
+        }
+        let mut runtime = ServerRuntime::new();
+        assert_eq!(runtime.record_ping_challenge("peer", 12.5), 12.5);
+        assert_eq!(runtime.record_ping_challenge("peer", f64::MAX), 1.0e15);
     }
 }

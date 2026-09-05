@@ -38,6 +38,8 @@ try:
         safe_extract_archive,
         sha256_file,
         verify_checksum,
+        dependency_files_for_version,
+        verify_dependency_inventory,
         write_report,
     )
 except ModuleNotFoundError:
@@ -56,6 +58,8 @@ except ModuleNotFoundError:
         safe_extract_archive,
         sha256_file,
         verify_checksum,
+        dependency_files_for_version,
+        verify_dependency_inventory,
         write_report,
     )
 
@@ -122,6 +126,10 @@ def safe_extract_gui_archive(
     """Extract the closed Windows GUI inventory using the updater's separator contract."""
 
     _require_regular_file(archive_path, "GUI release archive")
+    identity = ARCHIVE_RE.fullmatch(archive_path.name)
+    if identity is None:
+        raise VerificationError("GUI release archive name does not identify its version")
+    expected_files = PACKAGE_FILES | dependency_files_for_version(identity.group("version"))
     archive_size = archive_path.stat().st_size
     if archive_size <= 0:
         raise VerificationError(f"GUI release archive is empty: {archive_path}")
@@ -189,11 +197,11 @@ def safe_extract_gui_archive(
                 if "\\" in info.filename:
                     normalized_backslashes.append(relative)
                 normalized_infos.append((info, relative))
-            if observed != PACKAGE_FILES:
+            if observed != expected_files:
                 raise VerificationError(
                     f"archive inventory mismatch; "
-                    f"missing={sorted(PACKAGE_FILES - observed) or 'none'}, "
-                    f"extra={sorted(observed - PACKAGE_FILES) or 'none'}"
+                    f"missing={sorted(expected_files - observed) or 'none'}, "
+                    f"extra={sorted(observed - expected_files) or 'none'}"
                 )
             for info, relative in normalized_infos:
                 output_path = _path(destination, relative)
@@ -365,6 +373,7 @@ def verify_install_manifest(
     _validate_utc_timestamp(manifest["created_at_utc"], "install manifest created_at_utc")
 
     files = manifest["files"]
+    expected_payloads = PACKAGE_PAYLOADS | dependency_files_for_version(str(update_manifest["version"]))
     if not isinstance(files, list):
         raise VerificationError("install manifest files must be an array")
     observed: set[str] = set()
@@ -392,7 +401,7 @@ def verify_install_manifest(
                 f"install manifest contains duplicate or case-colliding paths: "
                 f"{previous!r} and {relative!r}"
             )
-        if normalized not in PACKAGE_PAYLOADS:
+        if normalized not in expected_payloads:
             raise VerificationError(
                 f"install manifest contains unexpected file entry: {relative}"
             )
@@ -420,11 +429,16 @@ def verify_install_manifest(
                 "sha256": actual_digest,
             }
         )
-    if observed != PACKAGE_PAYLOADS:
+    if observed != expected_payloads:
         raise VerificationError(
             f"install manifest file inventory mismatch; "
-            f"missing={sorted(PACKAGE_PAYLOADS - observed) or 'none'}, "
-            f"extra={sorted(observed - PACKAGE_PAYLOADS) or 'none'}"
+            f"missing={sorted(expected_payloads - observed) or 'none'}, "
+            f"extra={sorted(observed - expected_payloads) or 'none'}"
+        )
+    if dependency_files_for_version(str(update_manifest["version"])):
+        verify_dependency_inventory(
+            package_root, verified, package="sorotte-gui", source_sha=str(update_manifest["git_sha"]),
+            target="x86_64-pc-windows-msvc",
         )
     return (
         manifest,
@@ -794,7 +808,8 @@ def smoke_test_updater_success(
 ) -> dict[str, object]:
     target = runtime_root / "update-success"
     original = _seed_old_install(target, package_root / UPDATER_EXE)
-    expected = _snapshot(package_root, PACKAGE_FILES)
+    version = str(_load_manifest(package_root / INSTALL_MANIFEST)["version"])
+    expected = _snapshot(package_root, PACKAGE_FILES | dependency_files_for_version(version))
     log_path = runtime_root / "update-success.log"
     command = [
         str(target / UPDATER_EXE),

@@ -2,29 +2,8 @@ use super::*;
 
 #[test]
 fn python_fanout_roundtrip_matches_runtime_on_state_ping_forward_delay_metrics() {
-    let steps = vec![
-            ServerRuntimeScenarioStep {
-                client_id: "client-1".to_owned(),
-                request_line: r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255"}}"#
-                    .to_owned(),
-                advance_seconds: 0.0,
-                legacy_advance_seconds: None,
-            },
-            ServerRuntimeScenarioStep {
-                client_id: "client-2".to_owned(),
-                request_line: r#"{"Hello":{"username":"bob","room":{"name":"room1"},"version":"1.2.255"}}"#
-                    .to_owned(),
-                advance_seconds: 0.0,
-                legacy_advance_seconds: None,
-            },
-            ServerRuntimeScenarioStep {
-                client_id: "client-1".to_owned(),
-                request_line: r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":-10.0,"clientRtt":2.0}}}"#
-                    .to_owned(),
-                advance_seconds: 0.0,
-                legacy_advance_seconds: None,
-            },
-        ];
+    let steps = load_server_runtime_scenario_fixture("server_runtime_state_latency_metrics.jsonl")
+        .expect("issued-challenge latency scenario should load");
     let rust_events = replay_server_runtime_scenario_steps(&steps)
         .expect("state ping-forward-delay scenario should replay through runtime");
     let python_events = match run_python_fanout_roundtrip(&steps) {
@@ -40,17 +19,19 @@ fn python_fanout_roundtrip_matches_runtime_on_state_ping_forward_delay_metrics()
     };
 
     let rust_state_event = rust_events
-        .get(2)
+        .last()
         .expect("runtime state step should exist")
         .outbound_lines
         .iter()
+        .rev()
         .find(|line| line.client_id == "client-1")
         .expect("runtime sender output should exist");
     let python_state_event = python_events
-        .get(2)
+        .last()
         .expect("python state step should exist")
         .outbound_lines
         .iter()
+        .rev()
         .find(|line| line.client_id == "client-1")
         .expect("python sender output should exist");
 

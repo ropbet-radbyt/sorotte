@@ -12,6 +12,8 @@ import tomllib
 from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
+import artifact_input
+
 
 SLUG = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 TRANSITION_ID = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+")
@@ -25,9 +27,9 @@ class ModelError(ValueError):
 
 def load_toml(path: pathlib.Path, label: str) -> dict[str, Any]:
     try:
-        with path.open("rb") as handle:
-            value = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError) as error:
+        raw = artifact_input.read_bounded(path, max_bytes=4 * 1024 * 1024, label=label)
+        value = tomllib.loads(raw.decode("utf-8", errors="strict"))
+    except (artifact_input.ArtifactInputError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ModelError(f"failed to load {label} {path}: {error}") from error
     if not isinstance(value, dict):
         raise ModelError(f"{label} must be a TOML table")
@@ -140,7 +142,7 @@ def system_coverage_suites(
         allowed={"schema_version", "model_id", "suite"},
         context="system coverage registry",
     )
-    if registry["schema_version"] != 1:
+    if not artifact_input.is_json_integer(registry["schema_version"]) or registry["schema_version"] != 1:
         raise ModelError("system coverage registry schema_version must be 1")
     if registry["model_id"] != expected_model_id:
         raise ModelError("system coverage registry model_id does not match the model")
@@ -212,7 +214,7 @@ def validate_model(
         },
         context="lifecycle model",
     )
-    if model["schema_version"] != 1:
+    if not artifact_input.is_json_integer(model["schema_version"]) or model["schema_version"] != 1:
         raise ModelError("lifecycle model schema_version must be 1")
     model_id = require_string(model["model_id"], "model_id")
     if not SLUG.fullmatch(model_id):

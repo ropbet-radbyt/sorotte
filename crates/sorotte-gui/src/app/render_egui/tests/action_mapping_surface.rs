@@ -719,6 +719,62 @@ fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wi
 }
 
 #[test]
+fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
+    let name = "viewer-000 multilingual participant with a deliberately long display name";
+    for is_controller in [false, true] {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            username: Some(name.to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettingsMvp::default()
+        });
+        state.main_window.users[0].is_controller = is_controller;
+        let tree = state.main_window_widget_tree();
+        let user = tree.find("main-window:user:0").expect("participant row");
+        let panel = tree.find("main-window:connection").expect("room panel");
+        for width in [240.0, 360.0, 500.0] {
+            for zoom in [1.0, 1.5] {
+                let context = egui::Context::default();
+                context.enable_accesskit();
+                context.set_zoom_factor(zoom);
+                let mut renderer = GuiWidgetEguiRenderer::default();
+                let mut right_edge = 0.0;
+                let output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        right_edge = ui.max_rect().right();
+                        renderer.render_combined_room_panel(ui, panel, &state);
+                    },
+                );
+                let update = output
+                    .platform_output
+                    .accesskit_update
+                    .expect("accessibility tree");
+                let label = update
+                    .nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.value() == Some(user.label.as_str())).then_some(node)
+                    })
+                    .expect(
+                        "truncation must preserve the complete participant name for accessibility",
+                    );
+                let bounds = label.bounds().expect("participant name bounds");
+                assert!(
+                    bounds.x1 <= f64::from(right_edge) + 1.0,
+                    "name must fit at width {width}, zoom {zoom}, controller {is_controller}: {bounds:?}, right edge {right_edge}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
 

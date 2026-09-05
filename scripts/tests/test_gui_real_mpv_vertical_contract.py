@@ -398,8 +398,7 @@ def extend_with_owned_mpv_recovery(
     write_json(session_exchange_path, session_exchange)
 
     menu = json.loads(menu_path.read_text(encoding="utf-8"))
-    replacement_open = copy.deepcopy(menu["interactions"][0])
-    menu["interactions"].insert(1, replacement_open)
+    menu["interactions"].insert(1, copy.deepcopy(menu["interactions"][0]))
     write_json(menu_path, menu)
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -422,6 +421,13 @@ def extend_with_owned_mpv_recovery(
         "initial_sha256": report["mpv"]["sha256"],
         "initial_ipc_endpoint": initial_ipc,
         "initial_process_terminated": True,
+        "missing_media": {
+            "path": str(root / "missing-generated-media.wav"),
+            "event_id": "gui-missing-media-event",
+            "emitter": "gui-real-mpv",
+            "process_role": "client",
+            "initial_pid": initial_pid,
+        },
         "automatic_relaunch_observation_index": boundary,
         "automatic_relaunch_observation_event": "pause",
         "gui_room_remained_active": True,
@@ -1075,6 +1081,57 @@ def extend_with_stalled_http(
 
 
 class RealMpvVerticalContractTests(unittest.TestCase):
+    def test_transport_exchange_binds_seek_counters_and_optional_ping(self) -> None:
+        action = "GUI Play canonical transport"
+        for kind, factory in (("seek", seek_exchange), ("pause", playstate_exchange)):
+            row = factory(action, True, 1.25)
+            request = json.loads(row["request"])
+            request["State"]["ping"] = {
+                "clientLatencyCalculation": 1234.5,
+                "clientRtt": 0.0,
+            }
+            request["State"]["ignoringOnTheFly"] = {"client": 7}
+            echo = json.loads(row["authoritative_echo"])
+            echo["State"]["ignoringOnTheFly"] = {"client": 7}
+            row["request"] = json.dumps(request)
+            row["authoritative_echo"] = json.dumps(echo)
+            arguments = {
+                "expected_action": action,
+                "expected_paused": True,
+                "expected_mutation_kind": kind,
+            }
+            contract.validate_playstate_exchange(row, **arguments)
+            for invalid in (
+                None, {}, {"client": 0}, {"client": -1}, {"client": True},
+                {"client": 2**32}, {"client": 7, "server": 1},
+            ):
+                broken_request = copy.deepcopy(request)
+                broken_request["State"]["ignoringOnTheFly"] = invalid
+                with (
+                    self.subTest(kind=kind, request_counter=invalid),
+                    self.assertRaises(ValueError),
+                ):
+                    contract.validate_playstate_exchange(
+                        {**row, "request": json.dumps(broken_request)}, **arguments
+                    )
+            for invalid in (
+                None, {}, {"client": 6}, {"client": True}, {"client": 7, "server": 1},
+            ):
+                broken_echo = copy.deepcopy(echo)
+                broken_echo["State"]["ignoringOnTheFly"] = invalid
+                with (
+                    self.subTest(kind=kind, echo_counter=invalid),
+                    self.assertRaises(ValueError),
+                ):
+                    contract.validate_playstate_exchange(
+                        {**row, "authoritative_echo": json.dumps(broken_echo)}, **arguments
+                    )
+            del echo["State"]["ignoringOnTheFly"]
+            with self.assertRaises(ValueError):
+                contract.validate_playstate_exchange(
+                    {**row, "authoritative_echo": json.dumps(echo)}, **arguments
+                )
+
     def test_accepts_complete_owned_isolated_vertical_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")
@@ -1915,6 +1972,44 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                         expect_recovery=True,
                     )
 
+    def test_recovery_contract_rejects_missing_media_evidence_drift(self) -> None:
+        for field, value in (
+            ("path", "some-other-missing-file.wav"),
+            ("event_id", ""),
+            ("emitter", "unrelated-producer"),
+            ("process_role", "server"),
+            ("initial_pid", 999),
+            ("existing_target", None),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary) / "artifacts"
+                report, arguments = build_valid_fixture(root)
+                extend_with_owned_mpv_recovery(report, arguments)
+                if field == "existing_target":
+                    (root / "missing-generated-media.wav").write_bytes(b"unexpected")
+                else:
+                    report["recovery"]["missing_media"][field] = (
+                        str(root / value) if field == "path" else value
+                    )
+                path = root / "owned-mpv-recovery.json"
+                write_json(path, report["recovery"])
+                report["artifacts"]["owned_mpv_recovery"] = identity(path, relative_to=root)
+                with self.assertRaisesRegex(ValueError, "missing-media target or resolver"):
+                    contract.validate_report(report, **arguments, expect_recovery=True)
+
+    def test_recovery_contract_requires_media_open_after_relaunch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "artifacts"
+            report, arguments = build_valid_fixture(root)
+            extend_with_owned_mpv_recovery(report, arguments)
+            menu_path = root / "menu-interactions.json"
+            menu = json.loads(menu_path.read_text(encoding="utf-8"))
+            menu["interactions"].pop(1)
+            write_json(menu_path, menu)
+            report["artifacts"]["menu_interactions"] = identity(menu_path, relative_to=root)
+            with self.assertRaisesRegex(ValueError, "menu action inventory or order drifted"):
+                contract.validate_report(report, **arguments, expect_recovery=True)
+
     def test_recovery_contract_rejects_old_generation_after_termination_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")
@@ -1981,6 +2076,13 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                 lambda hello: hello["Hello"]["features"].__setitem__(
                     "sharedPlaylists", False
                 ),
+                "client Hello exchange drifted",
+            ),
+            (
+                "large-frame capability",
+                "client_hello",
+                contract.EXPECTED_CLIENT_HELLO,
+                lambda hello: hello["Hello"]["features"].pop("sorotteLargeProtocolFramesV1"),
                 "client Hello exchange drifted",
             ),
             (

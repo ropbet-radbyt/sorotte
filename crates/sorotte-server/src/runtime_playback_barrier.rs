@@ -1243,6 +1243,7 @@ impl ServerRuntime {
             return Ok(Vec::new());
         }
         let now_seconds = self.current_time_seconds();
+        let reported_at_seconds = self.local_time_seconds();
         let Some(control) = self.room_buffering_controls.get_mut(&session.room) else {
             return Ok(Vec::new());
         };
@@ -1258,7 +1259,7 @@ impl ServerRuntime {
                 username: session.username,
                 buffering: report.buffering,
                 buffered_seconds: report.buffered_seconds,
-                reported_at_seconds: now_seconds,
+                reported_at_seconds,
             },
         );
         self.evaluate_room_buffering_at(&session.room, now_seconds, true)
@@ -1270,6 +1271,7 @@ impl ServerRuntime {
         now_seconds: f64,
         always_publish_status: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let elapsed = self.local_time_for_wall_sample(now_seconds);
         let before_status = self.room_buffering_status_at(room_name, now_seconds);
         let reports_expired =
             self.room_buffering_controls
@@ -1278,7 +1280,7 @@ impl ServerRuntime {
                     let before = control.reports.len();
                     control
                         .reports
-                        .retain(|_, report| room_buffering_report_is_fresh(report, now_seconds));
+                        .retain(|_, report| room_buffering_report_is_fresh(report, elapsed));
                     control.reports.len() != before
                 });
         let Some((condition_active, policy)) =
@@ -1313,8 +1315,8 @@ impl ServerRuntime {
                 if condition_active {
                     control.condition_clear_since = None;
                 } else {
-                    let clear_since = control.condition_clear_since.get_or_insert(now_seconds);
-                    if now_seconds - *clear_since >= hysteresis_seconds {
+                    let clear_since = control.condition_clear_since.get_or_insert(elapsed);
+                    if elapsed - *clear_since >= hysteresis_seconds {
                         control.condition_clear_since = None;
                         control.fail_open_latched = false;
                     }
@@ -1322,7 +1324,7 @@ impl ServerRuntime {
             } else if control.paused_by_policy {
                 if control
                     .pause_deadline
-                    .is_some_and(|deadline| deadline <= now_seconds)
+                    .is_some_and(|deadline| deadline <= elapsed)
                 {
                     control.paused_by_policy = false;
                     control.pause_deadline = None;
@@ -1333,8 +1335,8 @@ impl ServerRuntime {
                 } else if condition_active {
                     control.condition_clear_since = None;
                 } else {
-                    let clear_since = control.condition_clear_since.get_or_insert(now_seconds);
-                    if now_seconds - *clear_since >= hysteresis_seconds {
+                    let clear_since = control.condition_clear_since.get_or_insert(elapsed);
+                    if elapsed - *clear_since >= hysteresis_seconds {
                         control.paused_by_policy = false;
                         control.pause_deadline = None;
                         control.condition_active_since = None;
@@ -1344,10 +1346,10 @@ impl ServerRuntime {
                 }
             } else if condition_active {
                 control.condition_clear_since = None;
-                let active_since = control.condition_active_since.get_or_insert(now_seconds);
-                if now_seconds - *active_since >= debounce_seconds {
+                let active_since = control.condition_active_since.get_or_insert(elapsed);
+                if elapsed - *active_since >= debounce_seconds {
                     control.paused_by_policy = true;
-                    control.pause_deadline = Some(now_seconds + max_pause_seconds);
+                    control.pause_deadline = Some(elapsed + max_pause_seconds);
                     control.condition_active_since = None;
                     transition = Some(RoomBufferingTransition::Pause);
                 }
@@ -1403,6 +1405,7 @@ impl ServerRuntime {
         room_name: &str,
         now_seconds: f64,
     ) -> Option<(bool, RoomBufferingPolicy)> {
+        let now_seconds = self.local_time_for_wall_sample(now_seconds);
         let control = self.room_buffering_controls.get(room_name)?;
         let eligible: BTreeSet<&str> = self
             .sessions
@@ -1534,6 +1537,7 @@ impl ServerRuntime {
         room_name: &str,
         now_seconds: f64,
     ) -> Option<RoomBufferingStatusPayload> {
+        let elapsed = self.local_time_for_wall_sample(now_seconds);
         let control = self.room_buffering_controls.get(room_name)?;
         let eligible: BTreeMap<&str, &str> = self
             .sessions
@@ -1551,7 +1555,7 @@ impl ServerRuntime {
             .filter(|(client_id, report)| {
                 report.buffering
                     && eligible.contains_key(client_id.as_str())
-                    && room_buffering_report_is_fresh(report, now_seconds)
+                    && room_buffering_report_is_fresh(report, elapsed)
             })
             .map(|(_, report)| report.username.clone())
             .collect();
@@ -1588,7 +1592,9 @@ impl ServerRuntime {
             eligible_clients,
             required_buffering_clients,
             buffering_clients,
-            pause_deadline: control.pause_deadline,
+            pause_deadline: control
+                .pause_deadline
+                .map(|deadline| now_seconds + (deadline - elapsed).max(0.0)),
         })
     }
 
@@ -1868,11 +1874,11 @@ impl ServerRuntime {
             PLAYBACK_BARRIER_MIN_TIMEOUT_SECONDS,
             PLAYBACK_BARRIER_MAX_TIMEOUT_SECONDS,
         );
-        let deadline = now_seconds + timeout_seconds;
+        let deadline = self.local_time_seconds() + timeout_seconds;
         prepare.target_position = prepare.target_position.max(0.0);
         prepare.timeout_action = Some(prepare.timeout_action.unwrap_or_default());
         prepare.timeout_ms = Some((timeout_seconds * 1_000.0) as u64);
-        prepare.deadline = Some(deadline);
+        prepare.deadline = Some(now_seconds + timeout_seconds);
 
         let readiness_governed =
             self.readiness_enabled && self.room_readiness.contains_key(&session.room);
@@ -2169,6 +2175,8 @@ impl ServerRuntime {
             return Ok(Vec::new());
         }
         let readiness_revision = self.readiness_revision_for_commit(room_name);
+        let started_local_deadline =
+            self.local_time_for_wall_sample(now_seconds) + PLAYBACK_BARRIER_STARTED_TIMEOUT_SECONDS;
         let barrier = self
             .room_playback_barriers
             .get_mut(room_name)
@@ -2204,7 +2212,7 @@ impl ServerRuntime {
         barrier.phase = PlaybackBarrierPhase::Committed;
         barrier.state_revision = Some(revision);
         barrier.readiness_revision = readiness_revision;
-        barrier.started_deadline = Some(started_deadline);
+        barrier.started_deadline = Some(started_local_deadline);
 
         {
             let room_state = self.room_playback_state_mut(room_name);
@@ -2349,11 +2357,12 @@ impl ServerRuntime {
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        let elapsed = self.local_time_for_wall_sample(now_seconds);
         let due_prepare: Vec<String> = self
             .room_playback_barriers
             .iter()
             .filter(|(_, barrier)| {
-                barrier.phase == PlaybackBarrierPhase::Preparing && barrier.deadline <= now_seconds
+                barrier.phase == PlaybackBarrierPhase::Preparing && barrier.deadline <= elapsed
             })
             .map(|(room_name, _)| room_name.clone())
             .collect();
@@ -2425,7 +2434,7 @@ impl ServerRuntime {
                 barrier.phase == PlaybackBarrierPhase::Committed
                     && barrier
                         .started_deadline
-                        .is_some_and(|deadline| deadline <= now_seconds)
+                        .is_some_and(|deadline| deadline <= elapsed)
             })
             .map(|(room_name, _)| room_name.clone())
             .collect();
@@ -2556,7 +2565,12 @@ impl ServerRuntime {
             phase: barrier.phase,
             policy: barrier.prepare.policy,
             quorum: barrier.prepare.quorum,
-            deadline: barrier.started_deadline.unwrap_or(barrier.deadline),
+            deadline: barrier
+                .commit
+                .as_ref()
+                .map(|commit| commit.started_deadline)
+                .or(barrier.prepare.deadline)
+                .unwrap_or_default(),
             participants,
             excluded_legacy_clients: barrier.excluded_legacy_clients.clone(),
         })

@@ -258,6 +258,11 @@ $packageResources = Join-Path $packageRoot "resources"
 New-Item -ItemType Directory -Force -Path $packageResources | Out-Null
 Copy-ReleaseFile (Join-Path $RepoRoot "resources/sorotte_syncplayintf.lua") (Join-Path $packageResources "sorotte_syncplayintf.lua")
 
+& python (Join-Path $RepoRoot "scripts/dependency_policy.py") inventory --repo-root $RepoRoot --package sorotte-gui --target x86_64-pc-windows-msvc --payload $packageRoot --output (Join-Path $packageRoot "DEPENDENCIES.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "GUI dependency inventory generation failed with exit code $LASTEXITCODE"
+}
+
 $pdbPaths = @()
 foreach ($pdbName in @("sorotte_gui.pdb", "sorotte-gui.pdb", "sorotte_gui_updater.pdb", "sorotte-gui-updater.pdb")) {
     $pdbPath = Join-Path $releaseDir $pdbName

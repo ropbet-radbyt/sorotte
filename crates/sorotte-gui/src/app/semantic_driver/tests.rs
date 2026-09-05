@@ -26,7 +26,7 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     );
     assert_eq!(stored.host.as_deref(), Some("syncplay.example"));
     assert_eq!(stored.port, Some(8999));
-    assert_eq!(stored.username.as_deref(), Some("smoke-user"));
+    assert_eq!(stored.username.as_deref(), Some("smoke-user-after-clear"));
     assert_eq!(stored.room.as_deref(), Some("smoke-room"));
     assert_eq!(
         stored.media_search_directories,
@@ -34,7 +34,9 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     );
     assert_eq!(saved.host.as_deref(), Some("syncplay.example"));
     assert_eq!(saved.port, Some(8999));
-    assert_eq!(saved.username.as_deref(), Some("smoke-user"));
+    assert_eq!(saved.username.as_deref(), Some("smoke-user-after-clear"));
+    assert!(stored.server_password.is_none());
+    assert!(saved.server_password.is_none());
     assert_eq!(saved.room.as_deref(), Some("smoke-room"));
     assert_eq!(
         saved.player_path.as_deref(),

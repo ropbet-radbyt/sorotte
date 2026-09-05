@@ -231,6 +231,25 @@ class LlvmCovLineMapTests(unittest.TestCase):
         self.assertIn("source content disagrees", error["errors"][0])
         self.assertIn("LLVM line-map input error", stderr.getvalue())
 
+    def test_shared_module_aliases_union_physical_lines_after_validating_each_view(self) -> None:
+        document = self.json_document()
+        alias = copy.deepcopy(document["data"][0]["files"][0])
+        (self.source.parent / "bin").mkdir()
+        alias["filename"] = str(self.source.parent / "bin" / ".." / "lib.rs")
+        document["data"][0]["files"].append(alias)
+        document["data"][0]["totals"] = self.summary(14, 10)
+        text = self.native_text() + "\n" + self.native_text(counts=["0", "1", "0", "0", "1"])
+        report = self.build(document=document, native_text=text)
+        self.assertEqual(len(report["files"]), 1)
+        self.assertEqual(report["files"][0]["lines"], [[1, 1], [2, 1], [3, 0], [4, 1], [5, 1]])
+        self.assertEqual(report["summary"]["instrumented_line_count"], 5)
+        self.assertEqual(report["summary"]["covered_line_count"], 4)
+        self.assertEqual(report["summary"]["llvm_summary_line_count"], 14)
+        self.assertEqual(report["summary"]["llvm_summary_covered_line_count"], 10)
+        self.assert_invalid("missing the header", document=document, native_text=self.native_text() + "\n")
+        drifted = self.native_text() + "\n" + self.native_text().replace("answer = 42", "answer = 43")
+        self.assert_invalid("source content disagrees", document=document, native_text=drifted)
+
     def test_crlf_source_is_normalized_for_rows_but_hashed_as_stored(self) -> None:
         self.source.write_bytes(self.source_text.replace("\n", "\r\n").encode("utf-8"))
         report = self.build()
@@ -387,7 +406,7 @@ class LlvmCovLineMapTests(unittest.TestCase):
         self.json_path.write_text(duplicated, encoding="utf-8")
         with self.assertRaisesRegex(
             line_map.LlvmCovLineMapError,
-            "duplicates object key",
+            "duplicate_key",
         ):
             line_map.build_report(
                 repo_root=self.repo,

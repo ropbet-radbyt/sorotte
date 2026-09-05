@@ -291,3 +291,19 @@ complete-pending
 assert-pending	none
 activate	configuration:tab:connection
 assert-value	settings.connection.public_server_count	0
+# Explicit credential clearing survives Save, a later unrelated edit, and Reload.
+activate	settings.connection.server_password.remove
+activate	config-command:save
+assert-pending	save-configuration
+complete-pending
+assert-pending	none
+assert-value	settings.connection.server_password.status	No password is configured.
+enter-text	settings.connection.username	false	smoke-user-after-clear
+activate	config-command:save
+complete-pending
+activate	config-command:reload
+assert-pending	reload-configuration
+complete-pending
+assert-pending	none
+assert-value	settings.connection.server_password.status	No password is configured.
+assert-value	settings.connection.username	smoke-user-after-clear

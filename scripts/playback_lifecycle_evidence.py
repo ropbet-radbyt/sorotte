@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -15,8 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+import artifact_input
+
 
 SCHEMA_VERSION = 1
+MAX_EVIDENCE_BYTES = 128 * 1024 * 1024
+MAX_EVIDENCE_RECORD_BYTES = 64 * 1024
+MAX_EVIDENCE_RECORDS = 200_000
 SCHEMA_KIND = "sorotte-playback-lifecycle-evidence"
 VALIDATION_KIND = "sorotte-playback-lifecycle-evidence-validation"
 TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -103,47 +107,42 @@ def _token(field: str, value: Any) -> str:
 
 
 def _positive_integer(field: str, value: Any) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+    if not artifact_input.is_json_integer(value) or value <= 0:
         raise EvidenceError(f"{field} must be a positive integer")
     return value
 
 
 def _non_negative_integer(field: str, value: Any) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+    if not artifact_input.is_json_integer(value) or value < 0:
         raise EvidenceError(f"{field} must be a non-negative integer")
     return value
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return artifact_input.sha256_file(path)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         raise EvidenceError("declared lifecycle evidence file is missing")
-    records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise EvidenceError(f"evidence line {line_number} is not valid JSON") from error
-        if not isinstance(record, dict):
-            raise EvidenceError(f"evidence line {line_number} is not an object")
-        records.append(record)
+    try:
+        records = artifact_input.strict_jsonl_load(
+            path, max_bytes=MAX_EVIDENCE_BYTES, max_record_bytes=MAX_EVIDENCE_RECORD_BYTES,
+            max_records=MAX_EVIDENCE_RECORDS, label="lifecycle evidence",
+        )
+    except artifact_input.ArtifactInputError as error:
+        raise EvidenceError(str(error)) from error
     if not records:
         raise EvidenceError("lifecycle evidence file is empty")
     return records
 
 
 def load_model_transitions(path: Path) -> dict[str, str]:
-    with path.open("rb") as source:
-        document = tomllib.load(source)
+    try:
+        raw = artifact_input.read_bounded(path, max_bytes=4 * 1024 * 1024, label="lifecycle model")
+        document = tomllib.loads(raw.decode("utf-8", errors="strict"))
+    except (artifact_input.ArtifactInputError, UnicodeError) as error:
+        raise EvidenceError(str(error)) from error
     transitions: dict[str, str] = {}
     for machine in document.get("machine", []):
         machine_id = _token("model machine id", machine.get("id"))
@@ -158,7 +157,7 @@ def load_model_transitions(path: Path) -> dict[str, str]:
 
 
 def _validate_common(record: Mapping[str, Any], expected_type: str) -> tuple[str, int]:
-    if record.get("schema_version") != SCHEMA_VERSION:
+    if not artifact_input.is_json_integer(record.get("schema_version")) or record.get("schema_version") != SCHEMA_VERSION:
         raise EvidenceError("evidence has an unsupported schema version")
     if record.get("kind") != SCHEMA_KIND:
         raise EvidenceError("evidence has the wrong kind")

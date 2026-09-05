@@ -552,7 +552,14 @@ impl GuiWidgetEguiRenderer {
                                 let name = egui::RichText::new(&user_node.label)
                                     .strong()
                                     .color(Self::palette_for_ui(ui).neutral_text);
-                                ui.label(name);
+                                let icon_width = if is_controller {
+                                    24.0 + ui.spacing().item_spacing.x
+                                } else {
+                                    0.0
+                                };
+                                let name_width = (ui.available_width() - icon_width).max(0.0);
+                                ui.add_sized([name_width, 0.0], egui::Label::new(name).truncate())
+                                    .on_hover_text(&user_node.label);
                                 if is_controller {
                                     Self::render_inline_controller_icon(ui);
                                 }

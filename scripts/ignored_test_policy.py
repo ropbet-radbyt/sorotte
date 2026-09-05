@@ -29,6 +29,7 @@ EXPECTED_TIERS = [
     "nightly",
     "pull-request",
     "quarantined",
+    "subprocess-fixture",
 ]
 EXPECTED_OWNERS = [
     "cli",
@@ -51,6 +52,7 @@ FUNCTION = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b"
 )
 IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TEST_SELECTOR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+$")
 POLICY_ID = re.compile(r"^IGN-[A-Z0-9]+-\d{3}$")
 JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 CHAR_LITERAL = re.compile(
@@ -437,6 +439,7 @@ def _validate_entry(
         "manual": set(),
         "maintenance": {"mutates_fixtures"},
         "quarantined": {"tracking", "review_by"},
+        "subprocess-fixture": {"required_job", "parent_test"},
     }
     _require_exact_keys(entry, common | tier_fields[tier], f"ignored_test[{index}]")
 
@@ -471,12 +474,18 @@ def _validate_entry(
         allowed=set(EXPECTED_OPERATING_SYSTEMS),
     )
 
-    if tier in {"pull-request", "nightly"}:
+    if tier in {"pull-request", "nightly", "subprocess-fixture"}:
         required_job = _strict_string(entry["required_job"], f"{policy_id}.required_job")
         if not JOB_ID.fullmatch(required_job):
             raise IgnoredTestPolicyError(
                 f"{policy_id}.required_job is not a normalized CI job ID"
             )
+        if tier == "subprocess-fixture":
+            parent = _strict_string(entry["parent_test"], f"{policy_id}.parent_test")
+            if not TEST_SELECTOR.fullmatch(parent) or parent.split("::")[-1] == test:
+                raise IgnoredTestPolicyError(
+                    f"{policy_id}.parent_test must select a distinct ordinary Rust test"
+                )
     elif tier == "maintenance":
         if entry["mutates_fixtures"] is not True:
             raise IgnoredTestPolicyError(
@@ -504,6 +513,7 @@ def validate_registry(
     discovered: Sequence[IgnoredTest],
     *,
     as_of: dt.date | None = None,
+    repo_root: pathlib.Path | None = None,
 ) -> Counter[str]:
     _validate_policy_header(registry)
     raw_entries = registry["ignored_test"]
@@ -537,6 +547,37 @@ def validate_registry(
                 f"{key!r} source reason changed at line {source_test.line}; "
                 f"registry={registered_reason!r}, source={source_test.source_reason!r}"
             )
+        entry = entries[key]
+        if entry["tier"] == "subprocess-fixture":
+            if repo_root is None:
+                raise IgnoredTestPolicyError("subprocess fixtures require a source root")
+            source_path = repo_root / entry["source"]
+            if source_path.is_symlink() or not source_path.resolve().is_relative_to(
+                repo_root.resolve()
+            ):
+                raise IgnoredTestPolicyError("fixture parent source escapes the source root")
+            masked = _mask_rust_comments_and_strings(
+                source_path.read_text(encoding="utf-8")
+            )
+            parent = entry["parent_test"].split("::")[-1]
+            lines = masked.splitlines()
+            matches = [
+                index for index, line in enumerate(lines)
+                if (match := FUNCTION.match(line)) and match.group(1) == parent
+            ]
+            if len(matches) != 1 or (entry["source"], parent) in discovered_by_key:
+                raise IgnoredTestPolicyError(
+                    f"{entry['id']}.parent_test must define one nonignored test in its source"
+                )
+            preceding = matches[0] - 1
+            attributes = []
+            while preceding >= 0 and ATTRIBUTE.fullmatch(lines[preceding]):
+                attributes.append(lines[preceding])
+                preceding -= 1
+            if not any(TEST_ATTRIBUTE.fullmatch(attribute) for attribute in attributes):
+                raise IgnoredTestPolicyError(
+                    f"{entry['id']}.parent_test is not an ordinary test"
+                )
 
     return Counter(entry["tier"] for entry in entries.values())
 
@@ -546,7 +587,7 @@ def validate_command(args: argparse.Namespace) -> int:
     registry_path = pathlib.Path(args.registry).resolve()
     try:
         discovered = discover_ignored_tests(repo_root)
-        tiers = validate_registry(load_registry(registry_path), discovered)
+        tiers = validate_registry(load_registry(registry_path), discovered, repo_root=repo_root)
     except IgnoredTestPolicyError as error:
         print(f"ignored-test policy failed: {error}", file=sys.stderr)
         return 1

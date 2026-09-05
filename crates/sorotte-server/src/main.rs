@@ -184,6 +184,8 @@ async fn run_server(config: ServerRunConfig) -> anyhow::Result<()> {
     app.runtime_mut().set_tls_cert_path(config.tls_cert_path);
     app.runtime_mut().set_stats_db_path(config.stats_db_file)?;
 
+    app.runtime_mut()
+        .set_resource_limits(sorotte_server::ServerResourceLimits::from_environment()?)?;
     let runtime = ServerActorHandle::spawn(std::mem::take(app.runtime_mut()));
     emit_global(
         TransitionObservation::new(

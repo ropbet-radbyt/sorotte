@@ -1,7 +1,7 @@
 schema_version = 1
 
 [policy]
-allowed_tiers = ["manual", "maintenance", "nightly", "pull-request", "quarantined"]
+allowed_tiers = ["manual", "maintenance", "nightly", "pull-request", "quarantined", "subprocess-fixture"]
 allowed_owners = ["cli", "compatibility", "gui", "player-mpv", "simulation"]
 allowed_operating_systems = ["linux", "macos", "windows"]
 
@@ -269,3 +269,55 @@ rationale = "The hardened workflow promotes this formerly scheduled HTTP-stall c
 prerequisites = ["supported mpv binary built for CI"]
 operating_systems = ["linux"]
 required_job = "mpv-pr-semantics"
+
+[[ignored_test]]
+id = "IGN-GUI-003"
+source = "crates/sorotte-gui/src/app/runtime_queue/tests/process_shutdown.rs"
+test = "fixture_entrypoint"
+source_reason = "isolated process entry point"
+tier = "subprocess-fixture"
+owner = "gui"
+rationale = "The ordinary GUI process-shutdown contract launches this exact helper with role and endpoint variables; it is not a standalone test."
+prerequisites = ["process_shutdown parent contract", "parent-owned temporary paths and role variables"]
+operating_systems = ["linux", "windows"]
+required_job = "checks"
+parent_test = "app::runtime_queue::tests::process_shutdown::gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player"
+
+[[ignored_test]]
+id = "IGN-GUI-004"
+source = "crates/sorotte-media-match/src/extraction/process/tests.rs"
+test = "media_tool_process_fixture"
+source_reason = "subprocess fixture entry point; invoked explicitly by process contract tests"
+tier = "subprocess-fixture"
+owner = "gui"
+rationale = "The ordinary extraction contracts invoke this helper to prove cancellation, output limits, deadlines, and descendant cleanup with controlled subprocess behavior."
+prerequisites = ["extraction process parent contracts", "parent-owned marker and fixture mode"]
+operating_systems = ["linux", "windows"]
+required_job = "checks"
+parent_test = "extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint"
+
+[[ignored_test]]
+id = "IGN-MPV-003"
+source = "crates/sorotte-player-mpv/src/bridge_resource/security_tests.rs"
+test = "cache_repair_process_fixture"
+source_reason = "isolated concurrent cache repair process entry point"
+tier = "subprocess-fixture"
+owner = "player-mpv"
+rationale = "The ordinary concurrent cache-repair contract launches this helper with a private cache and barriers to verify publication across independent processes."
+prerequisites = ["independent_processes_repair_one_corrupt_cache_without_partial_publication parent test", "parent-owned cache and barriers"]
+operating_systems = ["linux", "windows"]
+required_job = "checks"
+parent_test = "bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication"
+
+[[ignored_test]]
+id = "IGN-MPV-004"
+source = "crates/sorotte-player-mpv/src/managed_process/tests.rs"
+test = "process_fixture"
+source_reason = "subprocess entry point, invoked by process contract tests"
+tier = "subprocess-fixture"
+owner = "player-mpv"
+rationale = "The ordinary managed-process contracts invoke this exact helper to observe parent exit, containment, endpoint reuse, and survival of externally owned processes."
+prerequisites = ["managed_process parent contracts", "parent-owned temporary paths and role variables"]
+operating_systems = ["linux", "windows"]
+required_job = "checks"
+parent_test = "managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits"

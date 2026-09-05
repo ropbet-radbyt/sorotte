@@ -651,6 +651,83 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertTrue(set(range(1, 6)).isdisjoint(structural))
         self.assertNotIn(7, structural)
 
+    def test_impl_where_clause_preserves_executable_method_bodies(self) -> None:
+        lines = [
+            "impl<P, C> Runtime<P, C>",
+            "where", "    P: PlayerAdapter,", "    C: EffectSink,", "{",
+            "    fn run(&self) {", "        perform_work();", "    }", "}",
+            "impl<T> Wrapper<T>", "where T: Trait", "{ fn run() { work(); } }",
+        ]
+        structural = coverage.lexical_non_coverable_lines(lines)
+        self.assertTrue({1, 2, 3, 4, 5, 6, 8, 9, 10, 11}.issubset(structural))
+        self.assertTrue({7, 12}.isdisjoint(structural))
+
+    def test_qualified_patterns_and_data_headers_are_structural(self) -> None:
+        lines = [
+            "sorotte_player_api::Phase::Paused",
+            "    | sorotte_player_api::Phase::Rebuffering",
+            ")",
+            "std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock",
+            "Health::Recovering | Health::Degraded(_)",
+            "| Error::ToolFailed { status: None, .. }),",
+            "Result::Failed(FailureKind::TimedOut)",
+            "    if command.is_seek() => handle_timeout(),",
+            "let RuntimeAction::Execute {",
+            "    command: PlayerCommand::SetPaused(true),",
+            "    ..",
+            "} = action;",
+            "self.state = Some(",
+            "    compute_state(),",
+            ");",
+            "self.network_options",
+            "    .last_sequence = Some(",
+            "    read_sequence(),",
+            ");",
+            "self.config = RuntimeConfig {",
+            "    timeout: calculate_timeout(),",
+            "};",
+            "match (", "    snapshot(),", ") {",
+            "unsafe {", "    system_call();", "}",
+            "thread_local! {", "}",
+        ]
+        structural = coverage.lexical_non_coverable_lines(lines)
+        self.assertTrue({1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13, 15,
+                         16, 17, 19, 20, 22, 23, 25, 26, 28, 29, 30}.issubset(structural))
+        self.assertTrue({8, 12, 14, 18, 21, 24, 27}.isdisjoint(structural))
+
+    def test_new_structural_rules_reject_calls_guards_and_mutations(self) -> None:
+        lines = [
+            "self.state = compute(",
+            "    input,", ");",
+            "self.values[index()] = Some(",
+            "    value,", ");",
+            "module::State::Ready(compute_value())", ");",
+            "| module::State::Ready(compute_value()),",
+            "| State::Ready { value: calculate() },",
+            "command: Command::SetPaused(should_pause()),",
+            "counter += 1;",
+            ".counter -= 1;",
+            "unsafe { system_call(); }",
+            "match (read(), next()) {",
+            "thread_local! { invoke(); }",
+            "self.owner_id", "publish();",
+            "STATE", "publish();",
+        ]
+        structural = coverage.lexical_non_coverable_lines(lines)
+        self.assertTrue({1, 4, 7, 9, 10, 11, 12, 13, 14, 15, 16,
+                         17, 18, 19, 20}.isdisjoint(structural))
+
+    def test_pure_format_arguments_and_constant_method_bases_are_structural(self) -> None:
+        lines = [
+            "format!(", '    "{}",', "    self.owner_id", ");",
+            "format!(", '    "{} {}",', "    self.load_sequence, self.source_kind", ");",
+            "MAX_BYTES", "    .min(limit())",
+            "format!(", '    "{}",', "    self.next_id()", ");",
+        ]
+        structural = coverage.lexical_non_coverable_lines(lines)
+        self.assertTrue({3, 7, 9}.issubset(structural))
+        self.assertTrue({1, 5, 10, 11, 13}.isdisjoint(structural))
+
     def test_wholly_unmapped_executable_new_file_fails_closed(self) -> None:
         new_source = self.repo / "src" / "new.rs"
         new_source.write_text("pub fn new_behavior() -> bool {\n    true\n}\n", encoding="utf-8")
@@ -1180,7 +1257,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(status, 2)
         report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(report["status"], "error")
-        self.assertIn("cannot stat critical path policy", report["errors"][0])
+        self.assertIn("io: cannot read critical path policy", report["errors"][0])
 
     def test_empty_diff_is_a_valid_no_rust_change_result(self) -> None:
         report = self.build(self.lcov(), "")

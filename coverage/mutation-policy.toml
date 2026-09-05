@@ -112,6 +112,10 @@ package = "sorotte-client-core"
 files = [
     "crates/sorotte-client-core/src/runtime/accessors.rs",
     "crates/sorotte-client-core/src/runtime/playback_coordination.rs",
+    "crates/sorotte-client-core/src/runtime/playback_coordination/ordered_events.rs",
+    "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs",
+    "crates/sorotte-client-core/src/runtime/playback_coordination/barrier.rs",
+    "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
     "crates/sorotte-client-core/src/runtime/queued_control.rs",
 ]
 mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|observe_transport_with_semantics|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
@@ -151,9 +155,9 @@ files = [
     "crates/sorotte-server/src/runtime_maintenance.rs",
     "crates/sorotte-server/src/runtime_playback_barrier.rs",
 ]
-mutant_filter = "(participant_status|ParticipantStatus|collect_due_periodic_updates_at|delete field (set_by|transport_revision|client_latency_calculation|client_ignoring_counter|server_rtt_seconds|latency_calculation_seconds) from struct StateSyncOptions expression in ServerRuntime::periodic_state_sync_message_for_client_at)"
+mutant_filter = "(ingest_client_ping_metrics|record_ping_challenge|forward_delay_seconds|participant_status|ParticipantStatus|collect_due_periodic_updates_at|delete field (set_by|transport_revision|client_latency_calculation|client_ignoring_counter|server_rtt_seconds|latency_calculation_seconds) from struct StateSyncOptions expression in ServerRuntime::periodic_state_sync_message_for_client_at)"
 test_target = "lib"
-test_filter = "tests::participant_status_tests::"
+test_filter = ""
 jobs = 2
 timeout_seconds = 120
 build_timeout_seconds = 240
@@ -265,7 +269,7 @@ package = "sorotte-client-core"
 files = ["crates/sorotte-client-core/src/session/reconnect.rs"]
 mutant_filter = ""
 test_target = "lib"
-test_filter = "session::tests::"
+test_filter = ""
 jobs = 2
 timeout_seconds = 60
 build_timeout_seconds = 120
@@ -371,6 +375,39 @@ max_timeouts = 0
 require_baseline = true
 
 [[accepted_unviable]]
+id = "cli-barrier-parse-default"
+shard = "cli-framing"
+file = "crates/sorotte-cli/src/protocol_io.rs"
+function = "parse_lifecycle_write_barrier"
+return_type = "-> anyhow::Result<Option<LifecycleWriteBarrier>>"
+genre = "FnValue"
+replacement = "Ok(Some(Default::default()))"
+reason = "The hosted campaign reports rustc E0277 because LifecycleWriteBarrier has no Default; its readiness and release paths require explicit evidence ownership"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "cli-barrier-environment-default"
+shard = "cli-framing"
+file = "crates/sorotte-cli/src/protocol_io.rs"
+function = "lifecycle_write_barrier_for_frame"
+return_type = "-> anyhow::Result<Option<LifecycleWriteBarrier>>"
+genre = "FnValue"
+replacement = "Ok(Some(Default::default()))"
+reason = "The hosted campaign reports rustc E0277 because LifecycleWriteBarrier has no Default; its readiness and release paths require explicit evidence ownership"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
+id = "cli-barrier-instant-multiply"
+shard = "cli-framing"
+file = "crates/sorotte-cli/src/protocol_io.rs"
+function = "await_configured_lifecycle_write_barrier"
+return_type = "-> anyhow::Result<()>"
+genre = "BinaryOperator"
+replacement = "*"
+reason = "The hosted campaign reports rustc E0369 because tokio::time::Instant cannot be multiplied by std::time::Duration when calculating the deadline"
+review_by = "2026-10-31"
+
+[[accepted_unviable]]
 id = "const-default-is-not-const"
 shard = "privacy-secret"
 file = "crates/sorotte-secret/src/lib.rs"
@@ -471,6 +508,7 @@ review_by = "2026-10-31"
 
 [[accepted_unviable]]
 id = "client-reconnect-ping-let-chain-or"
+expected_count = 4
 shard = "client-reconnect-state"
 file = "crates/sorotte-client-core/src/session/reconnect.rs"
 function = "ClientSession::reconcile_ping_only_state_response"
@@ -493,6 +531,7 @@ review_by = "2026-10-31"
 
 [[accepted_unviable]]
 id = "client-runtime-config-host-let-chain-or"
+expected_count = 2
 shard = "client-runtime-config"
 file = "crates/sorotte-client-app/src/legacy_runtime_config.rs"
 function = "parse_host_and_optional_port_from_host_arg_legacy_compatible"
@@ -504,6 +543,7 @@ review_by = "2026-10-31"
 
 [[accepted_unviable]]
 id = "client-runtime-config-room-let-chain-or"
+expected_count = 2
 shard = "client-runtime-config"
 file = "crates/sorotte-client-app/src/legacy_runtime_config.rs"
 function = "normalize_controlled_room_input_legacy_compatible"
@@ -556,6 +596,7 @@ genre = "BinaryOperator"
 replacement = "||"
 reason = "cargo-mutants replaces each of the forward- and backward-search Rust let-chain && sites with ||, but let expressions are only valid in && chains so both generated mutants cannot parse"
 review_by = "2026-10-31"
+expected_count = 2
 
 [[accepted_unviable]]
 id = "participant-status-scope-state-revision-default"
@@ -714,7 +755,7 @@ review_by = "2026-11-30"
 [[accepted_unviable]]
 id = "client-participant-status-runtime-player-availability-default"
 shard = "client-participant-status-runtime"
-file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs"
 function = "RuntimePlaybackCoordination::participant_status_player_availability"
 return_type = "-> ParticipantPlayerConnection"
 genre = "FnValue"
@@ -725,7 +766,7 @@ review_by = "2026-11-30"
 [[accepted_unviable]]
 id = "client-participant-status-runtime-pending-report-default"
 shard = "client-participant-status-runtime"
-file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs"
 function = "RuntimePlaybackCoordination::pending_participant_status_report"
 return_type = "-> Option<PendingParticipantStatusReport>"
 genre = "FnValue"
@@ -923,6 +964,17 @@ reason = "cargo-mutants changes the observed && connector in a Rust let-chain to
 review_by = "2026-11-30"
 
 [[accepted_unviable]]
+id = "server-ping-challenge-let-chain-or"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::record_ping_challenge"
+return_type = "-> f64"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the observed && connector in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
 id = "server-participant-status-scope-default"
 shard = "server-participant-status"
 file = "crates/sorotte-server/src/runtime_maintenance.rs"
@@ -1037,7 +1089,7 @@ review_by = "2026-11-30"
 [[accepted_unviable]]
 id = "client-participant-status-runtime-phase-default"
 shard = "client-participant-status-runtime"
-file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/participant_status.rs"
 function = "RuntimePlaybackCoordination::participant_status_phase"
 return_type = "-> ParticipantPlaybackPhase"
 genre = "FnValue"
@@ -1076,4 +1128,102 @@ return_type = "-> bool"
 genre = "BinaryOperator"
 replacement = "||"
 reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[shard]]
+id = "plex-http-origin"
+owner = "plex"
+package = "sorotte-plex"
+files = ["crates/sorotte-plex/src/http.rs"]
+mutant_filter = "same_origin"
+test_target = "lib"
+test_filter = "http_boundary_tests::canonical_origin_"
+jobs = 2
+timeout_seconds = 60
+build_timeout_seconds = 180
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "settings-duplicate-keys"
+owner = "client-settings"
+package = "sorotte-client-app"
+files = ["crates/sorotte-client-app/src/sorotte_ini/helpers.rs"]
+mutant_filter = "(upsert_ini_value_legacy_compatible|remove_ini_value_legacy_compatible|ini_section_name)"
+test_target = "lib"
+test_filter = "sorotte_ini::duplicate_tests::"
+jobs = 2
+timeout_seconds = 90
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-local-clock"
+owner = "server-timing"
+package = "sorotte-server"
+files = ["crates/sorotte-server/src/local_clock.rs"]
+mutant_filter = "(ServerLocalClock::observe|ServerLocalClock::set_override)"
+test_target = "lib"
+test_filter = "local_clock::tests::"
+jobs = 2
+timeout_seconds = 90
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[shard]]
+id = "server-resource-permits"
+owner = "server-networking"
+package = "sorotte-server"
+files = ["crates/sorotte-server/src/resources.rs"]
+mutant_filter = "(NetworkResources::admit|reserve|ByteReservation::resize|ServerResourceLimits::validate)"
+test_target = "lib"
+test_filter = "resources::tests::"
+jobs = 2
+timeout_seconds = 90
+build_timeout_seconds = 240
+minimum_viable_kill_percent = "100.00"
+max_missed = 0
+max_timeouts = 0
+require_baseline = true
+
+[[accepted_unviable]]
+id = "settings-duplicate-let-chain-or"
+shard = "settings-duplicate-keys"
+file = "crates/sorotte-client-app/src/sorotte_ini/helpers.rs"
+function = "upsert_ini_value_legacy_compatible"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 2
+reason = "Both observed mutants replace an && connector in a Rust let-chain with ||, which rustc rejects because let-chain conditions support only &&; real campaign build logs establish both compile failures"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-resource-connection-permit-default"
+shard = "server-resource-permits"
+file = "crates/sorotte-server/src/resources.rs"
+function = "NetworkResources::admit"
+return_type = "-> Option<ConnectionPermit>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "The isolated campaign reports rustc E0277 because ConnectionPermit has no Default; admission ownership cannot be constructed without its counted address and resource owner"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "server-resource-byte-reservation-default"
+shard = "server-resource-permits"
+file = "crates/sorotte-server/src/resources.rs"
+function = "PeerByteBudget::reserve"
+return_type = "-> Option<ByteReservation>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "The isolated campaign reports rustc E0277 because ByteReservation has no Default; byte ownership cannot be constructed without its budget and reserved count"
 review_by = "2026-11-30"

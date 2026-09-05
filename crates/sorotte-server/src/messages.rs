@@ -244,6 +244,7 @@ pub(crate) fn server_feature_list(
         SOROTTE_PLAYBACK_BARRIER_V1: true,
         SOROTTE_READINESS_V2: readiness_enabled,
         SOROTTE_PARTICIPANT_STATUS_V1: true,
+        SOROTTE_LARGE_PROTOCOL_FRAMES_V1: true,
         "uiMode": LEGACY_UI_MODE_UNKNOWN,
     })
 }

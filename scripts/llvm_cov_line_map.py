@@ -36,6 +36,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import artifact_input
+
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-llvm-line-map"
@@ -145,14 +147,10 @@ def read_bounded(path: pathlib.Path, *, limit: int, description: str) -> bytes:
         raise LlvmCovLineMapError(f"{description} is not a regular file: {path}")
     if stat.st_size <= 0:
         raise LlvmCovLineMapError(f"{description} is empty: {path}")
-    if stat.st_size > limit:
-        raise LlvmCovLineMapError(
-            f"{description} exceeds the {limit}-byte safety limit: {stat.st_size} bytes"
-        )
     try:
-        return path.read_bytes()
-    except OSError as error:
-        raise LlvmCovLineMapError(f"cannot read {description} {path}: {error}") from error
+        return artifact_input.read_bounded(path, max_bytes=limit, label=description)
+    except artifact_input.ArtifactInputError as error:
+        raise LlvmCovLineMapError(str(error)) from error
 
 
 def decode_utf8(value: bytes, *, description: str) -> str:
@@ -191,17 +189,10 @@ def reject_json_constant(value: str) -> None:
 
 
 def parse_json(value: bytes) -> dict[str, Any]:
-    text = decode_utf8(value, description="LLVM JSON")
     try:
-        parsed = json.loads(
-            text,
-            object_pairs_hook=duplicate_rejecting_object,
-            parse_constant=reject_json_constant,
-        )
-    except LlvmCovLineMapError:
-        raise
-    except json.JSONDecodeError as error:
-        raise LlvmCovLineMapError(f"LLVM JSON is malformed: {error}") from error
+        parsed = artifact_input.strict_json_loads(value, max_bytes=MAX_LLVM_JSON_BYTES, label="LLVM JSON")
+    except artifact_input.ArtifactInputError as error:
+        raise LlvmCovLineMapError(str(error)) from error
     return require_object(parsed, context="LLVM JSON root")
 
 
@@ -395,7 +386,12 @@ def validate_json_export(
             context=f"{context}.filename",
             require_rust=True,
         )
-        identity = relative.casefold() if os.name == "nt" else relative
+        # Rust #[path] modules shared by independent binaries can produce
+        # distinct LLVM file spellings that resolve to the same source. Keep
+        # each producer view until its text rows have been validated; only
+        # an exact repeated producer identity is invalid.
+        filename = file_value["filename"]
+        identity = filename.casefold() if os.name == "nt" else filename
         if identity in identities:
             raise LlvmCovLineMapError(
                 f"LLVM JSON contains duplicate source file {relative!r}"
@@ -559,7 +555,26 @@ def parse_native_text(
         raise LlvmCovLineMapError(
             f"LLVM native text has unexpected content at row {cursor + 1}"
         )
-    return mapped_files
+    merged: dict[str, dict[str, Any]] = {}
+    for view in mapped_files:
+        previous = merged.get(view["path"])
+        if previous is None:
+            merged[view["path"]] = view
+            continue
+        if (
+            previous["source_sha256"] != view["source_sha256"]
+            or previous["source_line_count"] != view["source_line_count"]
+        ):
+            raise LlvmCovLineMapError("LLVM source aliases disagree about source identity")
+        # A physical line is covered if any independently validated view
+        # executed it. Do not add instances to the physical-line denominator.
+        executions = dict(previous["lines"])
+        for line, covered in view["lines"]:
+            executions[line] = max(executions.get(line, 0), covered)
+        previous["lines"] = [[line, covered] for line, covered in sorted(executions.items())]
+        previous["instrumented_line_count"] = len(executions)
+        previous["covered_line_count"] = sum(executions.values())
+    return list(merged.values())
 
 
 def percent_text(covered: int, count: int) -> str | None:

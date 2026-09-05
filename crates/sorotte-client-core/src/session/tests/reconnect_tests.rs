@@ -7,5 +7,6 @@ mod reconciliation_mutation_tests;
 mod reset_tests;
 mod retry_transition_tests;
 mod state_restore_tests;
+mod transport_revision_tests;
 mod validation_flow_tests;
 mod validation_policy_tests;

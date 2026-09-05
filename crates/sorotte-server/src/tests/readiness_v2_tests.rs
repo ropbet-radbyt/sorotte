@@ -28,6 +28,141 @@ use std::collections::BTreeMap;
 
 const READINESS_CAPABILITIES: &str = r#""sorottePlaybackBarrierV1":true,"sorotteReadinessV2":true"#;
 
+#[test]
+fn barrier_deadline_and_connection_liveness_use_elapsed_time_across_wall_adjustments() {
+    for wall in [-5000.0, 100.0, 50_000.0] {
+        let mut runtime = ServerRuntime::new();
+        runtime.set_clock_overrides_seconds(Some(100.0), Some(0.0));
+        runtime
+            .handle_line("peer", &readiness_hello("alice", "room"))
+            .unwrap();
+        start_barrier(&mut runtime, "peer");
+        assert_eq!(runtime.room_playback_barriers["room"].deadline, 5.0);
+        assert_eq!(
+            runtime.room_playback_barriers["room"].prepare.deadline,
+            Some(105.0)
+        );
+        runtime.set_clock_overrides_seconds(Some(wall), Some(4.999));
+        runtime.collect_dispatch_at(wall).unwrap();
+        assert_eq!(
+            runtime.room_playback_barriers["room"].phase,
+            PlaybackBarrierPhase::Preparing
+        );
+        assert!(
+            runtime.session("peer").is_some(),
+            "wall jump must not cause a protocol timeout"
+        );
+        runtime.set_clock_overrides_seconds(Some(wall), Some(5.0));
+        runtime.collect_dispatch_at(wall).unwrap();
+        assert_ne!(
+            runtime.room_playback_barriers["room"].phase,
+            PlaybackBarrierPhase::Preparing
+        );
+        runtime.set_clock_overrides_seconds(Some(101.0), Some(2.0));
+        runtime.collect_dispatch_at(101.0).unwrap();
+        assert_ne!(
+            runtime.room_playback_barriers["room"].phase,
+            PlaybackBarrierPhase::Preparing
+        );
+    }
+}
+
+#[test]
+fn reconnect_cache_capacity_evicts_oldest_membership_without_reviving_it() {
+    let mut runtime = ServerRuntime::new();
+    runtime.set_clock_overrides_seconds(Some(100.0), Some(0.0));
+    let first = runtime
+        .handle_line_fanout("peer", &readiness_hello("alice", "room"))
+        .unwrap();
+    let first_token = reconnect_token_for(&first, "peer");
+    let first_epoch = runtime.room_readiness["room"].participants["alice"]
+        .record
+        .membership_epoch;
+    runtime.handle_transport_disconnect_fanout("peer").unwrap();
+    runtime.set_clock_overrides_seconds(Some(100.0), Some(1.0));
+    for _ in 0..crate::READINESS_RECONNECT_MAX_RETAINED {
+        runtime
+            .handle_line("peer", &readiness_hello("alice", "room"))
+            .unwrap();
+        runtime.handle_transport_disconnect_fanout("peer").unwrap();
+    }
+    assert_eq!(
+        runtime.readiness_reconnect_cache.len(),
+        crate::READINESS_RECONNECT_MAX_RETAINED
+    );
+    runtime
+        .handle_line(
+            "peer",
+            &readiness_hello_with_token("alice", "room", &first_token),
+        )
+        .unwrap();
+    assert_ne!(
+        runtime.room_readiness["room"].participants["alice"]
+            .record
+            .membership_epoch,
+        first_epoch
+    );
+}
+
+#[test]
+fn reconnect_expiry_is_monotonic_and_maintenance_prunes_without_attach() {
+    for (wall, elapsed, restores) in [
+        (400.0, 179.999, true),
+        (150.0, 180.0, false),
+        (150.0, 300.0, false),
+    ] {
+        let mut runtime = ServerRuntime::new();
+        runtime.set_clock_overrides_seconds(Some(100.0), Some(0.0));
+        let joined = runtime
+            .handle_line_fanout("old", &readiness_hello("alice", "room"))
+            .unwrap();
+        let token = reconnect_token_for(&joined, "old");
+        let epoch = runtime.room_readiness["room"].participants["alice"]
+            .record
+            .membership_epoch;
+        runtime.handle_transport_disconnect_fanout("old").unwrap();
+        runtime.set_clock_overrides_seconds(Some(wall), Some(elapsed));
+        runtime.collect_dispatch_at(wall).unwrap();
+        assert_eq!(
+            runtime.readiness_reconnect_cache.len(),
+            usize::from(restores)
+        );
+        // Neither a wall rollback nor a regressing injected elapsed sample
+        // can make an expired token live after maintenance observed expiry.
+        runtime.set_clock_overrides_seconds(Some(150.0), Some(elapsed.min(150.0)));
+        runtime
+            .handle_line_fanout("new", &readiness_hello_with_token("alice", "room", &token))
+            .unwrap();
+        assert_eq!(
+            runtime.room_readiness["room"].participants["alice"]
+                .record
+                .membership_epoch
+                == epoch,
+            restores
+        );
+    }
+}
+
+#[test]
+fn readiness_pending_transport_deadline_ignores_wall_clock_adjustments() {
+    let mut runtime = ServerRuntime::new();
+    runtime.set_clock_overrides_seconds(Some(100.0), Some(0.0));
+    runtime
+        .handle_line("peer", &readiness_hello("alice", "room"))
+        .unwrap();
+    runtime.stage_unclassified_user_transport_observation("peer", "room", "alice", true);
+    runtime
+        .set_clock_overrides_seconds(Some(-1000.0), Some(READINESS_USER_TRANSPORT_GRACE_SECONDS));
+    runtime.collect_dispatch_at(-1000.0).unwrap();
+    assert!(!runtime.consume_pending_user_transport(
+        "peer",
+        "room",
+        "alice",
+        true,
+        PendingUserTransportEvidence::UnclassifiedObservation
+    ));
+}
+
 fn readiness_hello(username: &str, room: &str) -> String {
     format!(
         r#"{{"Hello":{{"username":"{username}","room":{{"name":"{room}"}},"version":"1.7.5","features":{{{READINESS_CAPABILITIES}}}}}}}"#

@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -27,6 +27,8 @@ const MAX_TOKEN_LEN: usize = 128;
 const MAX_COMPONENT_ROLES: usize = 8;
 const MAX_IDENTITIES: usize = 16;
 const MAX_PREDECESSORS: usize = 16;
+const MAX_RECORD_BYTES: usize = 16 * 1024;
+const MAX_SEQUENCE: u64 = 99_999_999;
 
 static GLOBAL_RECORDER: OnceLock<Option<LifecycleEvidenceRecorder>> = OnceLock::new();
 
@@ -291,19 +293,49 @@ pub enum EvidenceError {
     Json(#[from] serde_json::Error),
 }
 
+/// Recorder failures carried through the existing `EvidenceError::Io` variant
+/// so callers that exhaustively match the 0.2.x error enum remain compatible.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum RecordingFailure {
+    #[error("lifecycle evidence recorder failed earlier: {first_error}")]
+    RecordingFailed { first_error: Arc<str> },
+    #[error("lifecycle evidence record exceeds {MAX_RECORD_BYTES} bytes")]
+    RecordTooLarge,
+    #[error("lifecycle evidence exhausted its event sequence")]
+    SequenceExhausted,
+}
+
+impl From<RecordingFailure> for EvidenceError {
+    fn from(failure: RecordingFailure) -> Self {
+        Self::Io(std::io::Error::other(failure))
+    }
+}
+
+impl EvidenceError {
+    /// Returns a typed recorder failure, when this error carries one.
+    pub fn recording_failure(&self) -> Option<&RecordingFailure> {
+        match self {
+            Self::Io(error) => error.get_ref()?.downcast_ref(),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LifecycleEvidenceRecorder {
     inner: Arc<Mutex<RecorderState>>,
 }
 
 struct RecorderState {
-    writer: BufWriter<File>,
+    writer: Box<dyn Write + Send>,
     origin: Instant,
     sequence: u64,
     run_id: String,
     emitter: String,
     declared_roles: BTreeSet<ProcessRole>,
     last_event_id: String,
+    first_error: Option<Arc<str>>,
 }
 
 #[derive(Serialize)]
@@ -363,6 +395,7 @@ impl LifecycleEvidenceRecorder {
         let product_digest = product_digest.into();
         validate_token("run_id", &run_id)?;
         validate_token("emitter", &emitter)?;
+        validate_token("event_id", &format!("{emitter}.00000001"))?;
         validate_digest(&product_digest)?;
 
         let file = match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -372,14 +405,35 @@ impl LifecycleEvidenceRecorder {
             }
             Err(error) => return Err(EvidenceError::Io(error)),
         };
+        Self::with_writer(file, run_id, emitter, inventory, product_digest)
+    }
+
+    /// Creates an enabled recorder using the same record and flush protocol as
+    /// the file-backed API. A writer failure permanently fails this recorder;
+    /// later calls refuse events and finalization returns the first failure.
+    pub fn with_writer(
+        writer: impl Write + Send + 'static,
+        run_id: impl Into<String>,
+        emitter: impl Into<String>,
+        inventory: ProcessInventorySpec,
+        product_digest: impl Into<String>,
+    ) -> Result<Self, EvidenceError> {
+        let run_id = run_id.into();
+        let emitter = emitter.into();
+        let product_digest = product_digest.into();
+        validate_token("run_id", &run_id)?;
+        validate_token("emitter", &emitter)?;
+        validate_token("event_id", &format!("{emitter}.00000001"))?;
+        validate_digest(&product_digest)?;
         let mut state = RecorderState {
-            writer: BufWriter::new(file),
+            writer: Box::new(writer),
             origin: Instant::now(),
             sequence: 1,
             run_id,
             emitter,
             declared_roles: inventory.component_roles.clone(),
             last_event_id: String::new(),
+            first_error: None,
         };
         let event_id = state.event_id();
         let record = ProcessInventoryRecord {
@@ -406,17 +460,66 @@ impl LifecycleEvidenceRecorder {
         })
     }
 
-    pub fn emit(&self, mut observation: TransitionObservation) -> Result<String, EvidenceError> {
+    pub fn emit(&self, observation: TransitionObservation) -> Result<String, EvidenceError> {
         let mut state = self.inner.lock().map_err(|_| EvidenceError::Poisoned)?;
-        observation.validate(&state.declared_roles)?;
+        state.ensure_healthy()?;
+        let result = state.emit_record(observation);
+        state.retain_failure(result)
+    }
+
+    /// Finalizes the currently emitted prefix. This succeeds only when every
+    /// attempted event and every previous flush succeeded.
+    pub fn flush(&self) -> Result<(), EvidenceError> {
+        let mut state = self.inner.lock().map_err(|_| EvidenceError::Poisoned)?;
+        state.ensure_healthy()?;
+        let result = state.writer.flush().map_err(EvidenceError::Io);
+        state.retain_failure(result)
+    }
+}
+
+impl RecorderState {
+    fn ensure_healthy(&self) -> Result<(), EvidenceError> {
+        match &self.first_error {
+            Some(first_error) => Err(RecordingFailure::RecordingFailed {
+                first_error: Arc::clone(first_error),
+            }
+            .into()),
+            None => Ok(()),
+        }
+    }
+
+    fn retain_failure<T>(&mut self, result: Result<T, EvidenceError>) -> Result<T, EvidenceError> {
+        if let Err(error) = &result {
+            // Writer-supplied diagnostics can contain arbitrary data. Preserve
+            // the failure class, without retaining that data in recorder health.
+            self.first_error.get_or_insert_with(|| match error {
+                _ if error.recording_failure().is_some() => error.to_string().into(),
+                EvidenceError::Io(error) => {
+                    format!("lifecycle evidence I/O failed ({:?})", error.kind()).into()
+                }
+                EvidenceError::Json(_) => "lifecycle evidence serialization failed".into(),
+                _ => error.to_string().into(),
+            });
+        }
+        result
+    }
+
+    fn emit_record(
+        &mut self,
+        mut observation: TransitionObservation,
+    ) -> Result<String, EvidenceError> {
+        observation.validate(&self.declared_roles)?;
+        if self.sequence > MAX_SEQUENCE {
+            return Err(RecordingFailure::SequenceExhausted.into());
+        }
         if !observation
             .causal_predecessors
             .iter()
-            .any(|predecessor| predecessor == &state.last_event_id)
+            .any(|predecessor| predecessor == &self.last_event_id)
         {
             observation
                 .causal_predecessors
-                .insert(0, state.last_event_id.clone());
+                .insert(0, self.last_event_id.clone());
         }
         if observation.causal_predecessors.len() > MAX_PREDECESSORS {
             return Err(EvidenceError::TooManyCausalPredecessors {
@@ -424,19 +527,17 @@ impl LifecycleEvidenceRecorder {
                 maximum: MAX_PREDECESSORS,
             });
         }
-        let event_id = state.event_id();
-        let monotonic_ns = state.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        let run_id = state.run_id.clone();
-        let emitter = state.emitter.clone();
+        let event_id = self.event_id();
+        let monotonic_ns = self.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
         let record = TransitionRecord {
             common: CommonRecord {
                 schema_version: SCHEMA_VERSION,
                 kind: SCHEMA_KIND,
                 record_type: "transition",
                 event_id: &event_id,
-                run_id: &run_id,
+                run_id: &self.run_id,
                 monotonic_ns,
-                emitter: &emitter,
+                emitter: &self.emitter,
             },
             process_role: observation.process_role,
             subject: &observation.subject,
@@ -454,23 +555,11 @@ impl LifecycleEvidenceRecorder {
             deadline_ms: observation.deadline_ms,
             deadline_expired: observation.deadline_expired,
         };
-        write_record(&mut state.writer, &record)?;
-        state.last_event_id.clone_from(&event_id);
-        state.sequence += 1;
+        write_record(&mut self.writer, &record)?;
+        self.last_event_id.clone_from(&event_id);
+        self.sequence += 1;
         Ok(event_id)
     }
-
-    pub fn flush(&self) -> Result<(), EvidenceError> {
-        self.inner
-            .lock()
-            .map_err(|_| EvidenceError::Poisoned)?
-            .writer
-            .flush()
-            .map_err(EvidenceError::Io)
-    }
-}
-
-impl RecorderState {
     fn event_id(&self) -> String {
         format!("{}.{:08}", self.emitter, self.sequence)
     }
@@ -580,15 +669,39 @@ fn validate_token(field: &'static str, value: &str) -> Result<(), EvidenceError>
     Ok(())
 }
 
-fn write_record(
-    writer: &mut BufWriter<File>,
-    record: &impl Serialize,
-) -> Result<(), EvidenceError> {
-    serde_json::to_writer(&mut *writer, record)?;
-    writer.write_all(b"\n")?;
+fn write_record(writer: &mut impl Write, record: &impl Serialize) -> Result<(), EvidenceError> {
+    let mut encoded = RecordBuffer(Vec::new());
+    let result = serde_json::to_writer(&mut encoded, record);
+    if encoded.0.len() >= MAX_RECORD_BYTES {
+        return Err(RecordingFailure::RecordTooLarge.into());
+    }
+    result?;
+    encoded.0.push(b'\n');
+    writer.write_all(&encoded.0)?;
     writer.flush()?;
     Ok(())
 }
+
+struct RecordBuffer(Vec<u8>);
+
+impl Write for RecordBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let available = MAX_RECORD_BYTES - self.0.len();
+        self.0
+            .extend_from_slice(&bytes[..bytes.len().min(available)]);
+        if bytes.len() > available {
+            return Err(std::io::Error::other("record byte budget exceeded"));
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod failure_tests;
 
 #[cfg(test)]
 mod tests {
@@ -600,7 +713,7 @@ mod tests {
 
     use super::*;
 
-    fn unique_path(name: &str) -> PathBuf {
+    pub(super) fn unique_path(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should follow Unix epoch")
@@ -611,7 +724,7 @@ mod tests {
         ))
     }
 
-    fn recorder(path: &Path) -> LifecycleEvidenceRecorder {
+    pub(super) fn recorder(path: &Path) -> LifecycleEvidenceRecorder {
         LifecycleEvidenceRecorder::create(
             path,
             "run-001",
@@ -675,13 +788,13 @@ mod tests {
 
     #[test]
     fn raw_paths_urls_and_whitespace_are_rejected() {
-        let path = unique_path("privacy");
-        let recorder = recorder(&path);
         for unsafe_subject in [
             "C:\\Users\\person\\video.mkv",
             "https://example.test/media",
             "private room",
         ] {
+            let path = unique_path("privacy");
+            let recorder = recorder(&path);
             let error = recorder
                 .emit(TransitionObservation::new(
                     ProcessRole::Client,
@@ -691,8 +804,9 @@ mod tests {
                 ))
                 .expect_err("unsafe subject should fail");
             assert!(matches!(error, EvidenceError::UnsafeToken { .. }));
+            assert!(recorder.flush().is_err());
+            std::fs::remove_file(path).expect("test evidence should be removable");
         }
-        std::fs::remove_file(path).expect("test evidence should be removable");
     }
 
     #[test]
@@ -711,6 +825,10 @@ mod tests {
             role_error,
             EvidenceError::UndeclaredProcessRole { .. }
         ));
+        assert!(recorder.flush().is_err());
+        std::fs::remove_file(path).expect("test evidence should be removable");
+        let path = unique_path("zero-identity");
+        let recorder = self::recorder(&path);
         let identity_error = recorder
             .emit(
                 TransitionObservation::new(

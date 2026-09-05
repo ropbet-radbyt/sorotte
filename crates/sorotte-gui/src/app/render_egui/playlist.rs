@@ -401,6 +401,18 @@ impl GuiWidgetEguiRenderer {
             playlist_focus_id,
             Self::playlist_focus_sense(),
         );
+        // Row activation transfers keyboard ownership to this shared target
+        // for playlist shortcuts. Preserve the selected row's accessible name
+        // on that actual focus owner, including after selection changes.
+        let _ = ui
+            .ctx()
+            .accesskit_node_builder(playlist_focus_id, |builder| {
+                builder.set_author_id("main-window:playlist:keyboard-focus".to_owned());
+                builder.set_label(node.children.iter().find(|row| row.selected).map_or_else(
+                    || node.label.clone(),
+                    |row| format!("{}: {}", node.label, row.label),
+                ));
+            });
         if playlist_focus_requested {
             playlist_focus_response.request_focus();
         }
@@ -869,9 +881,14 @@ impl GuiWidgetEguiRenderer {
         }
 
         let text_left = rect.left() + if is_room_active { 50.0 } else { 36.0 };
-        let remove_padding = if has_remove_button { 46.0 } else { 12.0 }
-            + if has_source_button { 116.0 } else { 0.0 };
-        let text_right = (rect.right() - remove_padding).max(text_left);
+        // Source controls shrink on narrow rows. Use their actual interaction
+        // boundary so the label keeps the space that the controls released.
+        let text_right = (if has_remove_button || has_source_button {
+            response.rect.right() - 8.0
+        } else {
+            rect.right() - 12.0
+        })
+        .max(text_left);
         let text_width = (text_right - text_left).max(0.0);
         let (display_label, truncated) = Self::truncate_single_line_text_for_width(
             ui,

@@ -34,6 +34,8 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+import artifact_input
+
 
 SCHEMA_VERSION = 2
 REPORT_KIND = "sorotte-coverage-profile-lanes"
@@ -151,7 +153,7 @@ EXPECTED_COMPAT_TESTS = (
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_latency_metrics_matches_runtime_core_behavior",
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_propagation_matches_runtime_core_behavior",
 )
-EXPECTED_COMPAT_TOTAL_TESTS = 150
+EXPECTED_COMPAT_TOTAL_TESTS = 152
 EXPECTED_COMPAT_FILTERED_OUT = (
     EXPECTED_COMPAT_TOTAL_TESTS - len(EXPECTED_COMPAT_TESTS)
 )
@@ -229,20 +231,9 @@ def reject_json_constant(value: str) -> None:
 
 def parse_json(data: bytes, *, label: str) -> Any:
     try:
-        text = data.decode("utf-8", errors="strict")
-        return json.loads(
-            text,
-            object_pairs_hook=reject_duplicate_pairs,
-            parse_constant=reject_json_constant,
-        )
-    except UnicodeError as error:
-        raise CoverageProfileLaneError(
-            f"{label} is not valid UTF-8: {error}"
-        ) from error
-    except json.JSONDecodeError as error:
-        raise CoverageProfileLaneError(
-            f"{label} is not valid JSON: {error}"
-        ) from error
+        return artifact_input.strict_json_loads(data, max_bytes=MAX_REPORT_BYTES, label=label)
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
 
 
 def require_mapping(value: Any, *, label: str) -> Mapping[str, Any]:
@@ -520,6 +511,23 @@ def parse_show_env(
     return environment, summary, profile_root
 
 
+def show_env_environment(
+    *, repo_root: pathlib.Path, environment: Mapping[str, str]
+) -> dict[str, str]:
+    # Unlike `test` and `report`, `show-env` does not append llvm-cov-target
+    # itself. Select the same directory explicitly so external-process hits
+    # enter the profile set that the final cargo-llvm-cov report merges.
+    cargo_target = pathlib.Path(environment.get("CARGO_TARGET_DIR", "target"))
+    coverage_target = resolve_within(
+        repo_root, cargo_target / "llvm-cov-target", label="coverage build directory"
+    )
+    result = dict(environment)
+    result["CARGO_TARGET_DIR"] = str(coverage_target)
+    result["CARGO_LLVM_COV_TARGET_DIR"] = str(coverage_target)
+    result["CARGO_LLVM_COV_BUILD_DIR"] = str(coverage_target)
+    return result
+
+
 def profile_inventory(
     profile_root: pathlib.Path,
     *,
@@ -533,10 +541,8 @@ def profile_inventory(
     if not root.exists():
         return {}
     inventory: dict[str, ProfileState] = {}
-    # cargo-llvm-cov's owned workspace-test profiles live under
-    # target/llvm-cov-target, while processes launched with show-env write to
-    # the profile pattern directly under target. The merged producer consumes
-    # both, so freshness evidence must inventory the complete target tree.
+    # All producers share the merge directory. Inventory its full tree so
+    # reset and freshness validation also reject retained nested profiles.
     for path in sorted(root.rglob("*.profraw")):
         if path.is_symlink() or not path.is_file():
             raise CoverageProfileLaneError(
@@ -838,11 +844,10 @@ def file_metadata(
     *,
     repo_root: pathlib.Path,
 ) -> dict[str, Any]:
-    data = path.read_bytes()
-    if len(data) > MAX_LOG_BYTES:
-        raise CoverageProfileLaneError(
-            f"coverage lane log exceeds {MAX_LOG_BYTES} bytes: {path}"
-        )
+    try:
+        data = artifact_input.read_bounded(path, max_bytes=MAX_LOG_BYTES, label="coverage lane log")
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
     return {
         "path": repo_relative(repo_root, path),
         "size_bytes": len(data),
@@ -1081,7 +1086,8 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
         label="coverage profile report",
     )
     if (
-        report.get("schema_version") != SCHEMA_VERSION
+        not artifact_input.is_json_integer(report.get("schema_version"))
+        or report.get("schema_version") != SCHEMA_VERSION
         or report.get("kind") != REPORT_KIND
     ):
         raise CoverageProfileLaneError(
@@ -1329,21 +1335,9 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
 
 def strict_load_report(path: pathlib.Path) -> Mapping[str, Any]:
     try:
-        size = path.stat().st_size
-    except OSError as error:
-        raise CoverageProfileLaneError(
-            f"cannot stat coverage profile report {path}: {error}"
-        ) from error
-    if size > MAX_REPORT_BYTES:
-        raise CoverageProfileLaneError(
-            f"coverage profile report exceeds {MAX_REPORT_BYTES} bytes"
-        )
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise CoverageProfileLaneError(
-            f"cannot read coverage profile report {path}: {error}"
-        ) from error
+        data = artifact_input.read_bounded(path, max_bytes=MAX_REPORT_BYTES, label="coverage profile report")
+    except artifact_input.ArtifactInputError as error:
+        raise CoverageProfileLaneError(str(error)) from error
     return validate_report_document(parse_json(data, label="coverage profile report"))
 
 
@@ -1459,7 +1453,7 @@ def run_collection(args: argparse.Namespace) -> int:
         show_env_result = run_command(
             SHOW_ENV_COMMAND,
             cwd=repo_root,
-            environment=environment,
+            environment=show_env_environment(repo_root=repo_root, environment=environment),
         )
         instrumentation_env, instrumentation_summary, profile_root = parse_show_env(
             show_env_result,
@@ -1495,9 +1489,7 @@ def run_collection(args: argparse.Namespace) -> int:
         # built, uninstrumented binary even though show-env is present. Pin all
         # external lanes to cargo-llvm-cov's isolated build directory, which
         # the workspace lane populated with the same instrumentation contract.
-        instrumented_environment["CARGO_TARGET_DIR"] = str(
-            profile_root / "llvm-cov-target"
-        )
+        instrumented_environment["CARGO_TARGET_DIR"] = str(profile_root)
         with tempfile.TemporaryDirectory(
             prefix="sorotte-coverage-semantic-"
         ) as temporary:

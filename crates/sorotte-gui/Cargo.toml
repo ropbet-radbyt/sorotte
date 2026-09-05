@@ -24,11 +24,12 @@ egui.workspace = true
 reqwest.workspace = true
 rfd.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tokio.workspace = true
 sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 zip.workspace = true
 sorotte-compat = { path = "../sorotte-compat", optional = true }
@@ -43,13 +44,14 @@ sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_HiDpi"] }
 windows.workspace = true
 
 [build-dependencies]
 embed-resource = "3.0.11"
 
 [dev-dependencies]
+sorotte-server = { path = "../sorotte-server" }
 sorotte-client-core = { path = "../sorotte-client-core", features = ["test-support"] }
 sorotte-player-api = { path = "../sorotte-player-api", features = ["test-support"] }
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
@@ -84,3 +86,8 @@ path = "src/bin/sorotte-gui-updater.rs"
 name = "updater_self_replacement_windows"
 path = "tests/updater_self_replacement_windows.rs"
 required-features = ["updater-integration-test"]
+
+[[example]]
+name = "scaling_workloads"
+test = true
+required-features = ["gui-semantic-smoke", "live-python-interop"]

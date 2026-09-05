@@ -120,6 +120,15 @@ impl ClientParticipantStatusView {
             report_age_seconds,
             freshness,
         };
+        if view.status.playback_scope.is_some_and(|scope| {
+            scope.media_generation == 0
+                || scope.state_revision == Some(0)
+                || scope.transport_revision == Some(0)
+        }) {
+            // An invalid row scope cannot support media evidence, even when
+            // its correlation is absent or explicitly uncorrelated.
+            view.redact_precise_scope_evidence();
+        }
         view.synchronize_age_derived_availability();
         view.synchronize_evidence_age(0.0);
         view

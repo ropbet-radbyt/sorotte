@@ -984,16 +984,6 @@ impl GuiPersistedSettingsPatch {
             }
         }
     }
-
-    pub(super) fn clears_plex_identity_on_disk(&self) -> bool {
-        matches!(
-            self,
-            Self::PlexAuthenticated {
-                clear_selected_server: true,
-                ..
-            } | Self::PlexDisconnected
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -141,7 +141,7 @@ impl MpvAdapter {
         // events into this fast pump. Reduce their lifecycle effects now, but
         // retain potentially blocking network-option work for the ordinary
         // full flush.
-        self.network_media_options_event_batch_depth += 1;
+        self.network_options.network_media_options_event_batch_depth += 1;
         for item in items {
             match item {
                 crate::ipc::MpvIpcNonblockingRuntimeItem::CausalEvent(event) => {
@@ -166,6 +166,7 @@ impl MpvAdapter {
                     self.current_ipc_event_observed_at = previous_observed_at;
                     if is_transition_result
                         && let Some(result) = self
+                            .network_options
                             .deferred_network_media_options_hook_transition_result
                             .take()
                     {
@@ -197,8 +198,10 @@ impl MpvAdapter {
                             command_id,
                             token: NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN,
                         } => {
-                            if let Some(pending) =
-                                self.network_media_options_hook_pending_heartbeat.as_mut()
+                            if let Some(pending) = self
+                                .network_options
+                                .network_media_options_hook_pending_heartbeat
+                                .as_mut()
                                 && pending.command_id == Some(command_id)
                             {
                                 pending.sent_at = Some(Instant::now());
@@ -207,10 +210,13 @@ impl MpvAdapter {
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
                             command_id,
                             token: NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN,
-                        } if self.network_media_options_hook_pending_event_poll_command_id
+                        } if self
+                            .network_options
+                            .network_media_options_hook_pending_event_poll_command_id
                             == Some(command_id) =>
                         {
-                            self.network_media_options_hook_pending_event_poll_command_id = None;
+                            self.network_options
+                                .network_media_options_hook_pending_event_poll_command_id = None;
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
                             command_id,
@@ -245,10 +251,12 @@ impl MpvAdapter {
                             message,
                         } if (token == NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN
                             && self
+                                .network_options
                                 .network_media_options_hook_pending_heartbeat
                                 .is_some_and(|pending| pending.command_id == Some(command_id)))
                             || (token == NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN
                                 && self
+                                    .network_options
                                     .network_media_options_hook_pending_event_poll_command_id
                                     == Some(command_id)) =>
                         {
@@ -330,7 +338,8 @@ impl MpvAdapter {
                 }
             }
         }
-        self.network_media_options_event_batch_depth = self
+        self.network_options.network_media_options_event_batch_depth = self
+            .network_options
             .network_media_options_event_batch_depth
             .saturating_sub(1);
         processed_any
@@ -392,7 +401,10 @@ impl MpvAdapter {
         if !self.network_media_options_hook_is_ready() {
             return;
         }
-        if let Some(pending) = self.network_media_options_hook_pending_heartbeat {
+        if let Some(pending) = self
+            .network_options
+            .network_media_options_hook_pending_heartbeat
+        {
             if pending.sent_at.is_some_and(|sent_at| {
                 sent_at.elapsed() >= NETWORK_OPTIONS_HOOK_HEARTBEAT_ACK_TIMEOUT
             }) {
@@ -412,6 +424,7 @@ impl MpvAdapter {
             }
 
             if self
+                .network_options
                 .network_media_options_hook_pending_event_poll_command_id
                 .is_some()
             {
@@ -429,7 +442,8 @@ impl MpvAdapter {
             });
             match poll_result {
                 Some(Ok(Some(command_id))) => {
-                    self.network_media_options_hook_pending_event_poll_command_id =
+                    self.network_options
+                        .network_media_options_hook_pending_event_poll_command_id =
                         Some(command_id);
                 }
                 Some(Ok(None)) | None => {}
@@ -443,18 +457,21 @@ impl MpvAdapter {
             return;
         }
         if self
+            .network_options
             .network_media_options_hook_last_heartbeat_at
             .is_some_and(|last| last.elapsed() < NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL)
         {
             return;
         }
 
-        let nonce = self.next_network_media_options_hook_heartbeat_nonce;
+        let nonce = self
+            .network_options
+            .next_network_media_options_hook_heartbeat_nonce;
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
             "ownerId": self.legacy_syncplayintf_owner_id,
             "attachmentId": self.legacy_syncplayintf_attachment_id,
-            "configurationGeneration": self.network_media_options_generation,
+            "configurationGeneration": self.network_options.network_media_options_generation,
             "heartbeatNonce": nonce,
         });
         let command = json!([
@@ -470,11 +487,14 @@ impl MpvAdapter {
             )
         }) {
             Some(Ok(Some(command_id))) => {
-                self.next_network_media_options_hook_heartbeat_nonce = self
+                self.network_options
+                    .next_network_media_options_hook_heartbeat_nonce = self
+                    .network_options
                     .next_network_media_options_hook_heartbeat_nonce
                     .wrapping_add(1)
                     .max(1);
-                self.network_media_options_hook_pending_heartbeat =
+                self.network_options
+                    .network_media_options_hook_pending_heartbeat =
                     Some(PendingNetworkOptionsHookHeartbeat {
                         nonce,
                         command_id: Some(command_id),
@@ -668,8 +688,8 @@ impl PlayerAdapter for MpvAdapter {
         let result = match command {
             PlayerCommand::OpenFile(path) => self.open_file(&path),
             PlayerCommand::SetPosition(position_seconds) => {
-                self.interrupted_network_stream_recovery = None;
-                self.network_cache_stall = None;
+                self.stream_recovery.interrupted_network_stream_recovery = None;
+                self.stream_recovery.network_cache_stall = None;
                 self.invalidate_network_stream_recovery_position_for_seek();
                 self.begin_seek_cache_evidence_epoch();
                 let result = self.send_ipc_command_if_attached(json!([
@@ -845,8 +865,8 @@ impl PlayerAdapter for MpvAdapter {
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
         let baseline_playlist_entry_ids = self.capture_authoritative_playlist_baseline();
         let generation = self.allocate_media_generation();
-        self.interrupted_network_stream_recovery = None;
-        self.network_cache_stall = None;
+        self.stream_recovery.interrupted_network_stream_recovery = None;
+        self.stream_recovery.network_cache_stall = None;
         let lifecycle_command_id = self.tracked_load_command_id_for_generation(generation);
         let lifecycle_attempt_id = self.submit_lifecycle_load(
             lifecycle_command_id,
@@ -858,22 +878,24 @@ impl PlayerAdapter for MpvAdapter {
         let previous_phase = self.transport_phase;
         self.pending_load_request = Some(path.to_owned());
         self.pending_load_generation = Some(generation);
-        self.network_media_options_embedded_load = None;
+        self.network_options.network_media_options_embedded_load = None;
 
-        let load_result =
-            if uses_network_media_options(path) && !self.network_media_options.is_empty() {
-                self.network_media_options_embedded_load = Some(EmbeddedNetworkMediaOptions {
+        let load_result = if uses_network_media_options(path)
+            && !self.network_options.network_media_options.is_empty()
+        {
+            self.network_options.network_media_options_embedded_load =
+                Some(EmbeddedNetworkMediaOptions {
                     media_generation: generation,
                     requested_target: path.to_owned(),
                 });
-                self.send_network_media_loadfile(path)
-            } else {
-                self.send_ipc_command_if_attached_without_draining_events(json!([
-                    MPV_COMMAND_LOADFILE,
-                    path,
-                    MPV_LOADFILE_REPLACE
-                ]))
-            };
+            self.send_network_media_loadfile(path)
+        } else {
+            self.send_ipc_command_if_attached_without_draining_events(json!([
+                MPV_COMMAND_LOADFILE,
+                path,
+                MPV_LOADFILE_REPLACE
+            ]))
+        };
         if let Err(error) = load_result {
             self.apply_lifecycle_input(PlayerLifecycleInput::LoadAttemptRejected {
                 attachment_epoch: lifecycle_epoch,
@@ -881,11 +903,12 @@ impl PlayerAdapter for MpvAdapter {
                 failure: PlayerCommandFailureKind::Unknown,
             });
             if self
+                .network_options
                 .network_media_options_embedded_load
                 .as_ref()
                 .is_some_and(|embedded| embedded.media_generation == generation)
             {
-                self.network_media_options_embedded_load = None;
+                self.network_options.network_media_options_embedded_load = None;
             }
             if self.pending_load_generation == Some(generation) {
                 self.pending_load_request = None;
@@ -974,9 +997,9 @@ impl PlayerAdapter for MpvAdapter {
             self.pending_local_file_generation = None;
             self.pending_local_file_observed_at = None;
             self.last_polled_local_file_update = None;
-            self.interrupted_network_stream_recovery = None;
-            self.network_stream_recovery_evidence = None;
-            self.network_cache_stall = None;
+            self.stream_recovery.interrupted_network_stream_recovery = None;
+            self.stream_recovery.network_stream_recovery_evidence = None;
+            self.stream_recovery.network_cache_stall = None;
             if self.simulation_mode {
                 self.clear_physical_projection();
                 self.observed_state = MpvObservedState::default();
@@ -1022,8 +1045,8 @@ impl PlayerAdapter for MpvAdapter {
     }
 
     fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
-        self.interrupted_network_stream_recovery = None;
-        self.network_cache_stall = None;
+        self.stream_recovery.interrupted_network_stream_recovery = None;
+        self.stream_recovery.network_cache_stall = None;
         self.invalidate_network_stream_recovery_position_for_seek();
         self.begin_seek_cache_evidence_epoch();
         self.send_ipc_command_if_attached(json!([
@@ -3098,15 +3121,22 @@ mod nonblocking_maintenance_tests {
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Ready;
         adapter.legacy_syncplayintf_last_heartbeat_at =
             Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
-        adapter.network_media_options_hook_enabled = true;
-        adapter.network_media_options_hook_loaded = true;
-        adapter.network_media_options_hook_instance_id = Some("lease-hook".to_owned());
-        adapter.network_media_options_hook_configured_generation =
-            Some(adapter.network_media_options_generation);
+        adapter.network_options.network_media_options_hook_enabled = true;
+        adapter.network_options.network_media_options_hook_loaded = true;
+        adapter
+            .network_options
+            .network_media_options_hook_instance_id = Some("lease-hook".to_owned());
+        adapter
+            .network_options
+            .network_media_options_hook_configured_generation =
+            Some(adapter.network_options.network_media_options_generation);
         adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
-        adapter.network_media_options_hook_last_heartbeat_at =
+        adapter
+            .network_options
+            .network_media_options_hook_last_heartbeat_at =
             Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
         adapter
+            .network_options
             .pending_network_options_hook_health_transitions
             .clear();
         (adapter, network_heartbeats, legacy_heartbeats)
@@ -3162,12 +3192,16 @@ mod nonblocking_maintenance_tests {
             },
             command_timeout,
         );
-        adapter.network_media_options_hook_enabled = true;
-        adapter.network_media_options_hook_loaded = true;
-        adapter.network_media_options_hook_configured_generation =
-            Some(adapter.network_media_options_generation);
+        adapter.network_options.network_media_options_hook_enabled = true;
+        adapter.network_options.network_media_options_hook_loaded = true;
+        adapter
+            .network_options
+            .network_media_options_hook_configured_generation =
+            Some(adapter.network_options.network_media_options_generation);
         adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
-        adapter.network_media_options_hook_last_heartbeat_at =
+        adapter
+            .network_options
+            .network_media_options_hook_last_heartbeat_at =
             Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
 
         let queued_at = Instant::now();
@@ -3178,6 +3212,7 @@ mod nonblocking_maintenance_tests {
         );
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_some_and(|pending| pending.sent_at.is_none())
         );
@@ -3188,12 +3223,13 @@ mod nonblocking_maintenance_tests {
         while Instant::now() < pre_delivery_deadline {
             PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
             assert_eq!(
-                adapter.network_media_options_hook_health,
+                adapter.network_options.network_media_options_hook_health,
                 MpvNetworkOptionsHookHealth::Ready,
                 "an in-flight command must not consume the hook acknowledgement window"
             );
             assert!(
                 adapter
+                    .network_options
                     .network_media_options_hook_pending_heartbeat
                     .is_some_and(|pending| pending.sent_at.is_none())
             );
@@ -3203,6 +3239,7 @@ mod nonblocking_maintenance_tests {
         let delivery_deadline = Instant::now() + command_timeout;
         while Instant::now() < delivery_deadline
             && adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_none_or(|pending| pending.sent_at.is_none())
         {
@@ -3211,11 +3248,12 @@ mod nonblocking_maintenance_tests {
         }
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_some_and(|pending| pending.sent_at.is_some())
         );
         assert_eq!(
-            adapter.network_media_options_hook_health,
+            adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready
         );
     }
@@ -3235,18 +3273,25 @@ mod nonblocking_maintenance_tests {
             },
             command_timeout,
         );
-        adapter.network_media_options_hook_enabled = true;
-        adapter.network_media_options_hook_loaded = true;
-        adapter.network_media_options_hook_instance_id = Some("sync-hook".to_owned());
-        adapter.network_media_options_hook_configured_generation =
-            Some(adapter.network_media_options_generation);
+        adapter.network_options.network_media_options_hook_enabled = true;
+        adapter.network_options.network_media_options_hook_loaded = true;
+        adapter
+            .network_options
+            .network_media_options_hook_instance_id = Some("sync-hook".to_owned());
+        adapter
+            .network_options
+            .network_media_options_hook_configured_generation =
+            Some(adapter.network_options.network_media_options_generation);
         adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
-        adapter.network_media_options_hook_last_heartbeat_at =
+        adapter
+            .network_options
+            .network_media_options_hook_last_heartbeat_at =
             Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
 
         adapter.maintain_network_media_options_hook_lease();
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_some(),
             "the asynchronous Lua acknowledgement has not arrived yet"
@@ -3258,12 +3303,13 @@ mod nonblocking_maintenance_tests {
         adapter.maintain_network_media_options_hook_lease();
 
         assert_eq!(
-            adapter.network_media_options_hook_health,
+            adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready,
             "command delivery time must not be charged against the later Lua acknowledgement"
         );
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_some(),
             "the adapter should keep waiting for the asynchronous acknowledgement"
@@ -3288,6 +3334,7 @@ mod nonblocking_maintenance_tests {
                 .test_nonblocking_command_is_pending();
             if network_heartbeats.load(Ordering::Relaxed) >= 1
                 && adapter
+                    .network_options
                     .network_media_options_hook_pending_heartbeat
                     .is_none()
                 && !command_is_pending
@@ -3304,15 +3351,17 @@ mod nonblocking_maintenance_tests {
         assert!(network_heartbeats.load(Ordering::Relaxed) >= 1);
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_none()
         );
         assert_eq!(
-            adapter.network_media_options_hook_health,
+            adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready
         );
         assert!(
             adapter
+                .network_options
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
@@ -3382,7 +3431,7 @@ mod nonblocking_maintenance_tests {
             "optional Chat/OSD bridge should renew alongside the core hook"
         );
         assert_eq!(
-            adapter.network_media_options_hook_health,
+            adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready
         );
         assert!(matches!(
@@ -3391,6 +3440,7 @@ mod nonblocking_maintenance_tests {
         ));
         assert!(
             adapter
+                .network_options
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
@@ -3419,7 +3469,9 @@ mod nonblocking_maintenance_tests {
     fn stale_heartbeat_poll_and_bridge_completions_cannot_mutate_successors() {
         let (mut adapter, _network_heartbeats, _legacy_heartbeats) =
             ready_adapter_with_control_lane_transport(HeartbeatEventOrdering::PropertyThenAck);
-        adapter.network_media_options_hook_pending_heartbeat =
+        adapter
+            .network_options
+            .network_media_options_hook_pending_heartbeat =
             Some(PendingNetworkOptionsHookHeartbeat {
                 nonce: 1,
                 command_id: Some(21),
@@ -3438,18 +3490,23 @@ mod nonblocking_maintenance_tests {
         adapter.handle_network_options_hook_heartbeat(Some(&h1_ack));
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_none(),
             "H1 acknowledgement must clear H1 before its delayed command completion"
         );
 
-        adapter.network_media_options_hook_pending_heartbeat =
+        adapter
+            .network_options
+            .network_media_options_hook_pending_heartbeat =
             Some(PendingNetworkOptionsHookHeartbeat {
                 nonce: 2,
                 command_id: Some(22),
                 sent_at: None,
             });
-        adapter.network_media_options_hook_pending_event_poll_command_id = Some(32);
+        adapter
+            .network_options
+            .network_media_options_hook_pending_event_poll_command_id = Some(32);
         adapter.legacy_syncplayintf_pending_heartbeat_command_id = Some(42);
         adapter.legacy_syncplayintf_last_heartbeat_at = None;
         let client = adapter
@@ -3480,6 +3537,7 @@ mod nonblocking_maintenance_tests {
 
         assert!(
             adapter
+                .network_options
                 .network_media_options_hook_pending_heartbeat
                 .is_some_and(|pending| {
                     pending.nonce == 2
@@ -3488,7 +3546,9 @@ mod nonblocking_maintenance_tests {
                 })
         );
         assert_eq!(
-            adapter.network_media_options_hook_pending_event_poll_command_id,
+            adapter
+                .network_options
+                .network_media_options_hook_pending_event_poll_command_id,
             Some(32)
         );
         assert_eq!(
@@ -3497,7 +3557,7 @@ mod nonblocking_maintenance_tests {
         );
         assert!(adapter.legacy_syncplayintf_last_heartbeat_at.is_none());
         assert_eq!(
-            adapter.network_media_options_hook_health,
+            adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready
         );
         assert!(matches!(
@@ -3515,7 +3575,9 @@ mod nonblocking_maintenance_tests {
             Duration::from_millis(100),
         );
         adapter.set_network_media_policy_state(MpvNetworkMediaPolicyState::NetworkMediaUpdated);
-        let prior_revision = adapter.network_media_options_runtime_health_revision;
+        let prior_revision = adapter
+            .network_options
+            .network_media_options_runtime_health_revision;
         let (ordinary_capacity, _) = MpvJsonIpcClient::test_runtime_queue_capacities();
         let client = adapter
             .ipc_client
@@ -3750,7 +3812,9 @@ mod nonblocking_maintenance_tests {
             Duration::from_millis(100),
         );
         adapter.set_network_media_policy_state(MpvNetworkMediaPolicyState::NetworkMediaUpdated);
-        let prior_revision = adapter.network_media_options_runtime_health_revision;
+        let prior_revision = adapter
+            .network_options
+            .network_media_options_runtime_health_revision;
         let (_, control_capacity) = MpvJsonIpcClient::test_runtime_queue_capacities();
         let client = adapter
             .ipc_client
@@ -3900,16 +3964,24 @@ mod nonblocking_maintenance_tests {
         );
         adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
         adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
-        adapter.network_media_options_generation = 7;
-        adapter.network_media_options_hook_enabled = true;
-        adapter.network_media_options_hook_loaded = true;
-        adapter.network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
-        adapter.network_media_options_hook_configured_generation = Some(7);
-        adapter.network_media_options_hook_last_accepted_load_sequence = Some(1);
+        adapter.network_options.network_media_options_generation = 7;
+        adapter.network_options.network_media_options_hook_enabled = true;
+        adapter.network_options.network_media_options_hook_loaded = true;
+        adapter
+            .network_options
+            .network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
+        adapter
+            .network_options
+            .network_media_options_hook_configured_generation = Some(7);
+        adapter
+            .network_options
+            .network_media_options_hook_last_accepted_load_sequence = Some(1);
         adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
         adapter
             .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
-        adapter.network_media_options_hook_last_heartbeat_at =
+        adapter
+            .network_options
+            .network_media_options_hook_last_heartbeat_at =
             Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
 
         let observation_deadline = Instant::now() + Duration::from_secs(1);
@@ -3942,6 +4014,7 @@ mod nonblocking_maintenance_tests {
         );
         assert!(
             adapter
+                .network_options
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|event| !matches!(
@@ -3952,6 +4025,7 @@ mod nonblocking_maintenance_tests {
         );
         assert!(matches!(
             adapter
+                .network_options
                 .pending_network_media_policy_outcomes
                 .front()
                 .map(|event| &event.value),
@@ -3959,6 +4033,7 @@ mod nonblocking_maintenance_tests {
         ));
         assert!(
             adapter
+                .network_options
                 .deferred_network_media_options_hook_transition_result
                 .is_none()
         );
@@ -3977,16 +4052,24 @@ mod nonblocking_maintenance_tests {
         );
         adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
         adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
-        adapter.network_media_options_generation = 7;
-        adapter.network_media_options_hook_enabled = true;
-        adapter.network_media_options_hook_loaded = true;
-        adapter.network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
-        adapter.network_media_options_hook_configured_generation = Some(7);
-        adapter.network_media_options_hook_last_accepted_load_sequence = Some(1);
+        adapter.network_options.network_media_options_generation = 7;
+        adapter.network_options.network_media_options_hook_enabled = true;
+        adapter.network_options.network_media_options_hook_loaded = true;
+        adapter
+            .network_options
+            .network_media_options_hook_instance_id = Some("ordered-hook".to_owned());
+        adapter
+            .network_options
+            .network_media_options_hook_configured_generation = Some(7);
+        adapter
+            .network_options
+            .network_media_options_hook_last_accepted_load_sequence = Some(1);
         adapter.set_network_options_hook_health(MpvNetworkOptionsHookHealth::Ready);
         adapter
             .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
-        adapter.network_media_options_hook_last_heartbeat_at =
+        adapter
+            .network_options
+            .network_media_options_hook_last_heartbeat_at =
             Some(Instant::now() - NETWORK_OPTIONS_HOOK_HEARTBEAT_INTERVAL);
 
         let observation_deadline = Instant::now() + Duration::from_secs(1);
@@ -4019,6 +4102,7 @@ mod nonblocking_maintenance_tests {
         );
         assert!(matches!(
             adapter
+                .network_options
                 .pending_network_media_policy_outcomes
                 .front()
                 .map(|event| &event.value),
@@ -4041,8 +4125,12 @@ mod nonblocking_maintenance_tests {
         // The hook can advance its global sequence for work that does not
         // produce a Rust-side start-file observation. The next visible
         // transition therefore establishes a floor, not an exact successor.
-        adapter.network_media_options_hook_last_accepted_load_sequence = Some(0);
-        adapter.network_media_options_hook_latest_started_load_sequence = Some(0);
+        adapter
+            .network_options
+            .network_media_options_hook_last_accepted_load_sequence = Some(0);
+        adapter
+            .network_options
+            .network_media_options_hook_latest_started_load_sequence = Some(0);
         adapter
             .set_network_media_policy_state(MpvNetworkMediaPolicyState::AwaitingAuthoritativeLoad);
 
@@ -4074,7 +4162,7 @@ mod nonblocking_maintenance_tests {
             "ownerId": "causal-owner",
             "attachmentId": "causal-attachment",
             "hookInstanceId": "test-hook-instance",
-            "configurationGeneration": adapter.network_media_options_generation,
+            "configurationGeneration": adapter.network_options.network_media_options_generation,
             "loadSequence": 2,
             "sourcePath": new_target,
             "streamOpenFilename": new_target,
@@ -4139,7 +4227,10 @@ mod nonblocking_maintenance_tests {
         );
         assert!(diagnostics.verification_complete);
         assert!(
-            adapter.network_media_options_expected_transition.is_none(),
+            adapter
+                .network_options
+                .network_media_options_expected_transition
+                .is_none(),
             "the accepted transition must clear the replacement generation's expectation"
         );
     }

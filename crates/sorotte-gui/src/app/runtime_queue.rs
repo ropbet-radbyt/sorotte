@@ -12,6 +12,7 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::commands::LocalOffsetCommand;
+use sorotte_player_mpv::managed_process::ManagedMpvShutdownScope;
 
 use super::feature_slices::{GuiClientCommand, GuiRuntimeInput};
 use super::runtime_bridge::{
@@ -601,6 +602,7 @@ pub(super) struct GuiThreadedRuntimeOwnerPump {
     shared: Arc<GuiThreadedRuntimeOwnerShared>,
     worker: Option<JoinHandle<()>>,
     shutdown_timeout: Duration,
+    owned_processes: ManagedMpvShutdownScope,
 }
 
 impl GuiThreadedRuntimeOwnerPump {
@@ -642,12 +644,16 @@ impl GuiThreadedRuntimeOwnerPump {
     where
         TOwner: GuiQueuedRuntimeOwner + Send + 'static,
     {
+        let owned_processes = ManagedMpvShutdownScope::default();
+        owner.register_owned_processes(&owned_processes)?;
+        let worker_processes = owned_processes.clone();
         let shared = Arc::new(GuiThreadedRuntimeOwnerShared::default());
         let worker_shared = shared.clone();
         let worker_handle = handle.clone();
         let worker = thread::Builder::new()
             .name("sorotte-gui-runtime".to_owned())
             .spawn(move || {
+                let _process_scope = worker_processes.enter();
                 Self::run_worker_loop(worker_handle, owner, worker_shared.clone(), poll_interval);
                 worker_shared.wake.notify_all();
             })
@@ -658,6 +664,7 @@ impl GuiThreadedRuntimeOwnerPump {
             shared,
             worker: Some(worker),
             shutdown_timeout,
+            owned_processes,
         })
     }
 
@@ -724,6 +731,7 @@ impl GuiThreadedRuntimeOwnerPump {
     }
 
     fn request_shutdown(&self) {
+        self.owned_processes.request_shutdown();
         self.shared.stop_requested.store(true, Ordering::Release);
         self.shared.wake.notify_all();
     }
@@ -735,19 +743,26 @@ impl GuiThreadedRuntimeOwnerPump {
         super::test_lifecycle::record(super::test_lifecycle::RUNTIME_STOP_REQUESTED);
         self.request_shutdown();
         let deadline = Instant::now() + self.shutdown_timeout;
-        while !worker.is_finished() && Instant::now() < deadline {
+        // Keep part of the same shutdown budget for process termination even if
+        // the owner is stuck inside a player call and cannot run its destructor.
+        let owner_deadline = deadline - self.shutdown_timeout.min(Duration::from_millis(500));
+        while !worker.is_finished() && Instant::now() < owner_deadline {
             let shared_state = self
                 .shared
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = owner_deadline.saturating_duration_since(Instant::now());
             let wait_for = remaining.min(Duration::from_millis(25));
             let _ = self
                 .shared
                 .wake
                 .wait_timeout(shared_state, wait_for)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+
+        if let Err(error) = self.owned_processes.terminate_until(deadline) {
+            eprintln!("sorotte-gui owned player cleanup incomplete: {error}");
         }
 
         let Some(worker) = self.worker.take() else {

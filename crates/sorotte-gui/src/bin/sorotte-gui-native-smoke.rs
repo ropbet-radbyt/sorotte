@@ -97,6 +97,7 @@ struct GuiLaunchConfig<'a> {
 #[derive(Clone, Copy, Default)]
 struct GuiLaunchTestOverrides<'a> {
     theme: Option<&'a str>,
+    ui_scale: Option<f32>,
     appdata_root: Option<&'a Path>,
     explicit_config_path_with_appdata_root: bool,
     config_storage_browse_path: Option<&'a Path>,

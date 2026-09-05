@@ -1690,6 +1690,9 @@ fn handle_hard_failure_http_connection(
         ));
     }
     stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("failed setting hard-failure HTTP blocking mode: {error}"))?;
+    stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| format!("failed setting hard-failure HTTP read timeout: {error}"))?;
     stream
@@ -1765,6 +1768,15 @@ fn handle_hard_failure_http_connection(
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct MissingMediaEvidence {
+    path: String,
+    event_id: String,
+    emitter: String,
+    process_role: String,
+    initial_pid: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct MpvRecoveryEvidence {
     schema_version: u32,
     kind: &'static str,
@@ -1778,6 +1790,7 @@ struct MpvRecoveryEvidence {
     initial_sha256: String,
     initial_ipc_endpoint: String,
     initial_process_terminated: bool,
+    missing_media: Option<MissingMediaEvidence>,
     automatic_relaunch_observation_index: Option<usize>,
     automatic_relaunch_observation_event: &'static str,
     gui_room_remained_active: bool,
@@ -1821,6 +1834,7 @@ impl MpvRecoveryEvidence {
             initial_sha256: initial_sha256.to_owned(),
             initial_ipc_endpoint: initial_ipc_endpoint.to_owned(),
             initial_process_terminated: false,
+            missing_media: None,
             automatic_relaunch_observation_index: None,
             automatic_relaunch_observation_event: "pause",
             gui_room_remained_active: false,
@@ -1970,6 +1984,15 @@ fn record_authoritative_playstate_exchange(
         if request_playstate.contains_key("setBy") {
             return Err(format!(
                 "{action} client playstate improperly claimed server attribution"
+            ));
+        }
+        let expected_counter_ack = request_json
+            .pointer("/State/ignoringOnTheFly/client")
+            .filter(|counter| counter.as_u64().is_some_and(|counter| counter != 0))
+            .map(|counter| serde_json::json!({"client": counter}));
+        if echo_json.pointer("/State/ignoringOnTheFly") != expected_counter_ack.as_ref() {
+            return Err(format!(
+                "{action} authoritative echo did not acknowledge the exact client counter"
             ));
         }
         if echo_playstate
@@ -3587,6 +3610,24 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
         let mut active_mpv_pid = mpv_pid;
         let mut recovered_mpv_identity = None;
         if options.exercise_recovery {
+            let missing_media = exercise_missing_media_resolution(
+                session_server
+                    .as_ref()
+                    .expect("session server remains live"),
+                &shared_lifecycle_path,
+                &artifact_root.join("missing-generated-media.wav"),
+                &media_path,
+                mpv_pid,
+                step_timeout,
+            )?;
+            let recovery = recovery_evidence.as_mut().expect("recovery is initialized");
+            recovery.missing_media = Some(missing_media);
+            write_json_file(&recovery_path, recovery)?;
+            state.advance(
+                &state_path,
+                "missing-playlist-target-observed",
+                Some("missing-playlist-target-is-reported"),
+            )?;
             terminate_test_process(mpv_pid)?;
             wait_for_process_termination(mpv_pid, step_timeout)?;
             if process_is_running(mpv_pid) {
@@ -3707,8 +3748,9 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 Some("gui-remained-on-active-room-during-automatic-relaunch"),
             )?;
 
-            let observations_before_recovered_open =
-                read_mpv_observations(&observation_path)?.len();
+            // Process relaunch is automatic; reopening the selected media is
+            // a separate user action. A load can also arrive during ownership
+            // attestation, so retain observations from the relaunch boundary.
             invoke_real_mpv_menu_action_with_evidence(
                 &driver,
                 launched_window,
@@ -3718,20 +3760,15 @@ pub(crate) fn run_real_mpv_vertical_from_args(args: &[String]) -> Result<String,
                 &mut menu_interactions,
                 &menu_interactions_path,
             )?;
-            let (recovered_file_loaded_index, recovered_file_loaded) = wait_for_mpv_observation(
-                &observation_path,
-                observations_before_recovered_open,
-                step_timeout,
-                "file-loaded for generated local media from the replacement real mpv",
-                |observation| {
-                    observation.event == "file-loaded"
-                        && observation.pid == Some(recovered_mpv_pid)
-                        && observation.path.as_deref().is_some_and(|observed| {
-                            observed_media_path_matches(Path::new(observed), &media_path)
-                        })
-                        && observation.ipc_endpoint.as_deref() == Some(&recovered_ipc_endpoint)
-                },
-            )?;
+            let (recovered_file_loaded_index, recovered_file_loaded) =
+                wait_for_replacement_media_loaded(
+                    &observation_path,
+                    automatic_relaunch_observation_index,
+                    recovered_mpv_pid,
+                    &recovered_ipc_endpoint,
+                    &media_path,
+                    step_timeout,
+                )?;
             if recovered_file_loaded.filename.as_deref() != Some(expected_file_name) {
                 return Err(format!(
                     "replacement real mpv reported filename {:?}; expected {expected_file_name:?}",
@@ -4817,6 +4854,89 @@ where
     }
 }
 
+fn send_selected_media(
+    server: &MockSessionServer,
+    target: &Path,
+    phase: &str,
+) -> Result<(), String> {
+    for message in [
+        serde_json::json!({"Set":{"playlistChange":{"files":[target],"user":"remote-controller"}}}),
+        serde_json::json!({"Set":{"playlistIndex":{"index":0,"user":"remote-controller"}}}),
+        serde_json::json!({"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"remote-controller"}}}),
+    ] {
+        server.send_authoritative_line(message.to_string(), phase)?;
+    }
+    Ok(())
+}
+
+fn exercise_missing_media_resolution(
+    server: &MockSessionServer,
+    lifecycle_path: &Path,
+    missing_path: &Path,
+    restored_path: &Path,
+    initial_pid: u32,
+    timeout: Duration,
+) -> Result<MissingMediaEvidence, String> {
+    if missing_path
+        .try_exists()
+        .map_err(|error| error.to_string())?
+    {
+        return Err("missing-media fixture target unexpectedly exists".to_owned());
+    }
+    let boundary = wait_for_lifecycle_snapshot(lifecycle_path, timeout)?.len();
+    send_selected_media(server, missing_path, "missing-media resolution selection")?;
+    let (missing_index, record) =
+        wait_for_lifecycle_transition(lifecycle_path, boundary, "MEDIA-MISSING-001", timeout)?;
+    let event_id = required_lifecycle_string(&record, "event_id", "MEDIA-MISSING-001")?;
+    let emitter = required_lifecycle_string(&record, "emitter", "MEDIA-MISSING-001")?;
+    let process_role = required_lifecycle_string(&record, "process_role", "MEDIA-MISSING-001")?;
+    if emitter != "gui-real-mpv" || process_role != "client" {
+        return Err("missing-media transition was not emitted by the GUI resolver".to_owned());
+    }
+    send_selected_media(
+        server,
+        restored_path,
+        "restore media before owned-player loss",
+    )?;
+    wait_for_lifecycle_transition(
+        lifecycle_path,
+        missing_index.saturating_add(1),
+        "MEDIA-RESOLVE-001",
+        timeout,
+    )?;
+    Ok(MissingMediaEvidence {
+        path: missing_path.display().to_string(),
+        event_id,
+        emitter,
+        process_role,
+        initial_pid,
+    })
+}
+
+fn wait_for_replacement_media_loaded(
+    observation_path: &Path,
+    relaunch_index: usize,
+    recovered_pid: u32,
+    recovered_ipc_endpoint: &str,
+    media_path: &Path,
+    timeout: Duration,
+) -> Result<(usize, MpvObservation), String> {
+    wait_for_mpv_observation(
+        observation_path,
+        relaunch_index.saturating_add(1),
+        timeout,
+        "file-loaded for generated local media from the replacement real mpv",
+        |observation| {
+            observation.event == "file-loaded"
+                && observation.pid == Some(recovered_pid)
+                && observation.path.as_deref().is_some_and(|observed| {
+                    observed_media_path_matches(Path::new(observed), media_path)
+                })
+                && observation.ipc_endpoint.as_deref() == Some(recovered_ipc_endpoint)
+        },
+    )
+}
+
 fn wait_for_automatic_replacement_observation(
     path: &Path,
     start_index: usize,
@@ -5787,6 +5907,53 @@ mod tests {
     }
 
     #[test]
+    fn replacement_media_already_observed_during_attestation_is_retained() {
+        let root = std::env::temp_dir().join(format!(
+            "sorotte-replacement-observation-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let media = root.join("media.wav");
+        fs::write(&media, b"fixture").unwrap();
+        let path = root.join("observations.jsonl");
+        let loaded = serde_json::json!({
+            "event": "file-loaded", "pid": 72, "path": media,
+            "ipc_endpoint": "replacement"
+        });
+        let mut rows = vec![
+            loaded.clone(), // A matching record before the relaunch is stale.
+            serde_json::json!({"event":"pause","pid":72,"pause":true,"ipc_endpoint":"replacement"}),
+            serde_json::json!({"event":"file-loaded","pid":71,"path":media,"ipc_endpoint":"replacement"}),
+            serde_json::json!({"event":"file-loaded","pid":72,"path":media,"ipc_endpoint":"old-endpoint"}),
+            serde_json::json!({"event":"file-loaded","pid":72,"path":root.join("other.wav"),"ipc_endpoint":"replacement"}),
+            loaded,
+        ];
+        let write_rows = |rows: &[serde_json::Value]| {
+            fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        };
+        write_rows(&rows);
+        // All events arrived before ownership and screenshot checks finished.
+        let (index, _) =
+            wait_for_replacement_media_loaded(&path, 1, 72, "replacement", &media, Duration::ZERO)
+                .unwrap();
+        assert_eq!(index, 5);
+        rows.pop();
+        write_rows(&rows);
+        assert!(
+            wait_for_replacement_media_loaded(&path, 1, 72, "replacement", &media, Duration::ZERO)
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn real_mpv_session_endpoints_are_strict_ipv4_loopback_only() {
         assert!(require_ipv4_loopback_endpoint("127.0.0.1:49152", "fixture").is_ok());
         assert!(require_ipv4_loopback_endpoint("[::1]:49152", "fixture").is_err());
@@ -5952,6 +6119,52 @@ mod tests {
                 }
             })
         );
+
+        for (counter, playstate) in [
+            (
+                1,
+                Some(serde_json::json!({"position": 0.0, "paused": true, "doSeek": true})),
+            ),
+            (
+                2,
+                Some(serde_json::json!({"position": 0.0, "paused": true})),
+            ),
+            (3, None),
+        ] {
+            let mut request =
+                serde_json::json!({"State": {"ignoringOnTheFly": {"client": counter}}});
+            if let Some(playstate) = playstate {
+                request["State"]["playstate"] = playstate;
+            }
+            writeln!(stream, "{request}").expect("write client seek acknowledgement request");
+            let mut echo = String::new();
+            reader
+                .read_line(&mut echo)
+                .expect("read client counter acknowledgement");
+            let echo: serde_json::Value = serde_json::from_str(&echo).unwrap();
+            assert_eq!(
+                echo.pointer("/State/ignoringOnTheFly"),
+                Some(&serde_json::json!({"client": counter}))
+            );
+            if counter == 1 {
+                let (_, recorded_echo) = server
+                    .recv_playstate_exchange(Duration::from_secs(2), "seek counter")
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&recorded_echo).unwrap(),
+                    echo
+                );
+                assert_eq!(
+                    echo.pointer("/State/playstate/doSeek"),
+                    Some(&serde_json::json!(true))
+                );
+            } else {
+                assert_eq!(
+                    echo,
+                    serde_json::json!({"State": {"ignoringOnTheFly": {"client": counter}}})
+                );
+            }
+        }
 
         for (label, position, paused) in [("play", 1.25, false), ("pause", 2.0, true)] {
             let request = serde_json::json!({
@@ -6203,6 +6416,32 @@ mod tests {
             release_error.contains("playlistIndex did not match the exact closed request schema"),
             "unexpected rejection reason: {release_error}"
         );
+    }
+
+    #[test]
+    fn hard_failure_http_connection_waits_for_headers_on_a_nonblocking_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, peer) = listener.accept().unwrap();
+        // Windows accepts inherit the listener's nonblocking mode. Set it
+        // explicitly so this regression also exercises that state on Unix.
+        stream.set_nonblocking(true).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            handle_hard_failure_http_connection(stream, peer, 1)
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(
+                format!("GET {REAL_MPV_MEDIA_FAILURE_ROUTE} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        let evidence = server.join().unwrap().unwrap();
+        assert_eq!(evidence.status_code, 404);
+        assert_eq!(evidence.method, "GET");
     }
 
     #[test]

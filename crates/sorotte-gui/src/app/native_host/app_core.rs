@@ -74,9 +74,17 @@ impl GuiNativeApp {
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("dark") => ctx.set_visuals(egui::Visuals::dark()),
-            Some("light") => ctx.set_visuals(egui::Visuals::light()),
+            Some("dark") => ctx.set_theme(egui::Theme::Dark),
+            Some("light") => ctx.set_theme(egui::Theme::Light),
             _ => {}
+        }
+        if let Some(scale) = lookup("SOROTTE_GUI_TEST_UI_SCALE")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|scale| scale.is_finite() && (1.0..=3.0).contains(scale))
+        {
+            // Application zoom is independent of the native monitor DPI. Native
+            // evidence records both; this does not pretend to change Windows DPI.
+            ctx.set_zoom_factor(scale);
         }
     }
 

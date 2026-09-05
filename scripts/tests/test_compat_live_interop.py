@@ -195,18 +195,19 @@ def valid_report() -> dict[str, object]:
 class RequirementPolicyTests(unittest.TestCase):
     def test_exact_requirement_pins_are_accepted(self) -> None:
         parsed = interop.parse_pinned_requirements(
-            b"twisted==25.5.0\n"
+            b"twisted==26.4.0\n"
             b"# compatibility comment\n"
-            b"pyopenssl==25.3.0\n"
+            b"cryptography==50.0.1\n"
+            b"pyopenssl==26.4.0\n"
             b"service_identity==24.2.0\n"
         )
         self.assertEqual(parsed, interop.PINNED_PACKAGES)
 
     def test_ranges_duplicates_and_inventory_drift_are_rejected(self) -> None:
         mutations = (
-            b"twisted>=25.5.0\npyopenssl==25.3.0\nservice_identity==24.2.0\n",
-            b"twisted==25.5.0\nTwisted==25.5.0\npyopenssl==25.3.0\nservice_identity==24.2.0\n",
-            b"twisted==25.5.0\npyopenssl==25.3.0\n",
+            b"twisted>=26.4.0\npyopenssl==26.4.0\nservice_identity==24.2.0\n",
+            b"twisted==26.4.0\nTwisted==26.4.0\npyopenssl==26.4.0\nservice_identity==24.2.0\n",
+            b"twisted==26.4.0\npyopenssl==26.4.0\n",
         )
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(
@@ -222,8 +223,9 @@ class RequirementPolicyTests(unittest.TestCase):
             requirements = root / "requirements"
             requirements.mkdir()
             requirements.joinpath("legacy-python-interop.txt").write_text(
-                "twisted==25.5.0\n"
-                "pyopenssl==25.3.0\n"
+                "cryptography==50.0.1\n"
+                "twisted==26.4.0\n"
+                "pyopenssl==26.4.0\n"
                 "service_identity==24.2.0\n",
                 encoding="utf-8",
             )
@@ -231,9 +233,10 @@ class RequirementPolicyTests(unittest.TestCase):
                 "executable": "C:/Python313/python.exe",
                 "implementation": "CPython",
                 "packages": {
-                    "pyopenssl": "25.3.0",
+                    "pyopenssl": "26.4.0",
+                    "cryptography": "50.0.1",
                     "service-identity": "24.2.0",
-                    "twisted": "25.5.0",
+                    "twisted": "26.4.0",
                 },
                 "version": "3.13.5",
                 "version_info": [3, 13, 5],
@@ -252,7 +255,7 @@ class RequirementPolicyTests(unittest.TestCase):
             self.assertEqual(python["version"], "3.13.5")
             self.assertEqual(
                 [package["observed_version"] for package in python["packages"]],
-                ["25.3.0", "24.2.0", "25.5.0"],
+                ["50.0.1", "26.4.0", "24.2.0", "26.4.0"],
             )
             self.assertRegex(pinned["sha256"], r"^[0-9a-f]{64}$")
 
@@ -317,7 +320,7 @@ class InventoryAndAccountingTests(unittest.TestCase):
             ),
             interop.REQUIRED_LIVE_SENTINELS,
         )
-        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 150)
+        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 152)
 
     def test_complete_and_ignored_inventories_are_exact(self) -> None:
         tests = complete_test_inventory()

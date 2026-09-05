@@ -18,6 +18,58 @@ const TEST_COMPLETION_BUDGET: Duration = Duration::from_secs(1);
 
 static NEXT_SOCKET_ID: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+fn unix_socket_terminal_cleanup_cancels_pending_heartbeat_and_readback_first() {
+    for readback in [false, true] {
+        let fixture = UnixSocketFixture::unique();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let peer = fixture.bind().spawn("terminal-pending", move |peer| {
+            peer.read_request();
+            seen_tx.send(()).unwrap();
+            peer.read_request();
+            peer.read_request();
+        });
+        let mut client = MpvJsonIpcClient::connect_with_command_timeout(
+            fixture.socket_path(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        if readback {
+            client
+                .try_get_property_nonblocking("pause", 1)
+                .unwrap()
+                .unwrap();
+        } else {
+            client
+                .try_send_command_expect_success_nonblocking(
+                    json!(["script-message-to", "sorotte_network_options", "heartbeat"]),
+                    1,
+                )
+                .unwrap()
+                .unwrap();
+        }
+        seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let started = Instant::now();
+        client.send_final_commands_best_effort(vec![
+            json!(["set_property", "pause", false]),
+            json!(["script-message", "release"]),
+        ]);
+        drop(client);
+        assert!(started.elapsed() < Duration::from_millis(750));
+        let observed = join_peer(peer);
+        assert_eq!(observed.requests.len(), 3);
+        assert_eq!(
+            observed.requests[1].value["command"],
+            json!(["set_property", "pause", false])
+        );
+        assert_eq!(
+            observed.requests[2].value["command"],
+            json!(["script-message", "release"])
+        );
+        let _reused = fixture.bind();
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum DeliveryMode {
     OneByteWrites,

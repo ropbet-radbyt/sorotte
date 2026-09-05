@@ -1,0 +1,61 @@
+schema_version = 1
+
+[[boundary]]
+id = "player-runtime-0"
+owner = "player-runtime"
+contract = "Own player processes, IPC recovery, and executable bridge resources."
+roots = ["crates/sorotte-player-mpv/src/adapter.rs", "crates/sorotte-player-mpv/src/ipc.rs", "crates/sorotte-player-mpv/src/bridge.rs", "crates/sorotte-player-mpv/src/bridge_resource.rs", "crates/sorotte-player-mpv/src/players.rs", "crates/sorotte-player-mpv/src/managed_process.rs"]
+
+[[boundary]]
+id = "client-runtime-1"
+owner = "client-runtime"
+contract = "Preserve playback timing, reconnect authority, and ordered controls."
+roots = ["crates/sorotte-client-core/src/playback_coordinator.rs", "crates/sorotte-client-core/src/runtime/playback_coordination.rs", "crates/sorotte-client-core/src/player_transition.rs", "crates/sorotte-client-core/src/ping.rs", "crates/sorotte-client-core/src/config.rs", "crates/sorotte-client-core/src/outbox.rs", "crates/sorotte-client-core/src/inbound_order.rs", "crates/sorotte-client-core/src/session/playback.rs", "crates/sorotte-client-core/src/session/playback_barrier.rs", "crates/sorotte-client-core/src/session/reconnect.rs"]
+
+[[boundary]]
+id = "server-security-2"
+owner = "server-security"
+contract = "Enforce network framing, connection admission, byte permits, and local expiry."
+roots = ["crates/sorotte-server/src/network.rs", "crates/sorotte-server/src/backpressure.rs", "crates/sorotte-server/src/resources.rs", "crates/sorotte-server/src/local_clock.rs", "crates/sorotte-server/src/frame_limits.rs", "crates/sorotte-server/src/inbound.rs", "crates/sorotte-server/src/actor.rs", "crates/sorotte-server/src/tls.rs", "crates/sorotte-server/src/runtime_maintenance.rs"]
+
+[[boundary]]
+id = "plex-3"
+owner = "plex"
+contract = "Bound credential-bearing Plex requests, redirects, pagination, and responses."
+roots = ["crates/sorotte-plex/src/lib.rs", "crates/sorotte-plex/src/http.rs", "crates/sorotte-plex/src/discovery.rs", "crates/sorotte-plex/src/library.rs", "crates/sorotte-plex/src/resolver.rs", "crates/sorotte-plex/src/cache.rs", "crates/sorotte-plex/src/timeline.rs"]
+
+[[boundary]]
+id = "client-settings-4"
+owner = "client-settings"
+contract = "Persist intended settings atomically with private permissions and cross-writer isolation."
+roots = ["crates/sorotte-client-app/src/sorotte_ini.rs"]
+
+[[boundary]]
+id = "media-runtime-5"
+owner = "media-runtime"
+contract = "Own and cancel the entire extraction process tree and bounded subprocess pipes."
+roots = ["crates/sorotte-media-match/src/extraction.rs"]
+
+[[boundary]]
+id = "gui-runtime-6"
+owner = "gui-runtime"
+contract = "Preserve player attribution and ownership through asynchronous telemetry and transport."
+roots = ["crates/sorotte-gui/src/app/runtime_owner/player.rs", "crates/sorotte-gui/src/app/runtime_owner/session_transport.rs", "crates/sorotte-gui/src/app/runtime_stack/transport.rs"]
+
+[[boundary]]
+id = "release-security-7"
+owner = "release-security"
+contract = "Bound update download and retain protected staging through updater handoff."
+roots = ["crates/sorotte-gui/src/update_limits.rs", "crates/sorotte-gui/src/app/remote_services.rs"]
+
+[[boundary]]
+id = "server-persistence-8"
+owner = "server-persistence"
+contract = "Retain persistence arbitration when the actor is extracted."
+roots = ["crates/sorotte-server/src/persistence_actor/"]
+
+[[boundary]]
+id = "client-settings-9"
+owner = "client-settings"
+contract = "Merge GUI settings over current disk state before publishing completion."
+roots = ["crates/sorotte-gui/src/app/runtime_owner/requests/pending_completions.rs"]

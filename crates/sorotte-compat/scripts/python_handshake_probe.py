@@ -1587,6 +1587,30 @@ def _run_fanout_batch_mode(
         if not isinstance(event, dict):
             outputs.append([{"client": "unknown-client", "message": {"Error": {"message": "not-json-server-error"}}}])
             continue
+        client_id = event.get("client")
+        raw_line = event.get("line")
+        request = json.loads(raw_line) if isinstance(raw_line, str) and ("$lastServerChallenge" in raw_line or "$serverChallenge:" in raw_line) else {}
+        ping = request.get("State", {}).get("ping", {})
+        marker = ping.get("latencyCalculation")
+        if isinstance(marker, str) and (marker == "$lastServerChallenge" or marker.startswith("$serverChallenge:")):
+            # Client-side fixture action: echo this implementation's actual
+            # prior output before the delay. Never fabricate a wire timestamp.
+            captured = outputs
+            if marker.startswith("$serverChallenge:"):
+                step = int(marker.removeprefix("$serverChallenge:"))
+                if not 1 <= step <= len(outputs):
+                    raise ValueError("ping echo requires an earlier scenario step")
+                captured = outputs[step - 1:step]
+            challenge = next((
+                output["message"]["State"]["ping"]["latencyCalculation"]
+                for prior in reversed(captured) for output in reversed(prior)
+                if output.get("client") == client_id
+                and isinstance(output.get("message", {}).get("State", {}).get("ping", {}).get("latencyCalculation"), (int, float))
+            ), None)
+            if challenge is None:
+                raise ValueError("ping echo requires a captured challenge for this client")
+            ping["latencyCalculation"] = challenge
+            raw_line = json.dumps(request)
         step_outputs = []
         if "advanceSeconds" in event:
             advance_seconds = event.get("advanceSeconds")
@@ -1594,8 +1618,6 @@ def _run_fanout_batch_mode(
                 outputs.append([{"client": "unknown-client", "message": {"Error": {"message": "invalid-fanout-batch-format"}}}])
                 continue
             step_outputs.extend(probe._advance_time(float(advance_seconds)))
-        client_id = event.get("client")
-        raw_line = event.get("line")
         step_outputs.extend(probe.handle_event(client_id, raw_line))
         outputs.append(step_outputs)
 

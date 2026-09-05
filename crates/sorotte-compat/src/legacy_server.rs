@@ -141,6 +141,11 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
         let mut clients: BTreeMap<String, LegacyServerClientConnection> = BTreeMap::new();
         let mut events = Vec::with_capacity(steps.len());
         for step in steps {
+            let request_line = super::scenario_replay::prepare_scenario_request_line(
+                &step.request_line,
+                &step.client_id,
+                &events,
+            )?;
             ensure_legacy_server_is_running(&mut child)?;
             let is_new_client = !clients.contains_key(&step.client_id);
             if is_new_client {
@@ -165,11 +170,11 @@ pub(crate) fn run_legacy_server_fanout_roundtrip_with_full_overrides(
                 .ok_or_else(|| InteropError::MissingLegacyClient(step.client_id.clone()))?;
             let required_first_output_client = (is_new_client
                 && matches!(
-                    decode_message_line(&step.request_line)?,
+                    decode_message_line(&request_line)?,
                     ProtocolMessage::Hello(_)
                 ))
             .then_some(step.client_id.as_str());
-            let legacy_request_line = prepare_legacy_server_request_line(&step.request_line)?;
+            let legacy_request_line = prepare_legacy_server_request_line(&request_line)?;
             stream.stream.write_all(legacy_request_line.as_bytes())?;
             // Twisted LineReceiver defaults to CRLF framing.
             stream.stream.write_all(b"\r\n")?;

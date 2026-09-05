@@ -128,6 +128,48 @@ impl PlatformNativeGuiDriver {
         self.send_inputs(&mut inputs)
     }
 
+    pub(super) fn scroll_content_at(
+        &self,
+        window: PlatformWindowHandle,
+        x: i32,
+        y: i32,
+        delta: i32,
+    ) -> Result<(), String> {
+        use windows_sys::Win32::{
+            Foundation::RECT,
+            UI::{Input::KeyboardAndMouse::MOUSEEVENTF_WHEEL, WindowsAndMessaging::GetWindowRect},
+        };
+        Self::ensure_window_foreground(window, "content scroll target")?;
+        let mut bounds = RECT::default();
+        // SAFETY: The HWND belongs to this disposable fixture; output pointers
+        // remain valid for the calls. Recheck the captured point before input.
+        unsafe {
+            if GetWindowRect(window, &mut bounds) == 0 {
+                return Err("could not inspect native scroll coordinates".into());
+            }
+        }
+        if x <= bounds.left || x >= bounds.right || y <= bounds.top || y >= bounds.bottom {
+            return Err("captured scroll anchor is outside the fixture window".into());
+        }
+        // Give the GUI a pointer-move frame before the wheel event. Combining
+        // both immediately can route the wheel through a tooltip at the old
+        // pointer position instead of the intended scroll area.
+        self.send_inputs(&mut [Self::absolute_mouse_move_input(x, y)?])?;
+        thread::sleep(Duration::from_millis(80));
+        let mut input = Self::absolute_mouse_move_input(x, y)?;
+        // SAFETY: absolute_mouse_move_input constructs the mouse union member.
+        unsafe {
+            input.Anonymous.mi.dwFlags |= MOUSEEVENTF_WHEEL;
+            input.Anonymous.mi.mouseData = delta as u32;
+        }
+        let result = self.send_inputs(&mut [input]);
+        thread::sleep(Duration::from_millis(160));
+        // Keep pointer ownership here until the next transaction. A timed
+        // restore can be coalesced with the wheel during an expensive frame,
+        // routing the scroll to the old position outside the content area.
+        result
+    }
+
     pub(super) fn click_element_center(
         &self,
         window: PlatformWindowHandle,

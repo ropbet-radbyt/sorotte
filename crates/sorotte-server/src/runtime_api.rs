@@ -55,9 +55,11 @@ impl ServerRuntime {
             client_state_counters: BTreeMap::new(),
             client_last_state_update_at: BTreeMap::new(),
             client_next_periodic_state_at: BTreeMap::new(),
-            last_periodic_schedule_observed_at_seconds: None,
             client_peer_ips: BTreeMap::new(),
             time_now_override_seconds: None,
+            local_clock: local_clock::ServerLocalClock::default(),
+            last_ping_challenge_timestamp: None,
+            resource_limits: ServerResourceLimits::default(),
             room_password_provider: RoomPasswordProvider::new(salt.into()),
             server_password_token: None,
             motd_template: None,
@@ -236,7 +238,42 @@ impl ServerRuntime {
     }
 
     pub fn set_isolate_rooms(&mut self, enabled: bool) {
+        self.try_set_isolate_rooms(enabled)
+            .expect("room isolation change exceeds protocol frame capacity");
+    }
+
+    /// Changes visibility only when all existing recipients can consume the
+    /// resulting complete roster. Failed changes leave the old policy intact.
+    pub fn try_set_isolate_rooms(&mut self, enabled: bool) -> Result<(), ServerRuntimeError> {
+        let known: BTreeSet<_> = self
+            .room_controllers
+            .keys()
+            .chain(self.room_playlists.keys())
+            .chain(self.room_playback_states.keys())
+            .cloned()
+            .collect();
+        if let Some((id, session)) = self.sessions.iter().next() {
+            self.check_frame_projection_with_config(id, session, enabled, &known)?;
+        }
         self.isolate_rooms = enabled;
+        Ok(())
+    }
+
+    /// Configures resource ownership before spawning the network actor.
+    pub fn set_resource_limits(&mut self, limits: ServerResourceLimits) -> io::Result<()> {
+        let previous = std::mem::replace(&mut self.resource_limits, limits.validate()?);
+        if self
+            .sessions
+            .iter()
+            .any(|(id, session)| self.check_session_frame_projection(id, session).is_err())
+        {
+            self.resource_limits = previous;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "server resource limits cannot represent existing room state",
+            ));
+        }
+        Ok(())
     }
 
     pub fn set_chat_enabled(&mut self, enabled: bool) {
@@ -333,11 +370,35 @@ impl ServerRuntime {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let previous_permanent_rooms = std::mem::replace(
-            &mut self.permanent_rooms,
-            permanent_rooms.into_iter().map(Into::into).collect(),
-        );
+        self.try_set_permanent_rooms(permanent_rooms)
+            .expect("permanent rooms exceed protocol frame capacity");
+    }
+
+    pub fn try_set_permanent_rooms<I, S>(
+        &mut self,
+        permanent_rooms: I,
+    ) -> Result<(), ServerRuntimeError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let permanent_rooms: BTreeSet<String> =
+            permanent_rooms.into_iter().map(Into::into).collect();
+        let known: BTreeSet<_> = self
+            .room_controllers
+            .keys()
+            .chain(self.room_playlists.keys())
+            .chain(self.room_playback_states.keys())
+            .chain(permanent_rooms.iter())
+            .cloned()
+            .collect();
+        if let Some((id, session)) = self.sessions.iter().next() {
+            self.check_frame_projection_with_config(id, session, self.isolate_rooms, &known)?;
+        }
+        let previous_permanent_rooms =
+            std::mem::replace(&mut self.permanent_rooms, permanent_rooms);
         self.reconcile_permanent_rooms_snapshot(&previous_permanent_rooms);
+        Ok(())
     }
 
     pub fn set_permanent_rooms_file_path(
@@ -358,8 +419,7 @@ impl ServerRuntime {
                 source,
             }
         })?;
-        self.set_permanent_rooms(parse_permanent_rooms_file(&file_contents));
-        Ok(())
+        self.try_set_permanent_rooms(parse_permanent_rooms_file(&file_contents))
     }
 
     pub fn bootstrap_room(&mut self, room_name: &str) {
@@ -388,6 +448,17 @@ impl ServerRuntime {
 
     pub fn set_time_now_override_seconds(&mut self, seconds: Option<f64>) {
         self.time_now_override_seconds = seconds;
+        if !self.local_clock.independent_override {
+            self.local_clock.set_override(seconds);
+        }
+    }
+
+    /// Independently injects wall timestamps and elapsed time for deterministic
+    /// schedules. Local time never decreases, even if an injected clock does.
+    pub fn set_clock_overrides_seconds(&mut self, wall: Option<f64>, elapsed: Option<f64>) {
+        self.time_now_override_seconds = wall;
+        self.local_clock.independent_override = true;
+        self.local_clock.set_override(elapsed);
     }
 
     #[cfg(test)]
@@ -450,21 +521,38 @@ impl ServerRuntime {
     /// Explicit durability barrier for shutdown coordination and tests. Model
     /// transitions enqueue persistence effects without waiting on this boundary.
     pub fn flush_persistence(&self) -> Result<(), ServerRuntimeError> {
-        if self
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        if let Some(service) = &self.room_persistence {
+            service.set_deadline(Some(deadline));
+        }
+        if let Some(service) = &self.stats_persistence {
+            service.set_deadline(Some(deadline));
+        }
+        let rooms = self
             .room_persistence
             .as_ref()
-            .is_some_and(|persistence| !persistence.flush())
-        {
-            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("room"));
-        }
-        if self
+            .is_none_or(|service| service.flush_until(deadline));
+        let stats = self
             .stats_persistence
             .as_ref()
-            .is_some_and(|persistence| !persistence.flush())
-        {
-            return Err(ServerRuntimeError::PersistenceWorkerUnavailable("stats"));
+            .is_none_or(|service| service.flush_until(deadline));
+        if let Some(service) = &self.room_persistence {
+            service.set_deadline(None);
         }
-        Ok(())
+        if let Some(service) = &self.stats_persistence {
+            service.set_deadline(None);
+        }
+        if !rooms {
+            Err(ServerRuntimeError::PersistenceWorkerUnavailable(
+                "room durability barrier failed or timed out;",
+            ))
+        } else if !stats {
+            Err(ServerRuntimeError::PersistenceWorkerUnavailable(
+                "stats durability barrier failed or timed out;",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn drain_transport_actions(&mut self) -> Vec<DirectedTransportAction> {
@@ -502,7 +590,7 @@ impl ServerRuntime {
         } else {
             self.current_time_seconds()
         };
-        self.time_now_override_seconds = Some(now_seconds);
+        self.set_time_now_override_seconds(Some(now_seconds));
         self.collect_dispatch_at(now_seconds)
     }
 
@@ -515,6 +603,10 @@ impl ServerRuntime {
         } else {
             self.current_time_seconds()
         };
+        if self.time_now_override_seconds.is_some() && !self.local_clock.independent_override {
+            self.local_clock.set_override(Some(now_seconds));
+        }
+        self.prune_readiness_reconnect_cache();
         self.prune_playback_barrier_request_tombstones();
         self.persist_occupied_room_activity_if_due_at_for_all_rooms(now_seconds)?;
         let expired_persistent_rooms = self.expire_inactive_persistent_rooms_at(now_seconds)?;
@@ -529,6 +621,12 @@ impl ServerRuntime {
         let outbound_lines = outbound_messages
             .into_iter()
             .map(|message| {
+                if !message_fits_line_limit(
+                    &message.message,
+                    self.recipient_frame_limit(&message.client_id),
+                )? {
+                    return Err(frame_limits::frame_capacity_error());
+                }
                 let delivery = match &message.message {
                     ProtocolMessage::State(state)
                         if state.state.ignoring_on_the_fly.is_none()

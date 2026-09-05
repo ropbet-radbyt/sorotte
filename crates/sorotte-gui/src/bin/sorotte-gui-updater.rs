@@ -11,7 +11,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zip::ZipArchive;
+#[path = "../update_limits.rs"]
+mod update_limits;
+use update_limits::{ExtractionBudget, open_bounded_zip, read_limited};
 
 const GUI_EXE: &str = "sorotte-gui.exe";
 const UPDATER_EXE: &str = "sorotte-gui-updater.exe";
@@ -921,8 +923,16 @@ fn paths_are_equal(left: &Path, right: &Path) -> bool {
 fn read_verified_package_bytes(path: &Path, expected_sha256: &str) -> Result<Vec<u8>, String> {
     validate_sha256_hex(expected_sha256)?;
     reject_reparse_path(path)?;
-    let bytes = fs::read(path)
+    let file = fs::File::open(path)
         .map_err(|error| format!("failed reading update package {}: {error}", path.display()))?;
+    let archive_bytes = file
+        .metadata()
+        .map_err(|error| format!("failed inspecting update package: {error}"))?
+        .len();
+    if archive_bytes > update_limits::ARCHIVE_BYTES {
+        return Err("Update archive exceeded its byte budget.".to_owned());
+    }
+    let bytes = read_limited(file, update_limits::ARCHIVE_BYTES)?;
     let actual = sha256_bytes(&bytes);
     if !actual.eq_ignore_ascii_case(expected_sha256.trim()) {
         return Err(format!(
@@ -1096,8 +1106,10 @@ fn bootstrap_dir_contents_are_managed(path: &Path) -> Result<bool, String> {
 }
 
 fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String> {
-    let mut archive = ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| format!("failed opening update package: {error}"))?;
+    let mut archive = open_bounded_zip(Cursor::new(bytes))?;
+    let mut budget = ExtractionBudget::default();
+    budget.admit_archive(&mut archive)?;
+    let mut seen = BTreeSet::new();
     for index in 0..archive.len() {
         let mut entry = archive
             .by_index(index)
@@ -1108,6 +1120,10 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
                 entry.name()
             ));
         };
+        let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
+        if !seen.insert(normalized) {
+            return Err("Update package contains duplicate normalized entries.".to_owned());
+        }
         if entry
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
@@ -1136,8 +1152,11 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
             .create_new(true)
             .open(&output)
             .map_err(|error| format!("failed creating {}: {error}", output.display()))?;
-        std::io::copy(&mut entry, &mut file)
-            .map_err(|error| format!("failed extracting {}: {error}", output.display()))?;
+        budget.copy_entry(
+            &mut entry,
+            &mut file,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
         file.flush()
             .and_then(|()| file.sync_all())
             .map_err(|error| format!("failed flushing {}: {error}", output.display()))?;
@@ -1158,7 +1177,7 @@ fn safe_relative_path(name: &str) -> Option<PathBuf> {
         match part {
             "" | "." => {}
             ".." => return None,
-            _ if part.contains(':') => return None,
+            _ if !update_limits::unambiguous_output_component(part) => return None,
             _ => safe.push(part),
         }
     }
@@ -1179,12 +1198,14 @@ fn relative_path_is_safe(path: &Path) -> bool {
 
 fn read_install_manifest(path: &Path) -> Result<InstallManifest, String> {
     reject_reparse_path(path)?;
-    let contents = fs::read_to_string(path).map_err(|error| {
+    let file = fs::File::open(path).map_err(|error| {
         format!(
             "failed reading install manifest {}: {error}",
             path.display()
         )
     })?;
+    let contents = String::from_utf8(read_limited(file, update_limits::METADATA_BYTES)?)
+        .map_err(|error| format!("invalid UTF-8 install manifest: {error}"))?;
     serde_json::from_str(contents.trim_start_matches('\u{feff}')).map_err(|error| {
         format!(
             "failed parsing install manifest {}: {error}",

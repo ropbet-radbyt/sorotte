@@ -300,7 +300,7 @@ fn state_ping_only_client_metadata_is_forwarded_on_next_forced_update() {
 #[test]
 fn state_ping_metrics_apply_forward_delay_and_non_zero_server_rtt_for_sender() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_time_now_override_seconds(Some(100.0));
+    runtime.set_time_now_override_seconds(Some(90.0));
     runtime
         .handle_line(
             "client-1",
@@ -316,10 +316,18 @@ fn state_ping_metrics_apply_forward_delay_and_non_zero_server_rtt_for_sender() {
     acknowledge_server_state_counter(&mut runtime, "client-1", 1);
     acknowledge_server_state_counter(&mut runtime, "client-2", 1);
 
+    let challenge = runtime
+        .periodic_state_sync_message_for_client_at("client-1", 0.0, true, None, 90.0)
+        .unwrap();
+    let ProtocolMessage::State(challenge) = challenge else {
+        panic!("expected State challenge");
+    };
+    let echo = challenge.state.ping.unwrap().latency_calculation.unwrap();
+    runtime.set_time_now_override_seconds(Some(100.0));
     let directed_lines = runtime
         .handle_line_fanout(
             "client-1",
-            r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":90.0,"clientRtt":2.0}}}"#,
+            &json!({"State":{"playstate":{"position":5.0,"paused":false,"doSeek":true},"ping":{"latencyCalculation":echo,"clientRtt":2.0}}}).to_string(),
         )
         .expect("state update with ping metrics should be accepted");
     let directed_messages = decode_directed_lines(&directed_lines);

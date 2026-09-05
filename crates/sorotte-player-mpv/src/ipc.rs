@@ -4,7 +4,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -32,11 +32,14 @@ use crate::constants::{
 pub(crate) trait MpvJsonIpcTransport: Send + Sync {
     fn send_line_until(&mut self, line: &str, deadline: Instant) -> io::Result<()>;
     fn read_line_until(&mut self, line: &mut String, deadline: Instant) -> io::Result<usize>;
+    fn set_cancellation_flag(&mut self, _flag: Arc<AtomicBool>) {}
 }
 
 pub(crate) const MPV_IPC_MAX_LINE_BYTES: usize = 1024 * 1024;
 pub(crate) const MPV_IPC_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const MPV_IPC_FINAL_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+const MPV_IPC_TERMINAL_TIMEOUT: Duration = Duration::from_millis(500);
+const MPV_IPC_CANCEL_POLL: Duration = Duration::from_millis(10);
 const MPV_IPC_COMMAND_QUEUE_CAPACITY: usize = 1;
 const MPV_IPC_ORDINARY_EVENT_QUEUE_CAPACITY: usize = 1_024;
 const MPV_IPC_CONTROL_ITEM_QUEUE_CAPACITY: usize = 256;
@@ -86,6 +89,9 @@ impl std::fmt::Debug for MpvIpcConnectionEvent {
 pub(crate) struct MpvJsonIpcClient {
     command_tx: mpsc::SyncSender<MpvIpcActorMessage>,
     worker_thread: Option<JoinHandle<()>>,
+    terminal_tx: mpsc::SyncSender<MpvIpcFinalCommands>,
+    interrupt_command: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
     command_timeout: Duration,
     pending_nonblocking_command: Option<PendingMpvIpcCommand>,
     next_nonblocking_command_id: u64,
@@ -109,7 +115,7 @@ impl MpvJsonIpcClient {
     }
 
     fn new_with_command_timeout_and_initial_request_id(
-        transport: Box<dyn MpvJsonIpcTransport>,
+        mut transport: Box<dyn MpvJsonIpcTransport>,
         command_timeout: Duration,
         initial_request_id: u64,
     ) -> Self {
@@ -118,6 +124,12 @@ impl MpvJsonIpcClient {
         let next_runtime_item_sequence = Arc::new(AtomicU64::new(1));
         let (command_tx, command_rx) =
             mpsc::sync_channel::<MpvIpcActorMessage>(MPV_IPC_COMMAND_QUEUE_CAPACITY);
+        let (terminal_tx, terminal_rx) = mpsc::sync_channel::<MpvIpcFinalCommands>(1);
+        let interrupt_command = Arc::new(AtomicBool::new(false));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        transport.set_cancellation_flag(Arc::clone(&interrupt_command));
+        let worker_interrupt = Arc::clone(&interrupt_command);
+        let worker_stop = Arc::clone(&stop_requested);
         let worker_runtime_queues = Arc::clone(&runtime_queues);
         let worker_next_runtime_item_sequence = Arc::clone(&next_runtime_item_sequence);
         let worker_thread = std::thread::Builder::new()
@@ -130,8 +142,21 @@ impl MpvJsonIpcClient {
                     initial_request_id,
                 );
                 let final_completion_tx = loop {
-                    let Ok(message) = command_rx.recv() else {
+                    if let Ok(final_commands) = terminal_rx.try_recv() {
+                        worker_interrupt.store(false, Ordering::Release);
+                        worker.send_final_commands_best_effort(
+                            final_commands.commands,
+                            final_commands.deadline,
+                        );
+                        break Some(final_commands.completion_tx);
+                    }
+                    if worker_stop.load(Ordering::Acquire) {
                         break None;
+                    }
+                    let message = match command_rx.recv_timeout(MPV_IPC_CANCEL_POLL) {
+                        Ok(message) => message,
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break None,
                     };
                     match message {
                         MpvIpcActorMessage::Command(request) => {
@@ -145,16 +170,9 @@ impl MpvJsonIpcClient {
                                 .as_ref()
                                 .is_err_and(MpvIpcCommandFailure::is_connection_fatal);
                             let _ = request.response_tx.send(outcome);
-                            if connection_is_fatal {
+                            if connection_is_fatal && !worker_interrupt.load(Ordering::Acquire) {
                                 break None;
                             }
-                        }
-                        MpvIpcActorMessage::FinalCommands {
-                            commands,
-                            completion_tx,
-                        } => {
-                            worker.send_final_commands_best_effort(commands);
-                            break Some(completion_tx);
                         }
                         MpvIpcActorMessage::Shutdown => break None,
                     }
@@ -170,6 +188,9 @@ impl MpvJsonIpcClient {
         Self {
             command_tx,
             worker_thread: Some(worker_thread),
+            terminal_tx,
+            interrupt_command,
+            stop_requested,
             command_timeout,
             pending_nonblocking_command: None,
             next_nonblocking_command_id: 1,
@@ -235,33 +256,46 @@ impl MpvJsonIpcClient {
     /// Queues final JSON IPC writes and waits for their bounded attempts to finish.
     ///
     /// This is intentionally terminal: the client becomes unhealthy and must not be reused. The
-    /// worker does not wait for mpv's responses. Each command receives its own short write
-    /// deadline, commands retain their order, and a failed write does not prevent later cleanup
-    /// commands from being attempted. The bounded completion wait ensures callers cannot reattach
-    /// to an external mpv or exit the process before the cleanup worker has made every attempt.
+    /// worker cancels outstanding reads first and does not wait for final responses.
+    /// Commands retain their order and short per-write budgets inside one overall
+    /// terminal deadline. A stalled or non-cooperative transport cannot delay the
+    /// caller beyond that deadline; incomplete cleanup is reported explicitly.
     pub(crate) fn send_final_commands_best_effort(&mut self, commands: Vec<Value>) {
-        self.finish_nonblocking_command();
+        let deadline = Instant::now() + MPV_IPC_TERMINAL_TIMEOUT;
+        self.interrupt_command.store(true, Ordering::Release);
+        self.pending_nonblocking_command = None;
         if !self.healthy {
             return;
         }
-        let command_count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
-        let completion_timeout = MPV_IPC_FINAL_WRITE_TIMEOUT
-            .saturating_mul(command_count)
-            .saturating_add(MPV_IPC_ACTOR_RESPONSE_GRACE);
         let (completion_tx, completion_rx) = mpsc::channel();
         let queued = self
-            .command_tx
-            .try_send(MpvIpcActorMessage::FinalCommands {
+            .terminal_tx
+            .try_send(MpvIpcFinalCommands {
                 commands,
                 completion_tx,
+                deadline,
             })
             .is_ok();
         self.healthy = false;
-        if queued && completion_rx.recv_timeout(completion_timeout).is_ok() {
+        if queued
+            && completion_rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok()
+        {
             if let Some(worker_thread) = self.worker_thread.take() {
-                let _ = worker_thread.join();
+                while !worker_thread.is_finished() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                if worker_thread.is_finished() {
+                    let _ = worker_thread.join();
+                } else {
+                    eprintln!("mpv terminal worker did not finish before its 500 ms deadline");
+                }
             }
         } else {
+            self.interrupt_command.store(true, Ordering::Release);
+            self.stop_requested.store(true, Ordering::Release);
+            eprintln!("mpv terminal IPC cleanup did not complete before its 500 ms deadline");
             let _ = self.worker_thread.take();
         }
     }
@@ -788,25 +822,34 @@ impl MpvJsonIpcClient {
 
 impl Drop for MpvJsonIpcClient {
     fn drop(&mut self) {
-        let shutdown_queued = self
-            .command_tx
-            .try_send(MpvIpcActorMessage::Shutdown)
-            .is_ok();
-        if let Some(worker_thread) = self.worker_thread.take()
-            && shutdown_queued
-        {
-            let _ = worker_thread.join();
+        self.interrupt_command.store(true, Ordering::Release);
+        self.stop_requested.store(true, Ordering::Release);
+        let _ = self.command_tx.try_send(MpvIpcActorMessage::Shutdown);
+        if let Some(worker_thread) = self.worker_thread.take() {
+            let deadline = Instant::now() + MPV_IPC_TERMINAL_TIMEOUT;
+            while !worker_thread.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(
+                    MPV_IPC_CANCEL_POLL.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            if worker_thread.is_finished() {
+                let _ = worker_thread.join();
+            } else {
+                eprintln!("mpv IPC worker did not stop before its 500 ms shutdown deadline");
+            }
         }
     }
 }
 
 enum MpvIpcActorMessage {
     Command(MpvIpcWorkerRequest),
-    FinalCommands {
-        commands: Vec<Value>,
-        completion_tx: mpsc::Sender<()>,
-    },
     Shutdown,
+}
+
+struct MpvIpcFinalCommands {
+    commands: Vec<Value>,
+    completion_tx: mpsc::Sender<()>,
+    deadline: Instant,
 }
 
 struct MpvIpcWorkerRequest {
@@ -1075,8 +1118,11 @@ impl MpvIpcWorker {
         }
     }
 
-    fn send_final_commands_best_effort(&mut self, commands: Vec<Value>) {
+    fn send_final_commands_best_effort(&mut self, commands: Vec<Value>, overall_deadline: Instant) {
         for command in commands {
+            if Instant::now() >= overall_deadline {
+                break;
+            }
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
             let request = json!({
@@ -1089,7 +1135,8 @@ impl MpvIpcWorker {
             line.push('\n');
             let deadline = Instant::now()
                 .checked_add(MPV_IPC_FINAL_WRITE_TIMEOUT)
-                .unwrap_or_else(Instant::now);
+                .unwrap_or_else(Instant::now)
+                .min(overall_deadline);
             let _ = self.transport.send_line_until(&line, deadline);
         }
     }
@@ -1597,6 +1644,7 @@ fn is_structural_mpv_event(event: &Value) -> bool {
 struct MpvPipeTransport {
     stream: MpvPipeStream,
     read_buffer: Vec<u8>,
+    interrupt: Arc<AtomicBool>,
 }
 
 impl MpvPipeTransport {
@@ -1608,6 +1656,7 @@ impl MpvPipeTransport {
             Ok(Self {
                 stream: MpvPipeStream::Unix(stream),
                 read_buffer: Vec::new(),
+                interrupt: Arc::new(AtomicBool::new(false)),
             })
         }
 
@@ -1625,6 +1674,7 @@ impl MpvPipeTransport {
             Ok(Self {
                 stream: MpvPipeStream::Windows(MpvWindowsPipe { stream }),
                 read_buffer: Vec::new(),
+                interrupt: Arc::new(AtomicBool::new(false)),
             })
         }
 
@@ -1639,12 +1689,21 @@ impl MpvPipeTransport {
 }
 
 impl MpvJsonIpcTransport for MpvPipeTransport {
+    fn set_cancellation_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt = flag;
+    }
+
     fn send_line_until(&mut self, line: &str, deadline: Instant) -> io::Result<()> {
+        remaining_until_or_cancel(deadline, &self.interrupt)?;
         match &mut self.stream {
             #[cfg(unix)]
-            MpvPipeStream::Unix(stream) => write_line_to_unix_stream(stream, line, deadline),
+            MpvPipeStream::Unix(stream) => {
+                write_line_to_unix_stream(stream, line, deadline, &self.interrupt)
+            }
             #[cfg(windows)]
-            MpvPipeStream::Windows(stream) => stream.write_line_until(line, deadline),
+            MpvPipeStream::Windows(stream) => {
+                stream.write_line_until(line, deadline, &self.interrupt)
+            }
         }
     }
 
@@ -1652,14 +1711,30 @@ impl MpvJsonIpcTransport for MpvPipeTransport {
         match &mut self.stream {
             #[cfg(unix)]
             MpvPipeStream::Unix(stream) => read_line_with(&mut self.read_buffer, line, |chunk| {
-                let remaining = remaining_until(deadline)?;
-                stream.set_read_timeout(Some(remaining.max(Duration::from_millis(1))))?;
-                stream.read(chunk)
+                loop {
+                    let remaining = remaining_until_or_cancel(deadline, &self.interrupt)?;
+                    stream.set_read_timeout(Some(
+                        remaining
+                            .min(MPV_IPC_CANCEL_POLL)
+                            .max(Duration::from_millis(1)),
+                    ))?;
+                    match stream.read(chunk) {
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                            ) =>
+                        {
+                            continue;
+                        }
+                        result => break result,
+                    }
+                }
             }),
             #[cfg(windows)]
             MpvPipeStream::Windows(stream) => {
                 read_line_with(&mut self.read_buffer, line, |chunk| {
-                    stream.read_until(chunk, deadline)
+                    stream.read_until(chunk, deadline, &self.interrupt)
                 })
             }
         }
@@ -1678,12 +1753,27 @@ fn write_line_to_unix_stream(
     stream: &mut std::os::unix::net::UnixStream,
     line: &str,
     deadline: Instant,
+    interrupt: &AtomicBool,
 ) -> io::Result<()> {
     let mut remaining_bytes = line.as_bytes();
     while !remaining_bytes.is_empty() {
-        let remaining_time = remaining_until(deadline)?;
-        stream.set_write_timeout(Some(remaining_time.max(Duration::from_millis(1))))?;
-        let written = stream.write(remaining_bytes)?;
+        let remaining_time = remaining_until_or_cancel(deadline, interrupt)?;
+        stream.set_write_timeout(Some(
+            remaining_time
+                .min(MPV_IPC_CANCEL_POLL)
+                .max(Duration::from_millis(1)),
+        ))?;
+        let written = match stream.write(remaining_bytes) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            result => result?,
+        };
         if written == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
@@ -1702,10 +1792,15 @@ struct MpvWindowsPipe {
 
 #[cfg(windows)]
 impl MpvWindowsPipe {
-    fn write_line_until(&mut self, line: &str, deadline: Instant) -> io::Result<()> {
+    fn write_line_until(
+        &mut self,
+        line: &str,
+        deadline: Instant,
+        interrupt: &AtomicBool,
+    ) -> io::Result<()> {
         let mut remaining_bytes = line.as_bytes();
         while !remaining_bytes.is_empty() {
-            let written = self.write_until(remaining_bytes, deadline)?;
+            let written = self.write_until(remaining_bytes, deadline, interrupt)?;
             if written == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -1717,7 +1812,12 @@ impl MpvWindowsPipe {
         Ok(())
     }
 
-    fn read_until(&mut self, buffer: &mut [u8], deadline: Instant) -> io::Result<usize> {
+    fn read_until(
+        &mut self,
+        buffer: &mut [u8],
+        deadline: Instant,
+        interrupt: &AtomicBool,
+    ) -> io::Result<usize> {
         use std::os::windows::io::AsRawHandle;
 
         use windows_sys::Win32::{
@@ -1726,6 +1826,7 @@ impl MpvWindowsPipe {
             System::IO::OVERLAPPED,
         };
 
+        remaining_until_or_cancel(deadline, interrupt)?;
         let event = MpvWindowsEvent::new()?;
         // SAFETY: zero is the documented initial state for `OVERLAPPED`; the
         // event handle is assigned before the operation starts.
@@ -1751,10 +1852,16 @@ impl MpvWindowsPipe {
         if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
             return Err(error);
         }
-        wait_for_windows_overlapped(handle, &mut overlapped, deadline).map(|bytes| bytes as usize)
+        wait_for_windows_overlapped(handle, &mut overlapped, deadline, interrupt)
+            .map(|bytes| bytes as usize)
     }
 
-    fn write_until(&mut self, buffer: &[u8], deadline: Instant) -> io::Result<usize> {
+    fn write_until(
+        &mut self,
+        buffer: &[u8],
+        deadline: Instant,
+        interrupt: &AtomicBool,
+    ) -> io::Result<usize> {
         use std::os::windows::io::AsRawHandle;
 
         use windows_sys::Win32::{
@@ -1763,6 +1870,7 @@ impl MpvWindowsPipe {
             System::IO::OVERLAPPED,
         };
 
+        remaining_until_or_cancel(deadline, interrupt)?;
         let event = MpvWindowsEvent::new()?;
         // SAFETY: zero is the documented initial state for `OVERLAPPED`; the
         // event handle is assigned before the operation starts.
@@ -1788,7 +1896,8 @@ impl MpvWindowsPipe {
         if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
             return Err(error);
         }
-        wait_for_windows_overlapped(handle, &mut overlapped, deadline).map(|bytes| bytes as usize)
+        wait_for_windows_overlapped(handle, &mut overlapped, deadline, interrupt)
+            .map(|bytes| bytes as usize)
     }
 }
 
@@ -1826,49 +1935,68 @@ fn wait_for_windows_overlapped(
     file_handle: windows_sys::Win32::Foundation::HANDLE,
     overlapped: &mut windows_sys::Win32::System::IO::OVERLAPPED,
     deadline: Instant,
+    interrupt: &AtomicBool,
 ) -> io::Result<u32> {
     use windows_sys::Win32::{
         Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         System::{IO::GetOverlappedResult, Threading::WaitForSingleObject},
     };
 
-    let wait_millis = match remaining_until(deadline) {
-        Ok(remaining) => remaining
-            .as_millis()
-            .saturating_add(1)
-            .min((u32::MAX - 1) as u128) as u32,
-        Err(error) => {
-            cancel_and_wait_for_windows_overlapped(file_handle, overlapped);
-            return Err(error);
-        }
-    };
-    // SAFETY: the event belongs to the in-flight `OVERLAPPED` operation.
-    let wait_result = unsafe { WaitForSingleObject(overlapped.hEvent, wait_millis) };
-    if wait_result == WAIT_OBJECT_0 {
-        let mut transferred = 0_u32;
-        // SAFETY: the event is signaled, so the operation has completed and
-        // the `OVERLAPPED` structure is still valid.
-        let succeeded =
-            unsafe { GetOverlappedResult(file_handle, overlapped, &mut transferred, 0) };
-        return if succeeded != 0 {
-            Ok(transferred)
-        } else {
-            Err(io::Error::last_os_error())
+    loop {
+        let wait_millis = match remaining_until_or_cancel(deadline, interrupt) {
+            Ok(remaining) => remaining
+                .min(MPV_IPC_CANCEL_POLL)
+                .as_millis()
+                .saturating_add(1)
+                .min((u32::MAX - 1) as u128) as u32,
+            Err(error) => {
+                cancel_and_wait_for_windows_overlapped(file_handle, overlapped);
+                return Err(error);
+            }
         };
+        // SAFETY: the event belongs to the in-flight `OVERLAPPED` operation.
+        let wait_result = unsafe { WaitForSingleObject(overlapped.hEvent, wait_millis) };
+        if wait_result == WAIT_OBJECT_0 {
+            let mut transferred = 0_u32;
+            // SAFETY: the event is signaled, so the operation has completed and
+            // the `OVERLAPPED` structure is still valid.
+            let succeeded =
+                unsafe { GetOverlappedResult(file_handle, overlapped, &mut transferred, 0) };
+            return if succeeded != 0 {
+                Ok(transferred)
+            } else {
+                Err(io::Error::last_os_error())
+            };
+        }
+
+        if wait_result == WAIT_TIMEOUT && remaining_until_or_cancel(deadline, interrupt).is_ok() {
+            continue;
+        }
+
+        let wait_error = if wait_result == WAIT_TIMEOUT {
+            mpv_ipc_timeout_io_error()
+        } else if wait_result == WAIT_FAILED {
+            io::Error::last_os_error()
+        } else {
+            io::Error::other(format!(
+                "unexpected wait result for mpv IPC operation: {wait_result}"
+            ))
+        };
+
+        cancel_and_wait_for_windows_overlapped(file_handle, overlapped);
+        return Err(wait_error);
     }
+}
 
-    let wait_error = if wait_result == WAIT_TIMEOUT {
-        mpv_ipc_timeout_io_error()
-    } else if wait_result == WAIT_FAILED {
-        io::Error::last_os_error()
-    } else {
-        io::Error::other(format!(
-            "unexpected wait result for mpv IPC operation: {wait_result}"
+fn remaining_until_or_cancel(deadline: Instant, interrupt: &AtomicBool) -> io::Result<Duration> {
+    if interrupt.load(Ordering::Acquire) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "mpv IPC command cancelled for terminal cleanup",
         ))
-    };
-
-    cancel_and_wait_for_windows_overlapped(file_handle, overlapped);
-    Err(wait_error)
+    } else {
+        remaining_until(deadline)
+    }
 }
 
 #[cfg(windows)]

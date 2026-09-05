@@ -1,4 +1,5 @@
 use super::*;
+use rustls_pki_types::pem::PemObject;
 
 pub(in crate::tests) fn read_next_protocol_line_from_pending(
     pending_bytes: &mut Vec<u8>,
@@ -89,9 +90,11 @@ pub(in crate::tests) fn open_legacy_tls_client_stream(
 ) -> Result<StreamOwned<ClientConnection, TcpStream>, InteropError> {
     let cert_pem_path = tls_cert_path.join("cert.pem");
     let cert_pem = fs::read(&cert_pem_path)?;
-    let certs = rustls_pemfile::certs(&mut Cursor::new(cert_pem))
+    let certs = rustls_pki_types::CertificateDer::pem_reader_iter(&mut Cursor::new(cert_pem))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(InteropError::Io)?;
+        .map_err(|error| {
+            InteropError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
     if certs.is_empty() {
         return Err(InteropError::InvalidPythonBatchResponse(format!(
             "legacy TLS cert bundle contains no certificates at {}",

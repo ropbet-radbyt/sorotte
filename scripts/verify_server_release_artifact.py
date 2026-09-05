@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -24,10 +23,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterable
 
+try:
+    import artifact_input
+    import dependency_policy
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import artifact_input
+    import dependency_policy
+
 
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024 * 1024
 MAX_EXPANDED_BYTES = 512 * 1024 * 1024
+DEPENDENCY_FILES = {"DEPENDENCIES.json", "THIRD-PARTY-NOTICES.txt"}
 COPY_CHUNK_BYTES = 1024 * 1024
 SERVER_START_TIMEOUT_SECONDS = 10
 SERVER_SHUTDOWN_TIMEOUT_SECONDS = 5
@@ -63,11 +71,29 @@ class ArchiveMember:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(COPY_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return artifact_input.sha256_file(path)
+
+
+def dependency_files_for_version(version: str) -> set[str]:
+    # Historical packages retain their existing closed payload inventory. New
+    # releases cannot silently omit the resolved graph and notice inventory.
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].+)?", version)
+    if match is not None and tuple(map(int, match.groups())) < (0, 2, 9):
+        return set()
+    return set(DEPENDENCY_FILES)
+
+
+def verify_dependency_inventory(package_root: Path, verified_files: list[dict[str, object]], *, package: str, source_sha: str, target: str) -> None:
+    try:
+        inventory = _load_manifest(package_root / "DEPENDENCIES.json")
+        dependency_policy.validate_inventory(
+            inventory, payload_hashes={str(item["path"]): str(item["sha256"]) for item in verified_files},
+            expected_package=package, expected_source_sha=source_sha,
+        )
+        if inventory["target"] != target:
+            raise VerificationError("dependency inventory target differs from package platform")
+    except dependency_policy.DependencyError as error:
+        raise VerificationError(f"dependency inventory: {error}") from error
 
 
 def _require_regular_file(path: Path, description: str) -> None:
@@ -364,15 +390,10 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 
 def _load_manifest(path: Path) -> dict[str, object]:
     _require_regular_file(path, "package manifest")
-    if path.stat().st_size > 1024 * 1024:
-        raise VerificationError("package manifest exceeds the size limit")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_json_keys)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise VerificationError(f"package manifest is not valid UTF-8 JSON: {error}") from error
-    if not isinstance(value, dict):
-        raise VerificationError("package manifest must be a JSON object")
-    return value
+        return artifact_input.strict_json_load(path, max_bytes=1024 * 1024, expected_type=dict, label="package manifest")
+    except artifact_input.ArtifactInputError as error:
+        raise VerificationError(str(error)) from error
 
 
 def _require_exact_object_keys(
@@ -426,7 +447,7 @@ def verify_manifest(
         "README.md",
         "SERVER_RELEASE.md",
         "LICENSE",
-    }
+    } | dependency_files_for_version(identity.version)
     observed_names: set[str] = set()
     verified_files: list[dict[str, object]] = []
     for index, entry in enumerate(files):
@@ -465,6 +486,11 @@ def verify_manifest(
     if observed_names != expected_names:
         raise VerificationError(
             f"manifest file inventory mismatch; missing={sorted(expected_names - observed_names)}"
+        )
+    if dependency_files_for_version(identity.version):
+        verify_dependency_inventory(
+            package_root, verified_files, package="sorotte-server", source_sha=expected_source_sha,
+            target="x86_64-pc-windows-msvc" if identity.platform == "windows" else "x86_64-unknown-linux-gnu",
         )
     return manifest, sorted(verified_files, key=lambda item: str(item["path"]))
 
@@ -863,7 +889,7 @@ def verify_release(
             "SERVER_RELEASE.md",
             "LICENSE",
             "manifest.json",
-        }
+        } | dependency_files_for_version(identity.version)
         safe_extract_archive(
             archive_path,
             extraction_parent / "package",

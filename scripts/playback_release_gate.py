@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -16,9 +15,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import playback_lifecycle_model as lifecycle_model
+import artifact_input
 
 
 SCHEMA_VERSION = 1
+MAX_REPORT_BYTES = 16 * 1024 * 1024
 BUNDLE_KIND = "sorotte-playback-release-candidate-bundle"
 PLATFORM_KIND = "sorotte-playback-release-platform-gate"
 COMPLETE_KIND = "sorotte-playback-release-complete-gate"
@@ -137,21 +138,18 @@ class ReleaseGateError(ValueError):
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return artifact_input.sha256_file(path)
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReleaseGateError(f"{label} is not readable JSON") from error
-    if not isinstance(value, dict):
-        raise ReleaseGateError(f"{label} must be an object")
-    return value
+        return artifact_input.strict_json_load(path, max_bytes=MAX_REPORT_BYTES, expected_type=dict, label=label)
+    except artifact_input.ArtifactInputError as error:
+        raise ReleaseGateError(f"{label}: {error}") from error
+
+
+def has_schema(value: Mapping[str, Any], version: int = SCHEMA_VERSION) -> bool:
+    return artifact_input.is_json_integer(value.get("schema_version")) and value["schema_version"] == version
 
 
 def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -230,7 +228,9 @@ def validate_bundle(value: Mapping[str, Any], directory: Path) -> dict[str, Any]
         "files",
     }:
         raise ReleaseGateError("candidate bundle manifest does not use its closed schema")
-    if value.get("schema_version") != SCHEMA_VERSION or value.get("kind") != BUNDLE_KIND:
+    if not has_schema(value, SCHEMA_VERSION):
+        raise ReleaseGateError("candidate bundle manifest has an unsupported schema version")
+    if value.get("kind") != BUNDLE_KIND:
         raise ReleaseGateError("candidate bundle manifest has the wrong identity")
     if value.get("result") != "passed":
         raise ReleaseGateError("candidate bundle manifest is not a pass")
@@ -355,7 +355,7 @@ def checks_by_id(report: Mapping[str, Any]) -> dict[str, str]:
 def lifecycle_transition_ids(summary: Any, label: str) -> set[str]:
     if (
         not isinstance(summary, dict)
-        or summary.get("schema_version") != 1
+        or not has_schema(summary, 1)
         or summary.get("kind")
         != "sorotte-playback-lifecycle-evidence-validation"
         or summary.get("result") != "passed"
@@ -387,7 +387,7 @@ def validate_system_report(
     loop: bool,
 ) -> dict[str, Any]:
     report = load_json(path, "playback lifecycle system report")
-    if report.get("schema_version") != 1 or report.get("kind") != "sorotte-playback-lifecycle-system":
+    if not has_schema(report, 1) or report.get("kind") != "sorotte-playback-lifecycle-system":
         raise ReleaseGateError("system report has the wrong identity")
     if report.get("result") != "passed" or report.get("candidate_sha") != bundle_manifest["candidate_sha"]:
         raise ReleaseGateError("system report is not bound to the passing candidate")
@@ -422,7 +422,7 @@ def validate_system_report(
 
 def validate_start_report(path: Path, bundle_manifest: Mapping[str, Any]) -> dict[str, Any]:
     report = load_json(path, "start-gate system report")
-    if report.get("schema_version") != 1 or report.get("kind") != "sorotte-playback-start-gate-system":
+    if not has_schema(report, 1) or report.get("kind") != "sorotte-playback-start-gate-system":
         raise ReleaseGateError("start-gate report has the wrong identity")
     if (
         report.get("result") != "passed"
@@ -632,7 +632,7 @@ def validate_status_report(
     path: Path, bundle_manifest: Mapping[str, Any], mpv_digest: str
 ) -> dict[str, Any]:
     report = load_json(path, "participant status system report")
-    if report.get("schema_version") != 1 or report.get("kind") != "sorotte-playback-status-system":
+    if not has_schema(report, 1) or report.get("kind") != "sorotte-playback-status-system":
         raise ReleaseGateError("status system report has the wrong identity")
     if report.get("result") != "passed" or report.get("candidate_sha") != bundle_manifest["candidate_sha"]:
         raise ReleaseGateError("status system report is not bound to the candidate")
@@ -688,7 +688,7 @@ def attest_windows(args: argparse.Namespace) -> dict[str, Any]:
     for mode, path in sorted(summaries.items()):
         summary = load_json(path, f"{mode} exact-GUI summary")
         if (
-            summary.get("schema_version") != 1
+            not has_schema(summary, 1)
             or summary.get("kind") != "sorotte-gui-real-mpv-vertical-contract"
             or summary.get("result") != "passed"
             or summary.get("capability") != "executed"
@@ -795,7 +795,7 @@ def validate_platform_gate(
     if set(report) != required:
         raise ReleaseGateError(f"{platform} gate does not use its closed schema")
     if (
-        report.get("schema_version") != SCHEMA_VERSION
+        not has_schema(report, SCHEMA_VERSION)
         or report.get("kind") != PLATFORM_KIND
         or report.get("result") != "passed"
         or report.get("candidate_sha") != candidate_sha

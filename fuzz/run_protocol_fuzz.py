@@ -385,7 +385,8 @@ def minimization_command(
         target_name,
         str(artifact.resolve()),
         "--",
-        f"-max_len={MAX_INPUT_BYTES}",
+        # libFuzzer's crash minimizer sets its own limit to the input size.
+        # Supplying max_len here attempts to initialize that limit twice.
         f"-timeout={PER_INPUT_TIMEOUT_SECONDS}",
         f"-exact_artifact_path={minimized.resolve()}",
     ]

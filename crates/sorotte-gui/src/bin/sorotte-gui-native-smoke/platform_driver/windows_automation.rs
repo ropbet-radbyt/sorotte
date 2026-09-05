@@ -595,33 +595,74 @@ impl PlatformNativeGuiDriver {
         window: PlatformWindowHandle,
     ) -> Result<Vec<NativeAccessibilityNode>, String> {
         Self::with_ui_automation(window, "accessibility snapshot", |automation, root| {
-            let elements = Self::collect_subtree_elements(automation, root)?;
+            use windows::Win32::UI::Accessibility::{
+                TreeScope_Element, TreeScope_Subtree, UIA_AutomationIdPropertyId,
+                UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId,
+                UIA_HasKeyboardFocusPropertyId, UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId,
+                UIA_NamePropertyId,
+            };
+            // One provider snapshot avoids thousands of cross-process Current*
+            // calls per large-content scroll and keeps all properties coherent.
+            // SAFETY: All cache, condition and element COM objects belong to
+            // this initialized automation scope and are consumed within it.
+            let elements = unsafe {
+                (|| -> windows::core::Result<_> {
+                    let request = automation.CreateCacheRequest()?;
+                    request.SetTreeScope(TreeScope_Element)?;
+                    for property in [
+                        UIA_NamePropertyId,
+                        UIA_AutomationIdPropertyId,
+                        UIA_ControlTypePropertyId,
+                        UIA_BoundingRectanglePropertyId,
+                        UIA_IsEnabledPropertyId,
+                        UIA_HasKeyboardFocusPropertyId,
+                        UIA_IsOffscreenPropertyId,
+                    ] {
+                        request.AddProperty(property)?;
+                    }
+                    root.FindAllBuildCache(
+                        TreeScope_Subtree,
+                        &automation.CreateTrueCondition()?,
+                        &request,
+                    )
+                })()
+            }
+            .map_err(|error| format!("failed to capture cached UI Automation subtree: {error}"))?;
             let length = Self::automation_element_count(&elements)?;
             let mut nodes = Vec::with_capacity(length.max(0) as usize);
             for index in 0..length {
-                let Some(element) = Self::automation_element_at(&elements, index) else {
-                    continue;
-                };
-                let name = Self::automation_element_name(&element).unwrap_or_default();
-                let automation_id = Self::automation_element_automation_id(&element);
-                let Some(control_type) = Self::automation_element_control_type(&element) else {
-                    continue;
-                };
-                let bounds = Self::automation_element_bounding_rect(&element).and_then(|rect| {
-                    (rect.right > rect.left && rect.bottom > rect.top).then_some([
-                        rect.left,
-                        rect.top,
-                        rect.right,
-                        rect.bottom,
-                    ])
-                });
+                let element = Self::automation_element_at_required(&elements, index)?;
+                // SAFETY: Every requested property was populated by FindAllBuildCache.
+                let (name, automation_id, control_type, rect, enabled, focused, offscreen) =
+                    unsafe {
+                        (|| -> windows::core::Result<_> {
+                            Ok((
+                                element.CachedName()?,
+                                element.CachedAutomationId()?,
+                                element.CachedControlType()?,
+                                element.CachedBoundingRectangle()?,
+                                element.CachedIsEnabled()?,
+                                element.CachedHasKeyboardFocus()?,
+                                element.CachedIsOffscreen()?,
+                            ))
+                        })()
+                    }
+                    .map_err(|error| {
+                        format!("incomplete cached UI Automation node {index}: {error}")
+                    })?;
+                let bounds = (rect.right > rect.left && rect.bottom > rect.top).then_some([
+                    rect.left,
+                    rect.top,
+                    rect.right,
+                    rect.bottom,
+                ]);
                 nodes.push(NativeAccessibilityNode {
-                    name,
-                    automation_id,
+                    name: name.to_string().trim().to_owned(),
+                    automation_id: automation_id.to_string(),
                     control_type: control_type.0,
-                    enabled: Self::automation_element_is_enabled(&element),
-                    focused: Self::automation_element_has_keyboard_focus(&element),
-                    offscreen: Self::automation_element_is_offscreen(&element),
+                    enabled: enabled.as_bool(),
+                    focused: focused.as_bool(),
+                    offscreen: offscreen.as_bool(),
                     bounds,
                 });
             }

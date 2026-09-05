@@ -1,3 +1,4 @@
+use super::resources::{ByteReservation, ConnectionPermit, NetworkResources, PeerByteBudget};
 use super::*;
 use std::{
     future::Future,
@@ -10,6 +11,10 @@ use std::{
 use tokio::sync::mpsc::error::TrySendError;
 
 type AcceptedClient = io::Result<(TcpStream, SocketAddr)>;
+type AdmittedClient = io::Result<(TcpStream, SocketAddr, ConnectionPermit)>;
+
+#[cfg(test)]
+mod resource_tests;
 
 trait ServerNetworkAcceptor: Send + Sync {
     fn accept(&self) -> std::pin::Pin<Box<dyn Future<Output = AcceptedClient> + Send + '_>>;
@@ -47,10 +52,10 @@ impl std::fmt::Debug for ClientOutboundEvent {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
 struct PeriodicStateUpdate {
     generation: u64,
     line: String,
+    reservation: Option<ByteReservation>,
 }
 
 impl std::fmt::Debug for PeriodicStateUpdate {
@@ -66,18 +71,18 @@ impl std::fmt::Debug for PeriodicStateUpdate {
 #[derive(Debug, Default)]
 struct ProtocolLineQueueState {
     latest_periodic_generation: u64,
-    tail_periodic: Option<Arc<StdMutex<PeriodicStateUpdate>>>,
+    tail_periodic: Option<std::sync::Weak<StdMutex<PeriodicStateUpdate>>>,
     closed: bool,
 }
 
 enum QueuedProtocolLine {
-    Reliable(String),
+    Reliable(String, ByteReservation),
     Periodic(Arc<StdMutex<PeriodicStateUpdate>>),
     TransportAction(ServerTransportAction),
 }
 
 enum ResolvedClientEvent {
-    ProtocolLine(String),
+    ProtocolLine(String, Option<ByteReservation>),
     TransportAction(ServerTransportAction),
 }
 
@@ -100,6 +105,7 @@ pub(crate) struct ClientEventSender {
     overload_close: watch::Sender<Option<usize>>,
     overload_signalled: Arc<AtomicBool>,
     metrics: ServerOutboundBackpressureMetrics,
+    byte_budget: PeerByteBudget,
 }
 
 pub(crate) struct ClientEventReceiver {
@@ -127,8 +133,19 @@ pub(crate) async fn with_network_dispatch_order<T>(
     operation.await
 }
 
+#[cfg(test)]
 pub(crate) fn client_event_queue(
     metrics: ServerOutboundBackpressureMetrics,
+) -> (ClientEventSender, ClientEventReceiver) {
+    client_event_queue_with_budget(
+        metrics,
+        NetworkResources::new(ServerResourceLimits::default()).peer_budget(),
+    )
+}
+
+fn client_event_queue_with_budget(
+    metrics: ServerOutboundBackpressureMetrics,
+    byte_budget: PeerByteBudget,
 ) -> (ClientEventSender, ClientEventReceiver) {
     let (protocol_tx, protocol_rx) = channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
     let (overload_tx, overload_rx) = watch::channel(None);
@@ -140,6 +157,7 @@ pub(crate) fn client_event_queue(
             overload_close: overload_tx,
             overload_signalled: Arc::new(AtomicBool::new(false)),
             metrics: metrics.clone(),
+            byte_budget,
         },
         ClientEventReceiver {
             protocol_lines: protocol_rx,
@@ -167,7 +185,12 @@ impl ClientEventSender {
     }
 
     async fn send_reliable_line(&self, line: String) -> ClientEventSendOutcome {
-        self.send_reliable_event(QueuedProtocolLine::Reliable(line))
+        let Some(reservation) = self.byte_budget.reserve(line.len().saturating_add(2)) else {
+            self.metrics.dropped();
+            self.signal_overload();
+            return ClientEventSendOutcome::Overloaded;
+        };
+        self.send_reliable_event(QueuedProtocolLine::Reliable(line, reservation))
             .await
     }
 
@@ -226,20 +249,41 @@ impl ClientEventSender {
         }
         let generation = queue.latest_periodic_generation.saturating_add(1);
         queue.latest_periodic_generation = generation;
-        if let Some(tail_periodic) = queue.tail_periodic.as_ref() {
-            *tail_periodic
+        if let Some(tail_periodic) = queue
+            .tail_periodic
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            let mut update = tail_periodic
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                PeriodicStateUpdate { generation, line };
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !update
+                .reservation
+                .as_mut()
+                .is_some_and(|reservation| reservation.resize(line.len().saturating_add(2)))
+            {
+                self.metrics.dropped();
+                return ClientEventSendOutcome::DroppedPeriodic;
+            }
+            update.generation = generation;
+            update.line = line;
             self.metrics.coalesced();
             return ClientEventSendOutcome::Coalesced;
         }
 
-        let update = Arc::new(StdMutex::new(PeriodicStateUpdate { generation, line }));
+        let Some(reservation) = self.byte_budget.reserve(line.len().saturating_add(2)) else {
+            self.metrics.dropped();
+            return ClientEventSendOutcome::DroppedPeriodic;
+        };
+        let update = Arc::new(StdMutex::new(PeriodicStateUpdate {
+            generation,
+            line,
+            reservation: Some(reservation),
+        }));
         let item = QueuedProtocolLine::Periodic(update.clone());
         match self.protocol_lines.try_send(item) {
             Ok(()) => {
-                queue.tail_periodic = Some(update);
+                queue.tail_periodic = Some(Arc::downgrade(&update));
                 self.metrics.enqueued();
                 ClientEventSendOutcome::Sent
             }
@@ -269,36 +313,40 @@ impl ClientEventSender {
 
 impl ClientEventReceiver {
     async fn resolve_event(&self, item: QueuedProtocolLine) -> ResolvedClientEvent {
-        let event = match item {
-            QueuedProtocolLine::Reliable(line) => ResolvedClientEvent::ProtocolLine(line),
+        // Account when ownership leaves the queue, before the only await.
+        // Cancellation while locking a periodic marker must not leak depth.
+        self.metrics.dequeued();
+        match item {
+            QueuedProtocolLine::Reliable(line, reservation) => {
+                ResolvedClientEvent::ProtocolLine(line, Some(reservation))
+            }
             QueuedProtocolLine::Periodic(update) => {
                 let mut queue = self.protocol_line_queue.lock().await;
                 if queue
                     .tail_periodic
                     .as_ref()
-                    .is_some_and(|tail| Arc::ptr_eq(tail, &update))
+                    .is_some_and(|tail| tail.ptr_eq(&Arc::downgrade(&update)))
                 {
                     queue.tail_periodic = None;
                 }
-                let line = update
+                let mut update = update
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .line
-                    .clone();
-                ResolvedClientEvent::ProtocolLine(line)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                ResolvedClientEvent::ProtocolLine(
+                    std::mem::take(&mut update.line),
+                    update.reservation.take(),
+                )
             }
             QueuedProtocolLine::TransportAction(action) => {
                 ResolvedClientEvent::TransportAction(action)
             }
-        };
-        self.metrics.dequeued();
-        event
+        }
     }
 
     #[cfg(test)]
     async fn resolve_protocol_line(&self, item: QueuedProtocolLine) -> String {
         match self.resolve_event(item).await {
-            ResolvedClientEvent::ProtocolLine(line) => line,
+            ResolvedClientEvent::ProtocolLine(line, _reservation) => line,
             ResolvedClientEvent::TransportAction(action) => {
                 panic!("expected protocol line, received transport action {action:?}")
             }
@@ -318,7 +366,10 @@ impl ClientEventReceiver {
             queue.tail_periodic = None;
             self.protocol_lines.close();
         }
-        let discarded = self.protocol_lines.len();
+        let mut discarded = 0;
+        while self.protocol_lines.try_recv().is_ok() {
+            discarded += 1;
+        }
         self.metrics.discarded(discarded);
     }
 
@@ -338,6 +389,17 @@ impl ClientEventReceiver {
     }
 }
 
+impl Drop for ClientEventReceiver {
+    fn drop(&mut self) {
+        self.protocol_lines.close();
+        let mut discarded = 0;
+        while self.protocol_lines.try_recv().is_ok() {
+            discarded += 1;
+        }
+        self.metrics.discarded(discarded);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ServerNetworkClientSessionTimeouts {
     pre_hello: std::time::Duration,
@@ -348,6 +410,7 @@ pub(crate) struct ServerNetworkClientSessionTimeouts {
 struct ServerNetworkClientIdentity {
     peer_ip: Option<String>,
     client_id: String,
+    admission: Option<ConnectionPermit>,
 }
 
 impl ServerNetworkClientSessionTimeouts {
@@ -920,8 +983,15 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
     timeouts: ServerNetworkClientSessionTimeouts,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<(), ServerNetworkError> {
-    let ServerNetworkClientIdentity { peer_ip, client_id } = identity;
-    let (event_tx, mut event_rx) = client_event_queue(runtime.outbound_backpressure_metrics());
+    let ServerNetworkClientIdentity {
+        peer_ip,
+        client_id,
+        mut admission,
+    } = identity;
+    let (event_tx, mut event_rx) = client_event_queue_with_budget(
+        runtime.outbound_backpressure_metrics(),
+        runtime.network_resources.peer_budget(),
+    );
     {
         let mut senders = dispatch_context.client_event_senders.lock().await;
         senders.insert(client_id.clone(), event_tx);
@@ -962,7 +1032,7 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                     break;
                 };
                 match event_rx.resolve_event(outbound_item).await {
-                    ResolvedClientEvent::ProtocolLine(outbound_line) => {
+                    ResolvedClientEvent::ProtocolLine(outbound_line, _reservation) => {
                         let Some(write_result) = run_until_shutdown(
                             &mut shutdown_rx,
                             transport.write_line_with_timeout(&outbound_line, timeouts.write),
@@ -1058,6 +1128,7 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                 };
                 let ordered_dispatch = handle_result?;
                 session_known = session_known || ordered_dispatch.session_exists;
+                if session_known && let Some(admission) = admission.as_mut() { admission.authenticated(); }
             }
         }
     }
@@ -1120,7 +1191,11 @@ pub(crate) async fn run_server_network_client_session_with_timeouts(
     };
     run_server_network_client_session_with_timeouts_until_shutdown(
         stream,
-        ServerNetworkClientIdentity { peer_ip, client_id },
+        ServerNetworkClientIdentity {
+            peer_ip,
+            client_id,
+            admission: None,
+        },
         runtime,
         dispatch_context,
         timeouts,
@@ -1259,10 +1334,15 @@ async fn run_server_network_client_session(
     runtime: ServerActorHandle,
     dispatch_context: ServerNetworkDispatchContext,
     shutdown_rx: watch::Receiver<bool>,
+    admission: ConnectionPermit,
 ) -> Result<(), ServerNetworkError> {
     run_server_network_client_session_with_timeouts_until_shutdown(
         stream,
-        ServerNetworkClientIdentity { peer_ip, client_id },
+        ServerNetworkClientIdentity {
+            peer_ip,
+            client_id,
+            admission: Some(admission),
+        },
         runtime,
         dispatch_context,
         ServerNetworkClientSessionTimeouts::production_with_pre_hello(
@@ -1293,8 +1373,9 @@ fn accept_error_is_transient(source: &io::Error) -> bool {
 
 async fn accept_server_network_clients_with_until_shutdown<A>(
     acceptor: A,
-    accepted_clients: Sender<AcceptedClient>,
+    accepted_clients: Sender<AdmittedClient>,
     mut shutdown_rx: watch::Receiver<bool>,
+    resources: Arc<NetworkResources>,
 ) -> io::Result<()>
 where
     A: ServerNetworkAcceptor,
@@ -1307,9 +1388,10 @@ where
             _ = wait_for_shutdown(&mut shutdown_rx) => break,
             accepted = acceptor.accept() => {
                 let accepted_client = match accepted {
-                    Ok(accepted_client) => {
+                    Ok((stream, address)) => {
                         retry_backoff = initial_backoff;
-                        Ok(accepted_client)
+                        let Some(permit) = resources.admit(address.ip()) else { continue; };
+                        Ok((stream, address, permit))
                     }
                     Err(source) if accept_error_is_transient(&source) => {
                         tokio::select! {
@@ -1341,10 +1423,17 @@ where
 
 async fn accept_server_network_clients_until_shutdown(
     listener: TcpListener,
-    accepted_clients: Sender<AcceptedClient>,
+    accepted_clients: Sender<AdmittedClient>,
     shutdown_rx: watch::Receiver<bool>,
+    resources: Arc<NetworkResources>,
 ) -> io::Result<()> {
-    accept_server_network_clients_with_until_shutdown(listener, accepted_clients, shutdown_rx).await
+    accept_server_network_clients_with_until_shutdown(
+        listener,
+        accepted_clients,
+        shutdown_rx,
+        resources,
+    )
+    .await
 }
 
 async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
@@ -1412,18 +1501,20 @@ pub async fn run_server_network_loops_until_shutdown(
         dispatch_order: Arc::new(Mutex::new(())),
         transport_action_sink,
     };
-    let (accepted_tx, mut accepted_rx): (Sender<AcceptedClient>, Receiver<AcceptedClient>) =
+    let (accepted_tx, mut accepted_rx): (Sender<AdmittedClient>, Receiver<AdmittedClient>) =
         channel(ACCEPTED_CLIENT_QUEUE_CAPACITY);
     let (local_shutdown_tx, local_shutdown_rx) = watch::channel(false);
     let mut accept_tasks = JoinSet::new();
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();
         let listener_shutdown_rx = local_shutdown_rx.clone();
+        let resources = runtime.network_resources.clone();
         accept_tasks.spawn(async move {
             if let Err(source) = accept_server_network_clients_until_shutdown(
                 listener,
                 accepted_tx,
                 listener_shutdown_rx,
+                resources,
             )
             .await
             {
@@ -1464,7 +1555,7 @@ pub async fn run_server_network_loops_until_shutdown(
                 let Some(accepted) = accepted else {
                     break;
                 };
-                let (stream, address) = match accepted {
+                let (stream, address, admission) = match accepted {
                     Ok(accepted) => accepted,
                     Err(source) => {
                         loop_error = Some(ServerNetworkError::Io(source));
@@ -1486,6 +1577,7 @@ pub async fn run_server_network_loops_until_shutdown(
                         runtime,
                         dispatch_context,
                         session_shutdown_rx,
+                        admission,
                     )
                     .await
                     {
@@ -1624,6 +1716,7 @@ mod credential_debug_tests {
         let line = format!(r#"{{\"Hello\":{{\"password\":\"{secret}\"}}}}"#);
         let event = ClientOutboundEvent::ReliableLine(line.clone());
         let periodic = PeriodicStateUpdate {
+            reservation: None,
             generation: 7,
             line,
         };
@@ -1802,7 +1895,7 @@ mod credential_debug_tests {
             .expect("TLS action should be queued");
         assert!(matches!(
             receiver.resolve_event(first).await,
-            ResolvedClientEvent::ProtocolLine(line) if line == "tls-ack"
+            ResolvedClientEvent::ProtocolLine(line, _) if line == "tls-ack"
         ));
         assert!(matches!(
             receiver.resolve_event(second).await,
@@ -1839,9 +1932,10 @@ mod credential_debug_tests {
             acceptor,
             accepted_tx,
             shutdown_rx,
+            NetworkResources::new(ServerResourceLimits::default()),
         ));
 
-        let (_, delivered_address) =
+        let (_, delivered_address, _permit) =
             time::timeout(std::time::Duration::from_secs(1), accepted_rx.recv())
                 .await
                 .expect("accept retry should complete before timeout")

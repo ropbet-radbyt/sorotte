@@ -1,4 +1,7 @@
-use std::{thread, time::Duration};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use super::super::{
     MAIN_WINDOW_CONTROLS_CONTAINER_NAME, MAIN_WINDOW_LOCAL_READY_BUTTON_AUTOMATION_ID,
@@ -201,12 +204,18 @@ impl PlatformNativeGuiDriver {
                             &candidate,
                             &format!("{name:?} keyboard activation target"),
                         )?;
-                        thread::sleep(Duration::from_millis(120));
-                        if !Self::automation_element_has_keyboard_focus(&candidate) {
-                            return Err(format!(
-                                "{} named {name:?} did not acknowledge keyboard focus",
-                                control_kind.label()
-                            ));
+                        // AccessKit applies SetFocus on the GUI event loop.
+                        // Large trees can take more than one fixed frame delay;
+                        // acknowledge actual focus before sending physical keys.
+                        let focus_deadline = Instant::now() + Duration::from_secs(2);
+                        while !Self::automation_element_has_keyboard_focus(&candidate) {
+                            if Instant::now() >= focus_deadline {
+                                return Err(format!(
+                                    "{} named {name:?} did not acknowledge keyboard focus",
+                                    control_kind.label()
+                                ));
+                            }
+                            thread::sleep(Duration::from_millis(20));
                         }
                         self.send_enter_key().map_err(|error| {
                             format!(

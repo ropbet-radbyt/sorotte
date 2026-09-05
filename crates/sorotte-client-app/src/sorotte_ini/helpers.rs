@@ -109,40 +109,36 @@ pub(super) fn upsert_ini_value_legacy_compatible(
     value: &str,
 ) {
     let section_header = format!("[{section}]");
-    let mut section_start = None;
-    for (idx, line) in lines.iter().enumerate() {
-        if line.trim().eq_ignore_ascii_case(&section_header) {
-            section_start = Some(idx);
-            break;
-        }
-    }
-
     let rendered = format!(
         "{key} = {}",
         escape_sorotte_ini_value_legacy_compatible(value)
     );
 
-    if let Some(section_start_idx) = section_start {
-        let mut insert_at = lines.len();
-        let mut key_index = None;
-        for (idx, line) in lines.iter().enumerate().skip(section_start_idx + 1) {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                insert_at = idx;
-                break;
-            }
-            if let Some((candidate_key, _)) = trimmed.split_once('=')
-                && candidate_key.trim().eq_ignore_ascii_case(key)
-            {
-                key_index = Some(idx);
-                break;
-            }
+    let mut in_section = false;
+    let mut insert_at = None;
+    let mut found_key = false;
+    for (idx, line) in lines.iter_mut().enumerate() {
+        let trimmed = line.trim();
+        if let Some(candidate) = ini_section_name(trimmed) {
+            in_section = candidate.eq_ignore_ascii_case(section);
+        } else if in_section
+            && let Some((candidate_key, _)) = trimmed.split_once('=')
+            && candidate_key.trim().eq_ignore_ascii_case(key)
+        {
+            // The parser consumes every occurrence, including repeated sections.
+            // Rewrite all copies so clearing a secret cannot leave an older copy.
+            *line = rendered.clone();
+            found_key = true;
         }
-        if let Some(idx) = key_index {
-            lines[idx] = rendered;
-        } else {
-            lines.insert(insert_at, rendered);
+        if in_section {
+            insert_at = Some(idx + 1);
         }
+    }
+    if found_key {
+        return;
+    }
+    if let Some(insert_at) = insert_at {
+        lines.insert(insert_at, rendered);
         return;
     }
 
@@ -158,12 +154,11 @@ pub(super) fn remove_ini_value_legacy_compatible(
     section: &str,
     key: &str,
 ) {
-    let section_header = format!("[{section}]");
     let mut in_section = false;
     lines.retain(|line| {
         let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_section = trimmed.eq_ignore_ascii_case(&section_header);
+        if let Some(candidate) = ini_section_name(trimmed) {
+            in_section = candidate.eq_ignore_ascii_case(section);
             return true;
         }
         if !in_section {
@@ -173,4 +168,8 @@ pub(super) fn remove_ini_value_legacy_compatible(
             .split_once('=')
             .is_some_and(|(candidate_key, _)| candidate_key.trim().eq_ignore_ascii_case(key))
     });
+}
+
+pub(super) fn ini_section_name(line: &str) -> Option<&str> {
+    line.strip_prefix('[')?.strip_suffix(']').map(str::trim)
 }

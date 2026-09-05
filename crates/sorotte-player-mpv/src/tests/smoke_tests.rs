@@ -8,7 +8,6 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         io::{Read, Write},
         net::{SocketAddr, TcpListener, TcpStream},
         path::PathBuf,
-        process::{Child, Command, Stdio},
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -16,21 +15,6 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         thread::{JoinHandle, sleep},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-
-    struct RealMpvGuard {
-        child: Child,
-        cleanup_path: Option<PathBuf>,
-    }
-
-    impl Drop for RealMpvGuard {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            if let Some(path) = self.cleanup_path.as_ref() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
 
     struct LoopbackMediaServerGuard {
         address: SocketAddr,
@@ -172,21 +156,19 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         (path.to_string_lossy().into_owned(), Some(path))
     };
 
-    let child = Command::new(&mpv_bin)
-        .arg("--no-config")
-        .arg("--no-terminal")
-        .arg("--idle=yes")
-        .arg("--force-window=no")
-        .arg(format!("--input-ipc-server={endpoint}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("real mpv should launch");
-    let _guard = RealMpvGuard {
-        child,
-        cleanup_path,
-    };
+    let _guard = crate::managed_process::ManagedMpvCommand::new(&mpv_bin)
+        .args([
+            "--no-config",
+            "--no-terminal",
+            "--idle=yes",
+            "--force-window=no",
+            "--ao=null",
+            "--vo=null",
+            "--pause=yes",
+        ])
+        .args([format!("--input-ipc-server={endpoint}")])
+        .spawn(cleanup_path)
+        .expect("real mpv should launch in the production ownership container");
 
     let mut owner = connect_with_retry(&endpoint);
     let mut settings = LegacySyncplayUiSettings {
@@ -257,7 +239,9 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
     assert_eq!(
         contender
             .apply_network_media_options_to_active_media_classified()
-            .expect("the core network hook should load, acknowledge, and own the idle player"),
+            .unwrap_or_else(|error| {
+                panic!("the core network hook should load, acknowledge, and own the idle player: {error}")
+            }),
         MpvActiveNetworkMediaOptionsApplyOutcome::NoActiveMedia
     );
 
@@ -299,6 +283,11 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
         "local on-load must complete the installed policy without a file-local write"
     );
+    assert_eq!(
+        wait_for_network_outcome(&mut contender),
+        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
+        "the missing local fixture must finish its later idle transition before testing lease expiry"
+    );
 
     sleep(Duration::from_millis(10_200));
     let takeover_deadline = Instant::now() + Duration::from_secs(3);
@@ -319,12 +308,16 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
             .hook_health,
         MpvNetworkOptionsHookHealth::Ready
     );
-    assert!(matches!(
-        wait_for_network_outcome(&mut contender),
-        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
-            if error.to_string().contains("ownership")
-                || error.to_string().contains("lease expired")
-    ));
+    let replaced_owner_outcome = wait_for_network_outcome(&mut contender);
+    assert!(
+        matches!(
+            &replaced_owner_outcome,
+            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
+                if error.to_string().contains("ownership")
+                    || error.to_string().contains("lease expired")
+        ),
+        "expected replaced-owner degradation, observed {replaced_owner_outcome:?}"
+    );
     assert!(
         contender.is_connected(),
         "lease replacement must not detach playback"
