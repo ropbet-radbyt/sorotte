@@ -187,11 +187,12 @@ pub(crate) struct ConnectionPermit {
 impl ConnectionPermit {
     pub(crate) fn authenticated(&mut self) {
         if self.unauthenticated {
-            self.resources
+            let mut admission = self
+                .resources
                 .admission
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .unauthenticated -= 1;
+                .unwrap_or_else(|error| error.into_inner());
+            admission.unauthenticated -= 1;
             self.unauthenticated = false;
         }
     }

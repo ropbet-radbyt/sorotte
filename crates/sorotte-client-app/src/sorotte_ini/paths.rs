@@ -24,19 +24,18 @@ static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Create one new private directory without following or modifying existing
 /// entries. The parent must already exist. Used for credential and executable
 /// staging where securing a directory after creation would leave an exposure.
-pub fn create_private_directory(path: &Path) -> io::Result<()> {
+pub fn create_private_directory(_path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
-        super::windows_security::SecurityDescriptor::create_private_directory(path)
+        super::windows_security::SecurityDescriptor::create_private_directory(_path)
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new().mode(0o700).create(path)
+        std::fs::DirBuilder::new().mode(0o700).create(_path)
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = path;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "private directory security is not supported on this platform",

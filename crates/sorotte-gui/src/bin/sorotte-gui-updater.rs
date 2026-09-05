@@ -925,12 +925,11 @@ fn read_verified_package_bytes(path: &Path, expected_sha256: &str) -> Result<Vec
     reject_reparse_path(path)?;
     let file = fs::File::open(path)
         .map_err(|error| format!("failed reading update package {}: {error}", path.display()))?;
-    if file
+    let archive_bytes = file
         .metadata()
         .map_err(|error| format!("failed inspecting update package: {error}"))?
-        .len()
-        > update_limits::ARCHIVE_BYTES
-    {
+        .len();
+    if archive_bytes > update_limits::ARCHIVE_BYTES {
         return Err("Update archive exceeded its byte budget.".to_owned());
     }
     let bytes = read_limited(file, update_limits::ARCHIVE_BYTES)?;

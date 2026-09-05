@@ -44,6 +44,26 @@ class CoverageProfileLaneTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_external_profiles_share_the_cargo_report_directory(self) -> None:
+        for configured_target in (None, "target/windows-process", str(self.root / "custom")):
+            with self.subTest(configured_target=configured_target):
+                original = {"KEEP": "value"}
+                if configured_target is not None:
+                    original["CARGO_TARGET_DIR"] = configured_target
+                environment = lanes.show_env_environment(repo_root=self.root, environment=original)
+                base = pathlib.Path(configured_target or "target")
+                if not base.is_absolute():
+                    base = self.root / base
+                merged_directory = base / "llvm-cov-target"
+                for key in ("CARGO_TARGET_DIR", "CARGO_LLVM_COV_TARGET_DIR", "CARGO_LLVM_COV_BUILD_DIR"):
+                    self.assertEqual(pathlib.Path(environment[key]), merged_directory)
+                self.assertEqual(environment["KEEP"], "value")
+                self.assertNotIn("CARGO_LLVM_COV_TARGET_DIR", original)
+
+    def test_external_profile_directory_cannot_escape_the_checkout(self) -> None:
+        with self.assertRaises(lanes.CoverageProfileLaneError):
+            lanes.show_env_environment(repo_root=self.root, environment={"CARGO_TARGET_DIR": "../outside"})
+
     def test_show_env_requests_stable_posix_shell_output(self) -> None:
         self.assertEqual(
             lanes.SHOW_ENV_COMMAND,

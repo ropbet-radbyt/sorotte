@@ -2,6 +2,11 @@ use super::*;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
+#[cfg(target_os = "linux")]
+use self::launch_from_process_lifetime_thread as spawn_owned_child;
+#[cfg(not(target_os = "linux"))]
+use self::spawn_child as spawn_owned_child;
+
 #[derive(Debug)]
 pub(super) struct PlatformProcess {
     child: Mutex<Child>,
@@ -11,10 +16,7 @@ pub(super) struct PlatformProcess {
 
 impl PlatformProcess {
     pub(super) fn spawn(spec: &ManagedMpvCommand) -> io::Result<Self> {
-        #[cfg(target_os = "linux")]
-        let child = launch_from_process_lifetime_thread(spec)?;
-        #[cfg(not(target_os = "linux"))]
-        let child = spawn_child(spec)?;
+        let child = spawn_owned_child(spec)?;
         Ok(Self {
             id: child.id(),
             child: Mutex::new(child),

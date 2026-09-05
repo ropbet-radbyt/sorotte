@@ -4,8 +4,9 @@
 This producer deliberately covers non-interactive Windows behavior that the
 ordinary Linux workspace profile cannot execute: updater replacement and
 recovery, installed-updater self replacement, named-pipe faults, external mpv
-process faults, media-tool child-process faults, and server platform-signal
-registration. Every lane has an exact libtest inventory, must add a fresh raw
+process faults, owned child processes, private resource/settings permissions,
+media-tool child-process faults, and server platform-signal registration.
+Every lane has an exact libtest inventory, must add a fresh raw
 LLVM profile, and must remain merge compatible with the other profiles from
 this Windows/MSVC producer.
 
@@ -42,7 +43,7 @@ PINNED_RUST_RELEASE = "1.97.1"
 PINNED_RUST_COMMIT = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
 PINNED_RUST_HOST = "x86_64-pc-windows-msvc"
 PINNED_LLVM_VERSION = "22.1.6"
-TARGET_DIR = "target/llvm-cov-windows-process"
+TARGET_DIR = "target/llvm-cov-windows-process/llvm-cov-target"
 COMPATIBILITY_DOMAIN = "windows-x86_64-msvc"
 NATIVE_EXCLUSION_REASON = (
     "interactive Windows UI Automation is an uninstrumented, separately "
@@ -139,6 +140,114 @@ SERVER_PLATFORM_SIGNAL_COMMAND = (
     "--nocapture",
 )
 
+AUDIT_LANE_COMMANDS = {
+    "mpv-owned-process": (
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sorotte-player-mpv",
+        "--all-features",
+        "--lib",
+        "managed_process::",
+        "--",
+        "--nocapture",
+        "--skip",
+        "managed_process::tests::process_fixture",
+    ),
+    "mpv-bridge-resources": (
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sorotte-player-mpv",
+        "--all-features",
+        "--lib",
+        "bridge_resource::",
+        "--",
+        "--nocapture",
+        "--skip",
+        "bridge_resource::security_tests::cache_repair_process_fixture",
+    ),
+    "media-owned-process": (
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sorotte-media-match",
+        "--all-features",
+        "--lib",
+        "extraction::process::",
+        "--",
+        "--nocapture",
+        "--skip",
+        "extraction::process::tests::media_tool_process_fixture",
+    ),
+    "private-settings": (
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sorotte-client-app",
+        "--all-features",
+        "--lib",
+        "sorotte_ini::windows_tests::",
+        "--",
+        "--nocapture",
+    ),
+}
+
+AUDIT_EXPECTED_TESTS = {
+    "mpv-owned-process": (
+        "managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits",
+        "managed_process::tests::owned_child_survives_transfer_from_a_short_lived_launcher_thread",
+        "managed_process::tests::owned_launch_failure_leaves_scope_usable",
+        "managed_process::tests::owned_shutdown_replacement_and_late_drop_preserve_reused_endpoint",
+        "managed_process::tests::platform_containment_terminates_child_on_abrupt_parent_exit",
+    ),
+    "mpv-bridge-resources": (
+        "bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication",
+        "bridge_resource::security_tests::linked_cache_roots_hash_directories_and_ancestors_are_rejected",
+        "bridge_resource::security_tests::materialize_to_load_seam_cannot_redirect_through_replaced_ancestor",
+        "bridge_resource::security_tests::oversized_cache_file_is_repaired_and_hard_links_are_rejected_without_touching_target",
+        "bridge_resource::security_tests::resource_validation_reads_at_most_expected_bytes_plus_one",
+        "bridge_resource::tests::bundled_bridge_materialization_is_idempotent_and_repairs_corruption",
+        "bridge_resource::tests::bundled_bridge_materializes_under_hash_with_canonical_file_name",
+        "bridge_resource::tests::bundled_network_options_hook_materializes_independently_from_the_optional_bridge",
+        "bridge_resource::tests::concurrent_corrupt_materialization_repair_converges_on_the_embedded_resource",
+        "bridge_resource::windows::tests::windows_private_cache_rejects_broad_root_and_resource_acls",
+        "bridge_resource::windows::tests::windows_private_descriptor_rejects_foreign_owner_even_with_restrictive_acl",
+    ),
+    "media-owned-process": (
+        "extraction::process::tests::a_shared_operation_deadline_is_not_renewed_by_the_next_tool",
+        "extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint",
+        "extraction::process::tests::cancellation_after_probe_launch_prevents_audio_and_returns_no_fingerprint",
+        "extraction::process::tests::cancellation_reaps_descendant_that_holds_an_exited_childs_pipes",
+        "extraction::process::tests::cancellation_while_consuming_output_cannot_return_a_successful_result",
+        "extraction::process::tests::diagnostic_tail_preserves_the_end_without_retaining_all_stderr",
+        "extraction::process::tests::endless_stdout_and_stderr_are_bounded_and_reaped",
+        "extraction::process::tests::exited_child_with_inherited_pipe_descendant_obeys_drain_deadline",
+        "extraction::process::tests::pcm_output_limit_is_derived_from_the_requested_window",
+        "extraction::process::tests::pre_cancel_starts_no_process_and_precedes_filesystem_work",
+        "extraction::process::tests::silent_process_obeys_deadline_and_is_reaped",
+        "extraction::process::tests::successful_child_cannot_leave_a_descendant_with_closed_pipes_running",
+        "extraction::process::tests::successful_probe_convenience_api_preserves_duration_parsing",
+    ),
+    "private-settings": (
+        "sorotte_ini::windows_tests::windows_inherited_acl_is_tightened_and_read_only_failure_preserves_bytes_and_acl",
+        "sorotte_ini::windows_tests::windows_nested_new_settings_and_private_directories_use_protected_descriptors",
+        "sorotte_ini::windows_tests::windows_new_file_and_empty_temporary_file_are_private_under_permissive_parent",
+        "sorotte_ini::windows_tests::windows_protected_owner_and_dacl_survive_replacement_and_fault_cleanup",
+    ),
+}
+
+AUDIT_FILTERED_OUT = {
+    "mpv-owned-process": 453,
+    "mpv-bridge-resources": 447,
+    "media-owned-process": 79,
+    "private-settings": 228,
+}
+
 LANE_ORDER = (
     "updater-transaction-process",
     "updater-installed-self-replacement",
@@ -146,6 +255,7 @@ LANE_ORDER = (
     "mpv-external-process",
     "media-tool-process",
     "server-platform-signal",
+    *AUDIT_LANE_COMMANDS,
     "merge-check",
 )
 PROFILE_LANES = frozenset(LANE_ORDER[:-1])
@@ -156,6 +266,7 @@ LANE_COMMANDS = {
     "mpv-external-process": MPV_EXTERNAL_PROCESS_COMMAND,
     "media-tool-process": MEDIA_TOOL_PROCESS_COMMAND,
     "server-platform-signal": SERVER_PLATFORM_SIGNAL_COMMAND,
+    **AUDIT_LANE_COMMANDS,
     "merge-check": MERGE_COMMAND,
 }
 LANE_INSTRUMENTATION = {
@@ -165,6 +276,7 @@ LANE_INSTRUMENTATION = {
     "mpv-external-process": "cargo-llvm-cov-show-env",
     "media-tool-process": "cargo-llvm-cov-show-env",
     "server-platform-signal": "cargo-llvm-cov-show-env",
+    **{lane: "cargo-llvm-cov-show-env" for lane in AUDIT_LANE_COMMANDS},
     "merge-check": "cargo-llvm-cov-report",
 }
 LANE_ENVIRONMENT_OVERRIDES = {
@@ -256,6 +368,7 @@ EXPECTED_TESTS = {
         "tests::platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths",
     ),
 }
+EXPECTED_TESTS.update(AUDIT_EXPECTED_TESTS)
 MPV_LIBTEST_INVENTORY_SIZE = 458
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
@@ -268,12 +381,15 @@ EXPECTED_FILTERED_OUT = {
     ),
     "media-tool-process": 1184,
     "server-platform-signal": 14,
+    **AUDIT_FILTERED_OUT,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {
         "sorotte_gui_tests",
         "sorotte_gui_updater",
         "sorotte_player_mpv_tests",
+        "sorotte_client_app_tests",
+        "sorotte_media_match_tests",
         "sorotte_server",
         "updater_self_replacement_windows",
     }
@@ -1312,11 +1428,13 @@ def run_collection(args: argparse.Namespace) -> int:
         )
         target.mkdir(parents=True, exist_ok=True)
         coverage_environment = dict(environment)
-        coverage_environment["CARGO_TARGET_DIR"] = str(target)
+        coverage_environment["CARGO_TARGET_DIR"] = str(target.parent)
         show_env_result = common.run_command(
             SHOW_ENV_COMMAND,
             cwd=repo_root,
-            environment=coverage_environment,
+            environment=common.show_env_environment(
+                repo_root=repo_root, environment=coverage_environment
+            ),
         )
         (
             instrumentation_environment,
@@ -1331,9 +1449,7 @@ def run_collection(args: argparse.Namespace) -> int:
 
         instrumented_environment = dict(coverage_environment)
         instrumented_environment.update(instrumentation_environment)
-        instrumented_environment["CARGO_TARGET_DIR"] = str(
-            profile_root / "llvm-cov-target"
-        )
+        instrumented_environment["CARGO_TARGET_DIR"] = str(profile_root)
         for lane in LANE_ORDER:
             if lane == "merge-check":
                 lane_environment = coverage_environment

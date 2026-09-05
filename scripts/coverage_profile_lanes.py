@@ -511,6 +511,23 @@ def parse_show_env(
     return environment, summary, profile_root
 
 
+def show_env_environment(
+    *, repo_root: pathlib.Path, environment: Mapping[str, str]
+) -> dict[str, str]:
+    # Unlike `test` and `report`, `show-env` does not append llvm-cov-target
+    # itself. Select the same directory explicitly so external-process hits
+    # enter the profile set that the final cargo-llvm-cov report merges.
+    cargo_target = pathlib.Path(environment.get("CARGO_TARGET_DIR", "target"))
+    coverage_target = resolve_within(
+        repo_root, cargo_target / "llvm-cov-target", label="coverage build directory"
+    )
+    result = dict(environment)
+    result["CARGO_TARGET_DIR"] = str(coverage_target)
+    result["CARGO_LLVM_COV_TARGET_DIR"] = str(coverage_target)
+    result["CARGO_LLVM_COV_BUILD_DIR"] = str(coverage_target)
+    return result
+
+
 def profile_inventory(
     profile_root: pathlib.Path,
     *,
@@ -524,10 +541,8 @@ def profile_inventory(
     if not root.exists():
         return {}
     inventory: dict[str, ProfileState] = {}
-    # cargo-llvm-cov's owned workspace-test profiles live under
-    # target/llvm-cov-target, while processes launched with show-env write to
-    # the profile pattern directly under target. The merged producer consumes
-    # both, so freshness evidence must inventory the complete target tree.
+    # All producers share the merge directory. Inventory its full tree so
+    # reset and freshness validation also reject retained nested profiles.
     for path in sorted(root.rglob("*.profraw")):
         if path.is_symlink() or not path.is_file():
             raise CoverageProfileLaneError(
@@ -1438,7 +1453,7 @@ def run_collection(args: argparse.Namespace) -> int:
         show_env_result = run_command(
             SHOW_ENV_COMMAND,
             cwd=repo_root,
-            environment=environment,
+            environment=show_env_environment(repo_root=repo_root, environment=environment),
         )
         instrumentation_env, instrumentation_summary, profile_root = parse_show_env(
             show_env_result,
@@ -1474,9 +1489,7 @@ def run_collection(args: argparse.Namespace) -> int:
         # built, uninstrumented binary even though show-env is present. Pin all
         # external lanes to cargo-llvm-cov's isolated build directory, which
         # the workspace lane populated with the same instrumentation contract.
-        instrumented_environment["CARGO_TARGET_DIR"] = str(
-            profile_root / "llvm-cov-target"
-        )
+        instrumented_environment["CARGO_TARGET_DIR"] = str(profile_root)
         with tempfile.TemporaryDirectory(
             prefix="sorotte-coverage-semantic-"
         ) as temporary:

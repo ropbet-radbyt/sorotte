@@ -119,22 +119,7 @@ pub(super) fn load_path(
     file: &File,
     directories: &Directories,
 ) -> io::Result<PathBuf> {
-    #[cfg(target_os = "linux")]
-    let protected = PathBuf::from(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        directories
-            .handles
-            .last()
-            .expect("content directory pinned")
-            .as_raw_fd()
-    ))
-    .join(path.file_name().expect("canonical resource filename"));
-    #[cfg(not(target_os = "linux"))]
-    let protected = {
-        let _ = directories.handles.len();
-        path.to_path_buf()
-    };
+    let protected = protected_load_path(path, directories, cfg!(target_os = "linux"));
     let current = open_resource(&protected)?;
     let original = file.metadata()?;
     let current = current.metadata()?;
@@ -144,9 +129,39 @@ pub(super) fn load_path(
     Ok(protected)
 }
 
+fn protected_load_path(
+    path: &Path,
+    directories: &Directories,
+    use_proc_descriptor: bool,
+) -> PathBuf {
+    if use_proc_descriptor {
+        PathBuf::from(format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            directories
+                .handles
+                .last()
+                .expect("content directory pinned")
+                .as_raw_fd()
+        ))
+        .join(path.file_name().expect("canonical resource filename"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_proc_platform_path_preserves_the_resource_name() {
+        let path = Path::new("/private/cache/content/bridge.lua");
+        let directories = Directories {
+            handles: Vec::new(),
+        };
+        assert_eq!(protected_load_path(path, &directories, false), path);
+    }
 
     #[test]
     fn unlinked_open_resource_is_retryable_but_hard_links_are_denied() {

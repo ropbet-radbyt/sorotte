@@ -77,7 +77,7 @@ impl PlatformProcess {
         // SAFETY: all UTF-16 buffers are terminated and live, only the explicit
         // NUL handle is inherited, and the job list attaches containment atomically
         // as the kernel creates the process, before any child instruction runs.
-        if unsafe {
+        let created = unsafe {
             CreateProcessW(
                 std::ptr::null(),
                 command_line.as_mut_ptr(),
@@ -92,8 +92,8 @@ impl PlatformProcess {
                 &startup.StartupInfo,
                 &mut info,
             )
-        } == 0
-        {
+        };
+        if created == 0 {
             return Err(io::Error::last_os_error());
         }
         // SAFETY: successful CreateProcessW returned two new owned handles.

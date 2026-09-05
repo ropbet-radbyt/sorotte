@@ -2482,6 +2482,8 @@ def lexical_non_coverable_lines(
             # sharing the same line are intentionally not exempt.
             if "{" not in stripped or not stripped.split("{", 1)[1].strip():
                 result.add(number)
+            if "{" not in stripped and ";" not in stripped:
+                in_signature = True
             continue
         module_declaration = INLINE_MODULE_DECLARATION.fullmatch(
             code_stripped.removesuffix("{").removesuffix(";").rstrip()
@@ -2501,13 +2503,16 @@ def lexical_non_coverable_lines(
         if re.fullmatch(r"loop\s*{", code_stripped):
             result.add(number)
             continue
+        if re.fullmatch(r"(?:unsafe\s*\{|thread_local!\s*\{|match\s*\()", code_stripped):
+            result.add(number)
+            continue
         if "=>" in code_stripped and " if " not in f" {code_stripped} ":
             _pattern, arm = code_stripped.split("=>", maxsplit=1)
             if arm.strip() in {"", "{"}:
                 result.add(number)
                 continue
         if re.fullmatch(
-            r"(?:[A-Za-z_][A-Za-z0-9_]*:\s*)?"
+            r"(?:let\s+|[A-Za-z_][A-Za-z0-9_]*:\s*)?"
             r"(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*::)*"
             r"(?:Self|[A-Z][A-Za-z0-9_]*)\s*{",
             code_stripped,
@@ -2543,6 +2548,30 @@ def lexical_non_coverable_lines(
         if code_stripped.endswith("="):
             result.add(number)
             continue
+        # Assignments whose opening line contains only a place and a data
+        # constructor have no independently instrumented operation. Calls in
+        # their arguments still need coverage on the following lines.
+        place = r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+        constructor = r"(?:(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*\s*\{|Some\()"
+        if re.fullmatch(rf"\.?{place}\s*=\s*{constructor}", code_stripped) or (
+            re.fullmatch(place, code_stripped)
+            and re.fullmatch(rf"\.{place}\s*=\s*{constructor}", following_code)
+        ):
+            result.add(number)
+            continue
+        # Pure field/path arguments and the base of a method chain are source
+        # glue. Do not admit calls, indexing, dereferences or other operators.
+        argument = r"[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*"
+        if (
+            re.fullmatch(rf"{argument}(?:\s*,\s*{argument})*", code_stripped)
+            and preceding_code.endswith(",")
+            and re.match(r"^[)\]}]", following_code)
+        ) or (
+            re.fullmatch(r"[A-Z][A-Z0-9_]*", code_stripped)
+            and re.match(r"^\.[A-Za-z_][A-Za-z0-9_]*\(", following_code)
+        ):
+            result.add(number)
+            continue
         if re.fullmatch(
             r"(?:return\s+)?(?:Ok|Err|Some)\b.*[({]",
             code_stripped,
@@ -2550,33 +2579,43 @@ def lexical_non_coverable_lines(
             result.add(number)
             continue
         match_pattern = re.fullmatch(
-            r"(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?!.*\b[a-z_][A-Za-z0-9_]*\s*\()"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
             r"(?:\([^;=]*\)|\s*\{\s*\.\.\s*\})?,?",
             code_stripped,
         )
         if match_pattern is not None and (
             following_code.startswith("|")
+            or following_code.startswith("if ")
             or re.match(r"^[)\]}]", following_code)
         ):
             result.add(number)
             continue
         if re.fullmatch(
-            r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
-            r"(?:\([^;=]*\)|\s*\{[^;=]*\})?,?",
+            r"(?!.*\b[a-z_][A-Za-z0-9_]*\s*\()"
+            r"\|\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?:\([^;=]*\)|\s*\{[^;=()]*\})?\)?,?",
             code_stripped,
         ):
             result.add(number)
             continue
         if re.fullmatch(
-            r"\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*\s*\{",
+            r"\|\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*\s*\{",
             code_stripped,
         ):
             result.add(number)
             continue
         if re.fullmatch(
-            r"(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
-            r"(?:\s*\|\s*(?:[A-Z][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*)+"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*(?:\(_\))?"
+            r"(?:\s*\|\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*(?:\(_\))?)+"
             r",?",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
+        if re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*:\s*"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)+[A-Z][A-Za-z0-9_]*\((?:true|false|_)\),",
             code_stripped,
         ):
             result.add(number)
