@@ -1704,10 +1704,10 @@ impl ServerRuntime {
             return;
         };
         let sender_rtt = client_rtt.unwrap_or(0.0);
-        if !latency_calculation.is_finite()
-            || latency_calculation < 0.0
-            || !sender_rtt.is_finite()
-            || !(0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&sender_rtt)
+        if ![latency_calculation, sender_rtt]
+            .into_iter()
+            .all(|value| value.is_finite() && value >= 0.0)
+            || sender_rtt > PROTOCOL_TIMEOUT_SECONDS
         {
             return;
         }
@@ -1744,13 +1744,8 @@ impl ServerRuntime {
         state_counters.ping_average_rtt_seconds = state_counters.ping_average_rtt_seconds
             * PING_MOVING_AVERAGE_WEIGHT
             + current_rtt_seconds * (1.0 - PING_MOVING_AVERAGE_WEIGHT);
-        if sender_rtt < current_rtt_seconds {
-            state_counters.ping_forward_delay_seconds =
-                state_counters.ping_average_rtt_seconds / 2.0 + (current_rtt_seconds - sender_rtt);
-        } else {
-            state_counters.ping_forward_delay_seconds =
-                state_counters.ping_average_rtt_seconds / 2.0;
-        }
+        state_counters.ping_forward_delay_seconds = state_counters.ping_average_rtt_seconds / 2.0
+            + (current_rtt_seconds - sender_rtt).max(0.0);
         state_counters.ping_forward_delay_seconds = state_counters
             .ping_forward_delay_seconds
             .clamp(0.0, PROTOCOL_TIMEOUT_SECONDS);
@@ -1780,9 +1775,8 @@ impl ServerRuntime {
             (0.0..=PROTOCOL_TIMEOUT_SECONDS).contains(&(sent_at - sent))
                 && wire.to_bits() != wire_timestamp.to_bits()
         });
-        while challenges.len() >= 64 {
-            challenges.pop_front();
-        }
+        let retired = challenges.len().saturating_sub(63);
+        challenges.drain(..retired);
         challenges.push_back((wire_timestamp, sent_at));
         wire_timestamp
     }
@@ -2256,5 +2250,23 @@ impl ServerRuntime {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod ping_challenge_tests {
+    use super::*;
+
+    #[test]
+    fn wire_challenges_canonicalize_invalid_clocks_and_remain_unique() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, -0.0, 0.0] {
+            let mut runtime = ServerRuntime::new();
+            assert_eq!(runtime.record_ping_challenge("peer", invalid).to_bits(), 0);
+            let next = runtime.record_ping_challenge("peer", invalid);
+            assert!(next.is_finite() && next > 0.0);
+        }
+        let mut runtime = ServerRuntime::new();
+        assert_eq!(runtime.record_ping_challenge("peer", 12.5), 12.5);
+        assert_eq!(runtime.record_ping_challenge("peer", f64::MAX), 1.0e15);
     }
 }

@@ -1984,6 +1984,13 @@ class RealMpvVerticalContractTests(unittest.TestCase):
                 "client Hello exchange drifted",
             ),
             (
+                "large-frame capability",
+                "client_hello",
+                contract.EXPECTED_CLIENT_HELLO,
+                lambda hello: hello["Hello"]["features"].pop("sorotteLargeProtocolFramesV1"),
+                "client Hello exchange drifted",
+            ),
+            (
                 "server version",
                 "server_hello",
                 contract.EXPECTED_SERVER_HELLO,

@@ -361,7 +361,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     + lanes.EXPECTED_FILTERED_OUT[lane],
                     lanes.MPV_LIBTEST_INVENTORY_SIZE,
                 )
-        self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 441)
+        self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 458)
 
     def test_libtest_oracle_requires_rust_singular_one_test_grammar(self) -> None:
         lane = "server-platform-signal"

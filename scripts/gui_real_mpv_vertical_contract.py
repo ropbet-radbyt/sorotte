@@ -80,6 +80,7 @@ EXPECTED_CLIENT_HELLO = {
             "readiness": True,
             "setOthersReadiness": True,
             "sharedPlaylists": True,
+            "sorotteLargeProtocolFramesV1": True,
             "sorotteParticipantStatusV1": True,
             "sorottePlaybackBarrierV1": True,
             "sorottePlexPlaylistUris": True,

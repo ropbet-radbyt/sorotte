@@ -4059,6 +4059,21 @@ done""",
                                 ),
                             ),
                             (
+                                "server-ping-challenge-let-chain-or",
+                                "server-participant-status",
+                                "crates/sorotte-server/src/runtime_maintenance.rs",
+                                "ServerRuntime::record_ping_challenge",
+                                "-> f64",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "cargo-mutants changes the observed && "
+                                    "connector in a Rust let-chain to ||, "
+                                    "which rustc rejects because let-chain "
+                                    "conditions support only &&"
+                                ),
+                            ),
+                            (
                                 "server-participant-status-scope-default",
                                 "server-participant-status",
                                 (

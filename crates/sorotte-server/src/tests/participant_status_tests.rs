@@ -1325,6 +1325,36 @@ fn precise_offset_phase_gate_distinguishes_paused_rebuffering_and_unsafe_evidenc
 }
 
 #[test]
+fn participant_status_rejects_invalid_forward_delay_without_reviving_it() {
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.001, 90.001] {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_time_now_override_seconds(Some(100.0));
+        runtime
+            .handle_line("alice", &hello("alice", "room", true, false))
+            .unwrap();
+        fixture_issued_ping_echo(&mut runtime, "alice", 99.75, 0.25);
+        runtime
+            .client_state_counters
+            .get_mut("alice")
+            .unwrap()
+            .ping_forward_delay_seconds = invalid;
+        assert_eq!(
+            runtime.participant_status_forward_delay_ms_at("alice", 100.0),
+            None
+        );
+        runtime
+            .client_state_counters
+            .get_mut("alice")
+            .unwrap()
+            .ping_forward_delay_seconds = 0.125;
+        assert_eq!(
+            runtime.participant_status_forward_delay_ms_at("alice", 100.0),
+            None
+        );
+    }
+}
+
+#[test]
 fn participant_status_forward_delay_evidence_has_a_bounded_lifetime() {
     let mut runtime = ServerRuntime::default();
     let observed_at_seconds = 100.0;

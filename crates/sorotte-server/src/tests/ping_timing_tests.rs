@@ -120,6 +120,49 @@ fn challenge_capacity_age_and_sender_values_are_bounded() {
 }
 
 #[test]
+fn issuing_and_consuming_challenges_prunes_expired_queue_entries() {
+    let mut runtime = connected_runtime();
+    runtime.set_clock_overrides_seconds(Some(109.0), Some(10.0));
+    let old = issue(&mut runtime);
+    runtime.set_clock_overrides_seconds(Some(189.0), Some(90.0));
+    let current = issue(&mut runtime);
+    assert!(
+        runtime.client_state_counters["peer"]
+            .outstanding_ping_challenges
+            .iter()
+            .any(|(wire, _)| *wire == old)
+    );
+    runtime.set_clock_overrides_seconds(Some(204.0), Some(105.0));
+    runtime.ingest_client_ping_metrics("peer", Some(current), Some(15.0));
+    assert_eq!(runtime.server_rtt_seconds("peer"), 15.0);
+    assert!(
+        runtime.client_state_counters["peer"]
+            .outstanding_ping_challenges
+            .is_empty()
+    );
+
+    let old = issue(&mut runtime);
+    runtime.set_clock_overrides_seconds(Some(299.0), Some(200.0));
+    let current = issue(&mut runtime);
+    let pending = &runtime.client_state_counters["peer"].outstanding_ping_challenges;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, current);
+    assert_ne!(pending[0].0, old);
+}
+
+#[test]
+fn sender_rtt_boundaries_preserve_the_server_owned_forward_delay() {
+    for (sender, expected) in [(0.0, 3.0), (2.0, 1.0), (3.0, 1.0), (90.0, 1.0)] {
+        let mut runtime = connected_runtime();
+        let echo = issue(&mut runtime);
+        runtime.set_clock_overrides_seconds(Some(102.0), Some(3.0));
+        runtime.ingest_client_ping_metrics("peer", Some(echo), Some(sender));
+        assert_eq!(runtime.server_rtt_seconds("peer"), 2.0);
+        assert_eq!(runtime.forward_delay_seconds("peer"), expected);
+    }
+}
+
+#[test]
 fn ancient_unmatched_echo_cannot_amplify_a_valid_seek() {
     let mut runtime = ServerRuntime::new();
     runtime.set_time_now_override_seconds(Some(100.0));

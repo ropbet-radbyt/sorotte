@@ -964,6 +964,17 @@ reason = "cargo-mutants changes the observed && connector in a Rust let-chain to
 review_by = "2026-11-30"
 
 [[accepted_unviable]]
+id = "server-ping-challenge-let-chain-or"
+shard = "server-participant-status"
+file = "crates/sorotte-server/src/runtime_maintenance.rs"
+function = "ServerRuntime::record_ping_challenge"
+return_type = "-> f64"
+genre = "BinaryOperator"
+replacement = "||"
+reason = "cargo-mutants changes the observed && connector in a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
 id = "server-participant-status-scope-default"
 shard = "server-participant-status"
 file = "crates/sorotte-server/src/runtime_maintenance.rs"

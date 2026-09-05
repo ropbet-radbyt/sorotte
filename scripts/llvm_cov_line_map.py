@@ -386,7 +386,12 @@ def validate_json_export(
             context=f"{context}.filename",
             require_rust=True,
         )
-        identity = relative.casefold() if os.name == "nt" else relative
+        # Rust #[path] modules shared by independent binaries can produce
+        # distinct LLVM file spellings that resolve to the same source. Keep
+        # each producer view until its text rows have been validated; only
+        # an exact repeated producer identity is invalid.
+        filename = file_value["filename"]
+        identity = filename.casefold() if os.name == "nt" else filename
         if identity in identities:
             raise LlvmCovLineMapError(
                 f"LLVM JSON contains duplicate source file {relative!r}"
@@ -550,7 +555,26 @@ def parse_native_text(
         raise LlvmCovLineMapError(
             f"LLVM native text has unexpected content at row {cursor + 1}"
         )
-    return mapped_files
+    merged: dict[str, dict[str, Any]] = {}
+    for view in mapped_files:
+        previous = merged.get(view["path"])
+        if previous is None:
+            merged[view["path"]] = view
+            continue
+        if (
+            previous["source_sha256"] != view["source_sha256"]
+            or previous["source_line_count"] != view["source_line_count"]
+        ):
+            raise LlvmCovLineMapError("LLVM source aliases disagree about source identity")
+        # A physical line is covered if any independently validated view
+        # executed it. Do not add instances to the physical-line denominator.
+        executions = dict(previous["lines"])
+        for line, covered in view["lines"]:
+            executions[line] = max(executions.get(line, 0), covered)
+        previous["lines"] = [[line, covered] for line, covered in sorted(executions.items())]
+        previous["instrumented_line_count"] = len(executions)
+        previous["covered_line_count"] = sum(executions.values())
+    return list(merged.values())
 
 
 def percent_text(covered: int, count: int) -> str | None:
