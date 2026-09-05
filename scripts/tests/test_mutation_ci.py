@@ -324,8 +324,9 @@ class MutationEvaluationTests(unittest.TestCase):
         )
         for outcome in self.fixture.outcomes["outcomes"]:
             for phase in outcome["phase_results"]:
+                phase["argv"].append("--lib")
                 if phase["phase"] == "Test":
-                    phase["argv"].extend(["--lib", "auth::tests::"])
+                    phase["argv"].append("auth::tests::")
         self.fixture.outcomes["outcomes"][1]["phase_results"][1]["argv"].remove(
             "auth::tests::"
         )
@@ -347,6 +348,34 @@ class MutationEvaluationTests(unittest.TestCase):
             "outcomes are incomplete",
         ):
             self.evaluate()
+
+    def test_library_target_is_required_during_build_as_well_as_test(self) -> None:
+        self.shard = dataclasses.replace(self.shard, test_target="lib")
+        for outcome in self.fixture.outcomes["outcomes"]:
+            for phase in outcome["phase_results"]:
+                phase["argv"].append("--lib")
+        self.rewrite_outcomes()
+        self.assertEqual(self.evaluate()["status"], "passed")
+        self.fixture.outcomes["outcomes"][1]["phase_results"][0]["argv"].remove("--lib")
+        self.rewrite_outcomes()
+        with self.assertRaisesRegex(mutation_ci.MutationCiError, "configured 'lib' test scope"):
+            self.evaluate()
+
+    def test_build_timeout_remains_a_policy_failure(self) -> None:
+        outcome = self.fixture.outcomes["outcomes"][1]
+        outcome["summary"] = "Timeout"
+        outcome["phase_results"] = [self.fixture.phase("Build", "Timeout", no_run=True)]
+        self.fixture.outcomes["caught"] = 0
+        self.fixture.outcomes["timeout"] = 1
+        self.fixture.write()
+        (self.fixture.results / "caught.txt").write_text("", encoding="utf-8")
+        (self.fixture.results / "timeout.txt").write_text(
+            self.fixture.mutant["name"] + "\n", encoding="utf-8"
+        )
+        report = self.evaluate(exit_code=3)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["timeouts"], [self.fixture.mutant["name"]])
+        self.assertIn("timed-out mutants 1 exceed maximum 0", report["errors"])
 
     def test_status_text_must_match_structured_outcomes(self) -> None:
         (self.fixture.results / "caught.txt").write_text("", encoding="utf-8")
@@ -811,10 +840,11 @@ review_by = "2099-01-01"
         shard = self.load().shard("demo")
 
         command = mutation_ci.cargo_mutants_base_command(shard)
-        self.assertIn("--cargo-test-arg=--lib", command)
+        self.assertIn("--cargo-arg=--lib", command)
+        self.assertNotIn("--cargo-test-arg=--lib", command)
         self.assertIn("--cargo-test-arg=auth::tests::", command)
         self.assertLess(
-            command.index("--cargo-test-arg=--lib"),
+            command.index("--cargo-arg=--lib"),
             command.index("--cargo-test-arg=auth::tests::"),
         )
         self.assertEqual(

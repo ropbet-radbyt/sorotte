@@ -1115,6 +1115,7 @@ def require_phase_results(
         ]
         if phase_name == "Build":
             expected_arguments.append("--no-run")
+            expected_arguments.extend(cargo_target_arguments(shard))
         else:
             expected_arguments.extend(cargo_test_scope_arguments(shard))
         actual_arguments = list(argv[1:])
@@ -1162,11 +1163,7 @@ def require_phase_coherence(
         len(statuses) != 1 or not statuses[0].startswith("Failure(")
     ):
         raise MutationCiError(f"{label} unviable mutant has incoherent phases")
-    if summary == "Timeout" and (
-        len(statuses) != 2
-        or statuses[0] != "Success"
-        or statuses[1] != "Timeout"
-    ):
+    if summary == "Timeout" and statuses not in (["Timeout"], ["Success", "Timeout"]):
         raise MutationCiError(f"{label} timed-out mutant has incoherent phases")
 
 
@@ -1552,10 +1549,12 @@ def evaluate_results(
     }
 
 
+def cargo_target_arguments(shard: ShardPolicy) -> list[str]:
+    return ["--lib"] if shard.test_target == "lib" else []
+
+
 def cargo_test_scope_arguments(shard: ShardPolicy) -> list[str]:
-    arguments: list[str] = []
-    if shard.test_target == "lib":
-        arguments.append("--lib")
+    arguments = cargo_target_arguments(shard)
     if shard.test_filter:
         arguments.append(shard.test_filter)
     return arguments
@@ -1599,8 +1598,10 @@ def cargo_mutants_base_command(shard: ShardPolicy) -> list[str]:
             "--cargo-arg=--locked",
         ]
     )
-    for argument in cargo_test_scope_arguments(shard):
-        command.append(f"--cargo-test-arg={argument}")
+    for argument in cargo_target_arguments(shard):
+        command.append(f"--cargo-arg={argument}")
+    if shard.test_filter:
+        command.append(f"--cargo-test-arg={shard.test_filter}")
     command.extend(
         [
             "--jobs",
