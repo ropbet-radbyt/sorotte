@@ -27,7 +27,7 @@ rust-version = "1.97.1"
 [workspace.dependencies]
 anyhow = "1.0.104"
 base64 = "0.22.1"
-eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
 egui = "0.35.0"
 getrandom = "0.4.3"
 md-5 = "0.11.0"
