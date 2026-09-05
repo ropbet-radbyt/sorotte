@@ -1081,6 +1081,57 @@ def extend_with_stalled_http(
 
 
 class RealMpvVerticalContractTests(unittest.TestCase):
+    def test_transport_exchange_binds_seek_counters_and_optional_ping(self) -> None:
+        action = "GUI Play canonical transport"
+        for kind, factory in (("seek", seek_exchange), ("pause", playstate_exchange)):
+            row = factory(action, True, 1.25)
+            request = json.loads(row["request"])
+            request["State"]["ping"] = {
+                "clientLatencyCalculation": 1234.5,
+                "clientRtt": 0.0,
+            }
+            request["State"]["ignoringOnTheFly"] = {"client": 7}
+            echo = json.loads(row["authoritative_echo"])
+            echo["State"]["ignoringOnTheFly"] = {"client": 7}
+            row["request"] = json.dumps(request)
+            row["authoritative_echo"] = json.dumps(echo)
+            arguments = {
+                "expected_action": action,
+                "expected_paused": True,
+                "expected_mutation_kind": kind,
+            }
+            contract.validate_playstate_exchange(row, **arguments)
+            for invalid in (
+                None, {}, {"client": 0}, {"client": -1}, {"client": True},
+                {"client": 2**32}, {"client": 7, "server": 1},
+            ):
+                broken_request = copy.deepcopy(request)
+                broken_request["State"]["ignoringOnTheFly"] = invalid
+                with (
+                    self.subTest(kind=kind, request_counter=invalid),
+                    self.assertRaises(ValueError),
+                ):
+                    contract.validate_playstate_exchange(
+                        {**row, "request": json.dumps(broken_request)}, **arguments
+                    )
+            for invalid in (
+                None, {}, {"client": 6}, {"client": True}, {"client": 7, "server": 1},
+            ):
+                broken_echo = copy.deepcopy(echo)
+                broken_echo["State"]["ignoringOnTheFly"] = invalid
+                with (
+                    self.subTest(kind=kind, echo_counter=invalid),
+                    self.assertRaises(ValueError),
+                ):
+                    contract.validate_playstate_exchange(
+                        {**row, "authoritative_echo": json.dumps(broken_echo)}, **arguments
+                    )
+            del echo["State"]["ignoringOnTheFly"]
+            with self.assertRaises(ValueError):
+                contract.validate_playstate_exchange(
+                    {**row, "authoritative_echo": json.dumps(echo)}, **arguments
+                )
+
     def test_accepts_complete_owned_isolated_vertical_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report, arguments = build_valid_fixture(pathlib.Path(temporary) / "artifacts")

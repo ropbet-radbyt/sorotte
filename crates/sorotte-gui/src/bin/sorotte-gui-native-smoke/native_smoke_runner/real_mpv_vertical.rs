@@ -1986,6 +1986,15 @@ fn record_authoritative_playstate_exchange(
                 "{action} client playstate improperly claimed server attribution"
             ));
         }
+        let expected_counter_ack = request_json
+            .pointer("/State/ignoringOnTheFly/client")
+            .filter(|counter| counter.as_u64().is_some_and(|counter| counter != 0))
+            .map(|counter| serde_json::json!({"client": counter}));
+        if echo_json.pointer("/State/ignoringOnTheFly") != expected_counter_ack.as_ref() {
+            return Err(format!(
+                "{action} authoritative echo did not acknowledge the exact client counter"
+            ));
+        }
         if echo_playstate
             .get("paused")
             .and_then(serde_json::Value::as_bool)
@@ -6110,6 +6119,52 @@ mod tests {
                 }
             })
         );
+
+        for (counter, playstate) in [
+            (
+                1,
+                Some(serde_json::json!({"position": 0.0, "paused": true, "doSeek": true})),
+            ),
+            (
+                2,
+                Some(serde_json::json!({"position": 0.0, "paused": true})),
+            ),
+            (3, None),
+        ] {
+            let mut request =
+                serde_json::json!({"State": {"ignoringOnTheFly": {"client": counter}}});
+            if let Some(playstate) = playstate {
+                request["State"]["playstate"] = playstate;
+            }
+            writeln!(stream, "{request}").expect("write client seek acknowledgement request");
+            let mut echo = String::new();
+            reader
+                .read_line(&mut echo)
+                .expect("read client counter acknowledgement");
+            let echo: serde_json::Value = serde_json::from_str(&echo).unwrap();
+            assert_eq!(
+                echo.pointer("/State/ignoringOnTheFly"),
+                Some(&serde_json::json!({"client": counter}))
+            );
+            if counter == 1 {
+                let (_, recorded_echo) = server
+                    .recv_playstate_exchange(Duration::from_secs(2), "seek counter")
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&recorded_echo).unwrap(),
+                    echo
+                );
+                assert_eq!(
+                    echo.pointer("/State/playstate/doSeek"),
+                    Some(&serde_json::json!(true))
+                );
+            } else {
+                assert_eq!(
+                    echo,
+                    serde_json::json!({"State": {"ignoringOnTheFly": {"client": counter}}})
+                );
+            }
+        }
 
         for (label, position, paused) in [("play", 1.25, false), ("pause", 2.0, true)] {
             let request = serde_json::json!({

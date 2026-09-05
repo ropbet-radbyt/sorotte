@@ -1200,6 +1200,47 @@ fn validated_client_playstate_transition(
     )))
 }
 
+fn validated_client_ignore_counter(value: &serde_json::Value) -> Result<Option<u32>, String> {
+    let Some(counters) = value.pointer("/State/ignoringOnTheFly") else {
+        return Ok(None);
+    };
+    let counters = counters.as_object().ok_or_else(|| {
+        "playlist-echo mock TCP server received invalid ignoringOnTheFly counters".to_owned()
+    })?;
+    if counters.iter().any(|(key, value)| {
+        !matches!(key.as_str(), "client" | "server")
+            || value
+                .as_u64()
+                .is_none_or(|counter| counter > u64::from(u32::MAX))
+    }) {
+        return Err(
+            "playlist-echo mock TCP server received invalid ignoringOnTheFly counters".to_owned(),
+        );
+    }
+    Ok(counters
+        .get("client")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|counter| u32::try_from(counter).ok())
+        .filter(|counter| *counter != 0))
+}
+
+fn write_playlist_echo_counter_ack(
+    stream: &mut std::net::TcpStream,
+    counter: Option<u32>,
+) -> Result<(), String> {
+    if let Some(counter) = counter {
+        let acknowledgement = serde_json::json!({"State":{"ignoringOnTheFly":{"client":counter}}});
+        writeln!(stream, "{acknowledgement}")
+            .and_then(|()| stream.flush())
+            .map_err(|error| {
+                format!(
+                    "playlist-echo mock TCP server could not acknowledge client counter: {error}"
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn is_known_post_playlist_housekeeping_frame(
     value: &serde_json::Value,
     expected_media_url: &str,
@@ -1707,6 +1748,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
                             "playlist-echo mock TCP server received malformed post-playlist client JSON: {error}"
                         )
                     })?;
+                let client_ignore_counter = validated_client_ignore_counter(&parsed)?;
                 if let Some((paused, mut authoritative_playstate)) =
                     validated_client_playstate_transition(&parsed)?
                 {
@@ -1715,6 +1757,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     if paused == canonical_paused && !do_seek {
+                        write_playlist_echo_counter_ack(&mut stream, client_ignore_counter)?;
                         post_playlist_housekeeping_count =
                             post_playlist_housekeeping_count.saturating_add(1);
                         if post_playlist_housekeeping_count > 512 {
@@ -1729,12 +1772,16 @@ pub(super) fn start_playlist_echo_mock_session_server(
                         .as_object_mut()
                         .expect("validated authoritative playstate must remain an object")
                         .insert("setBy".to_owned(), serde_json::json!(username));
-                    let authoritative_echo = serde_json::json!({
+                    let mut authoritative_echo = serde_json::json!({
                         "State": {
                             "playstate": authoritative_playstate,
                         }
-                    })
-                    .to_string();
+                    });
+                    if let Some(counter) = client_ignore_counter {
+                        authoritative_echo["State"]["ignoringOnTheFly"] =
+                            serde_json::json!({"client":counter});
+                    }
+                    let authoritative_echo = authoritative_echo.to_string();
                     stream
                         .write_all(authoritative_echo.as_bytes())
                         .map_err(|error| {
@@ -1763,6 +1810,7 @@ pub(super) fn start_playlist_echo_mock_session_server(
                     continue;
                 }
                 if is_known_post_playlist_housekeeping_frame(&parsed, &expected_media_url) {
+                    write_playlist_echo_counter_ack(&mut stream, client_ignore_counter)?;
                     post_playlist_housekeeping_count =
                         post_playlist_housekeeping_count.saturating_add(1);
                     if post_playlist_housekeeping_count > 512 {
