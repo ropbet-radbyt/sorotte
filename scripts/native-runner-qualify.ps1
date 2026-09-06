@@ -8,6 +8,10 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+. (Join-Path $PSScriptRoot 'gui-native-smoke-process.ps1')
+. (Join-Path $PSScriptRoot 'native-runner-receipt.ps1')
+. (Join-Path $PSScriptRoot 'native-runner-cleanup.ps1')
 $repo='ropbet-radbyt/sorotte'
 $repoRoot=Split-Path -Parent $PSScriptRoot
 function Api([string]$Path) {
@@ -27,7 +31,7 @@ $active=@($observed | Where-Object { $_.status -ne 'completed' -and $_.head_sha 
 if ($active.Count -gt 1) { throw 'Multiple matching native runs are active; use the exact run/job controller command' }
 $attemptRoot=Join-Path $repoRoot ('target\verification\native-requests\'+[Guid]::NewGuid().ToString())
 $null=New-Item -ItemType Directory -Path $attemptRoot
-$receipt=[ordered]@{schema_version=1;kind='sorotte-native-request';source_sha=$SourceSha;reviewed_ref=$ReviewedRef;actor=$actor.login;status='dispatching';run_id=$null;run_attempt=$null;job_id=$null;started=[DateTime]::UtcNow.ToString('o');error=$null;cancellation='not-needed'}
+$receipt=[ordered]@{schema_version=1;kind='sorotte-native-request';source_sha=$SourceSha;reviewed_ref=$ReviewedRef;actor=$actor.login;status='dispatching';run_id=$null;run_attempt=$null;job_id=$null;instance=$null;started=[DateTime]::UtcNow.ToString('o');error=$null;cancellation='not-needed'}
 function Save-Receipt { $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $attemptRoot 'request.json') -Encoding utf8 }
 Save-Receipt
 try {
@@ -68,11 +72,12 @@ try {
         if ($authority.user.login -ine $approver -or $authority.permission -notin @('write','maintain','admin')) { throw 'Native producer approver lacks current repository write authority' }
     }
     $receipt.job_id=$nativeJob.id
+    $receipt.instance=[Guid]::NewGuid().ToString()
     $receipt.status='provisioning'
     Save-Receipt
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'native-runner-sandbox.ps1') `
         -BundleDirectory $BundleDirectory -SourceSha $SourceSha -RunId $receipt.run_id `
-        -RunAttempt $receipt.run_attempt -JobId $receipt.job_id -TimeoutMinutes $TimeoutMinutes
+        -RunAttempt $receipt.run_attempt -JobId $receipt.job_id -TimeoutMinutes $TimeoutMinutes -InstanceId $receipt.instance
     if ($LASTEXITCODE -ne 0) { throw 'Native qualification or isolated cleanup failed; retain this request and its controller attempt' }
     $receipt.status='passed'
 }
@@ -83,14 +88,10 @@ catch {
     Save-Receipt
     if ($null -ne $runId) {
         try {
-            $current=Api "repos/$repo/actions/runs/$runId"
-            if ($current.head_sha -cne $SourceSha -or $current.path -cne '.github/workflows/gui-native-interactive.yml') { throw 'Native cancellation ownership changed' }
-            if ($current.status -ne 'completed') {
-                & gh.exe run cancel ([string]$runId) --repo $repo
-                $receipt.cancellation=if ($LASTEXITCODE -eq 0) { 'requested' } else { 'failed' }
-            }
+            $cleanup=New-NativeCleanupContext (Join-Path $attemptRoot ('cancel-'+[Guid]::NewGuid().ToString())) 30000 (Join-Path $attemptRoot 'request.json')
+            $receipt.cancellation=Stop-NativeQualificationRequest $cleanup $receipt
         }
-        catch { $receipt.cancellation='failed' }
+        catch { $receipt.cancellation='unconfirmed'; $receipt['cancellation_error']=$_.Exception.Message }
     }
     throw $primaryFailure
 }

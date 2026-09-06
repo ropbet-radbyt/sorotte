@@ -20,7 +20,14 @@ try {
             $receipt=Read-NativeRunnerReceipt -Path "$runRoot\host-run.json"
             if ($receipt.instance -cne $InstanceId.ToString() -or $receipt.repository -cne 'ropbet-radbyt/sorotte' -or $receipt.runner_name -cne "sorotte-sandbox-$InstanceId") { throw 'Watchdog receipt identity mismatch' }
             if ($receipt.sandbox_stopped -isnot [bool] -or $receipt.runner_removed -isnot [bool]) { throw 'Invalid watchdog cleanup flags' }
-            if ($receipt.sandbox_stopped -and $receipt.runner_removed) { exit 0 }
+            # Older receipts could only reach successful cleanup after token
+            # removal; new receipts explicitly retain a failed removal attempt.
+            $tokensRemoved=$true
+            if ($receipt.PSObject.Properties.Name -contains 'tokens_removed') {
+                if ($receipt.tokens_removed -isnot [bool]) { throw 'Invalid watchdog token cleanup flag' }
+                $tokensRemoved=$receipt.tokens_removed
+            }
+            if ($receipt.sandbox_stopped -and $receipt.runner_removed -and $tokensRemoved) { exit 0 }
         } catch {
             # An unavailable observation must not stop ownership/deadline checks.
             # Recovery still validates the retained receipt before touching anything.

@@ -112,6 +112,18 @@ $global:LASTEXITCODE=0
         self.assertFalse(json.loads((self.root / "cleanup.json").read_text(encoding="utf-8-sig"))["owner_alive"])
         self.assertIsNone(unrelated.poll())
 
+    def test_leftover_token_keeps_recovery_required_after_guest_and_runner_are_gone(self):
+        owner, started, command = self.owner()
+        receipt_path = self.run_root / "host-run.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt.update(sandbox_stopped=True, runner_removed=True, tokens_removed=False)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        watchdog = self.watchdog(owner, started, command)
+        _, stderr = watchdog.communicate(timeout=20)
+        self.assertEqual(watchdog.returncode, 0, stderr)
+        self.assertIsNotNone(owner.poll(), "Watchdog accepted incomplete token cleanup")
+        self.assertTrue((self.root / "cleanup.json").exists(), "Watchdog skipped required token recovery")
+
     def test_live_pid_with_stale_creation_or_wrong_command_is_refused(self):
         owner, started, command = self.owner()
         for field, bad_start, bad_command in (("creation", "2000-01-01T00:00:00.0000000Z", command), ("command", started, "0" * 64)):

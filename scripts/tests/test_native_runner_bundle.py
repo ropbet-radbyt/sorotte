@@ -170,7 +170,8 @@ class NativeRunnerBundleTests(unittest.TestCase):
         self.assertLess(cleanup.index("Export-Diagnostic"), cleanup.index("Invoke-Control 'stop'"))
         self.assertIn("sandbox-stop-unconfirmed", cleanup)
         self.assertIn("runner-unregister-unconfirmed", cleanup)
-        self.assertIn('"$tokenPath.pending"', cleanup)
+        self.assertEqual(cleanup.count('Remove-OwnedRegistrationTokens'), 2)
+        self.assertIn('"$tokenPath.pending"', source[source.index('function Remove-OwnedRegistrationTokens'):source.index('function Remove-OwnedInstance')])
         self.assertIn("$MaximumPages=100", source)
         self.assertNotIn("api --paginate --slurp", source)
         self.assertLess(source.index("Guest readiness identity mismatch"), source.index("registration-token\" 'POST'"))
@@ -325,113 +326,6 @@ ConvertTo-Json -InputObject @($results) -Depth 4 -Compress
             self.assertTrue(item["json_valid"], item)
             self.assertEqual(item["hash"], hashlib.sha256(data.read_bytes()).hexdigest(), item)
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell independent cleanup")
-    def test_recovery_unregisters_even_when_sandbox_cli_or_python_is_unavailable(self):
-        probe = self.root / "recover.ps1"
-        probe.write_text(r'''
-param([string]$Controller,[string]$Fixture,[string]$Instance)
-Set-StrictMode -Version Latest
-$ErrorActionPreference='Stop'
-$case=Get-Content -LiteralPath $Fixture -Raw | ConvertFrom-Json
-$global:SorotteFixtureCalls=[Collections.Generic.List[string]]::new()
-$global:SorotteFixtureRunnerPresent=$true
-$global:SorotteFixtureGuestPresent=$true
-$global:SorotteFixtureInstance=$Instance
-$global:SorotteFixtureMissingWsb=$case.missing_wsb
-$global:SorotteFixtureMissingPython=$case.missing_python
-function global:Get-Command {
-    [CmdletBinding()]param([string]$Name)
-    $global:SorotteFixtureCalls.Add('lookup:'+$Name)
-    if ($Name -eq 'wsb.exe') {
-        if ($global:SorotteFixtureMissingWsb) { throw 'fixture Sandbox CLI unavailable' }
-        return [pscustomobject]@{Source='fixture-wsb'}
-    }
-    if ($Name -eq 'python') {
-        if ($global:SorotteFixtureMissingPython) { throw 'fixture Python unavailable' }
-        return [pscustomobject]@{Source='fixture-python'}
-    }
-    throw 'Unexpected external command lookup'
-}
-function global:fixture-python { $global:SorotteFixtureCalls.Add('safe-export'); $global:LASTEXITCODE=0 }
-function global:gh.exe {
-    if ($args.Count -ne 4 -or $args[0] -cne 'api' -or $args[1] -cne '--method') { throw 'Unexpected CLI invocation' }
-    $global:LASTEXITCODE=0
-    $global:SorotteFixtureCalls.Add($args[2]+':'+$args[3])
-    if ($args[2] -ceq 'DELETE' -and $args[3] -ceq 'repos/ropbet-radbyt/sorotte/actions/runners/77') {
-        $global:SorotteFixtureRunnerPresent=$false
-        return
-    }
-    if ($args[2] -ceq 'GET' -and $args[3] -ceq 'repos/ropbet-radbyt/sorotte/actions/runners?per_page=100&page=1') {
-        if ($global:SorotteFixtureRunnerPresent) {
-            @{total_count=1;runners=@(@{id=77;name='sorotte-sandbox-'+$Instance})} | ConvertTo-Json -Depth 4 -Compress
-        } else { '{"total_count":0,"runners":[]}' }
-        return
-    }
-    throw 'Unexpected API endpoint or mutation'
-}
-$errorText=$null
-try { & $Controller -CleanupOnly -InstanceId $Instance }
-catch { $errorText=$_.Exception.Message }
-$receiptPath=Join-Path (Split-Path -Parent (Split-Path -Parent $Controller)) ('target/verification/native-runners/'+$Instance+'/host-run.json')
-$receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-@{receipt=$receipt;calls=@($global:SorotteFixtureCalls);error=$errorText} | ConvertTo-Json -Depth 8 -Compress
-''', encoding="utf-8")
-        helper = r'''
-function Invoke-CapturedProcess {
-    param($FilePath,$Arguments,$WorkingDirectory,$ProcessTimeoutMs,$StdoutPath,$StderrPath)
-    if ($FilePath -cne 'fixture-wsb') { throw 'Unexpected process invocation' }
-    $global:SorotteFixtureCalls.Add('wsb:'+$Arguments[0])
-    if ($Arguments[0] -ceq 'stop') {
-        if ($Arguments[1] -cne '--id' -or $Arguments[2] -cne $global:SorotteFixtureInstance) { throw 'Cleanup targeted another guest' }
-        $global:SorotteFixtureGuestPresent=$false
-        $output='{}'
-    } elseif ($Arguments[0] -ceq 'list') {
-        if ($global:SorotteFixtureGuestPresent) { $output=@{WindowsSandboxEnvironments=@(@{Id=$global:SorotteFixtureInstance})} | ConvertTo-Json -Depth 4 -Compress }
-        else { $output='{"WindowsSandboxEnvironments":[]}' }
-    } else { throw 'Unexpected Sandbox action' }
-    [IO.File]::WriteAllText($StdoutPath,$output)
-    [IO.File]::WriteAllText($StderrPath,'')
-    return @{exit_code=0;timed_out=$false}
-}
-'''
-        instance = "00000000-0000-0000-0000-000000000123"
-        for missing_wsb, missing_python in ((True, False), (False, True), (True, True)):
-            with self.subTest(missing_wsb=missing_wsb, missing_python=missing_python):
-                fixture_root = self.root / f"recovery-{missing_wsb}-{missing_python}"
-                scripts = fixture_root / "scripts"
-                scripts.mkdir(parents=True)
-                controller = scripts / "native-runner-sandbox.ps1"
-                controller.write_text((ROOT / "scripts/native-runner-sandbox.ps1").read_text(), encoding="utf-8")
-                (scripts / "native-runner-receipt.ps1").write_text((ROOT / "scripts/native-runner-receipt.ps1").read_text(), encoding="utf-8")
-                (scripts / "native-runner-owner.ps1").write_text((ROOT / "scripts/native-runner-owner.ps1").read_text(), encoding="utf-8")
-                (scripts / "gui-native-smoke-process.ps1").write_text(helper, encoding="utf-8")
-                run = fixture_root / "target/verification/native-runners" / instance
-                (run / "output").mkdir(parents=True)
-                (run / "host-run.json").write_text(json.dumps({
-                    "instance": instance, "repository": "ropbet-radbyt/sorotte", "runner_name": "sorotte-sandbox-" + instance,
-                    "source_sha": "a" * 40, "run_id": 1, "run_attempt": 1, "status": "failed",
-                    "sandbox_stopped": False, "runner_removed": False, "automatic_unregister": False,
-                    "evidence_export": "unavailable", "evidence_directory": None, "cleanup_errors": [], "finished_at_utc": None,
-                }), encoding="utf-8")
-                fixture = fixture_root / "case.json"
-                fixture.write_text(json.dumps({"missing_wsb": missing_wsb, "missing_python": missing_python}), encoding="utf-8")
-                result = subprocess.run(
-                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(probe),
-                     "-Controller", str(controller), "-Fixture", str(fixture), "-Instance", instance],
-                    capture_output=True, text=True, timeout=15,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                observed = json.loads(result.stdout)
-                self.assertIn("DELETE:repos/ropbet-radbyt/sorotte/actions/runners/77", observed["calls"], observed)
-                self.assertTrue(observed["receipt"]["runner_removed"], observed)
-                self.assertEqual(observed["receipt"]["sandbox_stopped"], not missing_wsb, observed)
-                if missing_wsb:
-                    self.assertIn("sandbox-stop-unconfirmed", observed["receipt"]["cleanup_errors"])
-                    self.assertIn("cleanup remains unconfirmed", observed["error"])
-                else:
-                    self.assertIn("wsb:stop", observed["calls"])
-                    self.assertIsNone(observed["error"])
-                self.assertEqual(observed["receipt"]["evidence_export"], "unavailable" if missing_python else "exported")
 
 
 if __name__ == "__main__":

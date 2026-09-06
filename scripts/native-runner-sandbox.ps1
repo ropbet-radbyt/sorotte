@@ -30,6 +30,7 @@ $python=$null
 . (Join-Path $PSScriptRoot 'gui-native-smoke-process.ps1')
 . (Join-Path $PSScriptRoot 'native-runner-receipt.ps1')
 . (Join-Path $PSScriptRoot 'native-runner-owner.ps1')
+. (Join-Path $PSScriptRoot 'native-runner-cleanup.ps1')
 
 function Api([string]$Path,[string]$Method='GET') {
     $result=& gh.exe api --method $Method $Path
@@ -91,40 +92,65 @@ function Export-Diagnostic {
     # evidence when an interrupted guest never completed its private export.
     $safe=Join-Path $runRoot ('safe-evidence-'+[Guid]::NewGuid().ToString())
     $exporterExe=if ($python) { $python } else { (Get-Command python -ErrorAction Stop).Source }
-    & $exporterExe (Join-Path $PSScriptRoot 'native_failure_evidence.py') export --root "$runRoot\output" --output $safe `
-        --source-sha $receipt.source_sha --run-id ([string]$receipt.run_id) --run-attempt ([string]$receipt.run_attempt) `
-        --stage host-fallback --cleanup $(if ($receipt.sandbox_stopped -and $receipt.runner_removed) {'passed'} else {'pending'})
-    if ($LASTEXITCODE -ne 0) { $receipt.evidence_export='unavailable' }
-    else { $receipt.evidence_export='exported'; $receipt.evidence_directory=Split-Path -Leaf $safe }
+    $arguments=@((Join-Path $PSScriptRoot 'native_failure_evidence.py'),'export','--root',"$runRoot\output",'--output',$safe,
+        '--source-sha',$receipt.source_sha,'--run-id',[string]$receipt.run_id,'--run-attempt',[string]$receipt.run_attempt,
+        '--stage','host-fallback','--cleanup',$(if ($receipt.sandbox_stopped -and $receipt.runner_removed -and $receipt.tokens_removed) {'passed'} else {'pending'}))
+    $capture=Invoke-NativeCleanupCommand -FilePath $exporterExe -Arguments $arguments -TimeoutMs 10000
+    Write-NativeRunnerReceipt -Path (Join-Path $runRoot ('export-operation-'+[Guid]::NewGuid().ToString()+'.json')) -Value $capture
+    if ($capture.exit_code -ne 0 -or $capture.timed_out) {
+        $receipt.evidence_export='unavailable'; $receipt.evidence_directory=$null
+        if (-not (Test-Path -LiteralPath $safe)) { $null=New-Item -ItemType Directory -Path $safe }
+        Write-NativeRunnerReceipt -Path (Join-Path $safe 'host-export-unavailable.json') -Value @{
+            schema_version=1;authoritative=$false;source_sha=$receipt.source_sha;run_id=$receipt.run_id;run_attempt=$receipt.run_attempt
+            status='unavailable';reason=$(if($capture.timed_out){'exporter-timeout'}else{'exporter-failed'})
+        }
+    } else { $receipt.evidence_export='exported'; $receipt.evidence_directory=Split-Path -Leaf $safe }
+}
+function Remove-OwnedRegistrationTokens {
+    $receipt['tokens_removed']=$true
+    foreach ($path in @($tokenPath,"$tokenPath.pending")) {
+        try { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+        catch { $receipt.tokens_removed=$false; $receipt.cleanup_errors+='registration-token-removal-unconfirmed' }
+    }
 }
 function Remove-OwnedInstance {
     # Independent cleanup attempts: an API outage must not leave the VM running,
     # and an unavailable Sandbox CLI must not leave a registration active.
-    if (Test-Path -LiteralPath $tokenPath) { Remove-Item -LiteralPath $tokenPath -Force }
-    if (Test-Path -LiteralPath "$tokenPath.pending") { Remove-Item -LiteralPath "$tokenPath.pending" -Force }
+    $receipt.sandbox_stopped=$false
+    $receipt.runner_removed=$false
+    Remove-OwnedRegistrationTokens
     try {
         Export-Diagnostic
     } catch { $receipt.evidence_export='unavailable' }
+    $receipt['job_drain']='unconfirmed'
+    try {
+        $drain=New-NativeCleanupContext (Join-Path $runRoot ('cleanup-drain-'+[Guid]::NewGuid().ToString())) 90000 $receiptPath
+        Stop-NativeOwnedJob $drain $receipt
+    } catch {
+        $receipt.cleanup_errors+='job-drain-unconfirmed'
+        $receipt['job_drain_error']=$_.Exception.Message
+    }
+    # Cancellation can run always-on evidence steps. Retain their latest output
+    # while the guest still exists, even when GitHub itself failed or timed out.
+    try { Export-Diagnostic } catch { $receipt.evidence_export='unavailable' }
     try {
         if (@(Get-GuestIds 'before-stop') -contains $InstanceId.ToString()) {
             $null=Invoke-Control 'stop' @('stop','--id',$InstanceId.ToString())
         }
         $receipt.sandbox_stopped=@(Get-GuestIds 'after-stop') -notcontains $InstanceId.ToString()
     } catch { $receipt.cleanup_errors+= 'sandbox-stop-unconfirmed' }
+    # A guest may have held the mapped handoff file while its controller died.
+    # Retry after guest teardown; a locked token must not block other cleanup.
+    Remove-OwnedRegistrationTokens
     try {
-        $runners=@(Api-Items "repos/$repo/actions/runners?per_page=100" 'runners')
-        $owned=@($runners | Where-Object name -CEQ $runnerName)
-        $unregisterClock=[Diagnostics.Stopwatch]::StartNew()
-        while ($receipt.status -eq 'passed' -and $owned.Count -gt 0 -and $unregisterClock.Elapsed.TotalSeconds -lt 15) {
-            Start-Sleep -Milliseconds 1000
-            $runners=@(Api-Items "repos/$repo/actions/runners?per_page=100" 'runners')
-            $owned=@($runners | Where-Object name -CEQ $runnerName)
-        }
-        $receipt.automatic_unregister=$owned.Count -eq 0
-        foreach ($runner in $owned) { $null=Api "repos/$repo/actions/runners/$($runner.id)" 'DELETE' }
-        $remaining=@(Api-Items "repos/$repo/actions/runners?per_page=100" 'runners')
-        $receipt.runner_removed=@($remaining | Where-Object name -CEQ $runnerName).Count -eq 0
-    } catch { $receipt.cleanup_errors+= 'runner-unregister-unconfirmed' }
+        # A separate bounded phase still attempts unregister if drain or Sandbox
+        # control was unavailable. Deletion requires the exact job to be idle.
+        $unregister=New-NativeCleanupContext (Join-Path $runRoot ('cleanup-unregister-'+[Guid]::NewGuid().ToString())) 30000 $receiptPath
+        Unregister-NativeOwnedRunner $unregister $receipt
+    } catch {
+        $receipt.cleanup_errors+='runner-unregister-unconfirmed'
+        $receipt['runner_unregister_error']=$_.Exception.Message
+    }
     $receipt.finished_at_utc=[DateTime]::UtcNow.ToString('o')
     Save-Receipt
     # A final separate receipt records actual cleanup, after the diagnostic was
@@ -139,7 +165,7 @@ if ($CleanupOnly) {
     $receipt=[ordered]@{}
     foreach ($entry in $saved.PSObject.Properties) { $receipt[$entry.Name]=$entry.Value }
     Remove-OwnedInstance
-    if (-not $receipt.sandbox_stopped -or -not $receipt.runner_removed) { throw 'Recovery cleanup remains unconfirmed; retry exact instance recovery' }
+    if (-not $receipt.sandbox_stopped -or -not $receipt.runner_removed -or -not $receipt.tokens_removed) { throw 'Recovery cleanup remains unconfirmed; retry exact instance recovery' }
     return
 }
 
@@ -150,7 +176,7 @@ $receipt=[ordered]@{
     source_sha=$SourceSha; run_id=$RunId; run_attempt=$RunAttempt; job_id=$JobId; job_conclusion=$null
     status='preparing'; started_at_utc=[DateTime]::UtcNow.ToString('o'); finished_at_utc=$null
     provisioning_seconds=$null; queue_seconds=$null; execution_seconds=$null
-    sandbox_stopped=$false; runner_removed=$false; automatic_unregister=$false
+    sandbox_stopped=$false; runner_removed=$false; tokens_removed=$false; automatic_unregister=$false
     evidence_export='unavailable'; evidence_directory=$null; cleanup_errors=@(); error=$null
 }
 Save-Receipt
@@ -240,10 +266,9 @@ try {
     $receipt.status='passed'
 } catch { $receipt.status='failed'; $receipt.error=$_.Exception.Message }
 finally {
-    if (Test-Path -LiteralPath "$tokenPath.pending") { Remove-Item -LiteralPath "$tokenPath.pending" -Force }
     Remove-OwnedInstance
     if ($null -ne $connector) { $connector.Dispose() }
     if ($null -ne $guardian) { $guardian.Dispose() }
     Write-Host "Native runner receipt: $receiptPath"
 }
-if ($receipt.status -cne 'passed' -or -not $receipt.sandbox_stopped -or -not $receipt.runner_removed -or -not $receipt.automatic_unregister -or $receipt.evidence_export -cne 'exported') { exit 1 }
+if ($receipt.status -cne 'passed' -or -not $receipt.sandbox_stopped -or -not $receipt.runner_removed -or -not $receipt.tokens_removed -or -not $receipt.automatic_unregister -or $receipt.evidence_export -cne 'exported') { exit 1 }

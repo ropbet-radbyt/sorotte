@@ -127,8 +127,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-runner-sandbo
 ```
 
 Recovery removes only that instance's token handoff, guest and uniquely named
-runner, then re-queries both inventories. Guest-stop and unregister failures
-are independent; either unconfirmed result makes cleanup fail. Repeating
+runner, then re-queries both inventories. It exports evidence first, validates
+the exact source/run/attempt/job/runner, and requests cancellation while the
+guest can still acknowledge it. After a 30-second normal cancellation window,
+an unresponsive exact run may use GitHub's documented
+[force-cancel endpoint](https://docs.github.com/en/rest/actions/workflow-runs#force-cancel-a-workflow-run).
+Cancellation requests never substitute for observing a completed job and an
+idle runner. A completed successful native job instead gets its automatic
+unregister window without cancelling the enclosing release workflow.
+
+Drain and unregister have separate 90-second and 30-second API budgets;
+each API child has at most 10 seconds plus bounded process/stream termination.
+Each evidence exporter also has a 10-second process limit and records an
+explicit unavailable result on timeout. GitHub or exporter failure cannot
+prevent the separate guest-stop attempt. Token removal is retried after the
+guest stops, and a remaining token makes cleanup fail. Manual unregister is
+recorded before DELETE and cannot become automatic-unregister evidence on a
+later recovery. Private API captures retain status, original errors and each
+ownership observation without publishing credentials or raw guest output.
+
+Guest-stop, token-removal and unregister failures
+are independent; an unconfirmed result makes cleanup fail. Repeating
 recovery retains separate diagnostic attempts. It does not delete another
 guest, runner or a previous evidence directory.
 
@@ -231,10 +250,25 @@ on Windows. Initial conversation failures were test assumptions (username
 length and acknowledgement publication timing), corrected against observed
 server behavior; they were not product defects.
 
-An end-to-end registered Sandbox run, startup/job failure, cancellation,
-controller-kill drill, host-reboot recovery and actual DPI profiles require a
-committed trusted candidate and isolated infrastructure. They are distinct
-acceptance evidence and are not established by syntax or mocked contract
-tests. Use a fresh UUID for each drill and require zero remaining guest and
-runner registrations before accepting that environment. No native action was
-run on the user's active desktop while implementing this infrastructure.
+Actual disposable-Sandbox fault drills were attempted on trusted source
+`8297a56513bffc38d1e462f09f70da671d10dea7`. The cancellation drill
+[run 34010550587](https://github.com/ropbet-radbyt/sorotte/actions/runs/34010550587)
+completed its expected fault, safe export and independently verified guest,
+runner and process cleanup. Cold guest preparation took 80.87 seconds; the
+guest reported a 3050x1668 input desktop. This is neither a DPI assertion nor
+a full native suite pass.
+
+The controller-interruption drill
+[run 34010920508](https://github.com/ropbet-radbyt/sorotte/actions/runs/34010920508)
+failed: cleanup stopped the guest before the cancelled job drained, and
+GitHub rejected DELETE with HTTP 422 because the runner was busy. Its watchdog
+and bounded fallback both failed. GitHub eventually completed cancellation
+and the runner disappeared, independently verified alongside zero owned
+guests and processes; this later cleanup does not retroactively pass the
+drill. Original receipts and errors remain under
+`target/verification/native-acceptance-drills/interrupt-01c1bcf0-a81a-417b-b566-14d3c06430e9`.
+The repair has real PowerShell recovery/process regressions but requires a
+new committed-source cancellation/interruption run and full positive native
+qualification. Host-reboot recovery and actual DPI/screen-reader profiles
+remain separate acceptance obligations. No native action ran on the user's
+active desktop.
