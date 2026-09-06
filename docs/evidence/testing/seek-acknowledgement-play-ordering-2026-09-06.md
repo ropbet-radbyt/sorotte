@@ -106,3 +106,32 @@ reproductions are retained separately under
 `target/verification/hosted/3bee8c33/mpv-minimum-failure-attempt-1/`.
 `failure-review.json` binds their individual receipts and source identities.
 Later repaired-source validation must identify its own source and attempts.
+
+## Same-room request assertion and mutation selection
+
+The complete campaign on `c4688afbd39d642e1d5597a3194f81307abb42b0`
+retained one survivor in `client-participant-status-runtime--3-of-4`:
+replacing `!=` with `==` in `begin_participant_status_room_switch`.
+The existing public A-to-B-to-A regression passes on both versions: the
+original clears the earlier Seek when leaving A, while the mutation clears it
+when requesting A again. That sequence cannot distinguish the inverted guard.
+
+An isolated replay of the exact retained mutation establishes the distinguishing
+case. After Seek followed by Play, a request for the current room must preserve
+the earlier Seek's correlation. The unmodified implementation then delivers the
+newer Play on its ordinary heartbeat after acknowledging the Seek. The mutated
+implementation clears the correlation and fails that outgoing-protocol
+assertion. This is evidence of a missing assertion, not another shipped product
+defect.
+
+The permanent same-room regression checks the outgoing playing state, revision
+and absence of a duplicate Seek. The original roundtrip test and its name remain;
+shared assertion bodies also run through a `participant_status_` test so the
+existing participant-status mutation selection exercises both public sequences.
+Product code, mutation selection policy and kill requirements are unchanged.
+
+The original-pass/mutant-fail replay, original passing roundtrip on both versions,
+source hashes and exact mutation diff are retained in
+`target/verification/hosted-mutation-fuzz/c4688afb/room-switch-survivor-reproduction-attempt-1/`.
+The original hosted campaign remains failed; later validation is recorded as a
+separate attempt.

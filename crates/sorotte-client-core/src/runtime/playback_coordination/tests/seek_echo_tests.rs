@@ -1014,6 +1014,10 @@ fn queued_previous_seek_does_not_consume_the_newer_seek_acknowledgement() {
 
 #[test]
 fn public_room_effect_roundtrip_cannot_resurrect_an_old_seek_predecessor() {
+    assert_public_room_effect_roundtrip_cannot_resurrect_an_old_seek_predecessor();
+}
+
+pub(super) fn assert_public_room_effect_roundtrip_cannot_resurrect_an_old_seek_predecessor() {
     let mut fixture = SeekFixture::new();
     fixture.play_after_seek();
     fixture
@@ -1050,6 +1054,24 @@ fn public_room_effect_roundtrip_cannot_resurrect_an_old_seek_predecessor() {
             .as_ref()
             .is_some_and(|intent| intent.base_transport_revision == Some(35))
     );
+}
+
+#[test]
+fn public_same_room_effect_preserves_newer_play_after_seek() {
+    assert_public_same_room_effect_preserves_newer_play_after_seek();
+}
+
+pub(super) fn assert_public_same_room_effect_preserves_newer_play_after_seek() {
+    let mut fixture = SeekFixture::new();
+    fixture.play_after_seek();
+    fixture
+        .runtime
+        .emit_effect(ClientEffect::SetRoom("room1".into()))
+        .unwrap();
+    fixture.queue_observation(false, 11.1);
+    let echo = fixture.echo();
+    fixture.reconcile(echo);
+    fixture.heartbeat_play();
 }
 
 #[derive(Default)]
