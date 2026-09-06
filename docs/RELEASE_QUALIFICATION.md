@@ -47,6 +47,32 @@ authorize reuse. Dev and stable refs/channels retain separate
 qualifications. Failed jobs may be retried within the same Actions run while
 successful platform jobs and their immutable artifacts are retained.
 
+## Prepare the release version
+
+Before committing or qualifying a release candidate, update
+`[workspace.package].version` in `Cargo.toml` and the corresponding workspace/path
+package versions in both `Cargo.lock` and `fuzz/Cargo.lock`. Preserve all
+third-party dependency versions and checksums; the private `sorotte-fuzz` harness
+keeps its independent version.
+
+Update `[release]` in `coverage/current-architecture.toml` with the same version
+and the exact previously released base commit. Leave fixing and hosted evidence
+explicitly pending until recorded; retain older boundary-local results and
+remaining-work notes as historical evidence. Regenerate the index and validate
+the complete preparation before pushing or starting native qualification:
+
+```powershell
+python scripts/architecture_index.py --write
+cargo metadata --locked --format-version 1
+cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1
+python scripts/verify.py preflight --phase static --output target/verification/release-version-preflight-attempt-1.json
+```
+
+Use a fresh output path for every attempt and preserve failures. Locked metadata
+validates dependency inputs; the full static preflight also checks version-bound
+catalogs and generated documentation. After committing, require fresh exact-source
+hosted and native qualification for the release candidate.
+
 ## Local and coordinated server stages
 
 The supported standalone default remains full verification:
