@@ -376,6 +376,35 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                 )
         self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 459)
 
+    def test_shared_settings_reader_lane_preserves_acl_coverage_and_exact_registered_parents(self) -> None:
+        lane = "shared-settings-reader"
+        expected = tuple(name for name in lanes.reviewed_tests("client-app-lib")
+                         if name.startswith(lanes.SETTINGS_READER_PREFIX)
+                         and name != lanes.SETTINGS_READER_FIXTURE)
+        self.assertEqual(lanes.EXPECTED_TESTS[lane], expected)
+        self.assertEqual(len(expected), 13)
+        self.assertIn(lanes.SETTINGS_READER_PREFIX + "windows_case_aliases_share_the_read_lock_and_relocation_identity", expected)
+        for parent in ("cross_process_reader_waits_through_a_writer_owned_missing_name",
+                       "cross_process_reader_observes_clear_only_after_the_writer_unlocks"):
+            self.assertIn(lanes.SETTINGS_READER_PREFIX + parent, expected)
+        self.assertEqual(lanes.LANE_COMMANDS[lane][-2:], ("--skip", lanes.SETTINGS_READER_FIXTURE))
+        self.assertEqual(len(lanes.EXPECTED_TESTS["private-settings"]), 4)
+        self.assertIn("sorotte_ini::windows_tests::", lanes.LANE_COMMANDS["private-settings"])
+        self.assertEqual(len(expected) + lanes.EXPECTED_FILTERED_OUT[lane], len(lanes.reviewed_tests("client-app-lib")))
+
+    def test_shared_settings_reader_rejects_missing_extra_ignored_or_standalone_helper_results(self) -> None:
+        lane = "shared-settings-reader"
+        complete = self.libtest_output(lane)
+        parent = (lanes.SETTINGS_READER_PREFIX + "cross_process_reader_waits_through_a_writer_owned_missing_name").encode()
+        for faulty in (
+            complete.replace(b"test " + parent + b" ... ok\n", b""),
+            complete.replace(b"test result:", b"test unreviewed_reader ... ok\ntest result:"),
+            complete.replace(b"test " + parent + b" ... ok", b"test " + parent + b" ... ignored"),
+            complete.replace(b"test result:", b"test " + lanes.SETTINGS_READER_FIXTURE.encode() + b" ... ok\ntest result:"),
+        ):
+            with self.subTest(output=faulty), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, faulty, b"")
+
     def test_libtest_oracle_requires_rust_singular_one_test_grammar(self) -> None:
         lane = "server-platform-signal"
         output = self.libtest_output(lane)

@@ -796,6 +796,104 @@ mod tests {
     }
 
     #[test]
+    fn config_root_pointer_roundtrip_distinguishes_missing_and_cleared() {
+        let fixture = LocatorFixture::new("pointer-roundtrip");
+        let default_root = fixture.0.join("default");
+        let pointer = sorotte_client_config_root_pointer_path(&default_root);
+        assert_eq!(
+            load_sorotte_client_config_root_pointer_from_path(&pointer).unwrap(),
+            None
+        );
+        assert!(
+            !default_root.exists(),
+            "reading a missing pointer creates nothing"
+        );
+
+        for selected_root in [
+            fixture.0.join("selected settings"),
+            fixture.0.join("replacement"),
+        ] {
+            persist_sorotte_client_config_root_pointer(&default_root, &selected_root).unwrap();
+            assert_eq!(
+                load_sorotte_client_config_root_pointer_from_path(&pointer).unwrap(),
+                Some(selected_root.clone())
+            );
+            assert_eq!(
+                std::fs::read_to_string(&pointer).unwrap(),
+                selected_root.to_string_lossy()
+            );
+            assert!(
+                !selected_root.exists(),
+                "persisting a locator does not create its target"
+            );
+        }
+
+        assert!(clear_sorotte_client_config_root_pointer(&default_root).unwrap());
+        assert!(!pointer.exists());
+        assert_eq!(
+            load_sorotte_client_config_root_pointer_from_path(&pointer).unwrap(),
+            None
+        );
+        assert!(!clear_sorotte_client_config_root_pointer(&default_root).unwrap());
+    }
+
+    #[test]
+    fn config_root_pointer_invalid_utf8_is_reported_and_explicit_clear_recovers() {
+        let fixture = LocatorFixture::new("pointer-invalid-utf8");
+        let pointer = sorotte_client_config_root_pointer_path(&fixture.0);
+        std::fs::write(&pointer, [0xff]).unwrap();
+
+        let read_error = load_sorotte_client_config_root_pointer_from_path(&pointer)
+            .expect_err("invalid pointer bytes cannot become a missing locator");
+        assert_eq!(
+            read_error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(format!("{read_error:#}").contains("failed reading config-root pointer"));
+        assert!(format!("{read_error:#}").contains(&pointer.display().to_string()));
+
+        let write_error = persist_sorotte_client_config_root_pointer(
+            &fixture.0,
+            &fixture.0.join("new-selection"),
+        )
+        .expect_err("an uncertain existing read must not be overwritten");
+        assert_eq!(
+            write_error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(format!("{write_error:#}").contains("failed writing config-root pointer"));
+        assert_eq!(std::fs::read(&pointer).unwrap(), [0xff]);
+
+        assert!(clear_sorotte_client_config_root_pointer(&fixture.0).unwrap());
+        assert_eq!(
+            load_sorotte_client_config_root_pointer_from_path(&pointer).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn config_root_pointer_directory_errors_preserve_contents() {
+        let fixture = LocatorFixture::new("pointer-directory");
+        let pointer = sorotte_client_config_root_pointer_path(&fixture.0);
+        std::fs::create_dir(&pointer).unwrap();
+        let sentinel = pointer.join("owned-data");
+        std::fs::write(&sentinel, "retain").unwrap();
+
+        let read_error = load_sorotte_client_config_root_pointer_from_path(&pointer)
+            .expect_err("an unreadable directory is not an absent pointer");
+        assert_ne!(
+            read_error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(format!("{read_error:#}").contains("failed reading config-root pointer"));
+        let clear_error = clear_sorotte_client_config_root_pointer(&fixture.0)
+            .expect_err("clearing a pointer cannot remove a directory");
+        assert!(format!("{clear_error:#}").contains("failed clearing config-root pointer"));
+        assert!(pointer.is_dir());
+        assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "retain");
+    }
+
+    #[test]
     fn checked_locator_reads_bytes_without_a_missing_metadata_fallback() {
         let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(base_env()),

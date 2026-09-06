@@ -5,7 +5,8 @@ This producer deliberately covers non-interactive Windows behavior that the
 ordinary Linux workspace profile cannot execute: updater replacement and
 recovery, installed-updater self replacement, named-pipe faults, external mpv
 process faults, owned child processes, private resource/settings permissions,
-media-tool child-process faults, and server platform-signal registration.
+media-tool child-process faults, transaction-consistent settings readers, and
+server platform-signal registration.
 Every lane has an exact libtest inventory, must add a fresh raw
 LLVM profile, and must remain merge compatible with the other profiles from
 this Windows/MSVC producer.
@@ -195,6 +196,20 @@ AUDIT_LANE_COMMANDS = {
         "--",
         "--nocapture",
     ),
+    "shared-settings-reader": (
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "sorotte-client-app",
+        "--all-features",
+        "--lib",
+        "sorotte_ini::read_transaction_tests::",
+        "--",
+        "--nocapture",
+        "--skip",
+        "sorotte_ini::read_transaction_tests::settings_reader_process_fixture",
+    ),
 }
 
 AUDIT_EXPECTED_TESTS = {
@@ -244,6 +259,13 @@ AUDIT_EXPECTED_TESTS = {
 
 from test_inventory import reviewed as reviewed_tests
 
+SETTINGS_READER_PREFIX = "sorotte_ini::read_transaction_tests::"
+SETTINGS_READER_FIXTURE = SETTINGS_READER_PREFIX + "settings_reader_process_fixture"
+AUDIT_EXPECTED_TESTS["shared-settings-reader"] = tuple(
+    name for name in reviewed_tests("client-app-lib")
+    if name.startswith(SETTINGS_READER_PREFIX) and name != SETTINGS_READER_FIXTURE
+)
+
 AUDIT_FILTERED_OUT = {
     lane: len(reviewed_tests(scope)) - len(AUDIT_EXPECTED_TESTS[lane])
     for lane, scope in {
@@ -251,6 +273,7 @@ AUDIT_FILTERED_OUT = {
         "mpv-bridge-resources": "mpv-lib",
         "media-owned-process": "media-lib",
         "private-settings": "client-app-lib",
+        "shared-settings-reader": "client-app-lib",
     }.items()
 }
 

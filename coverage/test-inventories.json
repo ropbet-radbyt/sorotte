@@ -2,10 +2,10 @@
   "schema_version": 2,
   "status": "passed",
   "identity": {
-    "source_sha": "8297a56513bffc38d1e462f09f70da671d10dea7",
+    "source_sha": "67679a7a112b78e9c591aec45f27194ab9f55ce4",
     "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
     "working_source_dirty": true,
-    "working_source_sha256": "75043f51dd97be57e25e1f939154656fe87ac30aa7c7b16d226bfe56d4ff8f3a",
+    "working_source_sha256": "5521b5561879fe2dc42fe0cc9702ccfd7b074d643c625d79e1cc8f252d4986b3",
     "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
     "platform": "Windows",
     "machine": "AMD64",
@@ -2132,6 +2132,9 @@
         "client_storage_paths::tests::checked_locator_reads_bytes_without_a_missing_metadata_fallback",
         "client_storage_paths::tests::checked_locator_reports_invalid_utf8_instead_of_using_default_storage",
         "client_storage_paths::tests::compatibility_locator_read_failure_returns_no_path",
+        "client_storage_paths::tests::config_root_pointer_directory_errors_preserve_contents",
+        "client_storage_paths::tests::config_root_pointer_invalid_utf8_is_reported_and_explicit_clear_recovers",
+        "client_storage_paths::tests::config_root_pointer_roundtrip_distinguishes_missing_and_cleared",
         "client_storage_paths::tests::current_exe_test_harness_detection_skips_cargo_deps_binaries",
         "client_storage_paths::tests::ensure_install_locator_preserves_an_existing_read_only_document",
         "client_storage_paths::tests::ensure_storage_root_rejects_existing_file",
@@ -2362,7 +2365,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "d3cc9f96b8bbfcfc3e6297d513baa7298fa0b1910be3ae9b3777b3d055102455"
+      "listing_sha256": "d53a46fcedde8d97e440a3987ed43514c22ccb8725f1fcf91cc1e0e85aa06ae7"
     },
     "updater-bin": {
       "cargo_scope": [
@@ -2455,7 +2458,7 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\compat.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\compat.json",
       "listing_sha256": "7a8edf24ca34ab7d717578cfad7831d84d12da1b21a8d7e73aa5e3aaec799cc1"
     },
     {
@@ -2476,7 +2479,7 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\mpv-lib.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\mpv-lib.json",
       "listing_sha256": "0ee3ab365d56af5d0b2aa62a0c86342443cc1d12d819749c89c2628970e29fff"
     },
     {
@@ -2497,7 +2500,7 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\gui-lib.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\gui-lib.json",
       "listing_sha256": "9a2a9610cd26412dc37f8db9e1ce3384a3a46961a0c7a5aac378fdda1a44d66a"
     },
     {
@@ -2519,7 +2522,7 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\server-bin.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\server-bin.json",
       "listing_sha256": "8b1751e36b2c1827dc4dbefc938981bd1aa71e89ca73651c92dd0f286559ba16"
     },
     {
@@ -2540,7 +2543,7 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\media-lib.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\media-lib.json",
       "listing_sha256": "06c8e2ec58a53ba34d6ac360ffbf82282bbf2e95280224d27c33f2c4efc95944"
     },
     {
@@ -2561,8 +2564,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\client-app-lib.json",
-      "listing_sha256": "d3cc9f96b8bbfcfc3e6297d513baa7298fa0b1910be3ae9b3777b3d055102455"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\client-app-lib.json",
+      "listing_sha256": "d53a46fcedde8d97e440a3987ed43514c22ccb8725f1fcf91cc1e0e85aa06ae7"
     },
     {
       "scope": "updater-bin",
@@ -2583,16 +2586,16 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\updater-bin.json",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\updater-bin.json",
       "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b"
     }
   ],
   "cargo_nextest_version": "cargo-nextest 0.9.137 (75ddba7e9 2026-05-26)\nrelease: 0.9.137\ncommit-hash: 75ddba7e911b44c5c0700dac0415d824403de9bd\ncommit-date: 2026-05-26\nhost: x86_64-pc-windows-msvc",
   "identity_after": {
-    "source_sha": "8297a56513bffc38d1e462f09f70da671d10dea7",
+    "source_sha": "67679a7a112b78e9c591aec45f27194ab9f55ce4",
     "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
     "working_source_dirty": true,
-    "working_source_sha256": "75043f51dd97be57e25e1f939154656fe87ac30aa7c7b16d226bfe56d4ff8f3a",
+    "working_source_sha256": "5521b5561879fe2dc42fe0cc9702ccfd7b074d643c625d79e1cc8f252d4986b3",
     "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
     "platform": "Windows",
     "machine": "AMD64",
@@ -2602,5 +2605,5 @@
     "run_id": null,
     "run_attempt": null
   },
-  "duration_seconds": 6.332
+  "duration_seconds": 25.159
 }
