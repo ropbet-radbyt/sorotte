@@ -13,6 +13,12 @@ Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft
 $clock=[Diagnostics.Stopwatch]::StartNew()
 $runRoot=Join-Path (Split-Path -Parent $PSScriptRoot) "target\verification\native-runners\$InstanceId"
 $owner=$null
+function Write-NativeWatchdogCompletion {
+    Write-NativeRunnerReceipt -Path "$runRoot\watchdog-observation.json" -Value @{
+        schema_version=1; instance=$InstanceId.ToString(); status='watchdog-completed'
+        observed_at_utc=[DateTime]::UtcNow.ToString('o'); controller_pid=$ControllerPid
+    }
+}
 try {
     $owner=Open-NativeControllerOwner -ControllerPid $ControllerPid -StartedUtc $ControllerStartUtc -CommandSha256 $ControllerCommandSha256
     while ($true) {
@@ -27,7 +33,10 @@ try {
                 if ($receipt.tokens_removed -isnot [bool]) { throw 'Invalid watchdog token cleanup flag' }
                 $tokensRemoved=$receipt.tokens_removed
             }
-            if ($receipt.sandbox_stopped -and $receipt.runner_removed -and $tokensRemoved) { exit 0 }
+            if ($receipt.sandbox_stopped -and $receipt.runner_removed -and $tokensRemoved) {
+                Write-NativeWatchdogCompletion
+                exit 0
+            }
         } catch {
             # An unavailable observation must not stop ownership/deadline checks.
             # Recovery still validates the retained receipt before touching anything.
@@ -48,7 +57,11 @@ try {
                 }
             }
             & (Join-Path $PSScriptRoot 'native-runner-sandbox.ps1') -CleanupOnly -InstanceId $InstanceId
-            exit $LASTEXITCODE
+            # Recovery is a PowerShell script: a successful return need not set
+            # LASTEXITCODE, and an inherited native exit code is not its result.
+            if (-not $?) { throw 'Native watchdog recovery script failed' }
+            Write-NativeWatchdogCompletion
+            exit 0
         }
         Start-Sleep -Seconds 2
     }

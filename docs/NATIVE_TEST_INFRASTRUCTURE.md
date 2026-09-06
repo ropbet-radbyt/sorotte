@@ -118,7 +118,10 @@ and verified guest removal. A successful controller exit requires all of
 those cleanup obligations, including automatic unregistration.
 
 A hidden independent watchdog detects controller exit or a bounded timeout
-and runs cleanup for only its saved instance UUID. After host reboot, API
+and runs cleanup for only its saved instance UUID. Its final observation must
+record `watchdog-completed`; resource absence alone cannot hide a subsequent
+watchdog error. Fault acceptance also verifies that the exact recorded watchdog
+process has exited. After host reboot, API
 outage, watchdog failure or an interrupted cleanup, use the retained receipt:
 
 ```powershell
@@ -272,3 +275,16 @@ new committed-source cancellation/interruption run and full positive native
 qualification. Host-reboot recovery and actual DPI/screen-reader profiles
 remain separate acceptance obligations. No native action ran on the user's
 active desktop.
+
+A subsequent interruption of source
+`7cd70f49aa255968dbdbe9c38a863041bd9ec2fd` in
+[run 34015580980](https://github.com/ropbet-radbyt/sorotte/actions/runs/34015580980)
+drained the job and removed all owned resources within the deadline, then the
+watchdog reported an unset `$LASTEXITCODE`. Its test stub had manufactured that
+native-process variable even though recovery invokes a PowerShell script. The
+realistic fixture reproduces the reporting failure. Recovery now checks the
+script's success and records explicit completion; exception and nonzero-exit
+regressions preserve failure behavior. The original drill and independent review
+remain in `target/verification/native-acceptance-drills/interrupt-3004fd38-7fbe-4da3-b814-f6fe953f4efe`.
+That resource-cleanup proof is retained, and final fault acceptance requires a
+new run with a successful watchdog completion record.

@@ -37,7 +37,6 @@ $root=Split-Path -Parent $PSScriptRoot
 $owner=Get-Content -LiteralPath (Join-Path $root 'owner.json') -Raw | ConvertFrom-Json
 if (-not $CleanupOnly -or $InstanceId.ToString() -cne '00000000-0000-0000-0000-000000000123') { throw 'Unowned recovery invocation' }
 @{cleanup_called=$true;owner_alive=$null -ne (Get-Process -Id $owner.pid -ErrorAction SilentlyContinue)} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'cleanup.json')
-$global:LASTEXITCODE=0
 ''', encoding="utf-8")
 
     def child(self, script: Path, *arguments: str) -> subprocess.Popen:
@@ -89,7 +88,42 @@ $global:LASTEXITCODE=0
         self.assertTrue(cleanup["cleanup_called"])
         self.assertFalse(cleanup["owner_alive"], "Cleanup raced a live controller")
         diagnostic = json.loads((self.run_root / "watchdog-observation.json").read_text())
-        self.assertEqual(diagnostic["status"], "controller-deadline-stopped")
+        self.assertEqual(diagnostic["status"], "watchdog-completed")
+        self.assertEqual(diagnostic["instance"], INSTANCE)
+
+    def test_already_clean_receipt_records_completion_without_cleanup(self):
+        owner, started, command = self.owner()
+        receipt_path = self.run_root / "host-run.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt.update(sandbox_stopped=True, runner_removed=True, tokens_removed=True)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        watchdog = self.watchdog(owner, started, command)
+        _, stderr = watchdog.communicate(timeout=20)
+        self.assertEqual(watchdog.returncode, 0, stderr)
+        self.assertIsNone(owner.poll(), "Completed cleanup must not terminate a live controller")
+        self.assertFalse((self.root / "cleanup.json").exists())
+        diagnostic = json.loads((self.run_root / "watchdog-observation.json").read_text())
+        self.assertEqual(diagnostic["status"], "watchdog-completed")
+        self.assertEqual(diagnostic["instance"], INSTANCE)
+
+    def assert_failed_cleanup_is_not_completion(self, failure: str, expected: str):
+        cleanup = self.scripts / "native-runner-sandbox.ps1"
+        cleanup.write_text(cleanup.read_text() + "\n" + failure, encoding="utf-8")
+        owner, started, command = self.owner()
+        watchdog = self.watchdog(owner, started, command)
+        _, stderr = watchdog.communicate(timeout=20)
+        self.assertNotEqual(watchdog.returncode, 0, stderr)
+        self.assertIsNotNone(owner.poll())
+        self.assertTrue((self.root / "cleanup.json").exists())
+        diagnostic = json.loads((self.run_root / "watchdog-observation.json").read_text())
+        self.assertEqual(diagnostic["status"], "watchdog-failed")
+        self.assertIn(expected, diagnostic["error"])
+
+    def test_cleanup_exception_is_not_reported_as_completion(self):
+        self.assert_failed_cleanup_is_not_completion("throw 'injected cleanup failure'", "injected cleanup failure")
+
+    def test_cleanup_nonzero_script_exit_is_not_reported_as_completion(self):
+        self.assert_failed_cleanup_is_not_completion("exit 17", "Native watchdog recovery script failed")
 
     def test_owner_death_recovers_without_affecting_another_process(self):
         owner, started, command = self.owner()
