@@ -2,10 +2,12 @@
 
 `package-ci.yml` supplies the independent `package-required` merge check on every
 PR and main push. It builds and consumes Linux/Windows server archives and the
-Windows GUI archive, including updater replacement, success and rollback. It has
-no dependency on publication or interactive release authorization. This prevents
-the main approval graph from waiting on a publication job that itself needs main
-approval.
+Windows GUI archive. The GUI runtime check exercises updater replacement and
+rollback when its environment supports installation; an elevated process instead
+verifies launch and updater refusal before mutation. Its report records which
+path ran. It has no dependency on publication or interactive release
+authorization. This prevents the main approval graph from waiting on a
+publication job that itself needs main approval.
 
 Publication requires the dedicated Administration-read GitHub App described in
 [protection reader setup](PROTECTION_READER_SETUP.md). The normal workflow token
