@@ -3050,9 +3050,13 @@ impl MpvAdapter {
         );
         let phase = self.inferred_transport_phase();
         self.transport_phase = phase;
-        let update = self
+        let mut update = self
             .transport_update_for(active_attempt.media_generation)
             .with_phase(phase);
+        // Reconciliation can normalize an earlier raw seek edge once pause,
+        // cache and core-idle are known. Close that edge for sparse consumers
+        // as well as for the private state used to infer this phase.
+        update.seeking = self.observed_state.seeking;
         self.queue_transport_telemetry_update_for_attempt(update, Some(active_attempt.id));
         self.observe_tracked_commands_from_authoritative_state(
             active_attempt.media_generation,

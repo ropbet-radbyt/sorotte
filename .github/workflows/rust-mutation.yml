@@ -3,35 +3,8 @@ name: sorotte Mutation Testing
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - ".github/workflows/rust-mutation.yml"
-      - "coverage/mutation-policy.toml"
-      - "coverage/mutation-report-set.json"
-      - "scripts/mutation_ci.py"
-      - "scripts/mutation_selection.py"
-      - "scripts/artifact_input.py"
-      - "coverage/mutation-selection.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".cargo/**"
-      - "crates/**"
-      - "fixtures/**"
-      - "crates/sorotte-protocol/src/lib.rs"
-      - "crates/sorotte-protocol/src/state.rs"
-      - "crates/sorotte-protocol/src/participant_status.rs"
-      - "crates/sorotte-player-api/src/lib.rs"
-      - "crates/sorotte-player-mpv/src/adapter.rs"
-      - "crates/sorotte-player-mpv/src/adapter/reconnection.rs"
-      - "crates/sorotte-player-mpv/src/adapter/state.rs"
-      - "crates/sorotte-player-mpv/src/adapter/player_adapter.rs"
-      - "crates/sorotte-client-core/src/**"
-      - "crates/sorotte-client-app/src/**"
-      - "crates/sorotte-cli/src/**"
-      - "crates/sorotte-server/src/**"
-      - "crates/sorotte-gui/src/**"
-      - "!crates/**/*.md"
-      - "!fixtures/**/*.md"
+  push:
+    branches: [main]
   schedule:
     - cron: "15 4 * * 0"
 
@@ -42,156 +15,226 @@ concurrency:
   group: sorotte-mutation-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VERIFICATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   selection:
     name: Select mutation responsibilities
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.selection.outputs.shards }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
           fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Validate apparatus before inventory preparation
+        id: ci_validate_apparatus_before_inventory_pr_b7ccbf75
+        run: python scripts/verify.py preflight --phase static --output target/verification/mutation-preflight.json
       - name: Compute immutable base and head shard union
         id: selection
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ env.VERIFICATION_SHA }}
           FULL: ${{ github.event_name != 'pull_request' && '1' || '' }}
         run: |
           python scripts/mutation_selection.py select --base "$BASE_SHA" --head "$HEAD_SHA" ${FULL:+--full} --output target/verification/mutation-selection.json --github-output "$GITHUB_OUTPUT"
       - name: Retain immutable selection inputs
+        id: ci_retain_immutable_selection_inputs_3c9f9913
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sorotte-selected-mutation-plan
-          path: target/verification/mutation-selection.json
+          name: sorotte-selected-mutation-plan-${{ github.run_attempt }}
+          path: target/verification/mutation-*.json
           if-no-files-found: error
           retention-days: 14
 
-  mutation:
+  preparation:
+    name: Prepare immutable mutation chunks
     needs: selection
-    if: ${{ needs.selection.outputs.shards != '[]' }}
-    name: Mutation (${{ matrix.shard }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(needs.selection.outputs.shards) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.campaign.outputs.matrix }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
-
-      - name: Setup Rust
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Setup pinned Rust
+        id: ci_setup_pinned_rust_affcac2f
+        if: ${{ needs.selection.outputs.shards != '[]' }}
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-
       - name: Install pinned cargo-mutants
+        id: ci_install_pinned_cargo_mutants_9618263d
+        if: ${{ needs.selection.outputs.shards != '[]' }}
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-mutants@27.1.0
           fallback: none
-
-      - name: Validate mutation policy
-        run: >-
-          python scripts/mutation_ci.py validate
-          --repo-root .
-          --policy coverage/mutation-policy.toml
-          --shard ${{ matrix.shard }}
-
-      - name: Run source-bound mutation shard
-        run: >-
-          python scripts/mutation_ci.py run
-          --repo-root .
-          --policy coverage/mutation-policy.toml
-          --shard ${{ matrix.shard }}
-          --results-root target/mutation-ci/${{ matrix.shard }}
-          --output target/verification/mutation-${{ matrix.shard }}.json
-
-      - name: Verify mutation evidence matches current source
-        run: >-
-          python scripts/mutation_ci.py verify-report
-          --repo-root .
-          --policy coverage/mutation-policy.toml
-          --shard ${{ matrix.shard }}
-          --report target/verification/mutation-${{ matrix.shard }}.json
-
-      - name: Upload mutation evidence
+      - name: Prepare complete inventory and balanced execution matrix
+        id: campaign
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ env.VERIFICATION_SHA }}
+          FULL: ${{ github.event_name != 'pull_request' && '1' || '' }}
+        run: |
+          python scripts/mutation_campaign.py prepare --base "$BASE_SHA" --head "$HEAD_SHA" ${FULL:+--full} --output target/verification/mutation-campaign.json --github-output "$GITHUB_OUTPUT"
+      - name: Exercise real pinned mutant inventory and chunk contracts
+        id: ci_exercise_real_pinned_mutant_inventory__5f137e1f
+        if: ${{ needs.selection.outputs.shards != '[]' }}
+        run: python scripts/mutation_tool_canary.py --output target/mutation-tool-canary
+      - name: Preserve prepared inventory including empty selections
+        id: ci_preserve_prepared_inventory_including__3ff37ca7
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sorotte-mutation-${{ matrix.shard }}
-          path: |
-            target/verification/mutation-${{ matrix.shard }}.json
-            target/mutation-ci/${{ matrix.shard }}
+          name: sorotte-mutation-campaign-${{ github.run_attempt }}
+          path: target/verification/mutation-campaign.json
           if-no-files-found: error
           retention-days: 14
-          overwrite: true
 
-  participant-status-evidence-set:
-    name: Participant-status mutation evidence set
-    if: ${{ always() && (needs.selection.result != 'success' || needs.selection.outputs.shards != '[]') }}
-    needs: [selection, mutation]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Preserve pinned tool canary evidence
+        id: ci_preserve_pinned_tool_canary_evidence_ca72c97e
+        if: ${{ always() && needs.selection.outputs.shards != '[]' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: sorotte-mutant-tool-canary-${{ github.run_attempt }}
+          path: target/mutation-tool-canary
+          if-no-files-found: error
+          retention-days: 14
+
+  mutation:
+    needs: [selection, preparation]
+    if: ${{ needs.preparation.outputs.matrix != '[]' }}
+    name: Mutation (${{ matrix.chunk }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preparation.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned cargo-mutants
+        id: ci_install_pinned_cargo_mutants_9813c6fc
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sorotte-mutation-campaign-*
+          path: target/campaign-input
+          merge-multiple: false
+      - name: Run exact mutation chunk with live progress and cleanup reserve
+        id: ci_run_exact_mutation_chunk_with_live_pro_95edd16b
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ env.VERIFICATION_SHA }}
+          FULL: ${{ github.event_name != 'pull_request' && '1' || '' }}
+          CHUNK: ${{ matrix.chunk }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python scripts/mutation_campaign.py run --base "$BASE_SHA" --head "$HEAD_SHA" ${FULL:+--full} --campaign-dir target/campaign-input --chunk "$CHUNK" --attempt-root "target/mutation-attempts/$CHUNK/attempt-$ATTEMPT" --deadline-seconds 6600
+      - name: Preserve all mutation attempt evidence
+        id: ci_preserve_all_mutation_attempt_evidence_b91d8848
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-mutation-chunk-${{ matrix.chunk }}-${{ github.run_attempt }}
+          path: target/mutation-attempts/${{ matrix.chunk }}/attempt-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Setup Rust
+  mutation-required:
+    name: mutation-required
+    if: ${{ always() }}
+    needs: [selection, preparation, mutation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Setup independent finalizer compiler
+        id: ci_setup_independent_finalizer_compiler_58fce568
+        if: ${{ needs.selection.outputs.shards != '[]' }}
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+          components: rustfmt, clippy
+      - name: Install independent pinned inventory authority
+        id: ci_install_independent_pinned_inventory_a_1935043d
+        if: ${{ needs.selection.outputs.shards != '[]' }}
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
-          python-version: "3.11"
-
-      - name: Download mutation reports
+          tool: cargo-mutants@27.1.0
+          fallback: none
+      - name: Download prepared inventory
+        id: ci_download_prepared_inventory_8a5765d9
+        if: ${{ needs.preparation.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: sorotte-mutation-*
-          path: target
-          merge-multiple: true
-
-      - name: Download separately named selected reports
+          pattern: sorotte-mutation-campaign-*
+          path: target/campaign-input
+          merge-multiple: false
+      - name: Download all original and retried chunk attempts
+        id: ci_download_all_original_and_retried_chun_aeed3c18
+        if: ${{ needs.mutation.result != 'skipped' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: sorotte-mutation-*
+          pattern: sorotte-mutation-chunk-*
           path: target/mutation-selected
           merge-multiple: false
-
-      - name: Verify every immutable selected shard exactly once
+      - name: Enforce exact complete campaign or verified no-applicable-shards receipt
+        id: ci_enforce_exact_complete_campaign_or_ver_e9f8c22d
+        if: always()
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ env.VERIFICATION_SHA }}
           FULL: ${{ github.event_name != 'pull_request' && '1' || '' }}
+          SELECTION_RESULT: ${{ needs.selection.result }}
+          PREPARATION_RESULT: ${{ needs.preparation.result }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
         run: |
-          python scripts/mutation_selection.py verify --base "$BASE_SHA" --head "$HEAD_SHA" ${FULL:+--full} --artifacts target/mutation-selected
-
-      - name: Verify the uniquely selected participant-status report set
-        run: >-
-          python scripts/mutation_ci.py verify-report-set
-          --repo-root .
-          --policy coverage/mutation-policy.toml
-          --manifest coverage/mutation-report-set.json
+          python scripts/mutation_campaign.py verify --base "$BASE_SHA" --head "$HEAD_SHA" ${FULL:+--full} --campaign-dir target/campaign-input --artifacts target/mutation-selected --output target/verification/mutation-required.json --selection-result "$SELECTION_RESULT" --preparation-result "$PREPARATION_RESULT" --mutation-result "$MUTATION_RESULT"
+      - name: Retain required aggregate verdict
+        id: ci_retain_required_aggregate_verdict_3fc3b1d9
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-mutation-required-${{ github.run_attempt }}
+          path: target/verification/mutation-required.json
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import pathlib
@@ -1457,7 +1458,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_permissions_runner_timeout_and_concurrency_are_fail_closed(self) -> None:
         self.assertEqual(
             self.workflow["permissions"],
-            {"contents": "read", "id-token": "write", "packages": "write"},
+            {"contents": "read", "actions": "read", "checks": "read", "id-token": "write", "packages": "write"},
         )
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.job["timeout-minutes"], "45")
@@ -1497,45 +1498,78 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(build["provenance"], "false")
         self.assertEqual(build["sbom"], "false")
 
-    def test_latest_promotion_is_one_explicit_disabled_dispatch_choice(
-        self,
-    ) -> None:
+    def assert_latest_promotion_contract(self, workflow) -> None:
         # Tag refs implicitly add latest unless the action's auto flavor is disabled.
+        self.assertEqual(set(workflow["on"]), {"workflow_call", "workflow_dispatch"})
+        self.assertEqual(set(workflow["on"]["workflow_call"]["inputs"]), {"publish"})
+        publish = workflow["jobs"]["publish"]
+        metadata_steps = [step for step in publish["steps"] if step.get("uses", "").startswith("docker/metadata-action@")]
+        self.assertEqual(len(metadata_steps), 1)
         self.assertEqual(
-            self.by_name["Define publication tags and OCI labels"]["with"].get("flavor"),
+            metadata_steps[0]["with"].get("flavor"),
             "latest=false",
         )
-        push_latest = self.workflow["on"]["workflow_dispatch"]["inputs"][
-            "push_latest"
-        ]
-        self.assertEqual(
-            push_latest,
-            {
-                "description": (
-                    "Also promote this exact tested digest to latest"
-                ),
-                "required": "true",
-                "default": "false",
-                "type": "choice",
-                "options": ["true", "false"],
-            },
-        )
-        tag_lines = []
-        for line in self.by_name[
-            "Define publication tags and OCI labels"
-        ]["with"]["tags"].splitlines():
-            stripped = line.strip()
-            fields = stripped.split(",")
-            if "type=raw" in fields and "value=latest" in fields:
-                tag_lines.append(stripped)
-        self.assertEqual(
-            tag_lines,
-            [
-                "type=raw,value=latest,enable=${{ "
-                "github.event_name == 'workflow_dispatch' && "
-                "inputs.push_latest == 'true' }}"
-            ],
-        )
+        dispatch = workflow["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(dispatch), {"publication_run_id", "approved_digest", "version_tag"})
+        for item in dispatch.values():
+            self.assertEqual(item.get("required"), "true")
+            self.assertEqual(item.get("type"), "string")
+            self.assertNotIn("default", item)
+        metadata_tags = metadata_steps[0]["with"]["tags"]
+        self.assertNotIn("latest", metadata_tags)
+        promotion = workflow["jobs"]["promote-approved-digest"]
+        self.assertEqual(promotion.get("if"), "inputs.publication_run_id != ''")
+        commands = "\n".join(step.get("run", "") for step in promotion["steps"])
+        self.assertIn("verify-producer-run", commands)
+        self.assertIn("verify_server_container.py promote", commands)
+        self.assertIn("authorize-release", commands)
+        self.assertNotIn("docker build", commands)
+        self.assertFalse(any("build-push-action" in step.get("uses", "") for step in promotion["steps"]))
+        authority = [index for index, step in enumerate(promotion["steps"]) if "authorize-release" in step.get("run", "")]
+        producer = [index for index, step in enumerate(promotion["steps"]) if "verify-producer-run" in step.get("run", "")]
+        assignment = [index for index, step in enumerate(promotion["steps"]) if "verify_server_container.py promote" in step.get("run", "")]
+        self.assertEqual([len(authority), len(producer), len(assignment)], [1, 1, 1])
+        self.assertLess(authority[0], producer[0])
+        self.assertLess(producer[0], assignment[0])
+        for index in (*authority, *producer, *assignment):
+            self.assertNotIn("continue-on-error", promotion["steps"][index])
+
+    def test_latest_promotion_requires_explicit_verified_digest_without_rebuilding(self) -> None:
+        self.assert_latest_promotion_contract(self.workflow)
+
+    def test_latest_promotion_policy_rejects_automatic_unverified_or_rebuilt_images(self) -> None:
+        for defect in ("automatic-trigger", "optional-input", "default-input", "automatic-latest",
+                       "metadata-latest", "unguarded-promotion", "rebuild", "missing-authority",
+                       "missing-producer", "tolerated-authority", "early-promotion"):
+            with self.subTest(defect=defect):
+                candidate = copy.deepcopy(self.workflow)
+                promotion = candidate["jobs"]["promote-approved-digest"]
+                metadata = next(step for step in candidate["jobs"]["publish"]["steps"] if step.get("uses", "").startswith("docker/metadata-action@"))["with"]
+                if defect == "automatic-trigger": candidate["on"]["push"] = {}
+                if defect == "optional-input": candidate["on"]["workflow_dispatch"]["inputs"]["approved_digest"]["required"] = "false"
+                if defect == "default-input": candidate["on"]["workflow_dispatch"]["inputs"]["version_tag"]["default"] = "v0.2.9"
+                if defect == "automatic-latest": metadata["flavor"] = "latest=auto"
+                if defect == "metadata-latest": metadata["tags"] += "\ntype=raw,value=latest"
+                if defect == "unguarded-promotion": promotion["if"] = "true"
+                if defect == "rebuild": promotion["steps"].append({"uses": "docker/build-push-action@" + "a" * 40})
+                if defect == "missing-authority": promotion["steps"] = [step for step in promotion["steps"] if "authorize-release" not in step.get("run", "")]
+                if defect == "missing-producer": promotion["steps"] = [step for step in promotion["steps"] if "verify-producer-run" not in step.get("run", "")]
+                if defect == "tolerated-authority": next(step for step in promotion["steps"] if "authorize-release" in step.get("run", ""))["continue-on-error"] = "true"
+                if defect == "early-promotion":
+                    index = next(index for index, step in enumerate(promotion["steps"]) if "verify_server_container.py promote" in step.get("run", ""))
+                    promotion["steps"].insert(0, promotion["steps"].pop(index))
+                with self.assertRaises(AssertionError):
+                    self.assert_latest_promotion_contract(candidate)
+
+    def test_gui_development_upload_checks_current_main_before_publication(self) -> None:
+        workflow = yaml.load((REPO_ROOT / ".github/workflows/sorotte-gui-release.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        step = next(step for step in workflow["jobs"]["publish-release"]["steps"]
+                    if step.get("id") == "ci_publish_dev_package_to_github_release_fffdea3c")
+        command = step["run"]
+        self.assertNotIn("continue-on-error", step)
+        guard = './scripts/assert-github-source-tip.ps1 -ExpectedSha $env:GITHUB_SHA -Remote origin -Branch main'
+        self.assertIn(guard, command)
+        self.assertLess(command.index(guard), command.index("gh release create"))
 
     def test_smoke_and_sbom_finish_before_registry_login_or_push(self) -> None:
         names = [step["name"] for step in self.steps]
@@ -1588,6 +1622,9 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(sign.count("--annotations "), 2)
         self.assertNotIn("--annotation ", sign)
         verify = self.by_name["Verify keyless identity and workflow claims"]["run"]
+        signer = "https://github.com/${{ github.repository }}/.github/workflows/publish-server-container.yml@${{ github.ref }}"
+        self.assertEqual(self.by_name["Verify keyless identity and workflow claims"]["env"]["EXPECTED_IDENTITY"], signer)
+        self.assertIn(signer, self.by_name["Compare every public tag, digest, config, SBOM, and signature subject"]["run"])
         for required in [
             "--certificate-identity",
             "--certificate-oidc-issuer",
@@ -1608,8 +1645,8 @@ class WorkflowPolicyTests(unittest.TestCase):
             "Compare every public tag, digest, config, SBOM, and signature subject"
         )
         self.assertLess(logout, public)
-        self.assertEqual(self.steps[logout]["if"], "always()")
-        self.assertEqual(self.steps[public]["if"], "success()")
+        self.assertEqual(self.steps[logout]["if"], "${{ always() && inputs.publish }}")
+        self.assertEqual(self.steps[public]["if"], "${{ success() && inputs.publish }}")
         command = self.steps[public]["run"]
         self.assertIn("verify-publication", command)
         self.assertIn("--expected-workflow-sha", command)
@@ -1617,7 +1654,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_always_final_gate_and_evidence_retention_make_skips_fail(self) -> None:
         final = self.by_name["Enforce every container publication phase"]
         upload = self.by_name["Retain all container verification evidence"]
-        self.assertEqual(final["if"], "always()")
+        self.assertEqual(final["if"], "${{ always() && inputs.publish }}")
         self.assertIn("final-gate", final["run"])
         for phase in [
             "--runtime-report",
@@ -1630,7 +1667,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             self.assertIn(phase, final["run"])
         self.assertEqual(upload["if"], "always()")
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
-        self.assertEqual(upload["with"]["retention-days"], "30")
+        self.assertEqual(upload["with"]["retention-days"], "90")
 
     def test_dockerfile_frontend_and_base_images_are_digest_pinned(self) -> None:
         dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")

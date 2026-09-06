@@ -49,7 +49,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
         self.assertNotIn("if", step)
 
     def test_job_is_isolated_bounded_and_noninteractive(self) -> None:
-        self.assertEqual(self.job["runs-on"], "windows-latest")
+        self.assertEqual(self.job["runs-on"], "windows-2025")
         self.assertEqual(self.job["timeout-minutes"], 25)
         self.assertEqual(
             self.job["env"],

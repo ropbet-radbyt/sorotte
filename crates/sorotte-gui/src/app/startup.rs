@@ -12,8 +12,8 @@ use sorotte_client_app::app_boundary::{
     },
     storage::{
         SorotteClientStoragePaths, SorotteClientStorageSource, current_sorotte_client_install_root,
-        resolve_sorotte_client_storage_paths,
-        resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
+        try_resolve_sorotte_client_storage_paths,
+        try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
     },
 };
 
@@ -85,7 +85,7 @@ where
             current_dir,
             install_root,
             is_file,
-        );
+        )?;
     let mut settings = match config_path_source.as_ref() {
         Some(source) => load_settings_at_path(source.resolved_path())?.unwrap_or_default(),
         None => StoredClientSettingsMvp::default(),
@@ -158,7 +158,7 @@ fn gui_startup_tcp_tls_policy(settings: &StoredClientSettingsMvp) -> TlsPolicy {
 
 pub(super) fn gui_startup_host_and_settings()
 -> Result<(GuiEframeNativeHost, StoredClientSettingsMvp), String> {
-    let config_path = resolve_sorotte_gui_config_path_legacy_compatible();
+    let config_path = try_resolve_sorotte_gui_config_path()?;
     let _ =
         remote_services::cleanup_update_staging_root(config_path.as_deref().and_then(Path::parent));
     let settings = gui_startup_settings_from_env()?;
@@ -203,15 +203,16 @@ where
     C: Fn() -> Option<PathBuf>,
     I: Fn(&Path) -> bool,
 {
-    resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+    try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
         lookup,
         current_dir,
         || None,
         is_file,
-        |path| std::fs::read_to_string(path).ok(),
         None,
         None,
     )
+    .ok()
+    .flatten()
 }
 
 fn resolve_sorotte_gui_storage_paths_legacy_compatible_with_install_root<F, C, E, I>(
@@ -219,26 +220,27 @@ fn resolve_sorotte_gui_storage_paths_legacy_compatible_with_install_root<F, C, E
     current_dir: C,
     install_root: E,
     is_file: I,
-) -> Option<SorotteClientStoragePaths>
+) -> Result<Option<SorotteClientStoragePaths>, String>
 where
     F: Fn(&str) -> Option<String>,
     C: Fn() -> Option<PathBuf>,
     E: Fn() -> Option<PathBuf>,
     I: Fn(&Path) -> bool,
 {
-    resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+    try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
         lookup,
         current_dir,
         install_root,
         is_file,
-        |path| std::fs::read_to_string(path).ok(),
         None,
         None,
     )
+    .map_err(|error| format!("{error:#}"))
 }
 
-fn resolve_sorotte_gui_storage_paths_legacy_compatible() -> Option<SorotteClientStoragePaths> {
-    resolve_sorotte_client_storage_paths(None, None)
+fn resolve_sorotte_gui_storage_paths_legacy_compatible()
+-> Result<Option<SorotteClientStoragePaths>, String> {
+    try_resolve_sorotte_client_storage_paths(None, None).map_err(|error| format!("{error:#}"))
 }
 
 fn startup_config_path_source_from_storage_paths(
@@ -286,35 +288,49 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_install_root<F,
     current_dir: C,
     install_root: E,
     is_file: I,
-) -> Option<GuiStartupConfigPathSource>
+) -> Result<Option<GuiStartupConfigPathSource>, String>
 where
     F: Fn(&str) -> Option<String>,
     C: Fn() -> Option<PathBuf>,
     E: Fn() -> Option<PathBuf>,
     I: Fn(&Path) -> bool,
 {
-    resolve_sorotte_gui_storage_paths_legacy_compatible_with_install_root(
-        lookup,
-        current_dir,
-        install_root,
-        is_file,
+    Ok(
+        resolve_sorotte_gui_storage_paths_legacy_compatible_with_install_root(
+            lookup,
+            current_dir,
+            install_root,
+            is_file,
+        )?
+        .map(startup_config_path_source_from_storage_paths),
     )
-    .map(startup_config_path_source_from_storage_paths)
+}
+
+fn try_resolve_sorotte_gui_config_path() -> Result<Option<PathBuf>, String> {
+    Ok(resolve_sorotte_gui_storage_paths_legacy_compatible()?.map(|paths| paths.config_path))
 }
 
 pub(super) fn resolve_sorotte_gui_config_path_legacy_compatible() -> Option<PathBuf> {
-    resolve_sorotte_gui_storage_paths_legacy_compatible()
-        .map(startup_config_path_source_from_storage_paths)
-        .map(|source| source.resolved_path().to_path_buf())
+    match try_resolve_sorotte_gui_config_path() {
+        Ok(path) => path,
+        Err(error) => {
+            // Default runtime constructors cannot return a Result. Fail closed,
+            // disabling persistence rather than choosing another storage root.
+            eprintln!("sorotte-gui failed to resolve config storage: {error}");
+            None
+        }
+    }
 }
 
-pub(super) fn sorotte_gui_qsettings_root_from_env() -> Option<PathBuf> {
-    resolve_sorotte_gui_config_path_legacy_compatible()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
+pub(super) fn sorotte_gui_qsettings_root_from_env() -> Result<Option<PathBuf>, String> {
+    Ok(
+        try_resolve_sorotte_gui_config_path()?
+            .and_then(|path| path.parent().map(Path::to_path_buf)),
+    )
 }
 
 pub(super) fn load_gui_ui_state_from_env() -> Result<Option<GuiPersistedUiState>, String> {
-    let Some(root) = sorotte_gui_qsettings_root_from_env() else {
+    let Some(root) = sorotte_gui_qsettings_root_from_env()? else {
         return Ok(None);
     };
     load_gui_ui_state_from_root(&root)
@@ -358,8 +374,8 @@ where
 
 pub(super) fn gui_startup_actions_from_env(
     settings: &StoredClientSettingsMvp,
-) -> Vec<GuiShellAction> {
-    let storage_paths = resolve_sorotte_gui_storage_paths_legacy_compatible();
+) -> Result<Vec<GuiShellAction>, String> {
+    let storage_paths = resolve_sorotte_gui_storage_paths_legacy_compatible()?;
     let config_path_source = storage_paths
         .clone()
         .map(startup_config_path_source_from_storage_paths);
@@ -371,7 +387,7 @@ pub(super) fn gui_startup_actions_from_env(
     if GuiStartupPlayerIpcSource::from_lookup(&env_trimmed).is_none() {
         messages.push(GuiStartupPlayerIpcSource::missing_startup_message());
     }
-    storage_paths
+    Ok(storage_paths
         .as_ref()
         .map(|paths| {
             GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
@@ -380,7 +396,7 @@ pub(super) fn gui_startup_actions_from_env(
         })
         .into_iter()
         .chain(gui_startup_actions_from_messages(messages))
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

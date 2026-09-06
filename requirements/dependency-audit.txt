@@ -1,2 +1,3 @@
 # Separate verification environment; no Python runtime is shipped with Sorotte.
+-c verification-constraints.txt
 pip-audit==2.10.1

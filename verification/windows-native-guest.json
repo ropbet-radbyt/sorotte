@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "sorotte-windows-native-guest-profile",
+  "profile": "windows-sandbox-x64-v1",
+  "repository": "ropbet-radbyt/sorotte",
+  "runner_contract": "sorotte-ephemeral-interactive-windows-v1",
+  "max_jobs": 1,
+  "memory_mb": 16384,
+  "minimum_physical_display": [1800, 1200],
+  "rust_toolchain": "1.97.1",
+  "python_version": "3.12.10",
+  "msvc_version": "14.29.30133",
+  "sdk_version": "10.0.19041.0",
+  "runner_version": "2.337.0",
+  "downloads": {
+    "runner.zip": {
+      "url": "https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-win-x64-2.337.0.zip",
+      "sha256": "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
+    },
+    "rustup-init.exe": {
+      "url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
+      "sha256": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7"
+    }
+  },
+  "tool_directories": ["7zip", "git", "powershell", "msvc", "sdk", "cmake", "ninja", "python312"],
+  "required_files": [
+    "7zip/7z.exe", "git/bin/bash.exe", "git/cmd/git.exe",
+    "powershell/pwsh.exe", "msvc/bin/cl.exe", "msvc/bin/link.exe", "msvc/bin/lib.exe",
+    "msvc/include/vector", "sdk/include/ucrt/stdio.h", "sdk/lib/ucrt/libucrt.lib",
+    "cmake/bin/cmake.exe", "ninja/ninja.exe", "python312/python.exe", "runner.zip", "rustup-init.exe"
+  ],
+  "allowed_workflows": [
+    ".github/workflows/gui-native-interactive.yml",
+    ".github/workflows/stable-release.yml",
+    ".github/workflows/sorotte-server-release.yml",
+    ".github/workflows/sorotte-gui-release.yml",
+    ".github/workflows/publish-server-container.yml"
+  ],
+  "host_requirements": [
+    "Windows Sandbox optional feature enabled and any required restart completed",
+    "Modern wsb.exe supports list/start/connect/stop with caller-selected UUID",
+    "Authenticated gh with repository runner read/write permission",
+    "Dedicated interactive Sandbox viewer; no pre-existing guest",
+    "Explicitly reviewed trusted source, workflow run, attempt, and queued job ID"
+  ]
+}

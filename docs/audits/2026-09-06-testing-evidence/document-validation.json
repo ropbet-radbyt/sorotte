@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "baseline_sha": "4000eca69b52003b66e81b6998d15c555e7eb6d1",
+  "tasks": 18,
+  "source_anchors": 28,
+  "links": 40,
+  "production_and_harness_source_unchanged": true,
+  "report_sha256": "fd5d064cef5f8a79db6dc48765d26da3d56cbc73b771ab252a5c46589cd9f345",
+  "errors": []
+}

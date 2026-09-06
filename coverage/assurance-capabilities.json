@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "id": "native-full-inventory",
+      "owner": "gui/windows-infrastructure",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gui-native-smoke.ps1 -Json -TimeoutMs 80000 -InputMode StrictPhysical",
+      "environment": "Dedicated Windows Sandbox interactive desktop, full pinned guest manifest, exact trusted source; never the user's active desktop",
+      "cadence": "weekly trusted-main schedule and selected trusted dispatch",
+      "max_age_days": 14,
+      "execution": "scheduled",
+      "evidence": null,
+      "evidence_note": "Hosted execution requires an explicitly assigned one-job isolated runner. Local harness tests do not establish native execution."
+    },
+    {
+      "id": "native-display-96",
+      "owner": "gui/windows-infrastructure",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gui-display-matrix.ps1 -ExpectedNativeDpi 96",
+      "environment": "Isolated interactive Windows worker measured at actual 96 DPI; screenshots require visual review",
+      "cadence": "before GUI releases affecting geometry or accessibility; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Unavailable: no measured 96 DPI execution or screenshot review has been attested. App zoom is not equivalent."
+    },
+    {
+      "id": "native-display-144",
+      "owner": "gui/windows-infrastructure",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gui-display-matrix.ps1 -ExpectedNativeDpi 144",
+      "environment": "Isolated interactive Windows worker measured at actual 144 DPI; six retained captures and visual review",
+      "cadence": "weekly trusted-main native schedule",
+      "max_age_days": 14,
+      "execution": "scheduled",
+      "evidence": null,
+      "evidence_note": "Historical 0.2.9 evidence predates this harness and is not a current-source isolated-worker receipt."
+    },
+    {
+      "id": "native-display-192",
+      "owner": "gui/windows-infrastructure",
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/gui-display-matrix.ps1 -ExpectedNativeDpi 192",
+      "environment": "Isolated interactive Windows worker measured at actual 192 DPI; screenshots require visual review",
+      "cadence": "before GUI releases affecting geometry or accessibility; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Unavailable: no measured 192 DPI execution or screenshot review has been attested. App zoom is not equivalent."
+    },
+    {
+      "id": "screen-reader-interaction",
+      "owner": "gui/accessibility",
+      "command": "Follow docs/NATIVE_TEST_INFRASTRUCTURE.md screen-reader task packet and retain reader/version/task observations",
+      "environment": "Dedicated interactive Windows worker with recorded screen reader name/version and actual audio/task interaction",
+      "cadence": "before accessibility releases; quarterly otherwise",
+      "max_age_days": 95,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Unavailable. UIA trees, keyboard automation and screenshots do not prove screen-reader usability."
+    },
+    {
+      "id": "privileged-storage-power-loss",
+      "owner": "storage/platform-infrastructure",
+      "command": "python scripts/persistence_power_loss_harness.py --help (choose the documented disposable backend before execution)",
+      "environment": "Explicitly owned disposable VM/storage-fault infrastructure; no production mounts or developer desktop",
+      "cadence": "before persistence protocol changes; quarterly otherwise",
+      "max_age_days": 95,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Unavailable until a disposable storage-fault backend is provisioned. Process-kill tests do not substitute for power-loss proof."
+    },
+    {
+      "id": "IGN-CLI-001",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(connected_client_session_real_mpv_explicit_ipc_smoke_borderline_fastforward_without_server_rtt_does_not_seek_real_player)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Exercises a Windows real-player boundary that is not provisioned on ordinary developer or CI hosts."
+    },
+    {
+      "id": "IGN-CLI-002",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_fastforward_via_ping_forward_delay_to_real_player)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Exercises Windows fast-forward correction through a real mpv process and an explicitly supplied media fixture."
+    },
+    {
+      "id": "IGN-CLI-003",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_desync_rewind_to_real_player)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Exercises Windows rewind correction through a real mpv process and an explicitly supplied media fixture."
+    },
+    {
+      "id": "IGN-CLI-004",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(connected_client_session_real_mpv_explicit_ipc_smoke_publishes_local_file_and_applies_local_seek_command)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Crosses the Windows CLI, transport, IPC, and real-player boundary with a locally provisioned media asset."
+    },
+    {
+      "id": "IGN-CLI-005",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(connected_client_session_real_mpv_explicit_ipc_reconnect_validation_smoke_applies_server_playstate_to_real_player)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Validates reconnect state against a real Windows player and therefore needs an externally provisioned process fixture."
+    },
+    {
+      "id": "IGN-CLI-006",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_real_mpv)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Validates explicit Windows mpv startup arguments against a real binary rather than an in-process adapter."
+    },
+    {
+      "id": "IGN-CLI-007",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setup)'",
+      "environment": "standalone mpv binary; local media asset",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Checks managed launch and metadata publication using a real player and user-supplied media across supported hosts."
+    },
+    {
+      "id": "IGN-CLI-008",
+      "owner": "cli",
+      "command": "cargo nextest run --locked -p sorotte-cli --all-features --no-tests fail --run-ignored only -E 'test(unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args)'",
+      "environment": "standalone mpv binary; local media asset; Windows process support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Checks unmanaged Windows process spawning and player arguments against a real locally supplied mpv executable."
+    },
+    {
+      "id": "IGN-COMPAT-001",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_live_reference_state_latency_metrics_trace_fixture)'",
+      "environment": "trace-capture Cargo feature; Twisted legacy server; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates committed legacy latency fixtures and must only run during an intentional fixture-review workflow."
+    },
+    {
+      "id": "IGN-COMPAT-002",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_python_state_latency_metrics_trace_fixture)'",
+      "environment": "trace-capture Cargo feature; Python probe dependencies; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates committed Python latency fixtures and must not mutate the oracle during ordinary verification."
+    },
+    {
+      "id": "IGN-COMPAT-003",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_persistent_rooms_lifecycle_trace_fixtures)'",
+      "environment": "trace-capture Cargo feature; Python and legacy dependencies; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates persistent-room oracle fixtures and requires explicit review of both Python and legacy outputs."
+    },
+    {
+      "id": "IGN-COMPAT-004",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_permanent_rooms_file_trace_fixtures)'",
+      "environment": "trace-capture Cargo feature; Python and legacy dependencies; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates permanent-room file fixtures and is deliberately separated from tests that consume those fixtures."
+    },
+    {
+      "id": "IGN-COMPAT-005",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_live_reference_controlled_room_trace_fixtures)'",
+      "environment": "trace-capture Cargo feature; Twisted legacy server; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates controlled-room legacy fixtures from a live Twisted server and changes committed oracle material."
+    },
+    {
+      "id": "IGN-COMPAT-006",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_persistent_rooms_timeout_list_updates_trace_fixtures)'",
+      "environment": "trace-capture Cargo feature; Python and legacy dependencies; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates timeout-list-update fixtures whose behavioral changes require explicit compatibility review."
+    },
+    {
+      "id": "IGN-COMPAT-007",
+      "owner": "compatibility",
+      "command": "cargo nextest run --locked -p sorotte-compat --all-features --no-tests fail --run-ignored only -E 'test(capture_python_fanout_trace_fixtures)'",
+      "environment": "trace-capture Cargo feature; Python probe dependencies; fixture diff review",
+      "cadence": "explicit reviewed fixture regeneration only",
+      "max_age_days": 90,
+      "execution": "maintenance",
+      "evidence": null,
+      "evidence_note": "Regenerates committed Python fanout fixtures and is not valid as an ordinary nonmutating verification test."
+    },
+    {
+      "id": "IGN-GUI-002",
+      "owner": "gui",
+      "command": "cargo nextest run --locked -p sorotte-gui --all-features --no-tests fail --run-ignored only -E 'test(gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config)'",
+      "environment": "standalone mpv binary; Windows process and IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Crosses persisted GUI configuration and Windows managed-process startup using a real locally installed player."
+    },
+    {
+      "id": "IGN-MPV-001",
+      "owner": "player-mpv",
+      "command": "cargo nextest run --locked -p sorotte-player-mpv --all-features --no-tests fail --run-ignored only -E 'test(real_mpv_bridge_lifecycle_over_json_ipc)'",
+      "environment": "SOROTTE_TEST_MPV_BIN; standalone mpv binary",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Exercises the bridge lifecycle over a real mpv JSON IPC endpoint supplied by the operator."
+    },
+    {
+      "id": "IGN-MPV-002",
+      "owner": "player-mpv",
+      "command": "cargo nextest run --locked -p sorotte-player-mpv --all-features --no-tests fail --run-ignored only -E 'test(local_standalone_mpv_smoke_reports_file_metadata)'",
+      "environment": "standalone mpv binary; local media asset; Windows IPC support",
+      "cadence": "before relevant releases; monthly otherwise",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "Checks Windows standalone player metadata using locally supplied executable and media fixtures."
+    },
+    {
+      "id": "headless-scaling",
+      "owner": "gui/performance",
+      "command": "python scripts/scaling_workloads.py --name scheduled --cases normal large --samples 3 --verify-clone-sensitivity --output target/verification/scaling.json",
+      "environment": "Pinned Linux24.04 or Windows2025 hosted worker; headless resource invariants; timings advisory",
+      "cadence": "weekly",
+      "max_age_days": 35,
+      "execution": "scheduled",
+      "evidence": null,
+      "evidence_note": "No current-source measurement is claimed; publish a source-bound durable receipt after executing the command."
+    },
+    {
+      "id": "optimized-startup",
+      "owner": "gui/performance",
+      "command": "powershell -File scripts/gui-startup-bench.ps1 -Samples 20 -Warmup 3 -Json",
+      "environment": "Dedicated comparable Windows worker, release build; cold/warm samples; no timing threshold until noise measured",
+      "cadence": "monthly and before startup changes",
+      "max_age_days": 35,
+      "execution": "manual",
+      "evidence": null,
+      "evidence_note": "No current-source measurement is claimed; publish a source-bound durable receipt after executing the command."
+    }
+  ]
+}

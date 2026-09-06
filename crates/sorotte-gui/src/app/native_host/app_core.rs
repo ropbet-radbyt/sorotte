@@ -37,7 +37,7 @@ impl GuiNativeApp {
         runtime: Box<dyn GuiNativeRuntimeBridge>,
         runtime_pump: Box<dyn GuiNativeRuntimePump>,
         runtime_repaint_handle: Option<GuiQueuedRuntimeBridgeHandle>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         if let Some(handle) = runtime_repaint_handle.as_ref() {
             let repaint_context = creation_context.egui_ctx.clone();
             handle.set_repaint_notifier(move || {
@@ -51,17 +51,17 @@ impl GuiNativeApp {
                 None
             }
         };
-        Self {
+        Ok(Self {
             state,
             runtime,
             runtime_pump,
             runtime_repaint_handle,
-            gui_state_root: sorotte_gui_qsettings_root_from_env(),
+            gui_state_root: sorotte_gui_qsettings_root_from_env()?,
             test_drop_request,
             playback_prompt: None,
             playback_prompt_buffer: String::new(),
             playback_prompt_error: None,
-        }
+        })
     }
 
     pub(super) fn apply_test_theme_override_from_lookup<F>(ctx: &egui::Context, lookup: &F)

@@ -1,0 +1,124 @@
+[
+  {
+    "argv": [
+      "python",
+      "scripts/critical_boundaries.py",
+      "--repo-root",
+      "."
+    ],
+    "exit_code": 0,
+    "seconds": 0.384,
+    "stdout": "Validated 10 responsibility boundaries and 87 critical production modules\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/architecture_index.py",
+      "--repo-root",
+      "."
+    ],
+    "exit_code": 0,
+    "seconds": 0.146,
+    "stdout": "Current architecture references and generated index are valid\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/behavior_evidence.py",
+      "validate",
+      "--catalog",
+      "coverage/behaviors.toml"
+    ],
+    "exit_code": 0,
+    "seconds": 0.268,
+    "stdout": "valid behavior catalog: 23 behaviors, 99 proofs, 2 lanes, sha256:53f2ceacd197884f6af70127fbee160e424bc202d0b460389e70f3ef669bd046\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/ignored_test_policy.py",
+      "validate",
+      "--registry",
+      "coverage/ignored-tests.toml"
+    ],
+    "exit_code": 0,
+    "seconds": 0.493,
+    "stdout": "valid ignored-test policy: 27 tests (maintenance=7, manual=11, pull-request=5, subprocess-fixture=4)\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/known_defect_policy.py",
+      "validate",
+      "--registry",
+      "coverage/known-defects.toml",
+      "--catalog",
+      "coverage/behaviors.toml"
+    ],
+    "exit_code": 0,
+    "seconds": 0.279,
+    "stdout": "valid known-defect registry: 0 defects, 0 characterizations\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/mutation_ci.py",
+      "validate-policy",
+      "--repo-root",
+      ".",
+      "--policy",
+      "coverage/mutation-policy.toml"
+    ],
+    "exit_code": 2,
+    "seconds": 0.088,
+    "stdout": "",
+    "stderr": "usage: mutation_ci.py [-h] {validate,run,verify-report,verify-report-set} ...\nmutation_ci.py: error: argument command: invalid choice: 'validate-policy' (choose from validate, run, verify-report, verify-report-set)\n"
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/playback_lifecycle_model.py",
+      "validate",
+      "--model",
+      "coverage/playback-lifecycle.toml",
+      "--require-closed"
+    ],
+    "exit_code": 0,
+    "seconds": 0.082,
+    "stdout": "valid playback lifecycle model: 11 machines, 77 states, 78 transitions, 15 invariants, 8 gaps (0 open)\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/playback_lifecycle_oracle.py",
+      "run-suite",
+      "--schedule-dir",
+      "fixtures/playback-lifecycle"
+    ],
+    "exit_code": 0,
+    "seconds": 0.127,
+    "stdout": "{\n  \"covered_transition_count\": 56,\n  \"covered_transitions\": [\n    \"APP-LAUNCH-001\",\n    \"APP-RUN-001\",\n    \"APP-STOP-001\",\n    \"APP-TERM-001\",\n    \"GATE-CLEAR-001\",\n    \"GATE-COMMIT-001\",\n    \"GATE-PLAYABILITY-001\",\n    \"GATE-PREPARE-001\",\n    \"GATE-READY-001\",\n    \"LOAD-ACCEPT-001\",\n    \"LOAD-ACTIVE-001\",\n    \"LOAD-BIND-001\",\n    \"LOAD-CLEAR-001\",\n    \"LOAD-SUBMIT-001\",\n    \"LOAD-SUPERSEDE-001\",\n    \"LOAD-TERMINAL-001\",\n    \"MEDIA-CLEAR-001\",\n    \"MEDIA-PLAYABLE-001\",\n    \"MEDIA-RESOLVE-001\",\n    \"MEDIA-SELECT-001\",\n    \"PLAYER-ATTACH-001\",\n    \"PLAYER-CONNECT-001\",\n    \"PLAYER-LAUNCH-001\",\n    \"PLAYER-RESET-001\",\n    \"PLAYER-STOP-001\",\n    \"PLAYLIST-LOSE-AUTHORITY-001\",\n    \"PLAYLIST-SELECT-001\",\n    \"PLAYLIST-SNAPSHOT-SELECTED-001\",\n    \"ROOM-ACTIVE-001\",\n    \"ROOM-JOIN-001\",\n    \"ROOM-LEAVE-001\",\n    \"ROOM-OUTSIDE-001\",\n    \"ROOM-SWITCH-001\",\n    \"SESSION-ACTIVE-001\",\n    \"SESSION-CLOSE-001\",\n    \"SESSION-CONNECT-001\",\n    \"SESSION-DISCONNECT-001\",\n    \"SESSION-HELLO-001\",\n    \"SESSION-LOSS-001\",\n    \"STATUS-DELAY-001\",\n    \"STATUS-FRESH-001\",\n    \"STATUS-NEGOTIATE-001\",\n    \"STATUS-UNAVAILABLE-001\",\n    \"STATUS-WITHDRAW-001\",\n    \"TRANSPORT-DETACH-001\",\n    \"TRANSPORT-END-001\",\n    \"TRANSPORT-LOAD-001\",\n    \"TRANSPORT-PAUSE-001\",\n    \"TRANSPORT-PLAY-001\",\n    \"TX-BEGIN-001\",\n    \"TX-COMMIT-001\",\n    \"TX-CONVERGE-001\",\n    \"TX-DELIVERY-001\",\n    \"TX-FANOUT-001\",\n    \"TX-RESET-001\",\n    \"TX-WRITTEN-001\"\n  ],\n  \"event_count\": 121,\n  \"schedule_count\": 2,\n  \"schedules\": [\n    {\n      \"covered_transition_count\": 53,\n      \"event_count\": 71,\n      \"schedule_id\": \"full-lifecycle-seed\"\n    },\n    {\n      \"covered_transition_count\": 32,\n      \"event_count\": 50,\n      \"schedule_id\": \"late-join-reconnect-seed\"\n    }\n  ],\n  \"schema_version\": 1,\n  \"status\": \"passed\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "python",
+      "scripts/mutation_ci.py",
+      "validate",
+      "--repo-root",
+      ".",
+      "--policy",
+      "coverage/mutation-policy.toml"
+    ],
+    "exit_code": 0,
+    "seconds": 0.132,
+    "stdout": "mutation policy valid: 24 shard(s), 71 accepted unviable mutation(s)\n",
+    "stderr": ""
+  }
+]

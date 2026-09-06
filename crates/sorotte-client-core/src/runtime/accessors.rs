@@ -787,8 +787,11 @@ where
                 };
                 self.control.activate_protocol_connection_generation();
                 self.control
-                    .emit_causal_state(state)
-                    .map_err(client_effect_player_error)
+                    .emit_causal_state(state.clone())
+                    .map_err(client_effect_player_error)?;
+                self.playback_coordination
+                    .record_emitted_local_seek(&self.session, &state);
+                Ok(())
             });
         match result {
             Ok(()) => Ok(()),
@@ -819,6 +822,9 @@ where
         actions: &[ClientRuntimeAction],
     ) -> Result<(), PlayerError> {
         for action in actions {
+            if matches!(action, ClientRuntimeAction::SetRoom { .. }) {
+                self.playback_coordination.clear_local_seek_echo();
+            }
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 let cause = self.system_pause_command_cause(*paused);
                 self.execute_causal_pause_command(

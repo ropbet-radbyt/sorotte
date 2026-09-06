@@ -1,10 +1,12 @@
 use barrier::RoomBarrierState;
 use barrier::*;
 use local_intent::*;
+use local_seek::*;
 use participant_status::ParticipantStatusReportingState;
 use participant_status::*;
 mod barrier;
 mod local_intent;
+mod local_seek;
 mod participant_status;
 use super::*;
 
@@ -235,6 +237,8 @@ pub(crate) struct RuntimePlaybackCoordination {
     desired_revision: u64,
     desired_fingerprint: Option<RoomDesiredFingerprint>,
     pending_local_pause_intent: Option<PendingLocalPauseIntent>,
+    pending_local_seek_echo: Option<PendingLocalSeekEcho>,
+    local_seek_counter_high_watermark: Option<PendingLocalSeekEcho>,
     last_local_pause_intent_stage_accepted: Option<bool>,
     connection_generation: u64,
     local_control_authority: Option<ConnectionLocalControlAuthority>,
@@ -355,6 +359,7 @@ impl RuntimePlaybackCoordination {
         self.desired_generation = None;
         self.desired_fingerprint = None;
         self.pending_local_pause_intent = None;
+        self.pending_local_seek_echo = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.pending_forced_seek_revision = None;
         self.transport_telemetry_observed = false;
@@ -486,6 +491,7 @@ impl RuntimePlaybackCoordination {
             self.desired_generation = None;
             self.desired_fingerprint = None;
             self.pending_local_pause_intent = None;
+            self.pending_local_seek_echo = None;
             self.last_local_pause_intent_stage_accepted = None;
             self.pending_forced_seek_revision = None;
             self.last_applied_revision = None;
@@ -603,6 +609,7 @@ impl RuntimePlaybackCoordination {
             now_seconds.is_finite().then_some(now_seconds);
         self.participant_status_owner_clock_invalidated = false;
         self.pending_local_pause_intent = None;
+        self.pending_local_seek_echo = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.barrier.last_reported_barrier_ready = None;
         self.barrier.last_reported_barrier_started = None;
@@ -795,6 +802,7 @@ impl RuntimePlaybackCoordination {
     }
 
     pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
+        self.clear_local_seek_echo();
         self.connection_generation = self.connection_generation.saturating_add(1).max(1);
         self.participant_status.next_participant_status_sequence = 0;
         self.participant_status.last_participant_status_fingerprint = None;

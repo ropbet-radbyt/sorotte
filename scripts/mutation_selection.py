@@ -40,6 +40,12 @@ def read_revision(root: pathlib.Path, revision: str, path: str) -> bytes | None:
     return raw
 
 
+def checkout_matches_blob(blob: bytes | None, checkout: bytes) -> bool:
+    # Git's normal Windows checkout conversion is not a policy edit. Permit
+    # only CRLF/LF transport differences, never arbitrary clean-filter changes.
+    return blob is not None and blob.replace(b"\r\n", b"\n") == checkout.replace(b"\r\n", b"\n")
+
+
 def selected_shards(policy: dict, catalog: dict, changed: list[str], *, full: bool) -> set[str]:
     changed = [path for path in changed if not path.endswith(".md")]
     if set(catalog) != {"schema_version", "global_inputs", "dependency"} or type(catalog["schema_version"]) is not int or catalog["schema_version"] != 1:
@@ -80,7 +86,7 @@ def plan(root: pathlib.Path, base: str, head: str, *, full: bool = False) -> dic
     changed = sorted(set(git(root, "diff", "--name-only", "--no-renames", "-z", base, head).decode("utf-8").strip("\0").split("\0")) - {""})
     current = mutation_ci.load_policy(root, root / POLICY)
     head_policy, head_catalog = (root / POLICY).read_bytes(), (root / CATALOG).read_bytes()
-    if read_revision(root, head, POLICY) != head_policy or read_revision(root, head, CATALOG) != head_catalog:
+    if not checkout_matches_blob(read_revision(root, head, POLICY), head_policy) or not checkout_matches_blob(read_revision(root, head, CATALOG), head_catalog):
         raise SelectionError("selection policies must match immutable checked-out head")
     union: set[str] = set()
     inputs = []
@@ -113,8 +119,9 @@ def verify_selected(root: pathlib.Path, selection: dict, artifacts: pathlib.Path
         discovered.setdefault(shard, []).append(path)
     if set(discovered) != expected or any(len(paths) != 1 for paths in discovered.values()):
         raise SelectionError(f"selected mutation reports must be unique and complete; expected {sorted(expected)}, found { {key: len(paths) for key, paths in discovered.items()} }")
+    inventory_cache = mutation_ci.TestInventoryCache()
     for shard in sorted(expected):
-        if mutation_ci.verify_report(argparse.Namespace(repo_root=str(root), policy=POLICY, shard=shard, report=str(discovered[shard][0]))) != 0:
+        if mutation_ci.verify_report(argparse.Namespace(repo_root=str(root), policy=POLICY, shard=shard, report=str(discovered[shard][0])), inventory_cache=inventory_cache) != 0:
             raise SelectionError(f"selected mutation evidence failed: {shard}")
 
 

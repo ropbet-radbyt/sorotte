@@ -7,6 +7,11 @@ on:
         description: Full Sorotte commit SHA whose release candidates must be verified
         required: true
         type: string
+      channel:
+        description: Ref-derived release channel is part of the immutable build input
+        required: false
+        default: stable
+        type: string
 
 permissions:
   contents: read
@@ -24,29 +29,34 @@ jobs:
       EVIDENCE_DIR: target/verification/playback-release-evidence/linux-x86_64
     steps:
       - name: Checkout exact Sorotte candidate
+        id: ci_checkout_exact_sorotte_candidate_5de84255
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
 
       - name: Bind Linux checkout to release candidate
+        id: ci_bind_linux_checkout_to_release_candida_5097b406
         run: |
           test "$CANDIDATE_SHA" = "$GITHUB_SHA"
           test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Setup Rust
+        id: ci_setup_rust_64dd10de
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_d5b06dd2
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install supported mpv build dependencies
+        id: ci_install_supported_mpv_build_dependenci_bab10807
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
@@ -65,6 +75,7 @@ jobs:
             pkg-config
 
       - name: Checkout pinned official mpv source
+        id: ci_checkout_pinned_official_mpv_source_b432a13d
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: mpv-player/mpv
@@ -73,10 +84,12 @@ jobs:
           persist-credentials: false
 
       - name: Verify supported mpv source revision
+        id: ci_verify_supported_mpv_source_revision_bd0cb841
         working-directory: target/mpv-supported-release
         run: test "$(git rev-parse 'HEAD^{commit}')" = "$MPV_SOURCE_SHA"
 
       - name: Build pinned supported mpv
+        id: ci_build_pinned_supported_mpv_6f06eec3
         working-directory: target/mpv-supported-release
         run: |
           meson setup build \
@@ -97,6 +110,7 @@ jobs:
           meson compile -C build ./mpv:executable
 
       - name: Verify supported mpv version
+        id: ci_verify_supported_mpv_version_cf083c4c
         run: >-
           python scripts/mpv_version_matrix.py validate
           --identity minimum
@@ -107,6 +121,7 @@ jobs:
           --binary target/mpv-supported-release/build/mpv
 
       - name: Validate closed lifecycle declarations and deterministic model
+        id: ci_validate_closed_lifecycle_declarations_742a9d08
         run: |
           python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
           python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
@@ -118,17 +133,49 @@ jobs:
             scripts.tests.test_playback_start_gate_system \
             scripts.tests.test_playback_release_gate
 
+      - name: Capture Linux release build inputs
+        id: ci_capture_linux_release_build_inputs_ea2ab61b
+        run: |
+          python scripts/release_qualification.py inputs \
+            --candidate-sha "$CANDIDATE_SHA" --platform linux-x86_64 --channel "${{ inputs.channel }}" \
+            --tool mpv=target/mpv-supported-release/build/mpv --tool ffmpeg=ffmpeg \
+            --output target/playback-release-build-inputs.json
+
       - name: Build exact Linux release candidates
+        id: ci_build_exact_linux_release_candidates_caa5099b
         run: cargo build --locked --release -p sorotte-server -p sorotte-cli
 
       - name: Seal immutable Linux candidate bundle
+        id: ci_seal_immutable_linux_candidate_bundle_07234417
         run: |
           python scripts/playback_release_gate.py bundle \
             --candidate-sha "$CANDIDATE_SHA" \
             --platform linux-x86_64 \
+            --channel "${{ inputs.channel }}" \
+            --input-manifest target/playback-release-build-inputs.json \
             --artifact server=target/release/sorotte-server \
             --artifact client=target/release/sorotte-cli \
             --output-dir "$CANDIDATE_DIR"
+
+      - name: Upload immutable Linux release bundle
+        id: ci_upload_immutable_linux_release_bundle_6b60403e
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle-linux-x86_64-${{ inputs.candidate_sha }}
+          path: ${{ env.CANDIDATE_DIR }}
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      - name: Upload Linux approved build input record
+        id: ci_upload_linux_approved_build_input_reco_c92cdacd
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-input-record-linux-x86_64-${{ inputs.candidate_sha }}
+          path: ${{ env.CANDIDATE_DIR }}/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
 
       - name: Run ordinary and terminal exact-candidate lifecycle
         id: playback_lifecycle_system
@@ -143,6 +190,7 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA"
 
       - name: Run loop-boundary exact-candidate lifecycle
+        id: ci_run_loop_boundary_exact_candidate_life_5c57c55a
         run: |
           python scripts/playback_lifecycle_system.py run \
             --server target/release/sorotte-server \
@@ -154,6 +202,7 @@ jobs:
             --loop-at-end-of-playlist
 
       - name: Run generated every-phase start-gate lifecycle
+        id: ci_run_generated_every_phase_start_gate_l_e717b2ff
         run: |
           python scripts/playback_start_gate_system.py \
             --server target/release/sorotte-server \
@@ -179,6 +228,7 @@ jobs:
           --require-closed
 
       - name: Upload privacy-safe lifecycle release evidence
+        id: ci_upload_privacy_safe_lifecycle_release__ed6cebb6
         if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -189,6 +239,7 @@ jobs:
           overwrite: true
 
       - name: Enforce exact-candidate lifecycle release gate
+        id: ci_enforce_exact_candidate_lifecycle_rele_c57902a6
         if: always()
         env:
           PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME: ${{ steps.playback_lifecycle_system.outcome }}
@@ -200,6 +251,7 @@ jobs:
           test "$PLAYBACK_LIFECYCLE_CLOSED_OUTCOME" = success
 
       - name: Attest exact Linux suite and candidate digests
+        id: ci_attest_exact_linux_suite_and_candidate_2f7e3039
         run: |
           python scripts/playback_release_gate.py attest-linux \
             --bundle-dir "$CANDIDATE_DIR" \
@@ -211,6 +263,7 @@ jobs:
             --output target/verification/playback-lifecycle-release-safe/platform-gate.json
 
       - name: Upload Linux platform lifecycle attestation
+        id: ci_upload_linux_platform_lifecycle_attest_184b37f1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playback-lifecycle-platform-linux-${{ inputs.candidate_sha }}
@@ -239,6 +292,7 @@ jobs:
       FFMPEG_BINARY_SHA256: fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690
     steps:
       - name: Attest ephemeral interactive Windows runner
+        id: ci_attest_ephemeral_interactive_windows_r_026d4f00
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -263,6 +317,7 @@ jobs:
           }
 
       - name: Checkout exact Sorotte candidate
+        id: ci_checkout_exact_sorotte_candidate_3713d2e1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
@@ -270,6 +325,7 @@ jobs:
           persist-credentials: false
 
       - name: Bind Windows checkout to release candidate
+        id: ci_bind_windows_checkout_to_release_candi_b30ab641
         shell: pwsh
         run: |
           $actual = (git rev-parse 'HEAD^{commit}').Trim()
@@ -281,17 +337,20 @@ jobs:
           }
 
       - name: Setup Rust
+        id: ci_setup_rust_19d5cf83
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_c1c69d60
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Download and verify pinned supported Windows media tools
+        id: ci_download_and_verify_pinned_supported_w_e01a4873
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -328,6 +387,7 @@ jobs:
           "FFMPEG_PATH=$($ffmpeg[0].FullName)" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Validate closed lifecycle declarations and harness contracts
+        id: ci_validate_closed_lifecycle_declarations_3e5046ad
         shell: pwsh
         run: |
           python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
@@ -336,34 +396,91 @@ jobs:
             scripts.tests.test_playback_status_system `
             scripts.tests.test_playback_release_gate
 
+      - name: Build Windows native qualification driver
+        id: ci_build_windows_native_qualification_dri_0ee89fd3
+        shell: pwsh
+        run: cargo build --locked -p sorotte-gui --features gui-native-smoke --bin sorotte-gui-native-smoke
+
+      - name: Capture Windows release build inputs
+        id: ci_capture_windows_release_build_inputs_1a15d757
+        shell: pwsh
+        run: |
+          python scripts/release_qualification.py inputs `
+            --candidate-sha $env:CANDIDATE_SHA --platform windows-x86_64 --channel "${{ inputs.channel }}" `
+            --tool "mpv=$env:MPV_PATH" --tool "ffmpeg=$env:FFMPEG_PATH" `
+            --tool native-harness=target/debug/sorotte-gui-native-smoke.exe `
+            --output target/playback-release-build-inputs.json
+
       - name: Build exact Windows release candidates and native driver
+        id: ci_build_exact_windows_release_candidates_aa822db1
         shell: pwsh
         run: |
           cargo build --locked --release -p sorotte-server -p sorotte-cli
           cargo build --locked --release -p sorotte-gui --bin sorotte-gui --bin sorotte-gui-updater
-          cargo build --locked -p sorotte-gui --features gui-native-smoke --bin sorotte-gui-native-smoke
 
       - name: Seal immutable Windows candidate bundle
+        id: ci_seal_immutable_windows_candidate_bundl_103603d7
         shell: pwsh
         run: |
           python scripts/playback_release_gate.py bundle `
             --candidate-sha $env:CANDIDATE_SHA `
             --platform windows-x86_64 `
+            --channel "${{ inputs.channel }}" `
+            --input-manifest target/playback-release-build-inputs.json `
             --artifact server=target/release/sorotte-server.exe `
             --artifact client=target/release/sorotte-cli.exe `
             --artifact gui=target/release/sorotte-gui.exe `
             --artifact gui-updater=target/release/sorotte-gui-updater.exe `
             --output-dir $env:CANDIDATE_DIR
 
+      - name: Upload immutable Windows release bundle
+        id: ci_upload_immutable_windows_release_bundl_9a557991
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle-windows-x86_64-${{ inputs.candidate_sha }}
+          path: ${{ env.CANDIDATE_DIR }}
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      - name: Upload Windows approved build input record
+        id: ci_upload_windows_approved_build_input_re_9b15bdce
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-input-record-windows-x86_64-${{ inputs.candidate_sha }}
+          path: ${{ env.CANDIDATE_DIR }}/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
       - name: Run exact GUI baseline and terminal fault modes
+        id: vertical
         shell: pwsh
         run: |
+          python scripts/native_harness_canary.py --output target/verification/native-harness-readiness.json
+          if ($LASTEXITCODE -ne 0) { throw "Native fixture readiness failed" }
           ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000
+
+      - name: Run exact GUI HTTP failure recovery
+        id: http_fault
+        shell: pwsh
+        run: |
           ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseFaultingHttpRecovery
+
+      - name: Run exact GUI stalled HTTP boundary
+        id: http_stall
+        shell: pwsh
+        run: |
           ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 50000 -ExerciseStalledHttp
+
+      - name: Run exact GUI owned-process recovery
+        id: recovery
+        shell: pwsh
+        run: |
           ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseOwnedMpvRecovery
 
       - name: Run exact second-client native participant status composition
+        id: status
         shell: pwsh
         run: |
           python scripts/playback_status_system.py `
@@ -376,6 +493,7 @@ jobs:
             --candidate-sha $env:CANDIDATE_SHA
 
       - name: Attest exact Windows suite and candidate digests
+        id: attestation
         shell: pwsh
         run: |
           $baseline = @(Get-ChildItem target/verification/gui-real-mpv-vertical -Recurse -File -Filter contract-summary.json)
@@ -401,6 +519,7 @@ jobs:
             --output target/verification/playback-status-release/platform-gate.json
 
       - name: Upload Windows platform lifecycle attestation
+        id: ci_upload_windows_platform_lifecycle_atte_09ec89b8
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
@@ -408,6 +527,39 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           overwrite: true
+
+      - name: Project Windows diagnostics before ephemeral teardown
+        id: ci_project_windows_diagnostics_before_eph_39673358
+        if: always()
+        shell: pwsh
+        env:
+          SAFE_NATIVE_DIR: ${{ runner.temp }}/native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          VERTICAL_OUTCOME: ${{ steps.vertical.outcome }}
+          STATUS_OUTCOME: ${{ steps.status.outcome }}
+          ATTESTATION_OUTCOME: ${{ steps.attestation.outcome }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+          HTTP_FAULT_OUTCOME: ${{ steps.http_fault.outcome }}
+          HTTP_STALL_OUTCOME: ${{ steps.http_stall.outcome }}
+        run: |
+          $exported = $false
+          if ((Test-Path scripts/native_failure_evidence.py) -and (Get-Command python -ErrorAction SilentlyContinue)) {
+            python scripts/native_failure_evidence.py export --root target/verification --output $env:SAFE_NATIVE_DIR --source-sha $env:CANDIDATE_SHA --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT --stage windows-lifecycle --cleanup unavailable --mode-outcome "vertical=$env:VERTICAL_OUTCOME" --mode-outcome "status=$env:STATUS_OUTCOME" --mode-outcome "attestation=$env:ATTESTATION_OUTCOME" --mode-outcome "recovery=$env:RECOVERY_OUTCOME" --mode-outcome "http-fault=$env:HTTP_FAULT_OUTCOME" --mode-outcome "http-stall=$env:HTTP_STALL_OUTCOME"
+            $exported = $LASTEXITCODE -eq 0
+          }
+          if (-not $exported) {
+            $null = New-Item -ItemType Directory -Force -Path $env:SAFE_NATIVE_DIR
+            @{ schema_version=1; kind="sorotte-native-diagnostic"; authoritative=$false; source_sha=$env:CANDIDATE_SHA; run_id=$env:GITHUB_RUN_ID; run_attempt=$env:GITHUB_RUN_ATTEMPT; stage="windows-lifecycle"; cleanup="unavailable"; records=@(@{status="unavailable";reason="exporter-unavailable-before-checkout-or-setup"}) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:SAFE_NATIVE_DIR diagnostic.json)
+          }
+
+      - name: Retain safe Windows failure evidence
+        id: ci_retain_safe_windows_failure_evidence_5d4b3f3b
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-diagnostic-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 90
 
   complete-candidate:
     name: Complete cross-platform lifecycle attestation
@@ -420,29 +572,34 @@ jobs:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
     steps:
       - name: Checkout exact Sorotte candidate
+        id: ci_checkout_exact_sorotte_candidate_1fa2d704
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.candidate_sha }}
           persist-credentials: false
 
       - name: Setup Python
+        id: ci_setup_python_58324f54
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Download Linux platform lifecycle attestation
+        id: ci_download_linux_platform_lifecycle_atte_990457b8
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: playback-lifecycle-platform-linux-${{ inputs.candidate_sha }}
           path: target/verification/complete-gate/linux
 
       - name: Download Windows platform lifecycle attestation
+        id: ci_download_windows_platform_lifecycle_at_4fc9bb27
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
           path: target/verification/complete-gate/windows
 
       - name: Prove complete model transition coverage
+        id: ci_prove_complete_model_transition_covera_45aab257
         run: |
           test "$(git rev-parse 'HEAD^{commit}')" = "$CANDIDATE_SHA"
           python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
@@ -454,10 +611,35 @@ jobs:
             --output target/verification/complete-gate/platform-complete.json
 
       - name: Upload complete lifecycle attestation
+        id: ci_upload_complete_lifecycle_attestation_38dd1580
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playback-lifecycle-complete-${{ inputs.candidate_sha }}
           path: target/verification/complete-gate/platform-complete.json
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
+
+      - name: Download Linux approved build input record
+        id: ci_download_linux_approved_build_input_re_d0dc7009
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-record-linux-x86_64-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate/linux-inputs
+
+      - name: Download Windows approved build input record
+        id: ci_download_windows_approved_build_input__409c2559
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-input-record-windows-x86_64-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate/windows-inputs
+
+      - name: Retain compact source and build qualification record
+        id: ci_retain_compact_source_and_build_qualif_0e237c9c
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-qualification-record-${{ inputs.candidate_sha }}
+          path: target/verification/complete-gate
+          if-no-files-found: error
+          retention-days: 90
           overwrite: true

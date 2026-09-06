@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "sorotte-native-harness-canaries",
+  "cases": [
+    {"id":"counter-real-server","package":"sorotte-server","target":["--test","native_fake_server_contract"],"features":[],"test":"native_fake_counter_contract_matches_recorded_real_server_conversation","responsibility":"actual-server counter and attribution conversation"},
+    {"id":"counter-fake-server","package":"sorotte-gui","target":["--bin","sorotte-gui-native-smoke"],"features":["gui-native-smoke","live-python-interop"],"test":"native_smoke_runner::real_mpv_vertical::tests::playlist_echo_server_requires_and_records_exact_generated_url_exchange","responsibility":"exact counter acknowledgements including seek, heartbeat, and counter-only frames"},
+    {"id":"framing-timeout","package":"sorotte-gui","target":["--bin","sorotte-gui-native-smoke"],"features":["gui-native-smoke","live-python-interop"],"test":"native_smoke_runner::real_mpv_vertical::tests::playlist_echo_server_preserves_a_fragmented_frame_across_read_timeout","responsibility":"partial TCP framing survives timeout"},
+    {"id":"nonblocking-http","package":"sorotte-gui","target":["--bin","sorotte-gui-native-smoke"],"features":["gui-native-smoke","live-python-interop"],"test":"native_smoke_runner::real_mpv_vertical::tests::hard_failure_http_connection_waits_for_headers_on_a_nonblocking_socket","responsibility":"Windows accepted-socket mode and HTTP readiness"},
+    {"id":"replacement-cursor","package":"sorotte-gui","target":["--bin","sorotte-gui-native-smoke"],"features":["gui-native-smoke","live-python-interop"],"test":"native_smoke_runner::real_mpv_vertical::tests::replacement_media_already_observed_during_attestation_is_retained","responsibility":"relaunch cursor includes early replacement and rejects stale PID/path/endpoint"},
+    {"id":"malformed-observations","package":"sorotte-gui","target":["--bin","sorotte-gui-native-smoke"],"features":["gui-native-smoke","live-python-interop"],"test":"native_smoke_runner::real_mpv_vertical::tests::observation_reader_rejects_malformed_evidence_and_preserves_order","responsibility":"malformed observations are never repaired into valid evidence"},
+    {"id":"lua-delayed-open","package":"sorotte-player-mpv","target":["--lib"],"features":[],"test":"tests::ipc_tests::core_hook_keeps_network_option_writes_inside_mpv_and_classifies_a_to_b_as_superseded","responsibility":"script lease outlives command acknowledgement until delayed Lua file-open/configuration"}
+  ],
+  "python_suites": ["scripts.tests.test_gui_real_mpv_vertical_contract", "scripts.tests.test_native_failure_evidence", "scripts.tests.test_native_runner_bundle", "scripts.tests.test_native_required", "scripts.tests.test_native_interactive_workflow"],
+  "independent_authorities": ["real server executable", "real mpv system lanes", "shared lifecycle oracle"]
+}

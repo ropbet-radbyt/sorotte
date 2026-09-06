@@ -28,11 +28,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import artifact_input
+import mutation_process
 
 
 SCHEMA_VERSION = 3
@@ -56,6 +58,7 @@ PERCENT = re.compile(
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 KNOWN_SUMMARIES = {
     "Success",
+    "Failure",
     "CaughtMutant",
     "MissedMutant",
     "Timeout",
@@ -742,15 +745,27 @@ def verification_input_files(
 
     candidates: set[pathlib.Path] = set()
     for relative in (
+        ".gitattributes",
         "Cargo.toml",
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/config.toml",
         "scripts/mutation_ci.py",
         "scripts/mutation_selection.py",
+        "scripts/mutation_campaign.py",
+        "scripts/mutation_process.py",
+        "scripts/mutation_tool_canary.py",
+        "scripts/verify.py",
+        "scripts/verification_tools.py",
+        "scripts/test_inventory.py",
         "scripts/artifact_input.py",
         "coverage/mutation-selection.toml",
+        "coverage/mutation-execution.toml",
         "coverage/mutation-report-set.json",
+        "coverage/verification-tools.toml",
+        "coverage/verification-lanes.json",
+        "coverage/test-inventories.json",
+        ".github/workflows/rust-mutation.yml",
     ):
         candidate = repo_root / relative
         if candidate.is_file() and not candidate.is_symlink():
@@ -792,7 +807,7 @@ def test_inventory_binding(selected_tests: Sequence[str]) -> dict[str, Any]:
 def git_binding(repo_root: pathlib.Path, files: Sequence[str]) -> dict[str, Any]:
     def run(*argv: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["git", "-C", str(repo_root), *argv],
+            ["git", "-c", f"safe.directory={repo_root.as_posix()}", "-C", str(repo_root), *argv],
             check=False,
             capture_output=True,
             text=True,
@@ -1151,6 +1166,13 @@ def require_phase_coherence(
     statuses = [str(phase["status"]) for phase in phases]
     if summary == "Success" and statuses != ["Success", "Success"]:
         raise MutationCiError(f"{label} successful baseline has failing phases")
+    # cargo-mutants 27.1.0 uses Failure for an unmutated build/test failure.
+    # A mutant with these phase results must instead be Unviable/CaughtMutant.
+    if summary == "Failure" and (
+        not statuses[-1].startswith("Failure(")
+        or statuses[:-1] not in ([], ["Success"])
+    ):
+        raise MutationCiError(f"{label} failed baseline has incoherent phases")
     if summary == "CaughtMutant" and (
         len(statuses) != 2
         or statuses[0] != "Success"
@@ -1222,6 +1244,7 @@ def evaluate_results(
     pre_inventory: Sequence[Mapping[str, Any]],
     source_before: Sequence[Mapping[str, Any]],
     source_after: Sequence[Mapping[str, Any]],
+    partial_shard: bool = False,
 ) -> dict[str, Any]:
     if list(source_before) != list(source_after):
         raise MutationCiError("configured mutation sources changed during the run")
@@ -1321,10 +1344,17 @@ def evaluate_results(
         scenario = outcome["scenario"]
         if scenario == "Baseline":
             baseline_count += 1
-            if summary != "Success":
-                raise MutationCiError("baseline outcome did not succeed")
             if outcome["diff_path"] is not None:
                 raise MutationCiError("baseline outcome must not have a diff")
+            if summary not in {"Success", "Failure", "Timeout"}:
+                raise MutationCiError("baseline outcome has a mutant summary")
+            if summary != "Success":
+                terminal = phases[-1]
+                raise MutationCiError(
+                    f"unmutated baseline failed during {terminal['phase']} "
+                    f"({terminal['status']}); retained log {log_relative} "
+                    f"(sha256 {artifact_details[log_relative]['sha256']})"
+                )
             continue
         scenario_mapping = require_mapping(
             scenario,
@@ -1350,8 +1380,8 @@ def evaluate_results(
         if name in mutant_outcomes:
             raise MutationCiError(f"duplicate outcome for mutant {name!r}")
         mutant_outcomes[name] = summary
-        if summary == "Success":
-            raise MutationCiError("Success is valid only for the baseline")
+        if summary in {"Success", "Failure"}:
+            raise MutationCiError(f"{summary} is valid only for the baseline")
         diff_relative, diff_path = safe_artifact_path(
             results_dir,
             outcome["diff_path"],
@@ -1467,14 +1497,14 @@ def evaluate_results(
         )
     for identity, entry in accepted_by_identity.items():
         observed_count = observed_unviable_counts.get(identity, 0)
-        if observed_count != entry.expected_count:
+        if not partial_shard and observed_count != entry.expected_count:
             failures.append(
                 f"accepted-unviable {entry.identifier!r} expected "
                 f"{entry.expected_count} occurrence(s), observed {observed_count}"
             )
-    if viable == 0:
+    if viable == 0 and not partial_shard:
         failures.append("mutation shard has no viable mutants")
-    elif kill_percent < shard.minimum_viable_kill_percent:
+    elif viable and kill_percent < shard.minimum_viable_kill_percent:
         failures.append(
             f"viable kill percentage {kill_percent:.2f}% is below "
             f"{shard.minimum_viable_kill_percent:.2f}%"
@@ -1483,7 +1513,7 @@ def evaluate_results(
         failures.append(
             f"{len(unexpected_unviable)} unviable mutant(s) are not accepted"
         )
-    if stale_unviable:
+    if stale_unviable and not partial_shard:
         failures.append(
             f"{len(stale_unviable)} accepted-unviable entry or entries are stale"
         )
@@ -1619,6 +1649,10 @@ def run_process(
     argv: Sequence[str],
     *,
     cwd: pathlib.Path,
+    log_root: pathlib.Path | None = None,
+    timeout_seconds: float = 1800,
+    progress=None,
+    label: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = None
     if list(argv[:2]) == ["cargo", "mutants"]:
@@ -1629,23 +1663,46 @@ def run_process(
         environment = os.environ.copy()
         for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR"):
             environment[key] = "target"
+    scratch = None
+    completed = None
+    process_error = None
     try:
-        return subprocess.run(
-            list(argv),
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            env=environment,
+        if environment is not None and "--list" not in argv and "--version" not in argv:
+            temp_parent = pathlib.Path(tempfile.gettempdir()).resolve()
+            if temp_parent.is_relative_to(cwd.resolve()):
+                raise MutationCiError("mutation scratch parent must be outside the repository; restore an external TEMP/TMPDIR")
+            scratch = tempfile.TemporaryDirectory(prefix="sm-", dir=temp_parent)
+            for key in ("TEMP", "TMP", "TMPDIR"):
+                environment[key] = scratch.name
+        completed = mutation_process.run(
+            list(argv), cwd=cwd, env=environment,
+            timeout_seconds=timeout_seconds, log_root=log_root,
+            label=label or (log_root.name if log_root else " ".join(argv[:2])), progress=progress,
         )
+        return completed
+    except mutation_process.ProcessError as error:
+        process_error = error
+        raise
     except (OSError, UnicodeError) as error:
         raise MutationCiError(f"cannot run {argv[0]!r}: {error}") from error
+    finally:
+        if scratch is not None:
+            receipt = getattr(completed, "execution", None) if completed is not None else process_error.receipt if process_error is not None else None
+            try:
+                scratch.cleanup()
+                if receipt is not None:
+                    receipt["scratch_cleanup"] = {"status": "passed", "path": scratch.name}
+            except OSError as error:
+                if receipt is not None:
+                    receipt["scratch_cleanup"] = {"status": "failed", "path": scratch.name, "error": str(error)}
+                raise MutationCiError(f"owned mutation scratch cleanup failed: {scratch.name}: {error}") from error
+            finally:
+                if receipt is not None and log_root is not None:
+                    atomic_write_json(log_root / "process.json", receipt)
 
 
 def verify_tool(repo_root: pathlib.Path, expected_version: str) -> None:
-    process = run_process(["cargo", "mutants", "--version"], cwd=repo_root)
+    process = run_process(["cargo", "mutants", "--version"], cwd=repo_root, timeout_seconds=60)
     expected = f"cargo-mutants {expected_version}"
     if (
         process.returncode != 0
@@ -1694,6 +1751,62 @@ def report_template(
     }
 
 
+def mutation_progress(results_dir: pathlib.Path, inventory: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Best-effort diagnostics only; the strict evaluator remains the authority."""
+    completed: list[str] = []
+    failing: list[str] = []
+    phase = "preparing baseline"
+    try:
+        value, _ = load_json(results_dir / "outcomes.json", label="live outcomes")
+        for outcome in value.get("outcomes", []):
+            if outcome.get("scenario") == "Baseline":
+                phase = "testing mutants" if outcome.get("summary") == "Success" else "baseline failed"
+            elif isinstance(outcome.get("scenario"), dict):
+                name = outcome["scenario"].get("Mutant", {}).get("name")
+                if isinstance(name, str):
+                    completed.append(name)
+                    if outcome.get("summary") in {"MissedMutant", "Timeout"}:
+                        failing.append(name)
+    except (MutationCiError, OSError, ValueError, AttributeError):
+        pass
+    pending = [item["name"] for item in inventory if item["name"] not in set(completed)]
+    return {"phase": phase, "completed": len(completed), "remaining": len(pending),
+            "last_completed": completed[-1] if completed else None,
+            "failing": failing, "pending": pending}
+
+
+class TestInventoryCache:
+    """Fresh listings reused only inside one finalizer for identical inputs.
+
+    Never load a producer-supplied listing as the authority. Source, compiler,
+    Cargo arguments and inherited build inputs all belong to the cache key.
+    """
+    def __init__(self) -> None:
+        self.listings: dict[str, list[str]] = {}
+        self.compiler: str | None = None
+        self.executions = 0
+
+    def listing(self, repo_root: pathlib.Path, shard: ShardPolicy,
+                input_bindings: Sequence[Mapping[str, Any]]) -> list[str]:
+        if self.compiler is None:
+            version = run_process(["rustc", "--version", "--verbose"], cwd=repo_root)
+            if version.returncode or version.stderr or not version.stdout.startswith("rustc "):
+                raise MutationCiError("cannot identify finalizer Rust compiler")
+            self.compiler = version.stdout
+        command = cargo_test_inventory_command(shard)
+        key = canonical_digest({"root": str(repo_root), "inputs": list(input_bindings),
+                                "compiler": self.compiler, "command": command,
+                                "environment": {key: value for key, value in os.environ.items()
+                                                if key.startswith(("CARGO_", "RUST", "CC", "CXX")) or key == "PATH"}})
+        if key not in self.listings:
+            listing = run_process(command, cwd=repo_root)
+            if listing.returncode:
+                raise MutationCiError(f"current cargo test inventory failed with exit {listing.returncode}")
+            self.listings[key] = parse_test_inventory(listing.stdout, shard=shard)
+            self.executions += 1
+        return list(self.listings[key])
+
+
 def resolve_policy_path(repo_root: pathlib.Path, value: str) -> pathlib.Path:
     candidate = pathlib.Path(value)
     if not candidate.is_absolute():
@@ -1727,6 +1840,7 @@ def resolve_output_path(repo_root: pathlib.Path, value: str, *, label: str) -> p
 
 def run_shard(args: argparse.Namespace) -> int:
     repo_root = pathlib.Path(args.repo_root).resolve()
+    deadline = time.monotonic() + getattr(args, "deadline_seconds", 6600)
     output_path = resolve_output_path(repo_root, args.output, label="report output")
     policy_display = pathlib.PurePosixPath(args.policy).as_posix()
     report = report_template(
@@ -1734,7 +1848,22 @@ def run_shard(args: argparse.Namespace) -> int:
         policy_path=pathlib.Path(policy_display),
         shard_id=args.shard,
     )
+    # A retry needs a new attempt path. Never replace an original failed receipt.
+    if output_path.exists():
+        print(f"mutation evidence already exists; choose a fresh --output: {output_path}", file=sys.stderr)
+        return 2
+    report["status"] = "incomplete"
+    report["complete"] = False
+    report["attempt"] = getattr(args, "attempt", None)
+    if report["attempt"] is None:
+        report["attempt"] = int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    chunk = getattr(args, "chunk", None)
+    identity = chunk["id"] if chunk is not None else args.shard
+    if chunk is not None:
+        report["execution_chunk"] = {key: value for key, value in chunk.items() if key != "inventory"}
     try:
+        atomic_write_json(output_path, report)
+        require_int(report["attempt"], label="mutation attempt", minimum=1)
         if not (repo_root / "Cargo.toml").is_file():
             raise MutationCiError("repository root must contain Cargo.toml")
         policy_path = resolve_policy_path(repo_root, args.policy)
@@ -1761,18 +1890,21 @@ def run_shard(args: argparse.Namespace) -> int:
             label="mutation results root",
         )
         results_dir = results_root / MUTANTS_DIRECTORY
-        if results_dir.exists():
+        if results_root.exists():
             raise MutationCiError(
-                f"mutation results directory already exists: {results_dir}"
+                f"mutation results directory already exists: {results_root}; choose a fresh attempt path"
             )
-        results_root.mkdir(parents=True, exist_ok=True)
+        results_root.mkdir(parents=True, exist_ok=False)
         source_before = source_bindings(repo_root, shard.files)
         report["source_bindings"]["before"] = source_before
         verification_inputs_before = verification_input_bindings(repo_root, policy_path)
         report["verification_input_bindings"]["before"] = verification_inputs_before
 
         test_inventory_command = cargo_test_inventory_command(shard)
-        test_listing = run_process(test_inventory_command, cwd=repo_root)
+        test_listing = run_process(test_inventory_command, cwd=repo_root,
+                                   timeout_seconds=max(0.01, min(1800, deadline - time.monotonic())),
+                                   label=f"{identity}:test-inventory",
+                                   log_root=results_root / "phases" / "test-inventory")
         atomic_write_text(
             results_root / "test-inventory.stdout.txt",
             test_listing.stdout,
@@ -1790,8 +1922,12 @@ def run_shard(args: argparse.Namespace) -> int:
         report["test_inventory"] = test_inventory_binding(selected_tests)
 
         base_command = cargo_mutants_base_command(shard)
+        if chunk is not None:
+            base_command.extend(["--shard", f"{chunk['index']}/{chunk['count']}", "--sharding", "round-robin"])
         list_command = [*base_command, "--list", "--json"]
-        listing = run_process(list_command, cwd=repo_root)
+        listing = run_process(list_command, cwd=repo_root, log_root=results_root / "phases" / "mutant-inventory",
+                              label=f"{identity}:mutant-inventory",
+                              timeout_seconds=max(0.01, min(1800, deadline - time.monotonic())))
         atomic_write_text(results_root / "inventory.stderr.txt", listing.stderr)
         if listing.returncode != 0:
             raise MutationCiError(
@@ -1809,22 +1945,27 @@ def run_shard(args: argparse.Namespace) -> int:
             shard=shard,
             label="pre-run cargo-mutants inventory",
         )
+        if chunk is not None and pre_inventory != chunk["inventory"]:
+            raise MutationCiError("native chunk inventory differs from immutable campaign plan")
         atomic_write_json(results_root / "inventory.list.json", pre_inventory)
 
-        mutation_command = [*base_command, "--output", str(results_root)]
+        mutation_command = [*base_command, "--caught", "--unviable", "--output", str(results_root)]
         report["command"] = [
             *base_command,
+            "--caught", "--unviable",
             "--output",
             pathlib.PurePosixPath(args.results_root).as_posix(),
         ]
-        producer = run_process(mutation_command, cwd=repo_root)
+        atomic_write_json(output_path, report)
+        producer = run_process(mutation_command, cwd=repo_root,
+                               log_root=results_root / "phases" / "mutant-execution",
+                               timeout_seconds=max(0.01, deadline - time.monotonic()),
+                               label=f"{identity}:mutant-execution",
+                               progress=lambda: mutation_progress(results_dir, pre_inventory))
+        report["execution"] = getattr(producer, "execution", None)
         report["producer_exit_code"] = producer.returncode
-        atomic_write_text(results_root / "producer.stdout.txt", producer.stdout)
-        atomic_write_text(results_root / "producer.stderr.txt", producer.stderr)
-        if producer.stdout:
-            print(producer.stdout, end="")
-        if producer.stderr:
-            print(producer.stderr, end="", file=sys.stderr)
+        atomic_write_text(results_root / "producer.stdout.txt", mutation_process.redact(producer.stdout))
+        atomic_write_text(results_root / "producer.stderr.txt", mutation_process.redact(producer.stderr))
 
         source_after = source_bindings(repo_root, shard.files)
         report["source_bindings"]["after"] = source_after
@@ -1841,8 +1982,10 @@ def run_shard(args: argparse.Namespace) -> int:
             pre_inventory=pre_inventory,
             source_before=source_before,
             source_after=source_after,
+            partial_shard=chunk is not None,
         )
         report.update(evaluation)
+        report["complete"] = True
         atomic_write_json(output_path, report)
         if report["status"] == "passed":
             print(
@@ -1855,8 +1998,11 @@ def run_shard(args: argparse.Namespace) -> int:
         for error in report["errors"]:
             print(f"mutation policy failure: {error}", file=sys.stderr)
         return 1
-    except MutationCiError as error:
+    except (MutationCiError, mutation_process.ProcessError, OSError) as error:
         report["status"] = "error"
+        if isinstance(error, mutation_process.ProcessError):
+            report["status"] = error.receipt["status"] if error.receipt["status"] in {"cancelled", "timeout"} else "incomplete"
+            report["execution"] = error.receipt
         report["errors"] = [str(error)]
         try:
             atomic_write_json(output_path, report)
@@ -1885,7 +2031,7 @@ def validate_policy(args: argparse.Namespace) -> int:
         return 2
 
 
-def verify_report(args: argparse.Namespace) -> int:
+def verify_report(args: argparse.Namespace, *, inventory_cache: TestInventoryCache | None = None) -> int:
     """Reject mutation evidence that is stale for the current source tree."""
 
     repo_root = pathlib.Path(args.repo_root).resolve()
@@ -1912,6 +2058,8 @@ def verify_report(args: argparse.Namespace) -> int:
             raise MutationCiError("mutation evidence report did not pass")
         if report.get("shard") != shard.identifier:
             raise MutationCiError("mutation evidence report names a different shard")
+        if report.get("execution_chunk") is not None:
+            raise MutationCiError("a mutation chunk is not a complete shard; use the campaign verifier")
 
         bindings = require_mapping(
             report.get("source_bindings"),
@@ -1941,13 +2089,13 @@ def verify_report(args: argparse.Namespace) -> int:
                 "mutation evidence verification inputs are stale after execution"
             )
 
-        test_listing = run_process(cargo_test_inventory_command(shard), cwd=repo_root)
-        if test_listing.returncode != 0:
-            raise MutationCiError(
-                "current cargo test inventory failed with exit "
-                f"{test_listing.returncode}"
-            )
-        current_tests = parse_test_inventory(test_listing.stdout, shard=shard)
+        if inventory_cache is None:
+            test_listing = run_process(cargo_test_inventory_command(shard), cwd=repo_root)
+            if test_listing.returncode != 0:
+                raise MutationCiError("current cargo test inventory failed with exit " f"{test_listing.returncode}")
+            current_tests = parse_test_inventory(test_listing.stdout, shard=shard)
+        else:
+            current_tests = inventory_cache.listing(repo_root, shard, current_verification_bindings)
         if report.get("test_inventory") != test_inventory_binding(current_tests):
             raise MutationCiError("mutation evidence test inventory is stale")
 
@@ -1964,7 +2112,7 @@ def verify_report(args: argparse.Namespace) -> int:
             f"({summary['caught']}/{summary['viable_mutants']} viable mutants caught)"
         )
         return 0
-    except MutationCiError as error:
+    except (MutationCiError, mutation_process.ProcessError) as error:
         print(f"mutation evidence error: {error}", file=sys.stderr)
         return 2
 
@@ -2017,6 +2165,7 @@ def verify_report_set(args: argparse.Namespace) -> int:
             )
 
         verified = 0
+        inventory_cache = TestInventoryCache()
         for shard_id, report_value in sorted(reports.items()):
             if not isinstance(shard_id, str) or not IDENTIFIER.fullmatch(shard_id):
                 raise MutationCiError("mutation report-set manifest has an invalid shard id")
@@ -2031,7 +2180,7 @@ def verify_report_set(args: argparse.Namespace) -> int:
                     policy=args.policy,
                     shard=shard_id,
                     report=report_path,
-                )
+                ), inventory_cache=inventory_cache,
             )
             if result != 0:
                 raise MutationCiError(
@@ -2060,6 +2209,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--shard", required=True)
     run.add_argument("--results-root", required=True)
     run.add_argument("--output", required=True)
+    run.add_argument("--deadline-seconds", type=int, default=6600)
+    run.add_argument("--attempt", type=int)
 
     verify = subparsers.add_parser("verify-report")
     verify.add_argument("--repo-root", default=".")

@@ -1,1 +1,3 @@
+-c verification-constraints.txt
 PyYAML==6.0.2
+cryptography==50.0.1

@@ -13,6 +13,16 @@ use sorotte_protocol::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
+mod seek_echo_tests;
+
+#[test]
+fn participant_status_room_requests_preserve_only_current_seek_authority() {
+    // Share the public room-request behavior with the Seek responsibility;
+    // this prefix also selects it when mutating participant-status fencing.
+    seek_echo_tests::assert_public_room_effect_roundtrip_cannot_resurrect_an_old_seek_predecessor();
+    seek_echo_tests::assert_public_same_room_effect_preserves_newer_play_after_seek();
+}
+
 #[test]
 fn playback_barrier_start_defaults_to_immediate() {
     assert_eq!(PlaybackBarrierStartConfig::default().policy, None);

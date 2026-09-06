@@ -1126,13 +1126,14 @@ dependencies = [
 
 [[package]]
 name = "sorotte-cli"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "rustls",
  "serde_json",
  "sorotte-client-app",
  "sorotte-client-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-player-mpv",
  "sorotte-protocol",
@@ -1144,11 +1145,12 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-app"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "anyhow",
  "serde_json",
  "sorotte-client-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-plex",
  "sorotte-protocol",
@@ -1159,13 +1161,14 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-core"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "getrandom 0.4.3",
  "md-5",
  "serde_json",
  "sha2",
  "sorotte-core",
+ "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
  "sorotte-plex",
@@ -1178,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-core"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "thiserror",
 ]
@@ -1200,10 +1203,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sorotte-lifecycle-evidence"
+version = "0.2.9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "sorotte-media-match"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "base64",
+ "libc",
  "rusqlite",
  "rustfft",
  "serde",
@@ -1214,19 +1228,22 @@ dependencies = [
 
 [[package]]
 name = "sorotte-player-api"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "sorotte-secret",
 ]
 
 [[package]]
 name = "sorotte-player-mpv"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "anyhow",
+ "getrandom 0.4.3",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
+ "sorotte-lifecycle-evidence",
  "sorotte-player-api",
  "sorotte-secret",
  "url",
@@ -1235,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-plex"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "reqwest",
  "rustls",
@@ -1249,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-protocol"
-version = "0.2.4"
+version = "0.2.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -1258,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-secret"
-version = "0.2.4"
+version = "0.2.9"
 
 [[package]]
 name = "sqlite-wasm-rs"

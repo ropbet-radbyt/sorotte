@@ -1,21 +1,9 @@
 name: Dependency advisory and source policy
 
 on:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/**/Cargo.toml"
-      - ".cargo/**"
-      - "deny.toml"
-      - "requirements/**"
-      - "coverage/dependency-policy.toml"
-      - "coverage/native-components.toml"
-      - "scripts/dependency_policy.py"
-      - "scripts/artifact_input.py"
-      - "scripts/tests/test_dependency_policy.py"
-      - ".github/workflows/dependency-policy.yml"
-      - ".github/dependabot.yml"
   schedule:
     - cron: "40 3 * * 1"
   workflow_dispatch:
@@ -27,32 +15,84 @@ concurrency:
   group: dependencies-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VERIFICATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
+  selection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+    steps:
+      - name: Checkout exact candidate
+        id: ci_checkout_exact_candidate_f2157bd5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_44396736
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Validate selection prerequisites
+        id: ci_validate_selection_prerequisites_9c70863a
+        run: python scripts/verify.py preflight --phase static --output target/verification/preflight.json
+      - name: Compute source-bound obligations
+        id: ci_compute_source_bound_obligations_bf0b5206
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+        run: python scripts/verify.py plan --base "$BASE_SHA" --head "$VERIFICATION_SHA" --output target/verification/plan.json
+      - name: Select applicable producer
+        id: select
+        env:
+          FORCE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--force' || '' }}
+        run: python scripts/verify.py selected --plan target/verification/plan.json --lane dependencies ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
+      - name: Preserve immutable plan
+        id: ci_preserve_immutable_plan_cb5b1c9d
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependencies-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/plan.json
+          if-no-files-found: error
+          retention-days: 90
+
   rust:
+    needs: selection
+    if: needs.selection.outputs.selected == 'true'
     name: Rust locked advisory and source policy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
+        id: ci_checkout_0f6f51e6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
       - name: Setup Rust
+        id: ci_setup_rust_da6cfe4d
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
       - name: Setup Python
+        id: ci_setup_python_96caa407
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Install pinned cargo-deny
+        id: ci_install_pinned_cargo_deny_747abda6
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-deny@0.20.2
           fallback: none
       - name: Check locked graph and record database identity
+        id: ci_check_locked_graph_and_record_database_1c886f53
         run: python scripts/dependency_policy.py scan --ecosystem rust --output target/dependencies/rust/report.json
       - name: Preserve dependency evidence including failed or unavailable scans
+        id: ci_preserve_dependency_evidence_including_62130861
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -66,23 +106,31 @@ jobs:
           retention-days: 30
 
   python:
+    needs: selection
+    if: needs.selection.outputs.selected == 'true'
     name: Python verification dependency advisories
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout
+        id: ci_checkout_7cd933ed
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
       - name: Setup Python
+        id: ci_setup_python_39289186
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Install pinned verification scanner
+        id: ci_install_pinned_verification_scanner_ee25f209
         run: python -m pip install --disable-pip-version-check -r requirements/dependency-audit.txt
       - name: Audit resolved verification requirements
+        id: ci_audit_resolved_verification_requiremen_e37e33c3
         run: python scripts/dependency_policy.py scan --ecosystem python --output target/dependencies/python/report.json
       - name: Preserve Python database responses and resolved versions
+        id: ci_preserve_python_database_responses_and_a2397cb1
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -90,3 +138,57 @@ jobs:
           path: target/dependencies/python/
           if-no-files-found: error
           retention-days: 30
+
+  dependency-required:
+    name: dependency-required
+    if: always()
+    needs: [selection, rust, python]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate
+        id: ci_checkout_exact_candidate_ee1fd5d1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_89687896
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Require selection authority
+        id: ci_require_selection_authority_19aab1d8
+        env:
+          SELECTION_RESULT: ${{ needs.selection.result }}
+        run: test "$SELECTION_RESULT" = success
+      - name: Retrieve immutable plan
+        id: ci_retrieve_immutable_plan_3c4e3dba
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependencies-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification
+      - name: Validate every applicable producer or explicit no-op
+        id: ci_validate_every_applicable_producer_or__c5fbffdc
+        env:
+          SELECTED: ${{ needs.selection.outputs.selected }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+          RESULT_0: ${{ needs['rust'].result }}
+          RESULT_1: ${{ needs['python'].result }}
+        run: >-
+          python scripts/verify.py gate --lane dependencies --selected "$SELECTED"
+          --plan target/verification/plan.json
+          --base-sha "$EXPECTED_BASE" --source-sha "$VERIFICATION_SHA"
+          --expected-job rust --job-result "rust=$RESULT_0"
+          --expected-job python --job-result "python=$RESULT_1"
+          --output target/verification/dependency-required.json
+      - name: Preserve required receipt
+        id: ci_preserve_required_receipt_77b662e1
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-required-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/dependency-required.json
+          if-no-files-found: error
+          retention-days: 90

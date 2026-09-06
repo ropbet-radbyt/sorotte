@@ -480,6 +480,9 @@ impl RuntimePlaybackCoordination {
         target_room: &str,
         current_room: Option<&str>,
     ) {
+        if current_room != Some(target_room) {
+            self.clear_local_seek_echo();
+        }
         self.participant_status
             .pending_participant_status_room_switch_target =
             (current_room != Some(target_room)).then(|| target_room.to_owned());

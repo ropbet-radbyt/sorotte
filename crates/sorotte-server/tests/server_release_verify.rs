@@ -1,16 +1,52 @@
 mod support;
 
-use std::{
-    fs,
-    sync::{Mutex, MutexGuard, OnceLock},
-    thread,
-    time::Duration,
-};
+use std::{fs, thread, time::Duration};
 
 use serde_json::{Value, json};
 use sorotte_protocol::{PingPayload, ProtocolMessage, StatePayload, TlsPayload};
 
 use support::*;
+
+// Each case owns its child processes, unique paths and ports. There is no process-wide
+// environment mutation, so a shared mutex only coupled unrelated failures (and did
+// not serialize nextest's separate processes).
+#[test]
+fn fixture_timeout_preserves_primary_failure_and_next_case_runs_after_cleanup() {
+    let port = reserve_ipv4_port();
+    let failure = std::panic::catch_unwind(|| {
+        let mut server = ServerProcess::spawn(&server_args(
+            port,
+            &["--ipv4-only", "--interface-ipv4", "127.0.0.1"],
+        ));
+        let mut client = server.wait_for_ipv4(port);
+        client.read_until_expected(
+            "injected absent Hello",
+            Duration::from_millis(40),
+            1,
+            |message| message.kind() == "Hello",
+        );
+    })
+    .expect_err("injected absent exchange must fail");
+    let detail = failure
+        .downcast_ref::<String>()
+        .expect("fixture panic should explain failure");
+    assert!(detail.contains("absent-response") && detail.contains("injected absent Hello"));
+    assert!(detail.contains("replay_args") && detail.contains("recent="));
+    assert!(
+        detail.contains("server_release_verify.rs:"),
+        "failure must name the owning expectation: {detail}"
+    );
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "unwinding must terminate the owned server before another case runs"
+    );
+    let mut next = ServerProcess::spawn(&server_args(
+        port,
+        &["--ipv4-only", "--interface-ipv4", "127.0.0.1"],
+    ));
+    let mut client = next.wait_for_ipv4(port);
+    client.hello("independent-case", "fixture-cleanup");
+}
 
 fn server_args(port: u16, extra: &[&str]) -> Vec<String> {
     let mut args = vec!["--port".to_owned(), port.to_string()];
@@ -33,16 +69,8 @@ fn message_pointer_contains(message: &ProtocolMessage, pointer: &str, expected: 
         .is_some_and(|actual| actual.contains(expected))
 }
 
-fn release_verify_test_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("release verify test lock should not be poisoned")
-}
-
 #[test]
 fn release_verify_listener_startup_modes_and_partial_bind() {
-    let _guard = release_verify_test_lock();
     let ipv4_port = reserve_ipv4_port();
     let mut ipv4_server = ServerProcess::spawn(&server_args(
         ipv4_port,
@@ -67,7 +95,7 @@ fn release_verify_listener_startup_modes_and_partial_bind() {
         &["--interface-ipv4", "127.0.0.1", "--interface-ipv6", "::1"],
     ));
     let _dual_ipv6 = dual_server.wait_for_ipv6(dual_port);
-    let _dual_ipv4 = ProtocolClient::connect_ipv4(dual_port);
+    let _dual_ipv4 = dual_server.connect_ipv4(dual_port);
 
     let partial_port = reserve_ipv4_port();
     let occupied_ipv4 =
@@ -83,7 +111,6 @@ fn release_verify_listener_startup_modes_and_partial_bind() {
 
 #[test]
 fn release_verify_direct_protocol_room_state_chat_playlist_and_fanout() {
-    let _guard = release_verify_test_lock();
     let port = reserve_ipv4_port();
     let mut server = ServerProcess::spawn(&server_args(
         port,
@@ -91,7 +118,7 @@ fn release_verify_direct_protocol_room_state_chat_playlist_and_fanout() {
     ));
     let mut alice = server.wait_for_ipv4(port);
     alice.hello("alice", "room-a");
-    let mut bob = ProtocolClient::connect_ipv4(port);
+    let mut bob = server.connect_ipv4(port);
     bob.hello("bob", "room-a");
 
     alice.read_until(|message| {
@@ -148,7 +175,6 @@ fn release_verify_direct_protocol_room_state_chat_playlist_and_fanout() {
 
 #[test]
 fn release_verify_password_motd_and_protocol_errors() {
-    let _guard = release_verify_test_lock();
     let motd_file = temporary_path("release-motd", "txt");
     fs::write(
         &motd_file,
@@ -180,7 +206,7 @@ fn release_verify_password_motd_and_protocol_errors() {
         json!("Password required"),
     ));
 
-    let mut wrong_password = ProtocolClient::connect_ipv4(port);
+    let mut wrong_password = server.connect_ipv4(port);
     wrong_password.write_json_line(
         r#"{"Hello":{"username":"wrong","room":{"name":"room"},"version":"1.7.5","password":"bad"}}"#,
     );
@@ -190,7 +216,7 @@ fn release_verify_password_motd_and_protocol_errors() {
         json!("Wrong password supplied"),
     ));
 
-    let mut good_password = ProtocolClient::connect_ipv4(port);
+    let mut good_password = server.connect_ipv4(port);
     good_password.write_json_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","password":"5ebe2294ecd0e0f08eab7690d2a6ee69"}}"#,
     );
@@ -254,7 +280,7 @@ fn release_verify_password_motd_and_protocol_errors() {
         "Message of the Day is too long"
     ));
 
-    let mut invalid_json = ProtocolClient::connect_ipv4(port);
+    let mut invalid_json = server.connect_ipv4(port);
     invalid_json.write_json_line("{not-json");
     assert_eq!(
         invalid_json.read_until_kind("Error").kind(),
@@ -262,7 +288,7 @@ fn release_verify_password_motd_and_protocol_errors() {
         "invalid JSON should return protocol error"
     );
 
-    let mut invalid_utf8 = ProtocolClient::connect_ipv4(port);
+    let mut invalid_utf8 = server.connect_ipv4(port);
     invalid_utf8.write_raw_line(&[0xff, 0xfe, b'\n']);
     assert_eq!(
         invalid_utf8.read_until_kind("Error").kind(),
@@ -277,7 +303,6 @@ fn release_verify_password_motd_and_protocol_errors() {
 
 #[test]
 fn release_verify_persistence_permanent_rooms_and_isolation() {
-    let _guard = release_verify_test_lock();
     let rooms_db = temporary_path("release-rooms", "sqlite3");
     let permanent_rooms = temporary_path("release-permanent-rooms", "txt");
     fs::write(&permanent_rooms, "permanent-room\n").expect("permanent rooms file should write");
@@ -300,7 +325,7 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
         ));
         let mut alice = server.wait_for_ipv4(port);
         alice.hello("alice", "persisted-room");
-        let mut watcher = ProtocolClient::connect_ipv4(port);
+        let mut watcher = server.connect_ipv4(port);
         watcher.hello("watcher", "persisted-room");
         alice.read_until(|message| {
             message_pointer_eq(message, "/Set/user/watcher/event/joined", json!(true))
@@ -383,7 +408,7 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
     ));
     let mut alice = isolate_server.wait_for_ipv4(isolate_port);
     alice.hello("alice", "room-a");
-    let mut bob = ProtocolClient::connect_ipv4(isolate_port);
+    let mut bob = isolate_server.connect_ipv4(isolate_port);
     bob.hello("bob", "room-b");
     alice.write_message(&ProtocolMessage::list_request());
     let rooms = expect_list_rooms(alice.read_until_kind("List"));
@@ -399,7 +424,6 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
 
 #[test]
 fn release_verify_tls_and_idle_timeout_behavior() {
-    let _guard = release_verify_test_lock();
     let cert_path = temporary_directory_path("release-tls");
     write_valid_tls_bundle(&cert_path);
     let port = reserve_ipv4_port();
@@ -429,7 +453,7 @@ fn release_verify_tls_and_idle_timeout_behavior() {
         );
     }
 
-    let mut logged_client = ProtocolClient::connect_ipv4(port);
+    let mut logged_client = server.connect_ipv4(port);
     logged_client.hello("plain-client", "tls-room");
     logged_client.write_message(&ProtocolMessage::tls(TlsPayload::new("send")));
     let tls_denied = logged_client.read_until_kind("TLS");
@@ -446,7 +470,7 @@ fn release_verify_tls_and_idle_timeout_behavior() {
     ));
     let mut stale = timeout_server.wait_for_ipv4(timeout_port);
     stale.hello("stale", "timeout-room");
-    let mut watcher = ProtocolClient::connect_ipv4(timeout_port);
+    let mut watcher = timeout_server.connect_ipv4(timeout_port);
     watcher.hello("watcher", "timeout-room");
     for _ in 0..23 {
         thread::sleep(Duration::from_secs(4));
@@ -467,7 +491,6 @@ fn release_verify_tls_and_idle_timeout_behavior() {
 
 #[test]
 fn release_verify_real_python_clients_against_rust_binary() {
-    let _guard = release_verify_test_lock();
     if !strict_release_required() {
         eprintln!("legacy Python client release verification skipped outside strict release runs");
         return;

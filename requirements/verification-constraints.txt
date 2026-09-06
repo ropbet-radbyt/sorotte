@@ -1,0 +1,48 @@
+# Reviewed 2026-09-06 from pip dry-run closure on Linux/Windows, CPython 3.11-3.13.
+# Constraints limit packages selected by each environment; they do not install
+# the audit environment into interop or override dependency environment markers.
+# Resolution context and wheel hashes: target/verification/python-resolution/.
+attrs==26.1.0
+automat==25.4.16
+boolean.py==5.0
+cachecontrol==0.14.4
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+constantly==23.10.4
+cryptography==50.0.1
+cyclonedx-python-lib==11.12.0
+defusedxml==0.7.1
+filelock==3.32.5
+hyperlink==21.0.0
+idna==3.19
+incremental==24.11.0
+license-expression==30.4.4
+markdown-it-py==4.2.0
+mdurl==0.1.2
+msgpack==1.2.2
+packageurl-python==0.17.6
+packaging==26.3
+pip==26.2.1
+pip-api==0.0.34
+pip-audit==2.10.1
+pip-requirements-parser==32.0.1
+platformdirs==4.11.7
+py-serializable==2.1.0
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pycparser==3.0
+pygments==2.21.0
+pyopenssl==26.4.0
+pyparsing==3.3.2
+pyyaml==6.0.2
+requests==2.34.2
+rich==15.0.0
+service-identity==24.2.0
+sortedcontainers==2.4.0
+tomli==2.4.1
+tomli-w==1.2.0
+twisted==26.4.0
+typing-extensions==4.16.0
+urllib3==2.7.0
+zope.interface==8.6

@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -80,7 +81,12 @@ REQUIRED_LIVE_SENTINELS = frozenset(
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
     }
 )
-EXPECTED_DISCOVERED_TESTS = 152
+try:
+    from test_inventory import reviewed as reviewed_tests
+except ModuleNotFoundError:
+    from scripts.test_inventory import reviewed as reviewed_tests
+
+EXPECTED_DISCOVERED_TESTS = len(reviewed_tests("compat"))
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024 * 1024
 COMMAND_TIMEOUT_SECONDS = 15 * 60
@@ -372,9 +378,15 @@ def parse_pinned_requirements(data: bytes) -> dict[str, tuple[str, str]]:
     except UnicodeError as error:
         raise InteropContractError("legacy Python requirements are not UTF-8") from error
     packages: dict[str, tuple[str, str]] = {}
+    constraints_seen = False
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
+            continue
+        if line == "-c verification-constraints.txt":
+            if constraints_seen:
+                raise InteropContractError("duplicate legacy Python constraints input")
+            constraints_seen = True
             continue
         match = REQUIREMENT_LINE.fullmatch(line)
         if match is None:
@@ -396,6 +408,26 @@ def parse_pinned_requirements(data: bytes) -> dict[str, tuple[str, str]]:
     return packages
 
 
+def verify_python_constraints(repo_root: pathlib.Path, requirement_bytes: bytes) -> None:
+    """Bind the additive constraint input without changing historical report v1."""
+    if not any(line.split("#", 1)[0].strip() == "-c verification-constraints.txt"
+               for line in requirement_bytes.decode("utf-8").splitlines()):
+        return
+    constraints = repo_root / "requirements" / "verification-constraints.txt"
+    manifest = repo_root / "coverage" / "verification-tools.toml"
+    try:
+        if constraints.is_symlink() or manifest.is_symlink():
+            raise ValueError("indirect constraint input")
+        policy = tomllib.loads(manifest.read_text(encoding="utf-8"))["python-resolution"]
+        if policy["constraints"] != "requirements/verification-constraints.txt":
+            raise ValueError("constraint path differs from the reviewed input")
+        observed = sha256(constraints.read_text(encoding="utf-8").encode("utf-8"))
+        if observed != policy["constraints-lf-sha256"]:
+            raise ValueError("constraints differ from the reviewed digest")
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+        raise InteropContractError(f"legacy Python constraints are unavailable or changed: {error}") from error
+
+
 def verify_python(
     repo_root: pathlib.Path, environment: Mapping[str, str]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -408,6 +440,7 @@ def verify_python(
             "pinned legacy Python requirements file is missing",
         ) from error
     packages = parse_pinned_requirements(requirement_bytes)
+    verify_python_constraints(repo_root, requirement_bytes)
 
     python_command = environment.get("SYNCPLAY_PYTHON_BIN", sys.executable).strip()
     if not python_command:
@@ -652,6 +685,8 @@ def verify_inventory(
         raise InteropContractError(
             f"complete compatibility inventory omits live sentinels {missing_sentinels}"
         )
+    if listed != reviewed_tests("compat"):
+        raise InteropContractError("complete compatibility inventory changed required test identities; run test_inventory.py propose and review its diff")
     if ignored != sorted(EXPECTED_IGNORED_TESTS):
         raise InteropContractError(
             "ignored compatibility inventory differs from the exact fixture-generator set"
@@ -1153,6 +1188,8 @@ def validate_report_document(value: Any) -> Mapping[str, Any]:
                 "listed compatibility inventory omits required live sentinels "
                 f"{missing_sentinels}"
             )
+        if listed != reviewed_tests("compat"):
+            raise InteropContractError("listed compatibility inventory changed reviewed required identities")
         ignored = require_list(inventory["ignored_tests"], label="ignored_tests")
         if require_nonnegative_int(
             inventory["ignored_count"], label="ignored_count"
