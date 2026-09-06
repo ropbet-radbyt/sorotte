@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+from fuzz_regressions import validate as validate_corpus_manifest
 
 TARGET_NAME = "protocol_line"
 FRAMED_SESSION_TARGET_NAME = "framed_session"
@@ -27,54 +29,42 @@ FRAMED_SESSION_REPORT_SCHEMA = "sorotte-framed-session-fuzz-v1"
 MPV_FRAMED_TRANSCRIPT_REPORT_SCHEMA = "sorotte-mpv-framed-transcript-fuzz-v1"
 EXPECTED_CARGO_FUZZ_VERSION = "cargo-fuzz 0.13.2"
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-BOUND_FIXED_SOURCE_PATHS = (
+SHARED_BOUND_SOURCE_PATHS = (
+    ".gitattributes",
     ".github/workflows/rust-fuzz.yml",
     "Cargo.toml",
+    "Cargo.lock",
     "rust-toolchain.toml",
     "coverage/behaviors.toml",
     "coverage/known-defects.toml",
-    "crates/sorotte-protocol/Cargo.toml",
+    "coverage/fuzz-corpora.json",
+    "coverage/verification-tools.toml",
+    "coverage/verification-lanes.json",
+    "coverage/test-inventories.json",
+    "scripts/fuzz_regressions.py",
+    "scripts/fuzz_tool_canary.py",
+    "scripts/verification_tools.py",
+    "scripts/verify.py",
+    "scripts/test_inventory.py",
     "fuzz/Cargo.toml",
     "fuzz/Cargo.lock",
-    "fuzz/fuzz_targets/protocol_line.rs",
     "fuzz/run_protocol_fuzz.py",
+    "requirements/ci-policy.txt",
     "scripts/known_defect_policy.py",
     "scripts/tests/test_known_defect_policy.py",
     "scripts/tests/test_protocol_fuzz_policy.py",
+)
+BOUND_FIXED_SOURCE_PATHS = SHARED_BOUND_SOURCE_PATHS + (
+    "crates/sorotte-protocol/Cargo.toml",
+    "fuzz/fuzz_targets/protocol_line.rs",
 )
 PROTOCOL_SOURCE_DIRECTORY = "crates/sorotte-protocol/src"
-FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS = (
-    ".github/workflows/rust-fuzz.yml",
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "coverage/behaviors.toml",
-    "coverage/known-defects.toml",
-    "fuzz/Cargo.toml",
-    "fuzz/Cargo.lock",
+FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS = SHARED_BOUND_SOURCE_PATHS + (
     "fuzz/fuzz_targets/framed_session.rs",
-    "fuzz/run_protocol_fuzz.py",
-    "requirements/ci-policy.txt",
-    "scripts/known_defect_policy.py",
-    "scripts/tests/test_known_defect_policy.py",
-    "scripts/tests/test_protocol_fuzz_policy.py",
 )
 FRAMED_SESSION_SOURCE_DIRECTORY = "crates"
-MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS = (
-    ".github/workflows/rust-fuzz.yml",
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "coverage/behaviors.toml",
-    "coverage/known-defects.toml",
-    "fuzz/Cargo.toml",
-    "fuzz/Cargo.lock",
+MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS = SHARED_BOUND_SOURCE_PATHS + (
     "fuzz/fuzz_targets/mpv_framed_transcript.rs",
-    "fuzz/run_protocol_fuzz.py",
-    "requirements/ci-policy.txt",
-    "scripts/known_defect_policy.py",
-    "scripts/tests/test_known_defect_policy.py",
-    "scripts/tests/test_protocol_fuzz_policy.py",
 )
 MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES = (
     "crates/sorotte-player-api",
@@ -405,7 +395,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--seed-corpus", type=pathlib.Path, required=True)
-    parser.add_argument("--expected-seed-count", type=int, required=True)
+    parser.add_argument("--expected-seed-count", type=int, help="legacy explicit count; must match the reviewed manifest")
+    parser.add_argument("--corpus-manifest", type=pathlib.Path, default=pathlib.Path("coverage/fuzz-corpora.json"))
     parser.add_argument("--output-root", type=pathlib.Path, required=True)
     return parser.parse_args(argv)
 
@@ -450,10 +441,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError(
             f"seconds must be between 1 and {MAX_TOTAL_SECONDS}, got {args.seconds}"
         )
-    if not 1 <= args.expected_seed_count <= 1_000:
-        raise ValueError("expected seed count must be between 1 and 1000")
-
     repository_root = pathlib.Path(__file__).resolve().parents[1]
+    manifest_path = (repository_root / args.corpus_manifest).resolve()
+    if manifest_path != repository_root / "coverage/fuzz-corpora.json":
+        raise ValueError("fuzz corpus authority must be the reviewed repository manifest")
+    manifest = validate_corpus_manifest(root=repository_root, manifest=manifest_path)
+    target_entry = next(item for item in manifest["targets"] if item["id"] == args.target)
+    expected_count = len(target_entry["files"])
+    if args.expected_seed_count is not None and args.expected_seed_count != expected_count:
+        raise ValueError("explicit seed count differs from reviewed corpus identity")
+    args.expected_seed_count = expected_count
     target_root = (repository_root / "target").resolve()
     output_root = (
         args.output_root
@@ -470,6 +467,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         else repository_root / args.seed_corpus
     ).resolve()
     require_relative_to(seed_source, repository_root, "seed corpus")
+    if seed_source != (repository_root / target_entry["directory"]).resolve():
+        raise ValueError("target seed directory differs from reviewed corpus authority")
+    actual_files = []
+    for seed in sorted(seed_source.iterdir()):
+        if seed.is_symlink() or not seed.is_file():
+            raise ValueError("corpus input must be a direct regular file")
+        actual_files.append({"name": seed.name, "bytes": seed.stat().st_size, "sha256": sha256_file(seed)})
+    if actual_files != target_entry["files"]:
+        raise ValueError("seed corpus bytes differ from the reviewed manifest")
 
     corpus = output_root / "corpus"
     artifacts = output_root / "artifacts"

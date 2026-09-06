@@ -1,0 +1,172 @@
+name: package verification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-verification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VERIFICATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  VERIFICATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Validate package tooling before archive builds
+        id: ci_validate_package_tooling_before_archiv_1860042a
+        run: python scripts/verify.py preflight --phase static --output target/package-preflight.json
+      - name: Compute immutable package obligations
+        id: plan
+        run: python scripts/verify.py plan --base "$VERIFICATION_BASE" --head "$VERIFICATION_SHA" --output target/verification/package-plan.json
+      - name: Select applicable archive producers
+        id: select
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+        run: python scripts/verify.py selected --plan target/verification/package-plan.json --lane release $FORCE --github-output "$GITHUB_OUTPUT"
+      - name: Retain immutable package plan
+        id: plan_upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/package-plan.json
+          if-no-files-found: error
+          retention-days: 90
+
+  archive:
+    needs: preflight
+    if: needs.preflight.outputs.selected == 'true'
+    name: ${{ matrix.package }} archive consumption (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: gui
+            runner: windows-2025
+          - package: server
+            runner: windows-2025
+          - package: server
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Preserve updater protocol and Windows replacement obligations
+        id: ci_preserve_updater_protocol_and_windows__196d7832
+        if: matrix.package == 'gui'
+        shell: pwsh
+        run: |
+          cargo test --locked -p sorotte-gui --lib update_
+          if ($LASTEXITCODE -ne 0) { throw "Updater library tests failed" }
+          cargo test --locked -p sorotte-gui --bin sorotte-gui-updater
+          if ($LASTEXITCODE -ne 0) { throw "Updater binary tests failed" }
+          cargo test --locked -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
+          if ($LASTEXITCODE -ne 0) { throw "Updater process replacement tests failed" }
+      - name: Build and construct GUI candidate archive
+        id: ci_build_and_construct_gui_candidate_arch_8100d4c2
+        if: matrix.package == 'gui'
+        shell: pwsh
+        run: ./scripts/package-gui-release.ps1 -Channel dev
+      - name: Consume GUI archive including updater success and rollback
+        id: ci_consume_gui_archive_including_updater__9d8a8658
+        if: matrix.package == 'gui'
+        shell: pwsh
+        run: >-
+          python scripts/verify_gui_release_artifact.py --artifacts-dir target/gui-release/artifacts
+          --expected-source-sha "$env:VERIFICATION_SHA" --expected-channel dev
+          --report target/gui-release/artifact-verification.json
+      - name: Build and construct server candidate archive
+        id: ci_build_and_construct_server_candidate_a_c0588a16
+        if: matrix.package == 'server'
+        shell: pwsh
+        run: ./scripts/package-server-release.ps1
+      - name: Consume server archive through real protocol and persistence boundaries
+        id: ci_consume_server_archive_through_real_pr_85c2efe3
+        if: matrix.package == 'server'
+        run: >-
+          python scripts/verify_server_release_artifact.py --artifacts-dir target/server-release/artifacts
+          --expected-source-sha "${{ env.VERIFICATION_SHA }}" --report target/server-release/artifact-verification.json
+      - name: Retain exact package-consumption evidence
+        id: ci_retain_exact_package_consumption_evide_f7469f39
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-${{ matrix.package }}-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/${{ matrix.package }}-release/artifact-verification.json
+            target/${{ matrix.package }}-release/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  package-required:
+    if: always()
+    needs: [preflight, archive]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Require package selection authority
+        id: selection_authority
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+        run: test "$PREFLIGHT_RESULT" = success
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: package-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification
+      - name: Require every selected archive and runtime boundary
+        id: ci_require_every_selected_archive_and_run_b98e7c09
+        env:
+          SELECTED: ${{ needs.preflight.outputs.selected }}
+          ARCHIVE_RESULT: ${{ needs.archive.result }}
+        run: >-
+          python scripts/verify.py gate --lane release --selected "$SELECTED"
+          --plan target/verification/package-plan.json
+          --base-sha "$VERIFICATION_BASE" --source-sha "$VERIFICATION_SHA"
+          --expected-job archive --job-result "archive=$ARCHIVE_RESULT"
+          --output target/verification/package-required.json
+      - name: Retain required package decision
+        id: required_receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-required-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/package-required.json
+          if-no-files-found: error
+          retention-days: 90

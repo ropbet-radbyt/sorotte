@@ -1135,6 +1135,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))
@@ -1258,6 +1259,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             self.assertEqual(argv[:2], ["cargo", "test"])
@@ -1346,6 +1348,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))
@@ -1397,6 +1400,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))

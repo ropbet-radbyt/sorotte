@@ -1,0 +1,61 @@
+name: Scheduled resource and scaling assurance
+
+on:
+  schedule:
+    - cron: '25 2 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-assurance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  headless:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - name: Checkout immutable scheduled source
+        id: ci_checkout_immutable_scheduled_source_c31e5b81
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_01ec713e
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Setup Rust
+        id: ci_setup_rust_fc9996f5
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+      - name: Preflight scheduled prerequisites
+        id: ci_preflight_scheduled_prerequisites_e7fa46f3
+        run: python scripts/verify.py preflight --phase static --output target/verification/scaling/preflight.json
+      - name: Measure normal and large resource invariants
+        id: ci_measure_normal_and_large_resource_inva_9d257e9d
+        run: >-
+          python scripts/scaling_workloads.py --name scheduled-${{ matrix.os }}
+          --samples 3 --warmup 1 --cases normal large --verify-clone-sensitivity
+          --output target/verification/scaling/workloads.json
+      - name: Make manual and unavailable evidence visible
+        id: ci_make_manual_and_unavailable_evidence_v_289caa43
+        if: always()
+        run: python scripts/assurance_registry.py --output target/verification/scaling/assurance-status.json
+      - name: Preserve resource measurements and assurance boundaries
+        id: ci_preserve_resource_measurements_and_ass_cedf4ab7
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scaling-${{ matrix.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/scaling
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,52 @@
+{
+  "command": [
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "scripts/tests",
+    "-p",
+    "test_*.py",
+    "-v"
+  ],
+  "python_version": "3.13.5 (tags/v3.13.5:6cb20a2, Jun 11 2025, 16:15:46) [MSC v.1943 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "baseline_sha": "4000eca69b52003b66e81b6998d15c555e7eb6d1",
+  "working_directory": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06",
+  "rust_and_physical_gui_campaigns_executed": false,
+  "runs": [
+    {
+      "environment": "restricted process control, auditor override TEMP inside repository",
+      "log": "target/testing-audit/python-policy.log",
+      "log_sha256": "d39a9990aebd27617ff260f7a54e99320cf350eb54b399e26e7f80f9cec2d6b9",
+      "tests": 767,
+      "seconds": 68.524,
+      "result": "FAILED (failures=3)",
+      "failures": [
+        {
+          "name": "test_process_watchdog_terminates_hung_process_and_persists_evidence (test_gui_native_smoke_contract.GuiNativeSmokeContractTests.test_process_watchdog_terminates_hung_process_and_persists_evidence)",
+          "detail": "Traceback (most recent call last):\n  File \"C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06\\scripts\\tests\\test_gui_native_smoke_contract.py\", line 766, in test_process_watchdog_terminates_hung_process_and_persists_evidence\n    self.assertIn(\"tree_kill_exit=0\", timeout_evidence)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'tree_kill_exit=0' not found in '\\nHARNESS_TIMEOUT: process exceeded 200 ms; pid=68748; tree_kill_exit=1; taskkill_stdout=; taskkill_stderr=ERROR: Access denied\\n'\n"
+        },
+        {
+          "name": "test_process_wrapper_forwards_explicit_environment_variables (test_gui_native_smoke_contract.GuiNativeSmokeContractTests.test_process_wrapper_forwards_explicit_environment_variables)",
+          "detail": "Traceback (most recent call last):\n  File \"C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06\\scripts\\tests\\test_gui_native_smoke_contract.py\", line 842, in test_process_wrapper_forwards_explicit_environment_variables\n    self.assertEqual(stdout_path.read_text(encoding=\"utf-8\"), \"forwarded\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '' != 'forwarded'\n+ forwarded\n\n"
+        },
+        {
+          "name": "test_wrapper_executes_from_a_long_checkout_with_a_short_target (test_semver_wrapper.SemverWrapperPolicyTests.test_wrapper_executes_from_a_long_checkout_with_a_short_target)",
+          "detail": "Traceback (most recent call last):\n  File \"C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06\\scripts\\tests\\test_semver_wrapper.py\", line 114, in test_wrapper_executes_from_a_long_checkout_with_a_short_target\n    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : Semver target must remain outside the repository: \nC:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06\\target\\testing-audit\\temp\\sv22c0\nAt C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-apparatus-audit-2026-09-06\\scripts\\check-semver.ps1:68 char:5\n+     throw \"Semver target must remain outside the repository: $targetR ...\n+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n    + CategoryInfo          : OperationStopped: (Semver target m...dit\\temp\\sv22c0:String) [], RuntimeException\n    + FullyQualifiedErrorId : Semver target must remain outside the repository: C:\\Users\\shaun\\Documents\\workspace\\sor \n   otte\\tmp\\testing-apparatus-audit-2026-09-06\\target\\testing-audit\\temp\\sv22c0\n \n\n"
+        }
+      ]
+    },
+    {
+      "environment": "ordinary Windows process control and default external TEMP",
+      "log": "target/testing-audit/python-policy-host.log",
+      "log_sha256": "dd0f701cfeab07d7f9874f1f4e4ab76ff34302cb9350e02337857185251019fc",
+      "tests": 767,
+      "seconds": 48.8,
+      "result": "OK",
+      "failures": []
+    }
+  ],
+  "interpretation": "All initial failures pass without source changes. TEMP failure was introduced by the auditor; process denial and empty redirected output are restricted-environment observations, not new product defects."
+}

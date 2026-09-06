@@ -46,13 +46,24 @@ def materialize_bundle(root: Path, platform: str) -> dict[str, object]:
             "sha256": hashlib.sha256(body).hexdigest(),
         }
     manifest = {
-        "schema_version": 1,
+        "schema_version": gate.BUNDLE_SCHEMA_VERSION,
         "kind": gate.BUNDLE_KIND,
         "result": "passed",
         "candidate_sha": SHA,
         "platform": platform,
         "product_version": "0.2.8",
         "files": files,
+        "symbols": {},
+        "build_inputs": {
+            "schema_version": 1, "kind": "sorotte-release-build-inputs", "candidate_sha": SHA,
+            "source_files": {"Cargo.toml": "a" * 64, "Cargo.lock": "b" * 64},
+            "platform": platform, "target": gate.release_qualification.PLATFORMS[platform],
+            "profile": "release", "features": "default", "instrumentation": "none", "channel": "stable",
+            "source_ref": "refs/tags/v0.2.9", "tools": {name: {"sha256": "c" * 64} for name in ("rustc", "cargo", "python", "mpv", "ffmpeg", "native-harness")},
+            "python_packages": {},
+            "environment": {"os": "fixture", "runner_image": "fixture", "runner_image_version": "1", "os_packages": "fixture", "os_packages_sha256": hashlib.sha256(b"fixture").hexdigest(), "rustflags": "", "encoded_rustflags": "", "rustdocflags": ""},
+            "producer": {name: "fixture" for name in ("repository", "run_id", "run_attempt", "workflow_ref", "workflow_sha")},
+        },
     }
     write_json(root / "candidate-manifest.json", manifest)
     return manifest
@@ -75,6 +86,8 @@ def system_report(manifest: dict[str, object], *, loop: bool) -> dict[str, objec
             },
             "server": {"sha256": manifest["files"]["server"]["sha256"]},
             "client": {"sha256": manifest["files"]["client"]["sha256"]},
+            "mpv": {"sha256": manifest["build_inputs"]["tools"]["mpv"]["sha256"]},
+            "ffmpeg": {"sha256": manifest["build_inputs"]["tools"]["ffmpeg"]["sha256"]},
         },
         "checks": [
             {"id": check, "status": "passed", "detail": "synthetic"}
@@ -195,7 +208,7 @@ class WindowsAttestationTests(unittest.TestCase):
                     role: {"sha256": manifest["files"][role]["sha256"]}
                     for role in ("server", "client", "gui")
                 }
-                | {"mpv": {"sha256": "b" * 64}},
+                | {"mpv": {"sha256": "b" * 64}, "native_harness": {"sha256": "c" * 64}},
                 "projection": {"visible": True, "status_label": "Ready fresh"},
                 "lifecycle_summary": lifecycle_summary("STATUS-FRESH-001"),
             }

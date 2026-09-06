@@ -1,23 +1,33 @@
 name: publish sorotte-server container
 
 on:
+  workflow_call:
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY:
+        required: true
+    inputs:
+      publish:
+        type: boolean
+        required: true
   workflow_dispatch:
     inputs:
-      push_latest:
-        description: "Also promote this exact tested digest to latest"
+      publication_run_id:
+        description: Explicit successful coordinated stable-release run that published this digest
         required: true
-        default: "false"
-        type: choice
-        options:
-          - "true"
-          - "false"
-  push:
-    tags:
-      - "server-v*"
-      - "v*"
+        type: string
+      approved_digest:
+        description: Previously approved sha256 registry manifest digest
+        required: true
+        type: string
+      version_tag:
+        description: Existing stable version tag whose exact digest will become latest
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
+  checks: read
   id-token: write
   packages: write
 
@@ -32,32 +42,70 @@ env:
   DOCKER_METADATA_SHORT_SHA_LENGTH: 40
 
 jobs:
-  playback-lifecycle-release-gate:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/playback-lifecycle-release-gate.yml
-    with:
-      candidate_sha: ${{ github.sha }}
-
   publish:
-    needs: playback-lifecycle-release-gate
+    if: inputs.publication_run_id == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout exact source
+        id: ci_checkout_exact_source_c21f032e
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Setup pinned Python
+        id: ci_setup_pinned_python_97c5ab5c
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Recheck protected source and trusted checks before container qualification
+        id: ci_recheck_protected_source_and_trusted_c_b63f2449
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/container-release-authorization.json
+
       - name: Setup pinned Docker Buildx
+        id: ci_setup_pinned_docker_buildx_62fdb6c9
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Download shared qualified Linux product bundle
+        id: ci_download_shared_qualified_linux_produc_173d6011
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle-linux-x86_64-${{ github.sha }}
+          path: target/qualified-bundle
+
+      - name: Download complete shared lifecycle qualification
+        id: ci_download_complete_shared_lifecycle_qua_165f9d73
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-complete-${{ github.sha }}
+          path: target/qualified-receipt
+
+      - name: Verify exact qualified lifecycle input closure
+        id: ci_verify_exact_qualified_lifecycle_input_f6d32895
+        run: >-
+          python scripts/release_qualification.py consume --candidate-sha "${{ github.sha }}"
+          --platform linux-x86_64 --channel stable --bundle-dir target/qualified-bundle
+          --complete-receipt target/qualified-receipt/platform-complete.json
 
       - name: Capture immutable build metadata
         id: build_info
         shell: bash
         run: |
           set -euo pipefail
-          printf 'created=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+          printf 'created=%s\n' "$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       - name: Define publication tags and OCI labels
         id: meta
@@ -68,7 +116,6 @@ jobs:
           tags: |
             type=raw,value=sha-${{ github.sha }}
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' && inputs.push_latest == 'true' }}
           labels: |
             org.opencontainers.image.title=sorotte server
             org.opencontainers.image.description=Sorotte Syncplay-compatible server
@@ -78,6 +125,7 @@ jobs:
             org.opencontainers.image.licenses=Apache-2.0
 
       - name: Record closed publication tag inventory
+        id: ci_record_closed_publication_tag_inventor_3cc0c00e
         shell: bash
         env:
           PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
@@ -105,6 +153,7 @@ jobs:
           sbom: false
 
       - name: Consume the loaded image through real server boundaries
+        id: ci_consume_the_loaded_image_through_real__b835a461
         run: >-
           python scripts/verify_server_container.py smoke
           --image "${{ env.TEST_IMAGE }}"
@@ -114,6 +163,7 @@ jobs:
           --report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
 
       - name: Generate SPDX SBOM from the tested local image
+        id: ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ${{ env.TEST_IMAGE }}
@@ -126,6 +176,7 @@ jobs:
           syft-version: v1.44.0
 
       - name: Bind SBOM bytes to the tested local image ID
+        id: ci_bind_sbom_bytes_to_the_tested_local_im_e9888757
         run: >-
           python scripts/verify_server_container.py verify-sbom
           --sbom "${{ env.EVIDENCE_DIR }}/sbom.spdx.json"
@@ -133,6 +184,8 @@ jobs:
           --report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
 
       - name: Login only after local consumption passes
+        id: ci_login_only_after_local_consumption_pas_79253942
+        if: inputs.publish
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
@@ -140,6 +193,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push only tags of the already-tested daemon image
+        id: ci_push_only_tags_of_the_already_tested_d_e9d5952d
+        if: inputs.publish
         run: >-
           python scripts/verify_server_container.py publish
           --local-image "${{ env.TEST_IMAGE }}"
@@ -150,6 +205,7 @@ jobs:
           --report "${{ env.EVIDENCE_DIR }}/publish-report.json"
 
       - name: Read the validated registry manifest digest
+        if: inputs.publish
         id: publish_identity
         shell: bash
         run: |
@@ -161,11 +217,15 @@ jobs:
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install pinned Cosign
+        id: ci_install_pinned_cosign_41cb1944
+        if: inputs.publish
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
 
       - name: Keylessly sign and attest the exact tested digest
+        id: ci_keylessly_sign_and_attest_the_exact_te_4c1c8da0
+        if: inputs.publish
         shell: bash
         env:
           DIGEST_REF: ${{ env.IMAGE_NAME }}@${{ steps.publish_identity.outputs.digest }}
@@ -182,10 +242,12 @@ jobs:
             "$DIGEST_REF"
 
       - name: Verify keyless identity and workflow claims
+        id: ci_verify_keyless_identity_and_workflow_c_1bc0afac
+        if: inputs.publish
         shell: bash
         env:
           DIGEST_REF: ${{ env.IMAGE_NAME }}@${{ steps.publish_identity.outputs.digest }}
-          EXPECTED_IDENTITY: https://github.com/${{ github.workflow_ref }}
+          EXPECTED_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish-server-container.yml@${{ github.ref }}
           WORKFLOW_SOURCE_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
@@ -208,12 +270,14 @@ jobs:
             "$DIGEST_REF" > "$EVIDENCE_DIR/attestation-verification.json"
 
       - name: Remove registry credentials before public comparison
-        if: always()
+        id: ci_remove_registry_credentials_before_pub_49f4cbcf
+        if: ${{ always() && inputs.publish }}
         shell: bash
         run: docker logout ghcr.io
 
       - name: Compare every public tag, digest, config, SBOM, and signature subject
-        if: success()
+        id: ci_compare_every_public_tag_digest_config_edf164ab
+        if: ${{ success() && inputs.publish }}
         run: >-
           python scripts/verify_server_container.py verify-publication
           --publish-report "${{ env.EVIDENCE_DIR }}/publish-report.json"
@@ -221,12 +285,13 @@ jobs:
           --sbom-report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
           --signature-verification "${{ env.EVIDENCE_DIR }}/signature-verification.json"
           --attestation-verification "${{ env.EVIDENCE_DIR }}/attestation-verification.json"
-          --expected-workflow-identity "https://github.com/${{ github.workflow_ref }}"
+          --expected-workflow-identity "https://github.com/${{ github.repository }}/.github/workflows/publish-server-container.yml@${{ github.ref }}"
           --expected-workflow-sha "${{ github.workflow_sha }}"
           --report "${{ env.EVIDENCE_DIR }}/publication-report.json"
 
       - name: Enforce every container publication phase
-        if: always()
+        id: ci_enforce_every_container_publication_ph_064fe8c4
+        if: ${{ always() && inputs.publish }}
         run: >-
           python scripts/verify_server_container.py final-gate
           --runtime-report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
@@ -239,10 +304,96 @@ jobs:
           --report "${{ env.EVIDENCE_DIR }}/final-gate-report.json"
 
       - name: Retain all container verification evidence
+        id: ci_retain_all_container_verification_evid_99c9a382
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: server-container-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_DIR }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
+
+  promote-approved-digest:
+    if: inputs.publication_run_id != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact promotion authority
+        id: ci_checkout_exact_promotion_authority_dfc56e16
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Require protected source and complete trusted checks
+        id: ci_require_protected_source_and_complete__a762e9a0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/promotion-authorization.json
+      - name: Authenticate the explicit prior publication producer
+        id: producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+          VERSION_TAG: ${{ inputs.version_tag }}
+        run: >-
+          python scripts/release_qualification.py verify-producer-run --candidate-sha "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY" --run-id "$PUBLICATION_RUN_ID" --version-tag "$VERSION_TAG"
+      - name: Download complete original publication evidence
+        id: ci_download_complete_original_publication_2482054d
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.publication_run_id }}
+          name: server-container-verification-${{ inputs.publication_run_id }}-${{ steps.producer.outputs.attempt }}
+          path: target/approved-container-publication
+      - name: Setup pinned manifest copy tool
+        id: ci_setup_pinned_manifest_copy_tool_36f04fa3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Install pinned signature verifier
+        id: ci_install_pinned_signature_verifier_af751060
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Authenticate registry for digest-only latest assignment
+        id: ci_authenticate_registry_for_digest_only__f483aca3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reverify signatures and promote only the approved manifest digest
+        id: ci_reverify_signatures_and_promote_only_t_f7adff45
+        env:
+          APPROVED_DIGEST: ${{ inputs.approved_digest }}
+          VERSION_TAG: ${{ inputs.version_tag }}
+        run: >-
+          python scripts/verify_server_container.py promote
+          --evidence-dir target/approved-container-publication --expected-digest "$APPROVED_DIGEST"
+          --expected-source-sha "$GITHUB_SHA" --expected-source-url "https://github.com/$GITHUB_REPOSITORY"
+          --version-tag "$VERSION_TAG" --output-dir target/container-promotion
+          --report target/container-promotion/final-gate-report.json
+      - name: Remove promotion registry credentials
+        id: ci_remove_promotion_registry_credentials_cc7de03d
+        if: always()
+        run: docker logout ghcr.io
+      - name: Retain exact promotion and public verification evidence
+        id: ci_retain_exact_promotion_and_public_veri_5013a126
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-container-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/container-promotion
+          if-no-files-found: error
+          retention-days: 90

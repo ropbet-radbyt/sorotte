@@ -1,1 +1,2 @@
+-c verification-constraints.txt
 PyYAML==6.0.2

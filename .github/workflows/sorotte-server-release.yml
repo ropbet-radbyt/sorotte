@@ -1,82 +1,173 @@
 name: sorotte-server release
 
 on:
-  workflow_dispatch:
-  push:
-    tags:
-      - "server-v*"
-      - "v*"
+  workflow_call:
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY:
+        required: true
+    inputs:
+      publish:
+        type: boolean
+        required: true
 
 permissions:
   contents: read
+  actions: read
+  checks: read
 
 jobs:
-  playback-lifecycle-release-gate:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/playback-lifecycle-release-gate.yml
-    with:
-      candidate_sha: ${{ github.sha }}
-
   server-release:
-    needs: playback-lifecycle-release-gate
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, windows-latest]
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: windows-2025
+            platform: windows-x86_64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
-      - name: Checkout
+      - name: Checkout exact package inputs
+        id: ci_checkout_exact_package_inputs_0330fd2a
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+      - name: Setup Rust for dependency inventory
+        id: ci_setup_rust_for_dependency_inventory_e8eb8a28
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.97.1
-          components: rustfmt, clippy
-
       - name: Setup Python
+        id: ci_setup_python_2d5b0efc
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-
-      - name: Install server release prerequisites
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements/legacy-python-interop.txt
-
-      - name: Strict server release verification
+      - name: Download qualified platform bytes
+        id: ci_download_qualified_platform_bytes_12aabead
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle-${{ matrix.platform }}-${{ github.sha }}
+          path: target/qualified-bundle
+      - name: Download complete qualification receipt
+        id: ci_download_complete_qualification_receip_d8623cb7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-complete-${{ github.sha }}
+          path: target/qualified-receipt
+      - name: Download independent server behavior receipt
+        id: ci_download_independent_server_behavior_r_46c83117
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-server-behavior-${{ matrix.platform }}-${{ github.sha }}
+          path: target/qualified-server-behavior
+      - name: Require complete exact-source server behavior
+        id: ci_require_complete_exact_source_server_b_fcc55e04
+        run: >-
+          python scripts/release_qualification.py verify-server-behavior
+          --candidate-sha "${{ github.sha }}"
+          --receipt target/qualified-server-behavior/server-release-report.json
+      - name: Construct server archive from qualified bytes
+        id: ci_construct_server_archive_from_qualifie_79a52cde
         shell: pwsh
-        run: ./scripts/server-release-verify.ps1
-
-      - name: Package server release
-        shell: pwsh
-        run: ./scripts/package-server-release.ps1
-
-      - name: Verify packaged server release
+        run: ./scripts/package-server-release.ps1 -QualifiedBundle target/qualified-bundle -QualificationReceipt target/qualified-receipt/platform-complete.json
+      - name: Consume exact server archive including runtime boundaries
+        id: ci_consume_exact_server_archive_including_97dc01a6
         run: >-
           python scripts/verify_server_release_artifact.py
           --artifacts-dir target/server-release/artifacts
           --expected-source-sha "${{ github.sha }}"
           --report target/server-release/artifact-verification.json
-
-      - name: Upload verification report
+      - name: Bind archive-consumption receipt to qualified binary bytes
+        id: ci_bind_archive_consumption_receipt_to_qu_9ab2e861
+        # Binary equivalence is checked in addition to the archive's own hashes.
+        run: >-
+          python scripts/release_qualification.py verify-package --candidate-sha "${{ github.sha }}"
+          --platform "${{ matrix.platform }}" --channel stable --bundle-dir target/qualified-bundle
+          --complete-receipt target/qualified-receipt/platform-complete.json
+          --artifact-report target/server-release/artifact-verification.json
+      - name: Upload archive-consumption receipt
+        id: ci_upload_archive_consumption_receipt_8b91621c
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: server-release-report-${{ matrix.runner }}
-          path: |
-            target/server-release-verify/server-release-report.*
-            target/server-release/artifact-verification.json
+          path: target/server-release/artifact-verification.json
           if-no-files-found: warn
-          retention-days: 14
-
+          retention-days: 90
       - name: Upload server package
+        id: ci_upload_server_package_4c003b37
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sorotte-server-${{ matrix.runner }}
           path: target/server-release/artifacts/*
           if-no-files-found: error
+          retention-days: 90
+
+  publish-server-archives:
+    if: inputs.publish
+    needs: server-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      checks: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Recheck current trusted source authorization before publication
+        id: ci_recheck_current_trusted_source_authori_df0e8fb0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/release-authorization.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sorotte-server-${{ matrix.runner }}
+          path: target/server-release/artifacts
+      - name: Reverify downloaded server archive structure and source
+        id: ci_reverify_downloaded_server_archive_str_2f80a466
+        run: >-
+          python scripts/verify_server_release_artifact.py
+          --artifacts-dir target/server-release/artifacts --expected-source-sha "${{ github.sha }}"
+          --report target/server-release/publication-input.json --skip-runtime-smoke
+      - name: Attach immutable server assets
+        id: ci_attach_immutable_server_assets_2a789f72
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/release_assets.py attach --repository "${{ github.repository }}"
+          --tag "$RELEASE_TAG" --artifacts-dir target/server-release/artifacts
+      - name: Independently compare anonymous public server bytes
+        id: ci_independently_compare_anonymous_public_2eedd488
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/release_assets.py verify-public --repository "${{ github.repository }}"
+          --tag "$RELEASE_TAG" --artifacts-dir target/server-release/artifacts
+          --report target/server-release/publication-report.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: server-publication-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/server-release/publication-*.json
+          if-no-files-found: error
+          retention-days: 90

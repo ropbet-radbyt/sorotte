@@ -1,5 +1,6 @@
 use rustls_pki_types::pem::PemObject;
 use std::{
+    collections::VecDeque,
     env, fs, io,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -156,10 +157,14 @@ pub struct CapturedOutput {
 
 impl CapturedOutput {
     fn push(&self, line: String) {
-        self.lines
+        let mut lines = self
+            .lines
             .lock()
-            .expect("captured output lock should not be poisoned")
-            .push(line);
+            .expect("captured output lock should not be poisoned");
+        lines.push(line.chars().take(4096).collect());
+        if lines.len() > 256 {
+            lines.remove(0);
+        }
     }
 
     pub fn text(&self) -> String {
@@ -201,6 +206,40 @@ pub struct ServerProcess {
     child: Option<Child>,
     pub stdout: CapturedOutput,
     pub stderr: CapturedOutput,
+    diagnostics: ServerDiagnostics,
+}
+
+#[derive(Clone)]
+struct ServerDiagnostics {
+    pid: u32,
+    args: Vec<String>,
+    stdout: CapturedOutput,
+    stderr: CapturedOutput,
+    failure_path: PathBuf,
+}
+
+impl ServerDiagnostics {
+    fn record(&self, stage: &str, detail: &str) -> String {
+        let record = json!({
+            "schema_version": 1, "stage": stage, "detail": detail,
+            "pid": self.pid, "replay_args": self.args,
+            "binary": env!("CARGO_BIN_EXE_sorotte-server"),
+            "stdout": self.stdout.text(), "stderr": self.stderr.text(),
+        });
+        let result = self
+            .failure_path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&self.failure_path, record.to_string()));
+        format!(
+            "pid={} replay_args={:?} stdout={:?} stderr={:?} evidence={:?} export={result:?}",
+            self.pid,
+            self.args,
+            self.stdout.text(),
+            self.stderr.text(),
+            self.failure_path
+        )
+    }
 }
 
 impl ServerProcess {
@@ -232,10 +271,20 @@ impl ServerProcess {
             None,
         );
 
+        let diagnostics = ServerDiagnostics {
+            pid: child.id(),
+            args: args.to_vec(),
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
+            failure_path: workspace_root()
+                .join("target/verification/server-fixture-failures")
+                .join(format!("{}-{}.json", std::process::id(), child.id())),
+        };
         Self {
             child: Some(child),
             stdout,
             stderr,
+            diagnostics,
         }
     }
 
@@ -247,18 +296,27 @@ impl ServerProcess {
         self.wait_for_address(SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)))
     }
 
+    pub fn connect_ipv4(&self, port: u16) -> ProtocolClient {
+        let mut client = ProtocolClient::connect_ipv4(port);
+        client.diagnostics = Some(self.diagnostics.clone());
+        client
+    }
+
     fn wait_for_address(&mut self, address: SocketAddr) -> ProtocolClient {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             self.assert_running();
             if let Ok(stream) = TcpStream::connect(address) {
-                return ProtocolClient::from_stream(stream);
+                let mut client = ProtocolClient::from_stream(stream);
+                client.diagnostics = Some(self.diagnostics.clone());
+                return client;
             }
             if Instant::now() >= deadline {
                 panic!(
                     "sorotte-server did not accept connections on {address}; stdout='{}' stderr='{}'",
                     self.stdout.text(),
-                    self.stderr.text()
+                    self.diagnostics
+                        .record("readiness-failure", &format!("address={address}"))
                 );
             }
             thread::sleep(Duration::from_millis(50));
@@ -299,14 +357,34 @@ impl ServerProcess {
 impl Drop for ServerProcess {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let already_exited = child.try_wait().ok().flatten().is_some();
+            let killed = already_exited || child.kill().is_ok();
+            let waited = child.wait();
+            let cleanup = killed && waited.is_ok();
+            if thread::panicking() || !cleanup {
+                // Separate cleanup record preserves the original causal observation.
+                let mut diagnostic = self.diagnostics.clone();
+                diagnostic.failure_path.set_extension("cleanup.json");
+                eprintln!(
+                    "{}",
+                    diagnostic.record(
+                        if cleanup {
+                            "cleanup-passed"
+                        } else {
+                            "teardown-failure"
+                        },
+                        &format!("owned child waited={waited:?}"),
+                    )
+                );
+            }
         }
     }
 }
 
 pub struct ProtocolClient {
     reader: BufReader<TcpStream>,
+    recent: VecDeque<String>,
+    diagnostics: Option<ServerDiagnostics>,
 }
 
 impl ProtocolClient {
@@ -325,6 +403,8 @@ impl ProtocolClient {
             .expect("write timeout should be configurable");
         Self {
             reader: BufReader::new(stream),
+            recent: VecDeque::new(),
+            diagnostics: None,
         }
     }
 
@@ -352,45 +432,119 @@ impl ProtocolClient {
         self.write_json_line(&line);
     }
 
+    #[track_caller]
     pub fn hello(&mut self, username: &str, room: &str) {
         self.write_message(&ProtocolMessage::hello_basic(username, room, "1.7.5"));
         self.read_until_kind("Hello");
     }
 
+    #[track_caller]
     pub fn read_message(&mut self) -> Option<ProtocolMessage> {
+        self.read_message_before(
+            Instant::now() + Duration::from_secs(3),
+            "next protocol frame",
+        )
+    }
+
+    #[track_caller]
+    fn fail(&self, stage: &str, expectation: &str, detail: &str) -> ! {
+        let detail = format!(
+            "expected={expectation:?} caller={} peer={:?} recent={:?} detail={detail}",
+            std::panic::Location::caller(),
+            self.reader.get_ref().peer_addr(),
+            self.recent
+        );
+        let server = self
+            .diagnostics
+            .as_ref()
+            .map(|diagnostic| diagnostic.record(stage, &detail));
+        panic!("server fixture {stage}: {detail}; server={server:?}");
+    }
+
+    #[track_caller]
+    fn read_message_before(
+        &mut self,
+        deadline: Instant,
+        expectation: &str,
+    ) -> Option<ProtocolMessage> {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            self.fail("absent-response", expectation, "semantic deadline expired");
+        };
+        self.reader
+            .get_ref()
+            .set_read_timeout(Some(remaining.max(Duration::from_millis(1))))
+            .expect("semantic read deadline should be configurable");
         let mut line = String::new();
-        let read = self
-            .reader
-            .read_line(&mut line)
-            .expect("server response should read");
+        let read = match self.reader.read_line(&mut line) {
+            Ok(read) => read,
+            Err(error) => self.fail(
+                "absent-response",
+                expectation,
+                &format!("socket={error}; partial_frame={line:?}"),
+            ),
+        };
         if read == 0 {
             return None;
         }
-        Some(decode_message_line(line.trim_end()).expect("server response should decode"))
+        self.recent.push_back(line.chars().take(1024).collect());
+        if self.recent.len() > 16 {
+            self.recent.pop_front();
+        }
+        Some(match decode_message_line(line.trim_end()) {
+            Ok(message) => message,
+            Err(error) => self.fail("wrong-response", expectation, &format!("decode={error:?}")),
+        })
     }
 
+    #[track_caller]
     pub fn read_until_kind(&mut self, kind: &str) -> ProtocolMessage {
-        self.read_until(|message| message.kind() == kind)
+        self.read_until_expected(kind, Duration::from_secs(3), 64, |message| {
+            message.kind() == kind
+        })
     }
 
+    #[track_caller]
     pub fn read_until(&mut self, predicate: impl Fn(&ProtocolMessage) -> bool) -> ProtocolMessage {
         self.read_until_with_limit(64, predicate)
     }
 
+    #[track_caller]
     pub fn read_until_with_limit(
         &mut self,
         message_limit: usize,
         predicate: impl Fn(&ProtocolMessage) -> bool,
     ) -> ProtocolMessage {
+        self.read_until_expected(
+            "predicate at caller",
+            Duration::from_secs(3),
+            message_limit,
+            predicate,
+        )
+    }
+
+    #[track_caller]
+    pub fn read_until_expected(
+        &mut self,
+        expectation: &str,
+        budget: Duration,
+        message_limit: usize,
+        predicate: impl Fn(&ProtocolMessage) -> bool,
+    ) -> ProtocolMessage {
+        let deadline = Instant::now() + budget;
         for _ in 0..message_limit {
-            let message = self
-                .read_message()
-                .expect("server should not close before expected response");
+            let message = match self.read_message_before(deadline, expectation) {
+                Some(message) => message,
+                None => self.fail(
+                    "absent-response",
+                    expectation,
+                    "peer closed before exchange",
+                ),
+            };
             if predicate(&message) {
                 return message;
             }
         }
-        panic!("server did not produce expected response before read limit");
+        self.fail("wrong-response", expectation, "message limit exhausted");
     }
 
     pub fn upgrade_to_tls(mut self) -> TlsProtocolClient {

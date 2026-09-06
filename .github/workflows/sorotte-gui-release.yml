@@ -1,16 +1,25 @@
 name: sorotte-gui release
 
 on:
-  workflow_dispatch:
-  pull_request:
+  workflow_call:
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY:
+        required: true
+    inputs:
+      qualified:
+        type: boolean
+        default: false
+      publish:
+        type: boolean
+        default: false
   push:
     branches:
       - main
-    tags:
-      - "v*"
 
 permissions:
   contents: read
+  checks: read
+  actions: read
 
 concurrency:
   group: sorotte-gui-release-${{ github.event.pull_request.number || github.ref }}
@@ -20,52 +29,129 @@ env:
   SOROTTE_GUI_DEV_RELEASE_TAG: sorotte-gui-dev
 
 jobs:
+  authorize-source:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Require configured protection reader before waiting
+        id: ci_require_configured_protection_reader_b_9e076531
+        env:
+          PROTECTION_APP_CONFIGURED: ${{ vars.SOROTTE_PROTECTION_APP_ID != '' && secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$PROTECTION_APP_CONFIGURED" != true ]; then
+            echo "Configure SOROTTE_PROTECTION_APP_ID and SOROTTE_PROTECTION_APP_PRIVATE_KEY before protected publication."
+            exit 1
+          fi
+      - name: Wait for ordinary main checks before minting a short-lived token
+        id: ci_wait_for_ordinary_main_checks_before_m_f4327824
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/merge_gate.py wait-checks --candidate-sha "${{ github.sha }}" --wait-seconds 7200 --poll-seconds 30
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Authorize protected exact main before interactive qualification
+        id: ci_authorize_protected_exact_main_before__46b1a931
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/dev-release-authorization.json
+
   gui-release:
-    runs-on: windows-latest
+    needs: playback-lifecycle-release-gate
+    if: ${{ always() && (needs.playback-lifecycle-release-gate.result == 'success' || (needs.playback-lifecycle-release-gate.result == 'skipped' && !(github.event_name == 'push' && github.ref == 'refs/heads/main'))) }}
+    runs-on: windows-2025
     permissions:
       contents: read
     steps:
       - name: Checkout
+        id: ci_checkout_0b7d4b20
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_3ff97947
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_536b411d
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Check formatting
+        id: ci_check_formatting_32f0bc99
         shell: pwsh
         run: cargo fmt --all --check
 
       - name: Run GUI updater tests
+        id: ci_run_gui_updater_tests_24ec5dff
         shell: pwsh
         run: |
           cargo test --locked -p sorotte-gui --lib update_
+          if ($LASTEXITCODE -ne 0) { throw "Updater library tests failed" }
           cargo test --locked -p sorotte-gui --bin sorotte-gui-updater
+          if ($LASTEXITCODE -ne 0) { throw "Updater binary tests failed" }
           cargo test --locked -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
+          if ($LASTEXITCODE -ne 0) { throw "Updater process replacement tests failed" }
 
       - name: Build GUI release binaries
+        id: ci_build_gui_release_binaries_ddd8dad6
+        if: ${{ !inputs.qualified && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         shell: pwsh
         run: |
           cargo build --locked --release -p sorotte-gui --bin sorotte-gui
+          if ($LASTEXITCODE -ne 0) { throw "GUI release build failed" }
           cargo build --locked --release -p sorotte-gui --bin sorotte-gui-updater
+          if ($LASTEXITCODE -ne 0) { throw "Updater release build failed" }
+
+      - name: Download exact qualified GUI bundle
+        id: ci_download_exact_qualified_gui_bundle_373a9a20
+        if: inputs.qualified || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle-windows-x86_64-${{ github.sha }}
+          path: target/qualified-bundle
+
+      - name: Download complete GUI lifecycle qualification
+        id: ci_download_complete_gui_lifecycle_qualif_d4bdb9b3
+        if: inputs.qualified || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-complete-${{ github.sha }}
+          path: target/qualified-receipt
 
       - name: Package GUI release
+        id: ci_package_gui_release_bf3ff0ed
         shell: pwsh
         run: |
-          $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
+          $channel = if ("${{ inputs.qualified }}" -eq "true" -or $env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "SOROTTE_GUI_RELEASE_CHANNEL=$channel"
-          ./scripts/package-gui-release.ps1 -Channel $channel -SkipBuild
+          if (Test-Path target/qualified-bundle/candidate-manifest.json) {
+            ./scripts/package-gui-release.ps1 -Channel $channel -QualifiedBundle target/qualified-bundle -QualificationReceipt target/qualified-receipt/platform-complete.json
+          } else {
+            ./scripts/package-gui-release.ps1 -Channel $channel -SkipBuild
+          }
 
       - name: Verify exact GUI release artifact
+        id: ci_verify_exact_gui_release_artifact_20d21afd
         shell: pwsh
         run: |
           python scripts/verify_gui_release_artifact.py `
@@ -74,7 +160,18 @@ jobs:
             --expected-channel "$env:SOROTTE_GUI_RELEASE_CHANNEL" `
             --report target/gui-release/artifact-verification.json
 
+      - name: Bind exact GUI archive bytes to lifecycle qualification
+        id: ci_bind_exact_gui_archive_bytes_to_lifecy_7aa01f58
+        if: inputs.qualified || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: pwsh
+        run: >-
+          python scripts/release_qualification.py verify-package --candidate-sha "$env:GITHUB_SHA"
+          --platform windows-x86_64 --channel "$env:SOROTTE_GUI_RELEASE_CHANNEL" --bundle-dir target/qualified-bundle
+          --complete-receipt target/qualified-receipt/platform-complete.json
+          --artifact-report target/gui-release/artifact-verification.json
+
       - name: Upload GUI artifact verification report
+        id: ci_upload_gui_artifact_verification_repor_f47159a5
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -83,43 +180,69 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload GUI package artifact
+        id: ci_upload_gui_package_artifact_c62cee5c
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sorotte-gui-windows-x86_64
           path: target/gui-release/artifacts/*
 
   playback-lifecycle-release-gate:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: authorize-source
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/playback-lifecycle-release-gate.yml
     with:
       candidate_sha: ${{ github.sha }}
+      channel: dev
 
   publish-release:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: ${{ always() && needs.gui-release.result == 'success' && (inputs.publish || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.playback-lifecycle-release-gate.result == 'success')) }}
     needs:
       - gui-release
       - playback-lifecycle-release-gate
-    runs-on: windows-latest
+    runs-on: windows-2025
     permissions:
       contents: write
+      checks: read
+      actions: read
     steps:
       - name: Checkout trusted publication revision
+        id: ci_checkout_trusted_publication_revision_5d9972fd
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
+        id: ci_setup_python_1a8bb98d
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Recheck current trusted source authorization before GUI publication
+        id: ci_recheck_current_trusted_source_authori_14eb613f
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "$env:GITHUB_SHA" --output target/gui-release/authorization.json
+
       - name: Download GUI package artifact
+        id: ci_download_gui_package_artifact_c23aafd6
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sorotte-gui-windows-x86_64
           path: target/gui-release/artifacts
 
       - name: Reverify downloaded GUI release artifact
+        id: ci_reverify_downloaded_gui_release_artifa_67438bb2
         shell: pwsh
         run: |
           $channel = if ($env:GITHUB_REF -like "refs/tags/v*") { "stable" } else { "dev" }
@@ -131,6 +254,7 @@ jobs:
             --skip-runtime-smoke
 
       - name: Upload publication verification report
+        id: ci_upload_publication_verification_report_227777e0
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -139,25 +263,33 @@ jobs:
           if-no-files-found: warn
 
       - name: Attach package to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        id: ci_attach_package_to_github_release_ceb8aa0d
+        if: inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = $env:GITHUB_REF_NAME
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) {
-              gh release create $tag --title $tag --notes "Sorotte GUI release $tag"
-              if ($LASTEXITCODE -ne 0) {
-                  throw "gh release create failed with exit code $LASTEXITCODE"
-              }
-          }
-          gh release upload $tag target/gui-release/artifacts/* --clobber
-          if ($LASTEXITCODE -ne 0) {
-              throw "gh release upload failed with exit code $LASTEXITCODE"
-          }
+          python scripts/release_assets.py attach --repository $env:GITHUB_REPOSITORY --tag $env:GITHUB_REF_NAME --artifacts-dir target/gui-release/artifacts
+          if ($LASTEXITCODE -ne 0) { throw "GUI attachment failed" }
+
+      - name: Independently compare anonymous public GUI bytes
+        id: ci_independently_compare_anonymous_public_3c1570b0
+        if: inputs.publish
+        shell: pwsh
+        run: python scripts/release_assets.py verify-public --repository $env:GITHUB_REPOSITORY --tag $env:GITHUB_REF_NAME --artifacts-dir target/gui-release/artifacts --report target/gui-release/publication-public.json
+
+      - name: Retain public GUI verification
+        id: ci_retain_public_gui_verification_607ecd28
+        if: ${{ always() && inputs.publish }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gui-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/gui-release/publication-public.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Publish dev package to GitHub Release
+        id: ci_publish_dev_package_to_github_release_fffdea3c
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         env:

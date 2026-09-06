@@ -1,0 +1,91 @@
+[
+  {
+    "source": "target/testing-audit/hosted/mutation-server-status.log",
+    "sha256": "8a332b99ede4afc73c2c9c774a3d8661c997abb5201c83925d152e0e4f169411",
+    "excerpts": [
+      {
+        "line": 457,
+        "text": "2026-09-05T10:41:12.4260780Z Found 216 mutants to test"
+      },
+      {
+        "line": 458,
+        "text": "2026-09-05T10:41:12.4261212Z ok       Unmutated baseline"
+      },
+      {
+        "line": 459,
+        "text": "2026-09-05T10:41:12.4261595Z 216 mutants tested: 200 caught, 16 unviable"
+      },
+      {
+        "line": 460,
+        "text": "2026-09-05T10:41:12.4262270Z mutation shard server-participant-status: 200/200 viable mutants caught (100.00%)"
+      }
+    ]
+  },
+  {
+    "source": "target/testing-audit/hosted/server-release-timeout.log",
+    "sha256": "7d882e0dd378c4fa4682d84869d7641de3e06f2058bddacda7fd12c248ff4659",
+    "excerpts": [
+      {
+        "line": 6279,
+        "text": "2026-09-05T11:35:54.4004137Z server response should read: Os { code: 10060, kind: TimedOut, message: \"A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond.\" }"
+      },
+      {
+        "line": 6285,
+        "text": "2026-09-05T11:35:54.4009260Z release verify test lock should not be poisoned: PoisonError { .. }"
+      },
+      {
+        "line": 6290,
+        "text": "2026-09-05T11:35:54.4012138Z release verify test lock should not be poisoned: PoisonError { .. }"
+      },
+      {
+        "line": 6298,
+        "text": "2026-09-05T11:35:54.4015728Z test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.88s"
+      },
+      {
+        "line": 6312,
+        "text": "2026-09-05T11:35:55.8794891Z workspace tests                  FAIL    510.40"
+      }
+    ]
+  },
+  {
+    "source": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\v0.2.9\\target\\verification\\v0.2.9-release-closure.md",
+    "sha256": "125255f9d1488aa8c89ff600d502ac39c895f3941d76c6dfef788af57f63135b",
+    "text": "# Sorotte v0.2.9 release closure\n\nVerified 2026-09-05T12:48:17.340956+00:00. [PR #32](https://github.com/ropbet-radbyt/sorotte/pull/32) merged; [Sorotte v0.2.9](https://github.com/ropbet-radbyt/sorotte/releases/tag/v0.2.9) is the stable latest GitHub release.\n\n- Merge source: `4000eca69b52003b66e81b6998d15c555e7eb6d1`\n- Annotated tag object: `9acc616a09a28b15abd0884232dec047a67584f1`\n- Tested candidate: `9ced745e5aae40c782b7ef110c5434db3c9b6a6e`; merge and candidate tree: `e57689b86eb9d323e34bc70df255790664ef7c7d`\n\n## Validation\n\nAll six candidate workflows passed, including all 24 mutation shards and their aggregate. All eight main/tag/promotion workflows passed:\n\n| Workflow | Ref | Attempt | Result |\n| --- | --- | --- | --- |\n| [sorotte CI](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961629061) | main | 1 | success |\n| [sorotte Protocol Fuzz](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961629063) | main | 1 | success |\n| [sorotte-gui release](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961629161) | main | 1 | success |\n| [sorotte CI](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961659679) | v0.2.9 | 1 | success |\n| [sorotte-gui release](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961659777) | v0.2.9 | 1 | success |\n| [sorotte-server release](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961659708) | v0.2.9 | 2 | success |\n| [publish sorotte-server container](https://github.com/ropbet-radbyt/sorotte/actions/runs/33961659734) | v0.2.9 | 1 | success |\n| [publish sorotte-server container](https://github.com/ropbet-radbyt/sorotte/actions/runs/33966270349) | v0.2.9 | 1 | success |\n\nAll five release lifecycle gates validate the exact merge source, close eight declared gaps, and satisfy all 75 required system transitions. Their fresh Windows native jobs ran in separate one-job Sandboxes. Every runner registration and guest was removed; an independent final inventory found zero registered repository runners and zero running Sandboxes.\n\nThe final container digest is `sha256:4c68eb3d3cbe1f4fc6dc9e8e6c880739111d57070b0d14f74130ecce87bcdb1c`. The version, full-source-SHA and `latest` tags resolve to that digest. Independent anonymous registry checks, Cosign signature and SPDX attestation checks, SBOM checks, and the complete runtime/publication gate passed.\n\nAll 11 public release assets were downloaded without authentication and verified against GitHub digests, checksum sidecars, package contents and the updater manifest. Package runtime checks passed in the hosted release jobs.\n\n## Retained evidence\n\n- [Public assets](C:/Users/shaun/Documents/workspace/sorotte/tmp/v0.2.9/target/verification/v0.2.9-public-final/public-assets-verification.json)\n- [Final public container](C:/Users/shaun/Documents/workspace/sorotte/tmp/v0.2.9/target/verification/v0.2.9-ghcr-final-public/final-gate-report.json)\n- [Full closure receipt](C:/Users/shaun/Documents/workspace/sorotte/tmp/v0.2.9/target/verification/v0.2.9-release-closure.json)\n\n## Boundaries and retry\n\n- Native display validation: 144 DPI; 96/192 DPI and actual screen-reader interaction untested.\n- Default-font CJK glyph coverage incomplete; accessible Unicode text preserved.\n- Lifecycle binaries and final packages were built independently from the same source; binary identity between those builds is not claimed.\n- The first Windows server package attempt hit a 3-second socket read timeout. The unchanged targeted retry passed; 50 local fixture replays were diagnostic evidence only. The isolated timeout cause remains unproven.\n\nThe audit worktree remains clean. Existing uncommitted Sandbox work and diagnostics in the root checkout were preserved.\n"
+  },
+  {
+    "source": "target/testing-audit/hosted/container-initial.log",
+    "sha256": "82d60500e652fc679492d332fc1747599a8e071cc7da513904e092f346c9a4fc",
+    "excerpts": [
+      {
+        "line": 2139,
+        "text": "2026-09-05T11:35:10.0766721Z   DIGEST_REF: ghcr.io/ropbet-radbyt/sorotte-server@sha256:d5bb40b43c360e9f671ef33bc8ea885bd48e6ea95a5bab20cda1279e96c2f903"
+      },
+      {
+        "line": 2198,
+        "text": "2026-09-05T11:35:23.3706599Z   DIGEST_REF: ghcr.io/ropbet-radbyt/sorotte-server@sha256:d5bb40b43c360e9f671ef33bc8ea885bd48e6ea95a5bab20cda1279e96c2f903"
+      },
+      {
+        "line": 627,
+        "text": "2026-09-05T11:32:38.6304061Z   DOCKER_METADATA_OUTPUT_JSON: {\"tags\":[\"ghcr.io/ropbet-radbyt/sorotte-server:v0.2.9\",\"ghcr.io/ropbet-radbyt/sorotte-server:sha-4000eca69b52003b66e81b6998d15c555e7eb6d1\"],\"tag-names\":[\"v0.2.9\",\"sha-4000eca69b52003b66e81b6998d15c555e7eb6d1\"],\"labels\":{\"org.opencontainers.image.created\":\"2026-09-05T11:32:37Z\",\"org.opencontainers.image.description\":\"Sorotte Syncplay-compatible server\",\"org.opencontainers.image.licenses\":\"Apache-2.0\",\"org.opencontainers.image.revision\":\"4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"org.opencontainers.image.source\":\"https://github.com/ropbet-radbyt/sorotte\",\"org.opencontainers.image.title\":\"sorotte server\",\"org.opencontainers.image.url\":\"https://github.com/ropbet-radbyt/sorotte\",\"org.opencontainers.image.version\":\"v0.2.9\"},\"annotations\":[\"manifest:org.opencontainers.image.created=2026-09-05T11:32:38.586Z\",\"manifest:org.opencontainers.image.description=Sorotte Syncplay-compatible media synchronization client and server\",\"manifest:org.opencontainers.image.licenses=NOASSERTION\",\"manifest:org.opencontainers.image.revision=4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"manifest:org.opencontainers.image.source=https://github.com/ropbet-radbyt/sorotte\",\"manifest:org.opencontainers.image.title=sorotte\",\"manifest:org.opencontainers.image.url=https://github.com/ropbet-radbyt/sorotte\",\"manifest:org.opencontainers.image.version=v0.2.9\"]}"
+      }
+    ]
+  },
+  {
+    "source": "target/testing-audit/hosted/container-promotion.log",
+    "sha256": "93b9b107673cbf8caf105a75ae8a9dcb1532586c10eca24514200ba2a1dd0b03",
+    "excerpts": [
+      {
+        "line": 2139,
+        "text": "2026-09-05T12:46:15.2388992Z   DIGEST_REF: ghcr.io/ropbet-radbyt/sorotte-server@sha256:4c68eb3d3cbe1f4fc6dc9e8e6c880739111d57070b0d14f74130ecce87bcdb1c"
+      },
+      {
+        "line": 2200,
+        "text": "2026-09-05T12:46:32.9878328Z   DIGEST_REF: ghcr.io/ropbet-radbyt/sorotte-server@sha256:4c68eb3d3cbe1f4fc6dc9e8e6c880739111d57070b0d14f74130ecce87bcdb1c"
+      },
+      {
+        "line": 633,
+        "text": "2026-09-05T12:43:47.4023608Z   DOCKER_METADATA_OUTPUT_JSON: {\"tags\":[\"ghcr.io/ropbet-radbyt/sorotte-server:v0.2.9\",\"ghcr.io/ropbet-radbyt/sorotte-server:sha-4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"ghcr.io/ropbet-radbyt/sorotte-server:latest\"],\"tag-names\":[\"v0.2.9\",\"sha-4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"latest\"],\"labels\":{\"org.opencontainers.image.created\":\"2026-09-05T12:43:46Z\",\"org.opencontainers.image.description\":\"Sorotte Syncplay-compatible server\",\"org.opencontainers.image.licenses\":\"Apache-2.0\",\"org.opencontainers.image.revision\":\"4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"org.opencontainers.image.source\":\"https://github.com/ropbet-radbyt/sorotte\",\"org.opencontainers.image.title\":\"sorotte server\",\"org.opencontainers.image.url\":\"https://github.com/ropbet-radbyt/sorotte\",\"org.opencontainers.image.version\":\"v0.2.9\"},\"annotations\":[\"manifest:org.opencontainers.image.created=2026-09-05T12:43:47.364Z\",\"manifest:org.opencontainers.image.description=Sorotte Syncplay-compatible media synchronization client and server\",\"manifest:org.opencontainers.image.licenses=NOASSERTION\",\"manifest:org.opencontainers.image.revision=4000eca69b52003b66e81b6998d15c555e7eb6d1\",\"manifest:org.opencontainers.image.source=https://github.com/ropbet-radbyt/sorotte\",\"manifest:org.opencontainers.image.title=sorotte\",\"manifest:org.opencontainers.image.url=https://github.com/ropbet-radbyt/sorotte\",\"manifest:org.opencontainers.image.version=v0.2.9\"]}"
+      }
+    ]
+  }
+]

@@ -16,7 +16,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repoRoot
 try {
     if (-not $NoBuild) {
-        & cargo build --release -p sorotte-gui --bin sorotte-gui
+        & cargo build --locked --release -p sorotte-gui --bin sorotte-gui
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
@@ -28,6 +28,7 @@ try {
 
     $benchArgs = @(
         "run",
+        "--locked",
         "--quiet",
         "-p",
         "sorotte-gui",

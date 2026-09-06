@@ -16,9 +16,11 @@ from typing import Any, Mapping, Sequence
 
 import playback_lifecycle_model as lifecycle_model
 import artifact_input
+import release_qualification
 
 
 SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 2
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 BUNDLE_KIND = "sorotte-playback-release-candidate-bundle"
 PLATFORM_KIND = "sorotte-playback-release-platform-gate"
@@ -226,9 +228,11 @@ def validate_bundle(value: Mapping[str, Any], directory: Path) -> dict[str, Any]
         "platform",
         "product_version",
         "files",
+        "build_inputs",
+        "symbols",
     }:
         raise ReleaseGateError("candidate bundle manifest does not use its closed schema")
-    if not has_schema(value, SCHEMA_VERSION):
+    if not has_schema(value, BUNDLE_SCHEMA_VERSION):
         raise ReleaseGateError("candidate bundle manifest has an unsupported schema version")
     if value.get("kind") != BUNDLE_KIND:
         raise ReleaseGateError("candidate bundle manifest has the wrong identity")
@@ -236,11 +240,23 @@ def validate_bundle(value: Mapping[str, Any], directory: Path) -> dict[str, Any]
         raise ReleaseGateError("candidate bundle manifest is not a pass")
     candidate_sha = require_candidate_sha(str(value.get("candidate_sha", "")))
     platform = require_platform(str(value.get("platform", "")))
+    inputs = value.get("build_inputs")
+    if not isinstance(inputs, dict):
+        raise ReleaseGateError("candidate bundle has no build input closure")
+    try:
+        release_qualification.validate_inputs(
+            inputs, sha=candidate_sha, target_platform=platform, channel=inputs.get("channel", "")
+        )
+    except release_qualification.QualificationError as error:
+        raise ReleaseGateError(str(error)) from error
     files = value.get("files")
     if not isinstance(files, dict) or set(files) != PLATFORM_ROLES[platform]:
         raise ReleaseGateError("candidate bundle role inventory is incomplete")
     expected_names: set[str] = {"candidate-manifest.json"}
-    for role, identity in files.items():
+    symbols = value.get("symbols")
+    if not isinstance(symbols, dict) or any(not re.fullmatch(r"sorotte[-_][a-z_-]+\.pdb", str(name)) for name in symbols):
+        raise ReleaseGateError("candidate symbols inventory is invalid")
+    for role, identity in {**files, **symbols}.items():
         if not isinstance(identity, dict) or set(identity) != {"file_name", "size", "sha256"}:
             raise ReleaseGateError(f"candidate identity for {role} is malformed")
         file_name = identity.get("file_name")
@@ -274,6 +290,10 @@ def bundle(args: argparse.Namespace) -> dict[str, Any]:
     candidate_sha = require_candidate_sha(args.candidate_sha)
     platform = require_platform(args.platform)
     exact_clean_head(repo_root, candidate_sha)
+    inputs = load_json(Path(args.input_manifest), "release build inputs")
+    release_qualification.validate_inputs(inputs, sha=candidate_sha, target_platform=platform, channel=args.channel)
+    if inputs["source_files"] != release_qualification.clean_source(repo_root, candidate_sha):
+        raise ReleaseGateError("release inputs changed during the build")
     sources = parse_assignments(args.artifact, "artifact")
     if set(sources) != PLATFORM_ROLES[platform]:
         raise ReleaseGateError("bundle sources do not match the platform role inventory")
@@ -293,20 +313,31 @@ def bundle(args: argparse.Namespace) -> dict[str, Any]:
         destination = output_dir / name
         with source.open("rb") as input_stream, destination.open("xb") as output_stream:
             shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
+        shutil.copymode(source, destination)
         identities[role] = {
             "file_name": name,
             "size": destination.stat().st_size,
             "sha256": sha256_file(destination),
         }
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": BUNDLE_SCHEMA_VERSION,
         "kind": BUNDLE_KIND,
         "result": "passed",
         "candidate_sha": candidate_sha,
         "platform": platform,
         "product_version": workspace_version(repo_root),
         "files": identities,
+        "build_inputs": inputs,
+        "symbols": {},
     }
+    for source in sorted(set(s.parent for s in sources.values())):
+        for symbol in sorted(source.glob("sorotte*.pdb")):
+            if symbol.is_symlink() or not re.fullmatch(r"sorotte[-_][a-z_-]+\.pdb", symbol.name):
+                raise ReleaseGateError("unsupported symbol file in release output")
+            destination = output_dir / symbol.name
+            with symbol.open("rb") as input_stream, destination.open("xb") as output_stream:
+                shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
+            manifest["symbols"][symbol.name] = {"file_name": symbol.name, "size": symbol.stat().st_size, "sha256": sha256_file(destination)}
     atomic_json(output_dir / "candidate-manifest.json", manifest)
     return validate_bundle(manifest, output_dir)
 
@@ -404,6 +435,9 @@ def validate_system_report(
         raise ReleaseGateError("system server digest differs from candidate bundle")
     if prerequisites.get("client", {}).get("sha256") != files["client"]["sha256"]:
         raise ReleaseGateError("system client digest differs from candidate bundle")
+    for role in ("mpv", "ffmpeg"):
+        if prerequisites.get(role, {}).get("sha256") != bundle_manifest["build_inputs"]["tools"][role]["sha256"]:
+            raise ReleaseGateError(f"system {role} identity differs from qualified inputs")
     boundary_checks = LOOP_CHECKS if loop else TERMINAL_CHECKS
     required_checks = COMMON_CHECKS | boundary_checks
     missing = required_checks - set(checks_by_id(report))
@@ -569,6 +603,8 @@ def require_suite_coverage(
 def attest_linux(args: argparse.Namespace) -> dict[str, Any]:
     bundle_dir = Path(args.bundle_dir).resolve()
     manifest = read_bundle(bundle_dir, args.candidate_sha, "linux-x86_64")
+    if release_qualification.clean_source(Path(args.model).resolve().parents[1], manifest["candidate_sha"]) != manifest["build_inputs"]["source_files"]:
+        raise ReleaseGateError("Linux source inputs changed during qualification")
     base_path = Path(args.system_report).resolve()
     loop_path = Path(args.loop_report).resolve()
     start_path = Path(args.start_report).resolve()
@@ -647,6 +683,8 @@ def validate_status_report(
             raise ReleaseGateError(f"status {role} digest differs from candidate bundle")
     if prerequisites.get("mpv", {}).get("sha256") != mpv_digest:
         raise ReleaseGateError("status mpv digest differs from pinned supported player")
+    if prerequisites.get("native_harness", {}).get("sha256") != bundle_manifest["build_inputs"]["tools"]["native-harness"]["sha256"]:
+        raise ReleaseGateError("status native driver digest differs from qualified inputs")
     projection = report.get("projection")
     if (
         not isinstance(projection, dict)
@@ -670,6 +708,8 @@ def parse_named_paths(values: Sequence[str], expected: set[str]) -> dict[str, Pa
 def attest_windows(args: argparse.Namespace) -> dict[str, Any]:
     bundle_dir = Path(args.bundle_dir).resolve()
     manifest = read_bundle(bundle_dir, args.candidate_sha, "windows-x86_64")
+    if release_qualification.clean_source(Path(args.model).resolve().parents[1], manifest["candidate_sha"]) != manifest["build_inputs"]["source_files"]:
+        raise ReleaseGateError("Windows source inputs changed during qualification")
     mpv_path = Path(args.mpv).resolve()
     ffmpeg_path = Path(args.ffmpeg).resolve()
     mpv_digest = sha256_file(mpv_path)
@@ -678,6 +718,9 @@ def attest_windows(args: argparse.Namespace) -> dict[str, Any]:
         raise ReleaseGateError("mpv binary digest differs from the pinned release identity")
     if ffmpeg_digest != args.expected_ffmpeg_sha256:
         raise ReleaseGateError("FFmpeg binary digest differs from the pinned release identity")
+    if (manifest["build_inputs"]["tools"]["mpv"]["sha256"] != mpv_digest
+        or manifest["build_inputs"]["tools"]["ffmpeg"]["sha256"] != ffmpeg_digest):
+        raise ReleaseGateError("Windows media tools changed after build inputs were sealed")
     status_path = Path(args.status_report).resolve()
     status = validate_status_report(status_path, manifest, mpv_digest)
     summaries = parse_named_paths(args.vertical_summary, set(VERTICAL_MODES))
@@ -920,6 +963,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     bundle_parser.add_argument("--platform", required=True, choices=sorted(PLATFORM_ROLES))
     bundle_parser.add_argument("--artifact", action="append", required=True)
     bundle_parser.add_argument("--output-dir", required=True)
+    bundle_parser.add_argument("--input-manifest", required=True)
+    bundle_parser.add_argument("--channel", choices=("dev", "stable"), default="stable")
 
     verify = subcommands.add_parser("verify-bundle")
     verify.add_argument("--bundle-dir", required=True)
@@ -976,7 +1021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = attest_windows(args)
         else:
             report = attest_complete(args)
-    except (ReleaseGateError, OSError, subprocess.SubprocessError, KeyError, TypeError) as error:
+    except (ReleaseGateError, release_qualification.QualificationError, OSError, subprocess.SubprocessError, KeyError, TypeError) as error:
         print(f"playback release gate failed: {error}", file=sys.stderr)
         return 1
     print(

@@ -1,6 +1,6 @@
 schema_version = 1
 # These inputs can alter any selector, feature graph, compiler or evidence reader.
-global_inputs = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "coverage/mutation-*.toml", "coverage/mutation-report-set.json", "scripts/mutation*.py", "scripts/artifact_input.py", ".github/workflows/rust-mutation.yml"]
+global_inputs = [".gitattributes", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", "coverage/mutation-*.toml", "coverage/mutation-report-set.json", "scripts/mutation*.py", "scripts/tests/test_mutation*.py", "scripts/artifact_input.py", "scripts/verify.py", "scripts/verification_tools.py", "scripts/test_inventory.py", "coverage/verification-tools.toml", "coverage/verification-lanes.json", "coverage/test-inventories.json", ".github/workflows/rust-mutation.yml"]
 
 # Package sources, tests, build scripts and feature manifests automatically select
 # that package's shards. These additional edges declare cross-package contracts.

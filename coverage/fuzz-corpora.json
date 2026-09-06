@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "id": "protocol_line",
+      "directory": "crates/sorotte-protocol/tests/corpus/protocol_parser",
+      "files": [
+        {
+          "name": "invalid-string-escape.json",
+          "bytes": 32,
+          "sha256": "3f18aad666bc74af2529b793c671fcc1ce366a295b0113a7204216b7ba362dab"
+        },
+        {
+          "name": "invalid-trailing-token.json",
+          "bytes": 23,
+          "sha256": "3551d395c3d26031301cc7ba01e3b88634f2e8206ec1e7c232c867fb37017d17"
+        },
+        {
+          "name": "invalid-truncated-object.json",
+          "bytes": 39,
+          "sha256": "667881b7d83893d3194bd4df29c0935456354e1d8481bcdb34000d2abd009ffb"
+        },
+        {
+          "name": "invalid-unclosed-array.json",
+          "bytes": 32,
+          "sha256": "401e71c6e749605786687863e7587797705a02e057fd565b1801cfdbead99f64"
+        },
+        {
+          "name": "json-array.json",
+          "bytes": 60,
+          "sha256": "c3563b1a66cae957899d3fba4eace1c0f1f5e4ac2b5504bdcea5efb5f6b08d56"
+        },
+        {
+          "name": "json-duplicate-unknown.json",
+          "bytes": 71,
+          "sha256": "344783971bc73b9f63106cb4458c5bac598398a1483d38e53a9089ec2dacf642"
+        },
+        {
+          "name": "json-empty-object.json",
+          "bytes": 3,
+          "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+        },
+        {
+          "name": "json-float-roundtrip.json",
+          "bytes": 6,
+          "sha256": "2354ff8881354c2cda6a22418338fb61df2df1081edd2dc9aa4ddf12d8d9f49e"
+        },
+        {
+          "name": "json-null.json",
+          "bytes": 5,
+          "sha256": "38e0b9de817f645c4bec37c0d4a3e58baecccb040f5718dc069a72c7385a0bed"
+        },
+        {
+          "name": "json-unknown-after-valid.json",
+          "bytes": 69,
+          "sha256": "0ce77140fc58e55dbdb70518e8171a377991ebf98f51cbf0bf6901ef575869ce"
+        },
+        {
+          "name": "typed-duplicate-set.json",
+          "bytes": 141,
+          "sha256": "28f6e048f403ae4b8802142b6ffda39eae75487bf33751cc039cff589344df4d"
+        },
+        {
+          "name": "typed-escaped-composite-order.json",
+          "bytes": 160,
+          "sha256": "9f460e051e23cd31ece7b1d7b65144fd6096a3e63c2c4629c41a318839081ecb"
+        },
+        {
+          "name": "typed-leading-whitespace.json",
+          "bytes": 17,
+          "sha256": "4244abf2010db8035031c5fcca867667aecb3e5b4eae03359c839ece57994fbc"
+        },
+        {
+          "name": "typed-nested-lookalikes.json",
+          "bytes": 132,
+          "sha256": "bcebd9e5941f944d4c57669f3c73f42392548e8a877b2bc552be99a6cf5bff06"
+        },
+        {
+          "name": "typed-state-float-roundtrip.json",
+          "bytes": 43,
+          "sha256": "7bc46a6d705c7622f0cee1aa6bfcdf0b11b94923b65980ef6cb4e569884f7858"
+        },
+        {
+          "name": "typed-unicode-chat.json",
+          "bytes": 33,
+          "sha256": "f6a1959272f9dec77e18833f55fe419cb03ba2837e477809e6d581c7daafc60f"
+        }
+      ]
+    },
+    {
+      "id": "framed_session",
+      "directory": "crates/sorotte-cli/tests/corpus/framed_session",
+      "files": [
+        {
+          "name": "bytewise-state-chat.txt",
+          "bytes": 86,
+          "sha256": "d9430a55e826ba144ea49b2e9def4093276463eb1ba5bb87844f36e9aff21b09"
+        },
+        {
+          "name": "cancel-bytewise-hello.txt",
+          "bytes": 87,
+          "sha256": "c163da34f4ceb5cb1a537585c4e009d73a1e7b90bf5a4c12dfa6222c6e5ebdd2"
+        },
+        {
+          "name": "cancel-pseudorandom-multi.txt",
+          "bytes": 160,
+          "sha256": "30d61df26e9abe94acb5936f1c00b2660f6172677fbc2835897efdfbf3af81b8"
+        },
+        {
+          "name": "coalesced-hello-set.txt",
+          "bytes": 161,
+          "sha256": "75e2c61b19eb17f9526b9d0829c3d56993d4bc47b24bd02463a3e77ef21ade9c"
+        },
+        {
+          "name": "empty-and-null-frames.txt",
+          "bytes": 11,
+          "sha256": "87933b023f9ee1c7193eb2aff15b38539970ecb60b847f766ebbc1726208b6f4"
+        },
+        {
+          "name": "escaped-command-order.txt",
+          "bytes": 164,
+          "sha256": "ad85b9ddf8805429815f59ba15b418826ea365afe9f822eff936fb78e0eba663"
+        },
+        {
+          "name": "fixed-width-list.txt",
+          "bytes": 59,
+          "sha256": "df5276f3c175f4d65f4ec7a72d514a07606431d4345977d196d5cb745f575738"
+        },
+        {
+          "name": "malformed-prefix-valid-suffix.txt",
+          "bytes": 97,
+          "sha256": "1473a1cdeb167778ce263a7fa4b931b4b92c8a87257c256b5f75c56b22ad122b"
+        },
+        {
+          "name": "participant-status-report-snapshot.txt",
+          "bytes": 1079,
+          "sha256": "65ea61146b08e1a260ce2bf265ed627e8964ce9c299307f8205931c5e56a22c3"
+        },
+        {
+          "name": "participant-status-uncorrelated-offset.txt",
+          "bytes": 509,
+          "sha256": "c1ddc38502fab46c120fc3896424ab50436ab4cb891fb58019a2e2594dfc9506"
+        },
+        {
+          "name": "participant-status-withdrawal-invalid.txt",
+          "bytes": 433,
+          "sha256": "83ced91d410a9a54948170466838fab54da32b66826f43d6dcf84f17d60991dd"
+        },
+        {
+          "name": "participant-status-zero-row-scope.txt",
+          "bytes": 1079,
+          "sha256": "b54f01dd1ad6e8295ce13dcadd6e0ec422dbe458bd46dca100521cdc4b11e071"
+        },
+        {
+          "name": "pseudorandom-duplicate-set.txt",
+          "bytes": 140,
+          "sha256": "10f2684be12b023233d84eaf5c6f259de0542ea0abcb7831ca552bd0098abc99"
+        },
+        {
+          "name": "size-seam-crlf-limit.txt",
+          "bytes": 7,
+          "sha256": "84bb950ecf4a6f4caae3d8e4700016a20d56d7da32e328524864aa56b91f8625"
+        },
+        {
+          "name": "size-seam-crlf-over.txt",
+          "bytes": 7,
+          "sha256": "33bb38bceba6b14ca2694038039272cf30a1a29011bb9b4521223798271b21ab"
+        },
+        {
+          "name": "size-seam-lf-limit.txt",
+          "bytes": 7,
+          "sha256": "a7172d1c78af9667982176afd669b499d1f80182da657f3be6d5881d1e82b5e9"
+        },
+        {
+          "name": "size-seam-lf-over.txt",
+          "bytes": 7,
+          "sha256": "2e00cb4d195ac3fe15bcdb3716d43e27b506c7771d2b83382b0e0af0395157a7"
+        },
+        {
+          "name": "unknown-and-unicode.txt",
+          "bytes": 87,
+          "sha256": "49ab57a1dc2e864241a481c5f7a2c4d7aa400281352cb37968743a248fa1ecdc"
+        }
+      ]
+    },
+    {
+      "id": "mpv_framed_transcript",
+      "directory": "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript",
+      "files": [
+        {
+          "name": "bytewise-event-before-response.txt",
+          "bytes": 106,
+          "sha256": "43efaf22685d033a66f3749ee9468c133e9ca0a40ddb24a3da6ed49bae99adb8"
+        },
+        {
+          "name": "bytewise-partial-read-timeout.txt",
+          "bytes": 51,
+          "sha256": "bd1cc045e4ec171dfb267f748ce555ee7e33defe52fc0bc934adedb1cb640162"
+        },
+        {
+          "name": "bytewise-response-id-reorder.txt",
+          "bytes": 74,
+          "sha256": "8330c68fd7a6e9366c38c6ddb99e84a35b40c2928953b6a956a6ae051cf71da5"
+        },
+        {
+          "name": "coalesced-invalid-json.txt",
+          "bytes": 14,
+          "sha256": "f11c128af6be32bdb1ff22bd2293175769eef553f517f88bc0952d6599412a8f"
+        },
+        {
+          "name": "coalesced-success.txt",
+          "bytes": 52,
+          "sha256": "6e25e6ae17f2112695fc670e5263bc0500c0529435963bc99938451eefd7fefa"
+        },
+        {
+          "name": "coalesced-write-disconnect.txt",
+          "bytes": 39,
+          "sha256": "1139c89dd71ca9e4721037d656f9e5753df9f6343f00fbe9eb639ca657b51bf9"
+        },
+        {
+          "name": "fixed-width-dropped-response-disconnect.txt",
+          "bytes": 73,
+          "sha256": "afed7f2f63da464074e8d915bc00837b14d98b36b210ef8b15a3f7eed5ee1569"
+        },
+        {
+          "name": "fixed-width-duplicate-events.txt",
+          "bytes": 73,
+          "sha256": "ebe377f8ab508524add1cc9b242ae0a94ee7ec63abc742f116e63b2434f71ccf"
+        },
+        {
+          "name": "fixed-width-server-rejection.txt",
+          "bytes": 69,
+          "sha256": "7b3b864d7c2881902b1b1647de5d18bb539e1034351fead0efb1c37152fca57a"
+        },
+        {
+          "name": "pseudorandom-malformed-json.txt",
+          "bytes": 54,
+          "sha256": "6d5796e64fe1f7fa9234bb754c47194a21789691e9194ed0ad72a7a36c95b37b"
+        },
+        {
+          "name": "pseudorandom-write-timeout.txt",
+          "bytes": 39,
+          "sha256": "50b6028680ca3eb4acf874b66e45cb7af46bdf66f13e333fbf5cdc352fef3aa7"
+        },
+        {
+          "name": "response-barrier-ignores-trailing-malformed.txt",
+          "bytes": 61,
+          "sha256": "01a644774302c07e03f3669e5099df3d48f587f0d6818569a0ded0d918b1977d"
+        }
+      ]
+    }
+  ],
+  "regressions": [
+    {
+      "id": "v0.2.9-zero-row-scope",
+      "package": "sorotte-client-core",
+      "test": "session::tests::participant_status_tests::participant_status_replays_fuzzed_zero_transport_row_scope",
+      "seed": "crates/sorotte-cli/tests/corpus/framed_session/participant-status-zero-row-scope.txt"
+    }
+  ]
+}

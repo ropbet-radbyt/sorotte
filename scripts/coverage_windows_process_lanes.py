@@ -242,11 +242,16 @@ AUDIT_EXPECTED_TESTS = {
     ),
 }
 
+from test_inventory import reviewed as reviewed_tests
+
 AUDIT_FILTERED_OUT = {
-    "mpv-owned-process": 454,
-    "mpv-bridge-resources": 447,
-    "media-owned-process": 79,
-    "private-settings": 228,
+    lane: len(reviewed_tests(scope)) - len(AUDIT_EXPECTED_TESTS[lane])
+    for lane, scope in {
+        "mpv-owned-process": "mpv-lib",
+        "mpv-bridge-resources": "mpv-lib",
+        "media-owned-process": "media-lib",
+        "private-settings": "client-app-lib",
+    }.items()
 }
 
 LANE_ORDER = (
@@ -370,7 +375,7 @@ EXPECTED_TESTS = {
     ),
 }
 EXPECTED_TESTS.update(AUDIT_EXPECTED_TESTS)
-MPV_LIBTEST_INVENTORY_SIZE = 459
+MPV_LIBTEST_INVENTORY_SIZE = len(reviewed_tests("mpv-lib"))
 EXPECTED_FILTERED_OUT = {
     "updater-transaction-process": 0,
     "updater-installed-self-replacement": 0,
@@ -380,8 +385,8 @@ EXPECTED_FILTERED_OUT = {
     "mpv-external-process": (
         MPV_LIBTEST_INVENTORY_SIZE - len(EXPECTED_TESTS["mpv-external-process"])
     ),
-    "media-tool-process": 1184,
-    "server-platform-signal": 14,
+    "media-tool-process": len(reviewed_tests("gui-lib")) - len(EXPECTED_TESTS["media-tool-process"]),
+    "server-platform-signal": len(reviewed_tests("server-bin")) - len(EXPECTED_TESTS["server-platform-signal"]),
     **AUDIT_FILTERED_OUT,
 }
 REQUIRED_INSTRUMENTED_CRATES = frozenset(

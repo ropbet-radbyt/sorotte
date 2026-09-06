@@ -1,0 +1,10 @@
+{
+  "msvc": "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133",
+  "windows_sdk": "C:/Program Files (x86)/Windows Kits/10",
+  "git": "C:/Program Files/Git",
+  "powershell": "C:/Program Files/PowerShell/7",
+  "cmake": "C:/Program Files/CMake",
+  "ninja": "C:/Tools/ninja/ninja.exe",
+  "7zip": "C:/Program Files/7-Zip",
+  "python": "C:/Python312"
+}

@@ -1,0 +1,2897 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "ci_checkout_exact_candidate_f2157bd5",
+      "display_name": "Checkout exact candidate"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "ci_setup_python_44396736",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "ci_validate_selection_prerequisites_9c70863a",
+      "display_name": "Validate selection prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "ci_compute_source_bound_obligations_bf0b5206",
+      "display_name": "Compute source-bound obligations"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "select",
+      "display_name": "Select applicable producer"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "selection",
+      "step_id": "ci_preserve_immutable_plan_cb5b1c9d",
+      "display_name": "Preserve immutable plan"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_checkout_0f6f51e6",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_setup_rust_da6cfe4d",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_setup_python_96caa407",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_install_pinned_cargo_deny_747abda6",
+      "display_name": "Install pinned cargo-deny"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_check_locked_graph_and_record_database_1c886f53",
+      "display_name": "Check locked graph and record database identity"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "rust",
+      "step_id": "ci_preserve_dependency_evidence_including_62130861",
+      "display_name": "Preserve dependency evidence including failed or unavailable scans"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "python",
+      "step_id": "ci_checkout_7cd933ed",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "python",
+      "step_id": "ci_setup_python_39289186",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "python",
+      "step_id": "ci_install_pinned_verification_scanner_ee25f209",
+      "display_name": "Install pinned verification scanner"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "python",
+      "step_id": "ci_audit_resolved_verification_requiremen_e37e33c3",
+      "display_name": "Audit resolved verification requirements"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "python",
+      "step_id": "ci_preserve_python_database_responses_and_a2397cb1",
+      "display_name": "Preserve Python database responses and resolved versions"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_checkout_exact_candidate_ee1fd5d1",
+      "display_name": "Checkout exact candidate"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_setup_python_89687896",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_require_selection_authority_19aab1d8",
+      "display_name": "Require selection authority"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_retrieve_immutable_plan_3c4e3dba",
+      "display_name": "Retrieve immutable plan"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_validate_every_applicable_producer_or__c5fbffdc",
+      "display_name": "Validate every applicable producer or explicit no-op"
+    },
+    {
+      "workflow": ".github/workflows/dependency-policy.yml",
+      "job_id": "dependency-required",
+      "step_id": "ci_preserve_required_receipt_77b662e1",
+      "display_name": "Preserve required receipt"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "selection",
+      "step_id": "ci_checkout_exact_workflow_revision_on_a__a7d8eed6",
+      "display_name": "Checkout exact workflow revision on a hosted worker"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "selection",
+      "step_id": "ci_setup_python_for_applicability_30d60e1b",
+      "display_name": "Setup Python for applicability"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "selection",
+      "step_id": "ci_bind_requested_source_before_native_qu_171d9099",
+      "display_name": "Bind requested source before native queueing"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "selection",
+      "step_id": "ci_compute_native_applicability_from_immu_78c2583a",
+      "display_name": "Compute native applicability from immutable source and event base"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "selection",
+      "step_id": "select",
+      "display_name": "Queue only applicable or explicitly requested native execution"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "preflight",
+      "display_name": "Attest ephemeral interactive runner before checkout"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "checkout",
+      "display_name": "Checkout exact trusted source"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "source_binding",
+      "display_name": "Bind checkout to requested source"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "rust",
+      "display_name": "Setup pinned Rust"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "python",
+      "display_name": "Setup pinned Python"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "prerequisites",
+      "display_name": "Install pinned native interop prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "native",
+      "display_name": "Run exact strict native GUI inventory"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "display",
+      "display_name": "Validate measured native display profile"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "native_inventory",
+      "display_name": "Validate and bind native evidence inventory"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "lane_summary",
+      "display_name": "Write native lane outcome evidence"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "safe_export",
+      "display_name": "Project privacy-safe native diagnostic evidence"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "evidence_upload",
+      "display_name": "Upload all native interactive evidence"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "enforce",
+      "display_name": "Enforce complete native interactive lane"
+    },
+    {
+      "workflow": ".github/workflows/native-required.yml",
+      "job_id": "native-required",
+      "step_id": "ci_checkout_exact_candidate_on_an_unprivi_53ca91c8",
+      "display_name": "Checkout exact candidate on an unprivileged hosted worker"
+    },
+    {
+      "workflow": ".github/workflows/native-required.yml",
+      "job_id": "native-required",
+      "step_id": "ci_setup_python_941fa0bc",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/native-required.yml",
+      "job_id": "native-required",
+      "step_id": "ci_compute_obligations_from_the_immutable_533de821",
+      "display_name": "Compute obligations from the immutable event subjects"
+    },
+    {
+      "workflow": ".github/workflows/native-required.yml",
+      "job_id": "native-required",
+      "step_id": "ci_require_exact_trusted_native_execution_f18f6936",
+      "display_name": "Require exact trusted native execution or validate no applicable work"
+    },
+    {
+      "workflow": ".github/workflows/native-required.yml",
+      "job_id": "native-required",
+      "step_id": "ci_preserve_this_required_native_decision_ee4c3e2c",
+      "display_name": "Preserve this required native decision"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_validate_package_tooling_before_archiv_1860042a",
+      "display_name": "Validate package tooling before archive builds"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_preserve_updater_protocol_and_windows__196d7832",
+      "display_name": "Preserve updater protocol and Windows replacement obligations"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_build_and_construct_gui_candidate_arch_8100d4c2",
+      "display_name": "Build and construct GUI candidate archive"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_consume_gui_archive_including_updater__9d8a8658",
+      "display_name": "Consume GUI archive including updater success and rollback"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_build_and_construct_server_candidate_a_c0588a16",
+      "display_name": "Build and construct server candidate archive"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_consume_server_archive_through_real_pr_85c2efe3",
+      "display_name": "Consume server archive through real protocol and persistence boundaries"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "archive",
+      "step_id": "ci_retain_exact_package_consumption_evide_f7469f39",
+      "display_name": "Retain exact package-consumption evidence"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "package-required",
+      "step_id": "ci_require_every_selected_archive_and_run_b98e7c09",
+      "display_name": "Require every selected archive and runtime boundary"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_checkout_exact_sorotte_candidate_5de84255",
+      "display_name": "Checkout exact Sorotte candidate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_bind_linux_checkout_to_release_candida_5097b406",
+      "display_name": "Bind Linux checkout to release candidate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_setup_rust_64dd10de",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_setup_python_d5b06dd2",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_install_supported_mpv_build_dependenci_bab10807",
+      "display_name": "Install supported mpv build dependencies"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_checkout_pinned_official_mpv_source_b432a13d",
+      "display_name": "Checkout pinned official mpv source"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_verify_supported_mpv_source_revision_bd0cb841",
+      "display_name": "Verify supported mpv source revision"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_build_pinned_supported_mpv_6f06eec3",
+      "display_name": "Build pinned supported mpv"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_verify_supported_mpv_version_cf083c4c",
+      "display_name": "Verify supported mpv version"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_validate_closed_lifecycle_declarations_742a9d08",
+      "display_name": "Validate closed lifecycle declarations and deterministic model"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_capture_linux_release_build_inputs_ea2ab61b",
+      "display_name": "Capture Linux release build inputs"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_build_exact_linux_release_candidates_caa5099b",
+      "display_name": "Build exact Linux release candidates"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_seal_immutable_linux_candidate_bundle_07234417",
+      "display_name": "Seal immutable Linux candidate bundle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_upload_immutable_linux_release_bundle_6b60403e",
+      "display_name": "Upload immutable Linux release bundle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_upload_linux_approved_build_input_reco_c92cdacd",
+      "display_name": "Upload Linux approved build input record"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "playback_lifecycle_system",
+      "display_name": "Run ordinary and terminal exact-candidate lifecycle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_run_loop_boundary_exact_candidate_life_5c57c55a",
+      "display_name": "Run loop-boundary exact-candidate lifecycle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_run_generated_every_phase_start_gate_l_e717b2ff",
+      "display_name": "Run generated every-phase start-gate lifecycle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "playback_lifecycle_evidence",
+      "display_name": "Validate and stage privacy-safe release evidence"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "playback_lifecycle_closed",
+      "display_name": "Require every declared lifecycle gap to be closed"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_upload_privacy_safe_lifecycle_release__ed6cebb6",
+      "display_name": "Upload privacy-safe lifecycle release evidence"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_enforce_exact_candidate_lifecycle_rele_c57902a6",
+      "display_name": "Enforce exact-candidate lifecycle release gate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_attest_exact_linux_suite_and_candidate_2f7e3039",
+      "display_name": "Attest exact Linux suite and candidate digests"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "ci_upload_linux_platform_lifecycle_attest_184b37f1",
+      "display_name": "Upload Linux platform lifecycle attestation"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_attest_ephemeral_interactive_windows_r_026d4f00",
+      "display_name": "Attest ephemeral interactive Windows runner"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_checkout_exact_sorotte_candidate_3713d2e1",
+      "display_name": "Checkout exact Sorotte candidate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_bind_windows_checkout_to_release_candi_b30ab641",
+      "display_name": "Bind Windows checkout to release candidate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_setup_rust_19d5cf83",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_setup_python_c1c69d60",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_download_and_verify_pinned_supported_w_e01a4873",
+      "display_name": "Download and verify pinned supported Windows media tools"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_validate_closed_lifecycle_declarations_3e5046ad",
+      "display_name": "Validate closed lifecycle declarations and harness contracts"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_build_windows_native_qualification_dri_0ee89fd3",
+      "display_name": "Build Windows native qualification driver"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_capture_windows_release_build_inputs_1a15d757",
+      "display_name": "Capture Windows release build inputs"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_build_exact_windows_release_candidates_aa822db1",
+      "display_name": "Build exact Windows release candidates and native driver"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_seal_immutable_windows_candidate_bundl_103603d7",
+      "display_name": "Seal immutable Windows candidate bundle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_upload_immutable_windows_release_bundl_9a557991",
+      "display_name": "Upload immutable Windows release bundle"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_upload_windows_approved_build_input_re_9b15bdce",
+      "display_name": "Upload Windows approved build input record"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "vertical",
+      "display_name": "Run exact GUI baseline and terminal fault modes"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "http_fault",
+      "display_name": "Run exact GUI HTTP failure recovery"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "http_stall",
+      "display_name": "Run exact GUI stalled HTTP boundary"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "recovery",
+      "display_name": "Run exact GUI owned-process recovery"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "status",
+      "display_name": "Run exact second-client native participant status composition"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "attestation",
+      "display_name": "Attest exact Windows suite and candidate digests"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_upload_windows_platform_lifecycle_atte_09ec89b8",
+      "display_name": "Upload Windows platform lifecycle attestation"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_project_windows_diagnostics_before_eph_39673358",
+      "display_name": "Project Windows diagnostics before ephemeral teardown"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "windows-candidate",
+      "step_id": "ci_retain_safe_windows_failure_evidence_5d4b3f3b",
+      "display_name": "Retain safe Windows failure evidence"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_checkout_exact_sorotte_candidate_1fa2d704",
+      "display_name": "Checkout exact Sorotte candidate"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_setup_python_58324f54",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_download_linux_platform_lifecycle_atte_990457b8",
+      "display_name": "Download Linux platform lifecycle attestation"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_download_windows_platform_lifecycle_at_4fc9bb27",
+      "display_name": "Download Windows platform lifecycle attestation"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_prove_complete_model_transition_covera_45aab257",
+      "display_name": "Prove complete model transition coverage"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_upload_complete_lifecycle_attestation_38dd1580",
+      "display_name": "Upload complete lifecycle attestation"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_download_linux_approved_build_input_re_d0dc7009",
+      "display_name": "Download Linux approved build input record"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_download_windows_approved_build_input__409c2559",
+      "display_name": "Download Windows approved build input record"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "complete-candidate",
+      "step_id": "ci_retain_compact_source_and_build_qualif_0e237c9c",
+      "display_name": "Retain compact source and build qualification record"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_checkout_exact_source_c21f032e",
+      "display_name": "Checkout exact source"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_setup_pinned_python_97c5ab5c",
+      "display_name": "Setup pinned Python"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_recheck_protected_source_and_trusted_c_b63f2449",
+      "display_name": "Recheck protected source and trusted checks before container qualification"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_setup_pinned_docker_buildx_62fdb6c9",
+      "display_name": "Setup pinned Docker Buildx"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_download_shared_qualified_linux_produc_173d6011",
+      "display_name": "Download shared qualified Linux product bundle"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_download_complete_shared_lifecycle_qua_165f9d73",
+      "display_name": "Download complete shared lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_verify_exact_qualified_lifecycle_input_f6d32895",
+      "display_name": "Verify exact qualified lifecycle input closure"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "build_info",
+      "display_name": "Capture immutable build metadata"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "meta",
+      "display_name": "Define publication tags and OCI labels"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_record_closed_publication_tag_inventor_3cc0c00e",
+      "display_name": "Record closed publication tag inventory"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "build",
+      "display_name": "Build once and load the candidate image"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_consume_the_loaded_image_through_real__b835a461",
+      "display_name": "Consume the loaded image through real server boundaries"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4",
+      "display_name": "Generate SPDX SBOM from the tested local image"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_bind_sbom_bytes_to_the_tested_local_im_e9888757",
+      "display_name": "Bind SBOM bytes to the tested local image ID"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_login_only_after_local_consumption_pas_79253942",
+      "display_name": "Login only after local consumption passes"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_push_only_tags_of_the_already_tested_d_e9d5952d",
+      "display_name": "Push only tags of the already-tested daemon image"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "publish_identity",
+      "display_name": "Read the validated registry manifest digest"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_install_pinned_cosign_41cb1944",
+      "display_name": "Install pinned Cosign"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_keylessly_sign_and_attest_the_exact_te_4c1c8da0",
+      "display_name": "Keylessly sign and attest the exact tested digest"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_verify_keyless_identity_and_workflow_c_1bc0afac",
+      "display_name": "Verify keyless identity and workflow claims"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_remove_registry_credentials_before_pub_49f4cbcf",
+      "display_name": "Remove registry credentials before public comparison"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_compare_every_public_tag_digest_config_edf164ab",
+      "display_name": "Compare every public tag, digest, config, SBOM, and signature subject"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_enforce_every_container_publication_ph_064fe8c4",
+      "display_name": "Enforce every container publication phase"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "ci_retain_all_container_verification_evid_99c9a382",
+      "display_name": "Retain all container verification evidence"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_checkout_exact_promotion_authority_dfc56e16",
+      "display_name": "Checkout exact promotion authority"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_require_protected_source_and_complete__a762e9a0",
+      "display_name": "Require protected source and complete trusted checks"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "producer",
+      "display_name": "Authenticate the explicit prior publication producer"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_download_complete_original_publication_2482054d",
+      "display_name": "Download complete original publication evidence"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_setup_pinned_manifest_copy_tool_36f04fa3",
+      "display_name": "Setup pinned manifest copy tool"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_install_pinned_signature_verifier_af751060",
+      "display_name": "Install pinned signature verifier"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_authenticate_registry_for_digest_only__f483aca3",
+      "display_name": "Authenticate registry for digest-only latest assignment"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_reverify_signatures_and_promote_only_t_f7adff45",
+      "display_name": "Reverify signatures and promote only the approved manifest digest"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_remove_promotion_registry_credentials_cc7de03d",
+      "display_name": "Remove promotion registry credentials"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "promote-approved-digest",
+      "step_id": "ci_retain_exact_promotion_and_public_veri_5013a126",
+      "display_name": "Retain exact promotion and public verification evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_checkout_1066f6c2",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_setup_python_63e0b3e6",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_install_reviewed_policy_prerequisites_63e3ab01",
+      "display_name": "Install reviewed policy prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_run_cross_platform_apparatus_self_test_5b6af0e1",
+      "display_name": "Run cross-platform apparatus self-tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_validate_static_apparatus_and_environm_13d8d14c",
+      "display_name": "Validate static apparatus and environment"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "ci_preserve_preflight_receipt_6e315338",
+      "display_name": "Preserve preflight receipt"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "semver",
+      "step_id": "ci_checkout_2858a3e2",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "semver",
+      "step_id": "ci_setup_rust_dd1a8f55",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "semver",
+      "step_id": "ci_install_pinned_cargo_semver_checks_712626c6",
+      "display_name": "Install pinned cargo-semver-checks"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "semver",
+      "step_id": "ci_enforce_public_rust_api_compatibility_cc4e4e07",
+      "display_name": "Enforce public Rust API compatibility"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_checkout_d90905a1",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_checkout_pinned_legacy_reference_for_l_23ad1e00",
+      "display_name": "Checkout pinned legacy reference for Linux tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_setup_rust_3716b49a",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_cargo_fmt_938a90c3",
+      "display_name": "Cargo fmt"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_install_pinned_cargo_nextest_45b95333",
+      "display_name": "Install pinned cargo-nextest"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_setup_python_5070f49f",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_restore_immutable_locked_crate_downloa_2f67b294",
+      "display_name": "Restore immutable locked crate downloads"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_verify_cached_archives_and_reconstruct_01570f70",
+      "display_name": "Verify cached archives and reconstruct corrupt inputs"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_cargo_clippy_62374563",
+      "display_name": "Cargo clippy"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_install_linux_test_prerequisites_873e54bb",
+      "display_name": "Install Linux test prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_setup_actionlint_toolchain_bca40e4c",
+      "display_name": "Setup actionlint toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_github_actions_workflows_02097a68",
+      "display_name": "Validate GitHub Actions workflows"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_critical_responsibility_cover_b9f74f9f",
+      "display_name": "Validate critical responsibility coverage"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_current_architecture_referenc_b959d8a4",
+      "display_name": "Validate current architecture references"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_retained_fuzz_byte_inventory_c35b756f",
+      "display_name": "Validate retained fuzz byte inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_behavior_catalog_c5812aa0",
+      "display_name": "Validate behavior catalog"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_playback_lifecycle_model_5cee5d6c",
+      "display_name": "Validate playback lifecycle model"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_execute_playback_lifecycle_oracle_83540f12",
+      "display_name": "Execute playback lifecycle oracle"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_replay_playback_lifecycle_seeds_2a1d6bcf",
+      "display_name": "Replay playback lifecycle seeds"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "lifecycle_explore",
+      "display_name": "Required state-aware playback lifecycle exploration"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_upload_minimized_lifecycle_model_failu_bad90c2c",
+      "display_name": "Upload minimized lifecycle model failures"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_enforce_state_aware_playback_lifecycle_69221c7a",
+      "display_name": "Enforce state-aware playback lifecycle exploration"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_ignored_test_policy_0e7c4525",
+      "display_name": "Validate ignored test policy"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_validate_known_defect_characterization_a3b12695",
+      "display_name": "Validate known-defect characterizations"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_execute_subprocess_fixture_parent_cont_0e28da11",
+      "display_name": "Execute subprocess-fixture parent contracts"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "nextest",
+      "display_name": "Nextest fail-on-flaky workspace tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "doctests",
+      "display_name": "Cargo doctests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_upload_linux_nextest_attempt_evidence_419fdb81",
+      "display_name": "Upload Linux nextest attempt evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_enforce_complete_linux_test_gate_00ae2b22",
+      "display_name": "Enforce complete Linux test gate"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "ci_cache_pause_acknowledged_stream_regres_e4d87df7",
+      "display_name": "Cache-pause acknowledged-stream regression"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "ci_checkout_1193c5c5",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "ci_setup_rust_0c0f6add",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "ci_setup_python_e2be83f8",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "reducer",
+      "display_name": "Reducer and acceptance lifecycle inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "projection",
+      "display_name": "GUI lifecycle projection inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "delivery",
+      "display_name": "GUI ordered-delivery inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "evidence",
+      "display_name": "Run exact behavior proofs"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "ci_upload_lifecycle_evidence_17bb7f16",
+      "display_name": "Upload lifecycle evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "lifecycle_contract",
+      "step_id": "ci_enforce_complete_lifecycle_lane_96f93b31",
+      "display_name": "Enforce complete lifecycle lane"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_checkout_prospective_merge_revision_f3dc527d",
+      "display_name": "Checkout prospective merge revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_checkout_pinned_legacy_reference_1abca5c1",
+      "display_name": "Checkout pinned legacy reference"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_setup_rust_53ae2e1b",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_setup_python_d47dc5c6",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_install_live_semantic_prerequisites_b5a7d470",
+      "display_name": "Install live semantic prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_run_complete_semantic_inventory_on_pro_d722ebb5",
+      "display_name": "Run complete semantic inventory on prospective merge"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_checkout_exact_evidence_revision_4cd22c15",
+      "display_name": "Checkout exact evidence revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_reconcile_exact_evidence_prerequisites_103d4314",
+      "display_name": "Reconcile exact evidence prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "evidence",
+      "display_name": "Run complete semantic inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_upload_semantic_evidence_de4e304b",
+      "display_name": "Upload semantic evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "gui_semantic",
+      "step_id": "ci_enforce_complete_semantic_lane_157f9651",
+      "display_name": "Enforce complete semantic lane"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_checkout_sorotte_ddf2e145",
+      "display_name": "Checkout Sorotte"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_checkout_pinned_legacy_reference_f8abf6a8",
+      "display_name": "Checkout pinned legacy reference"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_setup_rust_a4bd0f12",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_install_pinned_cargo_nextest_5e3279cd",
+      "display_name": "Install pinned cargo-nextest"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_setup_python_a95e0bb1",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_restore_immutable_locked_crate_downloa_a170feb4",
+      "display_name": "Restore immutable locked crate downloads"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_verify_cached_archives_and_reconstruct_ec66cc47",
+      "display_name": "Verify cached archives and reconstruct corrupt inputs"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_validate_windows_semver_wrapper_6ba0767b",
+      "display_name": "Validate Windows semver wrapper"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_install_live_compatibility_prerequisit_d64088f1",
+      "display_name": "Install live compatibility prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_check_reviewed_compile_dependent_inven_57396f6a",
+      "display_name": "Check reviewed compile-dependent inventories"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "nextest",
+      "display_name": "Nextest fail-on-flaky workspace tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "doctests",
+      "display_name": "Cargo doctests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_upload_windows_nextest_attempt_evidenc_3a3e4ff8",
+      "display_name": "Upload Windows nextest attempt evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "ci_enforce_complete_windows_test_gate_6dbad039",
+      "display_name": "Enforce complete Windows test gate"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "ci_checkout_sorotte_ee8140a6",
+      "display_name": "Checkout Sorotte"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "ci_setup_rust_5f716fa8",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "release_build",
+      "display_name": "Locked release-profile GUI and updater build"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "package_paths",
+      "display_name": "Package path boundary regressions"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "release_policy",
+      "display_name": "Release publication policy regressions"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_release",
+      "step_id": "ci_enforce_complete_windows_release_gate_3efb173a",
+      "display_name": "Enforce complete Windows release gate"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_checkout_exact_windows_coverage_revisi_4c9d2529",
+      "display_name": "Checkout exact Windows coverage revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_setup_rust_coverage_toolchain_c9fc4241",
+      "display_name": "Setup Rust coverage toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_setup_python_eadf1fed",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_restore_immutable_locked_crate_downloa_d55585b0",
+      "display_name": "Restore immutable locked crate downloads"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_verify_cached_archives_and_reconstruct_23f4a250",
+      "display_name": "Verify cached archives and reconstruct corrupt inputs"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_install_pinned_cargo_llvm_cov_for_wind_cb5b68bd",
+      "display_name": "Install pinned cargo-llvm-cov for Windows process coverage"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "windows_coverage",
+      "display_name": "Generate exact Windows process coverage profiles"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "windows_llvm_json",
+      "display_name": "Export Windows LLVM JSON"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "windows_llvm_text",
+      "display_name": "Export Windows native LLVM source view"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "windows_line_map",
+      "display_name": "Build Windows source-bound physical line map"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_upload_windows_process_coverage_eviden_b72bef08",
+      "display_name": "Upload Windows process coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_coverage",
+      "step_id": "ci_enforce_complete_windows_coverage_gate_74686b2b",
+      "display_name": "Enforce complete Windows coverage gate"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows",
+      "step_id": "ci_enforce_complete_parallel_windows_beha_8b56a8ff",
+      "display_name": "Enforce complete parallel Windows behavior gate"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_checkout_exact_coverage_revision_751ea2db",
+      "display_name": "Checkout exact coverage revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_checkout_pinned_legacy_reference_for_m_c7ba1fc2",
+      "display_name": "Checkout pinned legacy reference for merged coverage"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_setup_rust_coverage_toolchain_4700e040",
+      "display_name": "Setup Rust coverage toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_setup_python_ebd91995",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_restore_immutable_locked_crate_downloa_d56f8d2b",
+      "display_name": "Restore immutable locked crate downloads"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_verify_cached_archives_and_reconstruct_a4d2be46",
+      "display_name": "Verify cached archives and reconstruct corrupt inputs"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_install_merged_coverage_prerequisites_234f17f8",
+      "display_name": "Install merged coverage prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_install_pinned_cargo_llvm_cov_37f9d2b9",
+      "display_name": "Install pinned cargo-llvm-cov"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "coverage_profiles",
+      "display_name": "Generate merged behavioral coverage profiles"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "llvm_json",
+      "display_name": "Export pinned LLVM JSON"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "llvm_text",
+      "display_name": "Export native LLVM source view"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "line_map",
+      "display_name": "Build source-bound physical line map"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_upload_linux_merged_coverage_evidence_d1b2b381",
+      "display_name": "Upload Linux merged coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_linux",
+      "step_id": "ci_enforce_complete_linux_coverage_produc_69f86aea",
+      "display_name": "Enforce complete Linux coverage producer"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_checkout_exact_coverage_revision_10845ddb",
+      "display_name": "Checkout exact coverage revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_download_exact_windows_process_coverag_2054a97e",
+      "display_name": "Download exact Windows process coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_download_exact_linux_merged_coverage_e_b2dfc293",
+      "display_name": "Download exact Linux merged coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_setup_python_aa276a4b",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "coverage_base",
+      "display_name": "Resolve changed-line coverage base"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "policy",
+      "display_name": "Enforce production changed-line coverage"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_enforce_complete_changed_line_coverage_c46ed6fd",
+      "display_name": "Enforce complete changed-line coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "coverage_diff",
+      "step_id": "ci_upload_changed_line_coverage_evidence_08a4e026",
+      "display_name": "Upload changed-line coverage evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_checkout_712fbfbe",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_checkout_pinned_legacy_reference_d0db2cc4",
+      "display_name": "Checkout pinned legacy reference"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_setup_rust_031f75ce",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_setup_python_e12eb386",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_install_pinned_live_python_prerequisit_bba8919c",
+      "display_name": "Install pinned live Python prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_strict_complete_live_python_compatibil_d02a6652",
+      "display_name": "Strict complete live Python compatibility"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_validate_live_compatibility_evidence_s_5f62a05f",
+      "display_name": "Validate live compatibility evidence schema"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "compat-live-tls",
+      "step_id": "ci_upload_live_compatibility_evidence_d18a80d5",
+      "display_name": "Upload live compatibility evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "media-match-generated-media",
+      "step_id": "ci_checkout_sorotte_e740c16e",
+      "display_name": "Checkout Sorotte"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "media-match-generated-media",
+      "step_id": "ci_setup_rust_82ca280f",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "media-match-generated-media",
+      "step_id": "ci_install_generated_media_tools_3b763091",
+      "display_name": "Install generated-media tools"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "media-match-generated-media",
+      "step_id": "ci_verify_generated_media_tools_7b98165c",
+      "display_name": "Verify generated-media tools"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "media-match-generated-media",
+      "step_id": "ci_required_generated_media_media_match_v_fc97f7a1",
+      "display_name": "Required generated-media Media Match V3 diagnostic"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_checkout_sorotte_16a00989",
+      "display_name": "Checkout Sorotte"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_setup_rust_4e3863e3",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_install_supported_mpv_build_dependenci_b2dcc34f",
+      "display_name": "Install supported mpv build dependencies"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_checkout_pinned_official_mpv_source_565036bb",
+      "display_name": "Checkout pinned official mpv source"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_verify_supported_mpv_source_revision_addc97fa",
+      "display_name": "Verify supported mpv source revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_build_pinned_supported_mpv_fe8bfb89",
+      "display_name": "Build pinned supported mpv"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_verify_supported_mpv_version_3d750cce",
+      "display_name": "Verify supported mpv version"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_verify_sorotte_candidate_revision_03e2dbaf",
+      "display_name": "Verify Sorotte candidate revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_build_packaged_playback_lifecycle_cand_2e5b88d5",
+      "display_name": "Build packaged playback lifecycle candidates"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "playback_lifecycle_system",
+      "display_name": "Required packaged multi-client real mpv lifecycle"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "playback_lifecycle_evidence",
+      "display_name": "Validate and stage privacy-safe lifecycle evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_upload_privacy_safe_packaged_lifecycle_c146affa",
+      "display_name": "Upload privacy-safe packaged lifecycle evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_required_real_mpv_pause_seek_resume_an_4588eef8",
+      "display_name": "Required real mpv pause, seek, resume, and bounded-fetch semantics"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_required_real_mpv_cache_cap_drain_and__4269069f",
+      "display_name": "Required real mpv cache-cap drain and input-resume semantics"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_required_real_mpv_premature_disconnect_ff908420",
+      "display_name": "Required real mpv premature-disconnect recovery semantics"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_full_deterministic_http_stall_and_rebu_adb8771d",
+      "display_name": "Full deterministic HTTP-stall and rebuffer harness"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "ci_enforce_packaged_lifecycle_verificatio_d976c54f",
+      "display_name": "Enforce packaged lifecycle verification and safe evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_checkout_exact_verification_revision_254342e3",
+      "display_name": "Checkout exact verification revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_setup_python_7ac3a0a3",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_download_lifecycle_evidence_aa0ff663",
+      "display_name": "Download lifecycle evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_download_semantic_evidence_7613f16e",
+      "display_name": "Download semantic evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_aggregate_required_behavior_evidence_063224c8",
+      "display_name": "Aggregate required behavior evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "verification_required",
+      "step_id": "ci_upload_aggregate_evidence_4732e4c7",
+      "display_name": "Upload aggregate evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_checkout_ccabee4f",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_checkout_pinned_legacy_reference_c941ab53",
+      "display_name": "Checkout pinned legacy reference"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_setup_rust_e998340b",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_setup_python_4a126615",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_install_pinned_live_python_prerequisit_68cdb36b",
+      "display_name": "Install pinned live Python prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_cargo_test_89b6689e",
+      "display_name": "Cargo test"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_nightly_state_aware_playback_lifecycle_10ae53ea",
+      "display_name": "Nightly state-aware playback lifecycle exploration"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_upload_nightly_minimized_lifecycle_mod_4c3b6544",
+      "display_name": "Upload nightly minimized lifecycle model failures"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_cache_pause_acknowledged_stream_regres_cfee6eb1",
+      "display_name": "Cache-pause acknowledged-stream regression"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_strict_complete_live_python_compatibil_87507182",
+      "display_name": "Strict complete live Python compatibility"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_validate_nightly_live_compatibility_ev_5c6c02a3",
+      "display_name": "Validate nightly live compatibility evidence schema"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "nightly-deep",
+      "step_id": "ci_upload_nightly_live_compatibility_evid_ed7c76bb",
+      "display_name": "Upload nightly live compatibility evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "server-release-verify",
+      "step_id": "ci_checkout_ae744adc",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "server-release-verify",
+      "step_id": "ci_setup_rust_268ae967",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "server-release-verify",
+      "step_id": "ci_setup_python_00b7c64c",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "server-release-verify",
+      "step_id": "ci_install_server_release_prerequisites_76270f74",
+      "display_name": "Install server release prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "server-release-verify",
+      "step_id": "ci_strict_server_release_verification_f9c53b2b",
+      "display_name": "Strict server release verification"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "merge-required",
+      "step_id": "ci_checkout_exact_verification_revision_f4733e9e",
+      "display_name": "Checkout exact verification revision"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "merge-required",
+      "step_id": "ci_setup_python_ac5b74fe",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "merge-required",
+      "step_id": "ci_enforce_complete_ci_producer_graph_adc01d5e",
+      "display_name": "Enforce complete CI producer graph"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "merge-required",
+      "step_id": "ci_preserve_required_result_16c01f0f",
+      "display_name": "Preserve required result"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_checkout_4a2b10f9",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_setup_python_5524d797",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_setup_pinned_coverage_rust_d381279c",
+      "display_name": "Setup pinned coverage Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_install_pinned_coverage_tool_1066d362",
+      "display_name": "Install pinned coverage tool"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_exercise_ordinary_standalone_and_child_6b83424e",
+      "display_name": "Exercise ordinary standalone and child profile registration"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "apparatus-canaries",
+      "step_id": "ci_preserve_real_producer_evidence_a0731aac",
+      "display_name": "Preserve real producer evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_checkout_da921ccf",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_checkout_pinned_legacy_reference_for_m_ec068844",
+      "display_name": "Checkout pinned legacy reference for merged coverage"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_setup_rust_28203453",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_setup_python_a82b5f17",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_install_merged_coverage_prerequisites_88f6261a",
+      "display_name": "Install merged coverage prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_install_pinned_cargo_llvm_cov_48d631a6",
+      "display_name": "Install pinned cargo-llvm-cov"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_generate_merged_behavioral_coverage_pr_2f931006",
+      "display_name": "Generate merged behavioral coverage profiles"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_export_pinned_llvm_json_61c5184b",
+      "display_name": "Export pinned LLVM JSON"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_export_native_llvm_source_view_d974deed",
+      "display_name": "Export native LLVM source view"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_build_source_bound_physical_line_map_c642b590",
+      "display_name": "Build source-bound physical line map"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "ci_upload_coverage_artifact_060006a8",
+      "display_name": "Upload coverage artifact"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_checkout_a2839d4f",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_setup_rust_4f669f70",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_setup_python_cfc09ad9",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_install_pinned_cargo_llvm_cov_f780e77a",
+      "display_name": "Install pinned cargo-llvm-cov"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_generate_windows_process_coverage_prof_c74d5696",
+      "display_name": "Generate Windows process coverage profiles"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_export_windows_llvm_json_97adc147",
+      "display_name": "Export Windows LLVM JSON"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_export_windows_llvm_source_view_bc6fcc4a",
+      "display_name": "Export Windows LLVM source view"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_build_windows_source_bound_physical_li_ec4c2eff",
+      "display_name": "Build Windows source-bound physical line map"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "ci_upload_windows_process_coverage_artifa_7bed17a2",
+      "display_name": "Upload Windows process coverage artifact"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "ci_checkout_exact_candidate_5433e8e2",
+      "display_name": "Checkout exact candidate"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "ci_setup_python_37490e7b",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "ci_validate_selection_prerequisites_1f3be78a",
+      "display_name": "Validate selection prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "ci_compute_source_bound_obligations_e1d79ba7",
+      "display_name": "Compute source-bound obligations"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "select",
+      "display_name": "Select applicable producer"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "selection",
+      "step_id": "ci_preserve_immutable_plan_ae04ffdd",
+      "display_name": "Preserve immutable plan"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_checkout_be2fc371",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_setup_pinned_nightly_rust_a2f02be5",
+      "display_name": "Setup pinned nightly Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_setup_python_c04ca57c",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_install_ci_policy_prerequisites_4342181d",
+      "display_name": "Install CI policy prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_install_pinned_cargo_fuzz_e3416ca0",
+      "display_name": "Install pinned cargo-fuzz"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_verify_exact_fuzz_toolchain_81ea4c0b",
+      "display_name": "Verify exact fuzz toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_validate_protocol_fuzz_policy_f620a684",
+      "display_name": "Validate protocol fuzz policy"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_exercise_real_pinned_build_run_minimiz_802bfb21",
+      "display_name": "Exercise real pinned build run minimize and report contracts"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_install_deterministic_regression_runne_33ef97e6",
+      "display_name": "Install deterministic regression runner"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_replay_retained_product_fuzz_regressio_4186de5c",
+      "display_name": "Replay retained product fuzz regressions"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_preserve_real_fuzz_tooling_and_regress_4753cd80",
+      "display_name": "Preserve real fuzz tooling and regression evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_build_protocol_fuzz_target_8e536549",
+      "display_name": "Build protocol fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_run_bounded_protocol_fuzz_target_d27893e1",
+      "display_name": "Run bounded protocol fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "protocol-fuzz",
+      "step_id": "ci_upload_protocol_fuzz_evidence_194683a2",
+      "display_name": "Upload protocol fuzz evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_checkout_1c917ecd",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_setup_pinned_nightly_rust_821f6d09",
+      "display_name": "Setup pinned nightly Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_setup_python_2eba7f68",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_install_ci_policy_prerequisites_81304427",
+      "display_name": "Install CI policy prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_install_pinned_cargo_fuzz_4ebf80ea",
+      "display_name": "Install pinned cargo-fuzz"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_verify_exact_fuzz_toolchain_11603e2f",
+      "display_name": "Verify exact fuzz toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_validate_protocol_fuzz_policy_7f06d3f9",
+      "display_name": "Validate protocol fuzz policy"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_build_framed_session_fuzz_target_45a8c6e5",
+      "display_name": "Build framed-session fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_run_bounded_framed_session_fuzz_target_880bf5b5",
+      "display_name": "Run bounded framed-session fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "framed-session-fuzz",
+      "step_id": "ci_upload_framed_session_fuzz_evidence_05534c83",
+      "display_name": "Upload framed-session fuzz evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_checkout_710c567c",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_setup_pinned_nightly_rust_da171eb8",
+      "display_name": "Setup pinned nightly Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_setup_python_9efd75f7",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_install_ci_policy_prerequisites_8c472717",
+      "display_name": "Install CI policy prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_install_pinned_cargo_fuzz_0f4839e1",
+      "display_name": "Install pinned cargo-fuzz"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_verify_exact_fuzz_toolchain_4748da5a",
+      "display_name": "Verify exact fuzz toolchain"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_validate_protocol_fuzz_policy_53c4d32b",
+      "display_name": "Validate protocol fuzz policy"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_build_mpv_framed_transcript_fuzz_targe_f1f69578",
+      "display_name": "Build mpv framed-transcript fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_run_bounded_mpv_framed_transcript_fuzz_5cb2dd38",
+      "display_name": "Run bounded mpv framed-transcript fuzz target"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "mpv-framed-transcript-fuzz",
+      "step_id": "ci_upload_mpv_framed_transcript_fuzz_evid_edd85772",
+      "display_name": "Upload mpv framed-transcript fuzz evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_checkout_exact_candidate_e0c2ead6",
+      "display_name": "Checkout exact candidate"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_setup_python_40fde241",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_require_selection_authority_4713a1bf",
+      "display_name": "Require selection authority"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_retrieve_immutable_plan_2076b323",
+      "display_name": "Retrieve immutable plan"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_validate_every_applicable_producer_or__79928092",
+      "display_name": "Validate every applicable producer or explicit no-op"
+    },
+    {
+      "workflow": ".github/workflows/rust-fuzz.yml",
+      "job_id": "fuzz-required",
+      "step_id": "ci_preserve_required_receipt_2006f306",
+      "display_name": "Preserve required receipt"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "selection",
+      "step_id": "ci_validate_apparatus_before_inventory_pr_b7ccbf75",
+      "display_name": "Validate apparatus before inventory preparation"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "selection",
+      "step_id": "selection",
+      "display_name": "Compute immutable base and head shard union"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "selection",
+      "step_id": "ci_retain_immutable_selection_inputs_3c9f9913",
+      "display_name": "Retain immutable selection inputs"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "ci_setup_pinned_rust_affcac2f",
+      "display_name": "Setup pinned Rust"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "ci_install_pinned_cargo_mutants_9618263d",
+      "display_name": "Install pinned cargo-mutants"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "campaign",
+      "display_name": "Prepare complete inventory and balanced execution matrix"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "ci_exercise_real_pinned_mutant_inventory__5f137e1f",
+      "display_name": "Exercise real pinned mutant inventory and chunk contracts"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "ci_preserve_prepared_inventory_including__3ff37ca7",
+      "display_name": "Preserve prepared inventory including empty selections"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "preparation",
+      "step_id": "ci_preserve_pinned_tool_canary_evidence_ca72c97e",
+      "display_name": "Preserve pinned tool canary evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation",
+      "step_id": "ci_install_pinned_cargo_mutants_9813c6fc",
+      "display_name": "Install pinned cargo-mutants"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation",
+      "step_id": "ci_run_exact_mutation_chunk_with_live_pro_95edd16b",
+      "display_name": "Run exact mutation chunk with live progress and cleanup reserve"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation",
+      "step_id": "ci_preserve_all_mutation_attempt_evidence_b91d8848",
+      "display_name": "Preserve all mutation attempt evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_setup_independent_finalizer_compiler_58fce568",
+      "display_name": "Setup independent finalizer compiler"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_install_independent_pinned_inventory_a_1935043d",
+      "display_name": "Install independent pinned inventory authority"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_download_prepared_inventory_8a5765d9",
+      "display_name": "Download prepared inventory"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_download_all_original_and_retried_chun_aeed3c18",
+      "display_name": "Download all original and retried chunk attempts"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_enforce_exact_complete_campaign_or_ver_e9f8c22d",
+      "display_name": "Enforce exact complete campaign or verified no-applicable-shards receipt"
+    },
+    {
+      "workflow": ".github/workflows/rust-mutation.yml",
+      "job_id": "mutation-required",
+      "step_id": "ci_retain_required_aggregate_verdict_3fc3b1d9",
+      "display_name": "Retain required aggregate verdict"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_checkout_immutable_scheduled_source_c31e5b81",
+      "display_name": "Checkout immutable scheduled source"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_setup_python_01ec713e",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_setup_rust_fc9996f5",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_preflight_scheduled_prerequisites_e7fa46f3",
+      "display_name": "Preflight scheduled prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_measure_normal_and_large_resource_inva_9d257e9d",
+      "display_name": "Measure normal and large resource invariants"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_make_manual_and_unavailable_evidence_v_289caa43",
+      "display_name": "Make manual and unavailable evidence visible"
+    },
+    {
+      "workflow": ".github/workflows/scheduled-assurance.yml",
+      "job_id": "headless",
+      "step_id": "ci_preserve_resource_measurements_and_ass_cedf4ab7",
+      "display_name": "Preserve resource measurements and assurance boundaries"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "ci_require_configured_protection_reader_b_9e076531",
+      "display_name": "Require configured protection reader before waiting"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "ci_wait_for_ordinary_main_checks_before_m_f4327824",
+      "display_name": "Wait for ordinary main checks before minting a short-lived token"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "ci_authorize_protected_exact_main_before__46b1a931",
+      "display_name": "Authorize protected exact main before interactive qualification"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_checkout_0b7d4b20",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_setup_rust_3ff97947",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_setup_python_536b411d",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_check_formatting_32f0bc99",
+      "display_name": "Check formatting"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_run_gui_updater_tests_24ec5dff",
+      "display_name": "Run GUI updater tests"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_build_gui_release_binaries_ddd8dad6",
+      "display_name": "Build GUI release binaries"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_download_exact_qualified_gui_bundle_373a9a20",
+      "display_name": "Download exact qualified GUI bundle"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_download_complete_gui_lifecycle_qualif_d4bdb9b3",
+      "display_name": "Download complete GUI lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_package_gui_release_bf3ff0ed",
+      "display_name": "Package GUI release"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_verify_exact_gui_release_artifact_20d21afd",
+      "display_name": "Verify exact GUI release artifact"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_bind_exact_gui_archive_bytes_to_lifecy_7aa01f58",
+      "display_name": "Bind exact GUI archive bytes to lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_upload_gui_artifact_verification_repor_f47159a5",
+      "display_name": "Upload GUI artifact verification report"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_upload_gui_package_artifact_c62cee5c",
+      "display_name": "Upload GUI package artifact"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_checkout_trusted_publication_revision_5d9972fd",
+      "display_name": "Checkout trusted publication revision"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_setup_python_1a8bb98d",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_recheck_current_trusted_source_authori_14eb613f",
+      "display_name": "Recheck current trusted source authorization before GUI publication"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_download_gui_package_artifact_c23aafd6",
+      "display_name": "Download GUI package artifact"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_reverify_downloaded_gui_release_artifa_67438bb2",
+      "display_name": "Reverify downloaded GUI release artifact"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_upload_publication_verification_report_227777e0",
+      "display_name": "Upload publication verification report"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_attach_package_to_github_release_ceb8aa0d",
+      "display_name": "Attach package to GitHub Release"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_independently_compare_anonymous_public_3c1570b0",
+      "display_name": "Independently compare anonymous public GUI bytes"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_retain_public_gui_verification_607ecd28",
+      "display_name": "Retain public GUI verification"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-gui-release.yml",
+      "job_id": "publish-release",
+      "step_id": "ci_publish_dev_package_to_github_release_fffdea3c",
+      "display_name": "Publish dev package to GitHub Release"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_checkout_exact_package_inputs_0330fd2a",
+      "display_name": "Checkout exact package inputs"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_setup_rust_for_dependency_inventory_e8eb8a28",
+      "display_name": "Setup Rust for dependency inventory"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_setup_python_2d5b0efc",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_qualified_platform_bytes_12aabead",
+      "display_name": "Download qualified platform bytes"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_complete_qualification_receip_d8623cb7",
+      "display_name": "Download complete qualification receipt"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_independent_server_behavior_r_46c83117",
+      "display_name": "Download independent server behavior receipt"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_require_complete_exact_source_server_b_fcc55e04",
+      "display_name": "Require complete exact-source server behavior"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_construct_server_archive_from_qualifie_79a52cde",
+      "display_name": "Construct server archive from qualified bytes"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_consume_exact_server_archive_including_97dc01a6",
+      "display_name": "Consume exact server archive including runtime boundaries"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_bind_archive_consumption_receipt_to_qu_9ab2e861",
+      "display_name": "Bind archive-consumption receipt to qualified binary bytes"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_upload_archive_consumption_receipt_8b91621c",
+      "display_name": "Upload archive-consumption receipt"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "server-release",
+      "step_id": "ci_upload_server_package_4c003b37",
+      "display_name": "Upload server package"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "publish-server-archives",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "publish-server-archives",
+      "step_id": "ci_recheck_current_trusted_source_authori_df0e8fb0",
+      "display_name": "Recheck current trusted source authorization before publication"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "publish-server-archives",
+      "step_id": "ci_reverify_downloaded_server_archive_str_2f80a466",
+      "display_name": "Reverify downloaded server archive structure and source"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "publish-server-archives",
+      "step_id": "ci_attach_immutable_server_assets_2a789f72",
+      "display_name": "Attach immutable server assets"
+    },
+    {
+      "workflow": ".github/workflows/sorotte-server-release.yml",
+      "job_id": "publish-server-archives",
+      "step_id": "ci_independently_compare_anonymous_public_2eedd488",
+      "display_name": "Independently compare anonymous public server bytes"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "ci_require_protected_main_and_complete_tr_9eb72761",
+      "display_name": "Require protected main and complete trusted checks"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "ci_require_a_tag_for_publication_e1cc92e5",
+      "display_name": "Require a tag for publication"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "default-workspace",
+      "step_id": "ci_prepare_immutable_server_qualification_fc15a940",
+      "display_name": "Prepare immutable server qualification prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "default-workspace",
+      "step_id": "ci_execute_default_feature_workspace_obli_0482bcb2",
+      "display_name": "Execute default-feature workspace obligation once"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "default-workspace",
+      "step_id": "ci_qualify_server_behavior_with_the_exact_1def2da5",
+      "display_name": "Qualify server behavior with the exact default workspace receipt"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_download_complete_build_and_lifecycle__eb431787",
+      "display_name": "Download complete build and lifecycle authority"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_download_original_protected_source_aut_25176c30",
+      "display_name": "Download original protected-source authority"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_download_exact_default_workspace_recei_1bc59cb3",
+      "display_name": "Download exact default workspace receipts"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_seal_compact_durable_receipt_inventory_8d7e50cd",
+      "display_name": "Seal compact durable receipt inventory"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_recheck_publication_authorization_befo_61e8954e",
+      "display_name": "Recheck publication authorization before durable attachment"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_attach_durable_qualification_receipts_6a5e5997",
+      "display_name": "Attach durable qualification receipts"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "ci_verify_public_durable_receipt_bytes_6054399b",
+      "display_name": "Verify public durable receipt bytes"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "preflight",
+      "step_id": "plan",
+      "display_name": "Compute immutable package obligations"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "preflight",
+      "step_id": "select",
+      "display_name": "Select applicable archive producers"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "preflight",
+      "step_id": "plan_upload",
+      "display_name": "Retain immutable package plan"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "package-required",
+      "step_id": "selection_authority",
+      "display_name": "Require package selection authority"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "package-required",
+      "step_id": "required_receipt",
+      "display_name": "Retain required package decision"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "coverage_tool_canary",
+      "display_name": "Validate real coverage producer before Linux collection"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "coverage",
+      "step_id": "coverage_canary_receipt",
+      "display_name": "Retain Linux coverage producer canary receipt"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "coverage_tool_canary",
+      "display_name": "Validate real coverage producer before Windows collection"
+    },
+    {
+      "workflow": ".github/workflows/rust-coverage.yml",
+      "job_id": "windows-process-coverage",
+      "step_id": "coverage_canary_receipt",
+      "display_name": "Retain Windows coverage producer canary receipt"
+    }
+  ]
+}

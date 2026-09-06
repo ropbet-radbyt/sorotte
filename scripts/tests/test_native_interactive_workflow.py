@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import pathlib
 import re
 import unittest
@@ -41,6 +42,7 @@ ATTESTATION_ENV_KEYS = {
     "SOROTTE_NATIVE_RUNNER_CONTRACT",
     "SOROTTE_NATIVE_RUNNER_INSTANCE_ID",
     "SOROTTE_NATIVE_RUNNER_MAX_JOBS",
+    "SOROTTE_NATIVE_RUNNER_INPUTS_SHA256",
 }
 EVIDENCE_ROOT = (
     "${{ runner.temp }}\\sorotte-native-evidence-"
@@ -53,7 +55,7 @@ CARGO_TARGET_ROOT = (
     "${{ runner.temp }}\\sorotte-native-"
     "${{ github.run_id }}-${{ github.run_attempt }}\\target"
 )
-REQUESTED_SHA = "${{ inputs.source_sha }}"
+REQUESTED_SHA = "${{ inputs.source_sha || github.sha }}"
 
 STEP_NAMES = [
     "Attest ephemeral interactive runner before checkout",
@@ -98,6 +100,9 @@ ENFORCED_OUTCOMES.update(
     {
         "LANE_SUMMARY_OUTCOME": "${{ steps.lane_summary.outcome }}",
         "EVIDENCE_UPLOAD_OUTCOME": "${{ steps.evidence_upload.outcome }}",
+        "SAFE_EXPORT_OUTCOME": "${{ steps.safe_export.outcome }}",
+        "DISPLAY_OUTCOME": "${{ steps.display.outcome }}",
+        "DISPLAY_REQUIRED": "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.native_dpi != '' && inputs.native_dpi != 'none') }}",
     }
 )
 
@@ -113,7 +118,7 @@ def step_by_name(job: dict[str, Any], name: str) -> dict[str, Any]:
     matches = [
         step
         for step in job.get("steps", [])
-        if isinstance(step, dict) and step.get("name") == name
+        if isinstance(step, dict) and (step.get("name") == name or step.get("id") == dict(zip(STEP_NAMES, ["preflight", "checkout", "source_binding", "rust", "python", "prerequisites", "native", "native_inventory", "lane_summary", "evidence_upload", "enforce"])).get(name))
     ]
     if len(matches) != 1:
         raise AssertionError(
@@ -130,16 +135,16 @@ def require_fragments(text: str, fragments: list[str], *, label: str) -> None:
 
 def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     triggers = workflow.get("on")
-    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch"}:
+    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch", "schedule", "push"}:
         raise AssertionError(
-            "native interactive execution must remain explicit trusted dispatch"
+            "native execution must use trusted dispatch, scheduled main or main push"
         )
     dispatch = triggers["workflow_dispatch"]
     if not isinstance(dispatch, dict) or set(dispatch) != {"inputs"}:
         raise AssertionError("workflow_dispatch must contain only its input contract")
     inputs = dispatch["inputs"]
-    if not isinstance(inputs, dict) or set(inputs) != {"source_sha"}:
-        raise AssertionError("workflow must require exactly one source_sha input")
+    if not isinstance(inputs, dict) or set(inputs) != {"source_sha", "native_dpi"}:
+        raise AssertionError("native source and display-profile inputs are required")
     if inputs["source_sha"] != {
         "description": "Full trusted Sorotte commit SHA to validate",
         "required": "true",
@@ -155,27 +160,43 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         raise AssertionError("workflow-level environment can bypass runner attestation")
 
     jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict) or set(jobs) != {"native_interactive"}:
-        raise AssertionError("workflow must contain exactly one native_interactive job")
+    if triggers["push"] != {"branches": ["main"]}:
+        raise AssertionError("automatic native execution must use only main pushes")
+    if not isinstance(jobs, dict) or set(jobs) != {"selection", "native_interactive"}:
+        raise AssertionError("workflow must contain hosted selection and one native_interactive job")
+    selection = jobs["selection"]
+    if selection.get("runs-on") != "ubuntu-24.04" or "if" in selection or "continue-on-error" in selection:
+        raise AssertionError("native applicability must execute on an unprivileged hosted worker")
+    selection_commands = "\n".join(step.get("run", "") for step in selection.get("steps", []))
+    for fragment in ('test "$REQUESTED_SOURCE_SHA" = "$GITHUB_SHA"',
+                     'scripts/verify.py plan --base "$BASE_SHA" --head "$GITHUB_SHA"',
+                     '--lane native $FORCE --github-output "$GITHUB_OUTPUT"'):
+        if fragment not in selection_commands:
+            raise AssertionError("native applicability or workflow source binding drifted")
     job = jobs["native_interactive"]
     if not isinstance(job, dict):
         raise AssertionError("native_interactive job must be a mapping")
+    if job.get("needs") != "selection" or job.get("if") != "needs.selection.outputs.selected == 'true'":
+        raise AssertionError("native job must follow successful hosted applicability")
     if job.get("runs-on") != RUNNER_LABELS:
         raise AssertionError("ephemeral interactive runner label contract drifted")
     if job.get("timeout-minutes") != "45":
         raise AssertionError("native interactive job timeout must remain 45 minutes")
     if "environment" in job or "continue-on-error" in job:
         raise AssertionError("native interactive job cannot weaken failure semantics")
-    if job.get("env") != {"NATIVE_ARTIFACT_ROOT": NATIVE_ARTIFACT_ROOT}:
-        raise AssertionError("job environment must only bind the native artifact root")
+    if job.get("env") != {"NATIVE_ARTIFACT_ROOT": NATIVE_ARTIFACT_ROOT,
+                          "SYNCPLAY_LEGACY_ROOT": "${{ github.workspace }}\\.interop-cache\\syncplay-legacy",
+                          "SYNCPLAY_REQUIRE_LIVE_INTEROP": "1"}:
+        raise AssertionError("native artifact and required pinned interop environment drifted")
     if ATTESTATION_ENV_KEYS & set(job.get("env", {})):
         raise AssertionError("workflow cannot self-assert runner attestations")
 
     steps = job.get("steps")
     if not isinstance(steps, list):
         raise AssertionError("native_interactive steps must be an array")
-    if [step.get("name") for step in steps] != STEP_NAMES:
-        raise AssertionError("native interactive step inventory or order drifted")
+    expected_ids = ["preflight", "checkout", "source_binding", "rust", "python", "prerequisites", "native", "display", "native_inventory", "lane_summary", "safe_export", "evidence_upload", "enforce"]
+    if [step.get("id") for step in steps] != expected_ids:
+        raise AssertionError("native trust, evidence, and execution dependency order drifted")
     for step in steps:
         if not isinstance(step, dict):
             raise AssertionError("every workflow step must be a mapping")
@@ -203,6 +224,8 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         preflight_run,
         [
             "^[0-9a-f]{40}$",
+            "Require-RunnerCondition ($requestedSha -ceq $env:GITHUB_SHA)",
+            "SOROTTE_NATIVE_RUNNER_INPUTS_SHA256 -cmatch '^[0-9a-f]{64}$'",
             "SOROTTE_NATIVE_RUNNER_CONTRACT",
             "sorotte-ephemeral-interactive-windows-v1",
             "SOROTTE_NATIVE_RUNNER_INSTANCE_ID",
@@ -263,8 +286,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     )
 
     rust = step_by_name(job, STEP_NAMES[3])
-    if rust != {
-        "name": STEP_NAMES[3],
+    if {k: v for k, v in rust.items() if k != "name"} != {
         "id": "rust",
         "if": "steps.source_binding.outcome == 'success'",
         "uses": RUST_ACTION,
@@ -273,12 +295,11 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         raise AssertionError("pinned Rust setup contract drifted")
 
     python = step_by_name(job, STEP_NAMES[4])
-    if python != {
-        "name": STEP_NAMES[4],
+    if {k: v for k, v in python.items() if k != "name"} != {
         "id": "python",
         "if": "steps.rust.outcome == 'success'",
         "uses": PYTHON_ACTION,
-        "with": {"python-version": "3.11"},
+        "with": {"python-version": "3.12.10"},
     }:
         raise AssertionError("pinned Python setup contract drifted")
 
@@ -288,11 +309,10 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         or prerequisites.get("if") != "steps.python.outcome == 'success'"
         or prerequisites.get("shell") != "pwsh"
         or "continue-on-error" in prerequisites
-        or " ".join(prerequisites.get("run", "").split())
-        != (
-            "python -m pip install --disable-pip-version-check "
-            "-r requirements/legacy-python-interop.txt"
-        )
+        or "python -m pip install --disable-pip-version-check -r requirements/legacy-python-interop.txt" not in prerequisites.get("run", "")
+        or "python scripts/native_harness_canary.py --output" not in prerequisites.get("run", "")
+        or "python scripts/verification_tools.py verify-legacy $env:SYNCPLAY_LEGACY_ROOT" not in prerequisites.get("run", "")
+        or prerequisites.get("env") != {"CARGO_TARGET_DIR": CARGO_TARGET_ROOT}
     ):
         raise AssertionError("native prerequisite installation contract drifted")
 
@@ -395,16 +415,20 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     if not isinstance(upload_with, dict):
         raise AssertionError("artifact upload inputs must be a mapping")
     if upload_with != {
-        "name": (
-            "native-interactive-${{ inputs.source_sha }}-"
-            "${{ github.run_attempt }}"
-        ),
-        "path": f"{EVIDENCE_ROOT}\n${{{{ env.NATIVE_ARTIFACT_ROOT }}}}\n",
-        "if-no-files-found": "error",
-        "retention-days": "14",
-        "overwrite": "true",
+        "name": "native-interactive-${{ inputs.source_sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "path": "${{ runner.temp }}\\native-safe-${{ github.run_id }}-${{ github.run_attempt }}",
+        "if-no-files-found": "error", "retention-days": "90",
     }:
-        raise AssertionError("native evidence artifact binding drifted")
+        raise AssertionError("native evidence must upload only the safe projection with immutable attempt identity")
+    safe = next(step for step in steps if step.get("id") == "safe_export")
+    if safe.get("if") != "always()":
+        raise AssertionError("safe failure projection must always execute")
+    require_fragments(safe.get("run", ""), ["native_failure_evidence.py export", "authoritative=$false", "exporter-unavailable-before-checkout-or-setup", "--run-attempt $env:GITHUB_RUN_ATTEMPT"], label="privacy-safe projection")
+    display = next(step for step in steps if step.get("id") == "display")
+    if display.get("if") != "steps.native.outcome == 'success' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.native_dpi != '' && inputs.native_dpi != 'none'))":
+        raise AssertionError("display profiles require a passed isolated native inventory")
+    require_fragments(display.get("run", ""), ["-ExpectedNativeDpi ([int]$env:EXPECTED_NATIVE_DPI)", "gui-display-matrix.ps1"], label="measured display profile")
+    require_fragments(preflight_run, ["$env:GITHUB_EVENT_NAME -ne 'schedule'", "'refs/heads/main'"], label="scheduled source authorization")
 
     enforcement = step_by_name(job, STEP_NAMES[10])
     if (
@@ -471,7 +495,7 @@ class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
             },
         )
 
-    def test_untrusted_or_automatic_trigger_is_rejected(self) -> None:
+    def test_untrusted_trigger_is_rejected(self) -> None:
         self.assert_policy_rejects(
             lambda workflow: workflow["on"].update({"pull_request": {}})
         )
@@ -509,6 +533,50 @@ class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
                 lambda step: step["with"].update({"ref": "${{ github.sha }}"}),
             )
         )
+
+    def test_checkout_subject_cannot_differ_from_authorized_workflow_revision(self) -> None:
+        self.assert_policy_rejects(
+            lambda workflow: self.mutate_step(
+                workflow,
+                STEP_NAMES[0],
+                lambda step: step.update(
+                    {"run": step["run"].replace(
+                        "Require-RunnerCondition ($requestedSha -ceq $env:GITHUB_SHA)",
+                        "Require-RunnerCondition ($true)",
+                    )}
+                ),
+            )
+        )
+
+    def test_display_labels_can_change_without_weakening_step_contracts(self) -> None:
+        workflow = copy.deepcopy(self.workflow)
+        for step in self.job(workflow)["steps"]:
+            step["name"] = "A clearer display label for " + step["id"]
+        validate_native_interactive_workflow(workflow)
+
+    def test_display_profile_is_requested_only_by_schedule_or_explicit_dispatch_input(self) -> None:
+        steps = {step["id"]: step for step in self.job(self.workflow)["steps"]}
+        display_if = steps["display"]["if"]
+        required_if = steps["enforce"]["env"]["DISPLAY_REQUIRED"][3:-2].strip()
+        self.assertEqual(self.workflow["on"]["workflow_dispatch"]["inputs"]["native_dpi"]["default"], "none")
+
+        def evaluate(expression: str, event: str, dpi: str, outcome: str) -> bool:
+            for token, value in (("github.event_name", event), ("inputs.native_dpi", dpi),
+                                 ("steps.native.outcome", outcome)):
+                expression = expression.replace(token, repr(value))
+            tree = ast.parse(expression.replace("&&", " and ").replace("||", " or "), mode="eval")
+            allowed = (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Eq, ast.NotEq, ast.Constant)
+            self.assertTrue(all(isinstance(node, allowed) for node in ast.walk(tree)))
+            return eval(compile(tree, "<workflow condition>", "eval"), {"__builtins__": {}})
+
+        for event, dpi, required in (("push", "", False), ("push", "144", False),
+                                     ("workflow_dispatch", "none", False), ("workflow_dispatch", "", False),
+                                     ("workflow_dispatch", "96", True), ("workflow_dispatch", "144", True),
+                                     ("workflow_dispatch", "192", True), ("schedule", "", True)):
+            for outcome in ("success", "failure", "skipped"):
+                with self.subTest(event=event, dpi=dpi, outcome=outcome):
+                    self.assertEqual(evaluate(required_if, event, dpi, outcome), required)
+                    self.assertEqual(evaluate(display_if, event, dpi, outcome), required and outcome == "success")
 
     def test_native_timeout_weakening_is_rejected(self) -> None:
         self.assert_policy_rejects(
@@ -586,7 +654,7 @@ class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
-    def test_upload_must_include_native_artifact_root(self) -> None:
+    def test_upload_must_not_publish_raw_native_artifact_root(self) -> None:
         self.assert_policy_rejects(
             lambda workflow: self.mutate_step(
                 workflow,
