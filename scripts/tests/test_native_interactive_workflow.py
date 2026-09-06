@@ -170,7 +170,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     selection_commands = "\n".join(step.get("run", "") for step in selection.get("steps", []))
     for fragment in ('test "$REQUESTED_SOURCE_SHA" = "$GITHUB_SHA"',
                      'scripts/verify.py plan --base "$BASE_SHA" --head "$GITHUB_SHA"',
-                     '--lane native $FORCE --github-output "$GITHUB_OUTPUT"'):
+                     '--lane native ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"'):
         if fragment not in selection_commands:
             raise AssertionError("native applicability or workflow source binding drifted")
     job = jobs["native_interactive"]

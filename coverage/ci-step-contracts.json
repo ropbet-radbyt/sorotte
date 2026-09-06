@@ -993,13 +993,13 @@
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "checks",
+      "job_id": "preflight",
       "step_id": "ci_setup_actionlint_toolchain_bca40e4c",
       "display_name": "Setup actionlint toolchain"
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "checks",
+      "job_id": "preflight",
       "step_id": "ci_validate_github_actions_workflows_02097a68",
       "display_name": "Validate GitHub Actions workflows"
     },
@@ -2164,12 +2164,6 @@
     {
       "workflow": ".github/workflows/rust-fuzz.yml",
       "job_id": "protocol-fuzz",
-      "step_id": "ci_build_protocol_fuzz_target_8e536549",
-      "display_name": "Build protocol fuzz target"
-    },
-    {
-      "workflow": ".github/workflows/rust-fuzz.yml",
-      "job_id": "protocol-fuzz",
       "step_id": "ci_run_bounded_protocol_fuzz_target_d27893e1",
       "display_name": "Run bounded protocol fuzz target"
     },
@@ -2224,12 +2218,6 @@
     {
       "workflow": ".github/workflows/rust-fuzz.yml",
       "job_id": "framed-session-fuzz",
-      "step_id": "ci_build_framed_session_fuzz_target_45a8c6e5",
-      "display_name": "Build framed-session fuzz target"
-    },
-    {
-      "workflow": ".github/workflows/rust-fuzz.yml",
-      "job_id": "framed-session-fuzz",
       "step_id": "ci_run_bounded_framed_session_fuzz_target_880bf5b5",
       "display_name": "Run bounded framed-session fuzz target"
     },
@@ -2280,12 +2268,6 @@
       "job_id": "mpv-framed-transcript-fuzz",
       "step_id": "ci_validate_protocol_fuzz_policy_53c4d32b",
       "display_name": "Validate protocol fuzz policy"
-    },
-    {
-      "workflow": ".github/workflows/rust-fuzz.yml",
-      "job_id": "mpv-framed-transcript-fuzz",
-      "step_id": "ci_build_mpv_framed_transcript_fuzz_targe_f1f69578",
-      "display_name": "Build mpv framed-transcript fuzz target"
     },
     {
       "workflow": ".github/workflows/rust-fuzz.yml",

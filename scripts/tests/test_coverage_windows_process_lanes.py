@@ -337,7 +337,6 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         self.assertEqual(root, self.target)
 
     def test_exact_libtest_oracle_accepts_every_lane(self) -> None:
-        total = 0
         for lane in lanes.PROFILE_LANES:
             with self.subTest(lane=lane):
                 oracle = lanes.libtest_oracle(
@@ -350,8 +349,19 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     oracle["tests"],
                     sorted(lanes.EXPECTED_TESTS[lane]),
                 )
-                total += oracle["passed"]
-        self.assertEqual(total, 99)
+
+    def test_complete_updater_lane_uses_reviewed_inventory_and_rejects_partial_or_ignored_runs(self) -> None:
+        lane = "updater-transaction-process"
+        self.assertEqual(lanes.EXPECTED_TESTS[lane], tuple(lanes.reviewed_tests("updater-bin")))
+        complete = self.libtest_output(lane)
+        fixture_test = b"tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open"
+        for faulty in (
+            complete.replace(b"test " + fixture_test + b" ... ok\n", b""),
+            complete.replace(b"test result:", b"test tests::unreviewed_updater_case ... ok\ntest result:"),
+            complete.replace(b"test " + fixture_test + b" ... ok", b"test " + fixture_test + b" ... ignored"),
+        ):
+            with self.subTest(output=faulty), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, faulty, b"")
 
     def test_mpv_lane_filtered_counts_share_reviewed_inventory_size(self) -> None:
         for lane in (

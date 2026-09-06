@@ -24,6 +24,7 @@ SCOPES = {
     "server-bin": ["-p", "sorotte-server", "--all-features", "--bin", "sorotte-server"],
     "media-lib": ["-p", "sorotte-media-match", "--all-features", "--lib"],
     "client-app-lib": ["-p", "sorotte-client-app", "--all-features", "--lib"],
+    "updater-bin": ["-p", "sorotte-gui", "--all-features", "--bin", "sorotte-gui-updater"],
 }
 
 

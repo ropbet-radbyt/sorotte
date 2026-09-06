@@ -50,7 +50,7 @@ jobs:
         id: select
         env:
           FORCE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--force' || '' }}
-        run: python scripts/verify.py selected --plan target/verification/plan.json --lane fuzz $FORCE --github-output "$GITHUB_OUTPUT"
+        run: python scripts/verify.py selected --plan target/verification/plan.json --lane fuzz ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Preserve immutable plan
         id: ci_preserve_immutable_plan_ae04ffdd
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -136,14 +136,6 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Build protocol fuzz target
-        id: ci_build_protocol_fuzz_target_8e536549
-        run: >-
-          cargo +nightly-2026-07-29 fuzz build
-          --fuzz-dir fuzz
-          --sanitizer address
-          protocol_line
-
       - name: Run bounded protocol fuzz target
         id: ci_run_bounded_protocol_fuzz_target_d27893e1
         run: >-
@@ -213,14 +205,6 @@ jobs:
       - name: Validate protocol fuzz policy
         id: ci_validate_protocol_fuzz_policy_7f06d3f9
         run: python -m unittest scripts.tests.test_protocol_fuzz_policy -v
-
-      - name: Build framed-session fuzz target
-        id: ci_build_framed_session_fuzz_target_45a8c6e5
-        run: >-
-          cargo +nightly-2026-07-29 fuzz build
-          --fuzz-dir fuzz
-          --sanitizer address
-          framed_session
 
       - name: Run bounded framed-session fuzz target
         id: ci_run_bounded_framed_session_fuzz_target_880bf5b5
@@ -292,14 +276,6 @@ jobs:
       - name: Validate protocol fuzz policy
         id: ci_validate_protocol_fuzz_policy_53c4d32b
         run: python -m unittest scripts.tests.test_protocol_fuzz_policy -v
-
-      - name: Build mpv framed-transcript fuzz target
-        id: ci_build_mpv_framed_transcript_fuzz_targe_f1f69578
-        run: >-
-          cargo +nightly-2026-07-29 fuzz build
-          --fuzz-dir fuzz
-          --sanitizer address
-          mpv_framed_transcript
 
       - name: Run bounded mpv framed-transcript fuzz target
         id: ci_run_bounded_mpv_framed_transcript_fuzz_5cb2dd38

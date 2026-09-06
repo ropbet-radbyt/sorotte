@@ -822,7 +822,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         actionlint_setup = named_step(
             self.jobs,
-            "checks",
+            "preflight",
             "Setup actionlint toolchain",
         )
         self.assertEqual(
@@ -835,10 +835,20 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assert_exact_run(
             self.jobs,
-            "checks",
+            "preflight",
             "Validate GitHub Actions workflows",
+            "command -v shellcheck shellcheck --version "
             "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
+            allowed_if="runner.os == 'Linux'",
         )
+        actionlint_validation = named_step(self.jobs, "preflight", "Validate GitHub Actions workflows")
+        self.assertEqual(actionlint_setup.get("if"), "runner.os == 'Linux'")
+        self.assertEqual(actionlint_validation.get("if"), "runner.os == 'Linux'")
+        self.assertEqual(actionlint_validation.get("shell"), "bash")
+        self.assertNotIn("continue-on-error", actionlint_validation)
+        preflight_names = [step.get("name") for step in self.jobs["preflight"]["steps"]]
+        self.assertLess(preflight_names.index("Setup actionlint toolchain"), preflight_names.index("Validate GitHub Actions workflows"))
+        self.assertLess(preflight_names.index("Validate GitHub Actions workflows"), preflight_names.index("Run cross-platform apparatus self-tests"))
         self.assert_exact_run(
             self.jobs,
             "preflight",

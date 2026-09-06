@@ -208,7 +208,7 @@ def assert_workflow_contract(text: str) -> None:
     require(plan.get("env") == {"BASE_SHA": BASE_EXPRESSION}, "plan base identity required")
     select = command_step(selection, ["python", "scripts/verify.py", "selected"])
     require(select.get("id") == "select" and command_tokens(select) == ["python", "scripts/verify.py", "selected",
-        "--plan", "target/verification/plan.json", "--lane", "fuzz", "$FORCE", "--github-output", "$GITHUB_OUTPUT"],
+        "--plan", "target/verification/plan.json", "--lane", "fuzz", "${FORCE:+$FORCE}", "--github-output", "$GITHUB_OUTPUT"],
         "selector must use the source-bound plan")
     require(select.get("env", {}).get("FORCE") ==
             "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--force' || '' }}",
@@ -234,9 +234,9 @@ def assert_workflow_contract(text: str) -> None:
         require(command_tokens(command_step(job, ["python", "-m", "pip"])) ==
                 ["python", "-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements/ci-policy.txt"],
                 "locked policy prerequisites required")
-        build = command_step(job, ["cargo", f"+{FUZZ_TOOLCHAIN}", "fuzz", "build"])
-        require(command_tokens(build) == ["cargo", f"+{FUZZ_TOOLCHAIN}", "fuzz", "build", "--fuzz-dir", "fuzz",
-                                         "--sanitizer", "address", target], "ASan build target changed")
+        require(not any(command_tokens(step)[:4] == ["cargo", f"+{FUZZ_TOOLCHAIN}", "fuzz", "build"]
+                        for step in job["steps"] if "run" in step),
+                "prebuild must remain inside the runner's committed-source guard")
         run = command_step(job, ["python", "fuzz/run_protocol_fuzz.py"])
         expected = ["python", "fuzz/run_protocol_fuzz.py"]
         if target != FUZZ_TARGET: expected += ["--target", target]
@@ -244,7 +244,7 @@ def assert_workflow_contract(text: str) -> None:
                      "${FUZZ_SECONDS}", "--seed-corpus", corpus, "--corpus-manifest", "coverage/fuzz-corpora.json",
                      "--output-root", output]
         require(command_tokens(run) == expected, "source, target, reviewed corpus and budget must remain exact")
-        require(job["steps"].index(install) < job["steps"].index(build) < job["steps"].index(run), "build/run order")
+        require(job["steps"].index(install) < job["steps"].index(run), "guarded build/run order")
         uploads = [step for step in job["steps"] if step.get("with", {}).get("path") == output]
         require(len(uploads) == 1, "one retained artifact per target required")
         upload = uploads[0]
@@ -261,7 +261,7 @@ def assert_workflow_contract(text: str) -> None:
             "retained product regression replay required")
     require(action_step(protocol, "taiki-e/install-action").get("with") ==
             {"tool": "cargo-nextest@0.9.137", "fallback": "none"}, "replay needs the pinned deterministic test runner")
-    build = command_step(protocol, ["cargo", f"+{FUZZ_TOOLCHAIN}", "fuzz", "build"])
+    build = command_step(protocol, ["python", "fuzz/run_protocol_fuzz.py"])
     require(protocol["steps"].index(canary) < protocol["steps"].index(replay) < protocol["steps"].index(build),
             "tool/replay canaries must precede the product campaign")
     evidence = [step for step in protocol["steps"] if step.get("with", {}).get("name") == "fuzz-tool-canary" + ATTEMPT_SUFFIX]
@@ -318,7 +318,6 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                 "actions/checkout@v4",
             ),
-            original.replace("--sanitizer address", "--sanitizer none"),
             original.replace('--source-sha "${{ env.VERIFICATION_SHA }}"', "--source-sha bad"),
             original.replace("--corpus-manifest coverage/fuzz-corpora.json", "--corpus-manifest malicious.json"),
             original.replace("pull_request:", "pull_request:\n    paths: [docs/**]"),
@@ -718,10 +717,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         manifest = runner.bound_source_manifest(REPO_ROOT)
         actual_paths = {entry["path"] for entry in manifest["files"]}
         expected_paths = set(runner.BOUND_FIXED_SOURCE_PATHS)
-        expected_paths.update(
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (REPO_ROOT / runner.PROTOCOL_SOURCE_DIRECTORY).rglob("*.rs")
-        )
+        expected_paths.update(path.relative_to(REPO_ROOT).as_posix()
+                              for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES
+                              for path in (REPO_ROOT / directory).rglob("*") if path.is_file())
 
         self.assertEqual(actual_paths, expected_paths)
         self.assertTrue(
@@ -746,13 +744,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         )
         actual_paths = {entry["path"] for entry in manifest["files"]}
         expected_paths = set(runner.FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS)
-        expected_paths.update(
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (
-                REPO_ROOT / runner.FRAMED_SESSION_SOURCE_DIRECTORY
-            ).rglob("*")
-            if path.is_file()
-        )
+        expected_paths.update(path.relative_to(REPO_ROOT).as_posix()
+                              for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES
+                              for path in (REPO_ROOT / directory).rglob("*") if path.is_file())
 
         self.assertEqual(actual_paths, expected_paths)
         self.assertTrue(
@@ -779,7 +773,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         expected_paths = set(
             runner.MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS
         )
-        for source_directory in runner.MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES:
+        for source_directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES:
             expected_paths.update(
                 path.relative_to(REPO_ROOT).as_posix()
                 for path in (REPO_ROOT / source_directory).rglob("*")
@@ -812,6 +806,8 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             protocol_source = root / runner.PROTOCOL_SOURCE_DIRECTORY / "codec.rs"
             protocol_source.parent.mkdir(parents=True, exist_ok=True)
             protocol_source.write_text("pub fn decode() {}\n", encoding="utf-8")
+            (root / ".cargo").mkdir()
+            (root / ".cargo/config.toml").write_text("# fixture\n", encoding="utf-8")
 
             baseline = runner.bound_source_manifest(root)
             target = root / "fuzz" / "fuzz_targets" / "protocol_line.rs"
@@ -899,7 +895,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         target_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=target_root) as temporary:
             output = pathlib.Path(temporary) / "setup-failure"
-            with mock.patch.object(
+            with mock.patch.object(runner, "require_committed_source"), mock.patch.object(
                 runner,
                 "tool_identities",
                 side_effect=ValueError("tool identity canary"),
@@ -1078,6 +1074,145 @@ class FuzzCorpusAuthorityTests(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(fuzz_regressions.main(["validate", "--output", str(output)]), 1)
             self.assertEqual(output.read_bytes(), original)
+
+
+class FuzzCommittedBuildTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def repository(self):
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary).resolve()
+            for relative in runner.BOUND_FIXED_SOURCE_PATHS:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture\n")
+            for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES:
+                path = root / directory / "fixture.txt"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture\n")
+            (root / "crates/seeds").mkdir()
+            (root / "crates/seeds/seed").write_bytes(b"{}\n")
+            (root / ".gitignore").write_bytes(b"target/\n*.ignored\n")
+            def git(*args):
+                return subprocess.run(["git", "-c", f"safe.directory={root.as_posix()}",
+                    "-c", "core.autocrlf=false", "-c", "commit.gpgSign=false",
+                    "-c", "user.name=Fuzz fixture", "-c", "user.email=fuzz@example.invalid", *args],
+                    cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "--quiet")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "Committed fuzz fixture")
+            yield runner, root, git("rev-parse", "HEAD"), git
+
+    def test_exact_git_blobs_reject_already_drifted_staged_and_untracked_inputs(self):
+        with self.repository() as (runner, root, sha, git):
+            def check():
+                runner.require_committed_source(root, sha, runner.bound_source_manifest(root))
+            check()
+            lock = root / "fuzz/Cargo.lock"
+            lock.write_bytes(b"already changed before fuzz runner\n")
+            with self.assertRaisesRegex(ValueError, "source bytes differ.*fuzz/Cargo.lock"):
+                check()
+            git("add", "fuzz/Cargo.lock")
+            with self.assertRaisesRegex(ValueError, "source bytes differ"):
+                check()
+            lock.write_bytes(b"fixture\n")
+            check()
+            extra = root / "crates/new-input.ignored"
+            extra.write_bytes(b"ignored by Git but consumed as a build input\n")
+            with self.assertRaisesRegex(ValueError, "source inventory differs"):
+                check()
+            extra.unlink()
+            (root / "crates/fixture.txt").unlink()
+            with self.assertRaisesRegex(ValueError, "at least one source file|source inventory differs"):
+                check()
+
+    def test_wrong_commit_is_rejected_even_for_unchanged_source_bytes(self):
+        with self.repository() as (runner, root, _, _):
+            with self.assertRaisesRegex(ValueError, "checked-out commit"):
+                runner.require_committed_source(root, "0" * 40, runner.bound_source_manifest(root))
+
+    def test_runner_rejects_preexisting_lock_drift_before_tools_or_prebuild(self):
+        with self.repository() as (runner, root, sha, _):
+            (root / "fuzz/Cargo.lock").write_bytes(b"changed before the runner started\n")
+            manifest = {"targets": [{"id": FUZZ_TARGET, "directory": "crates/seeds",
+                "files": [{"name": "seed", "bytes": 3, "sha256": hashlib.sha256(b"{}\n").hexdigest()}]}]}
+            output = root / "target/attempt"
+            with mock.patch.object(runner, "__file__", str(root / "fuzz/run_protocol_fuzz.py")), \
+                    mock.patch.object(runner, "validate_corpus_manifest", return_value=manifest), \
+                    mock.patch.object(runner, "tool_identities") as tools, \
+                    mock.patch.object(runner, "prepare_target") as build:
+                self.assertEqual(runner.main(["--toolchain", FUZZ_TOOLCHAIN, "--source-sha", sha,
+                    "--seconds", "1", "--seed-corpus", "crates/seeds", "--output-root", str(output)]), 2)
+                tools.assert_not_called()
+                build.assert_not_called()
+            report = json.loads((output / "run-report.json").read_text())
+            self.assertEqual(report["status"], "setup_failed")
+            self.assertIn("source bytes differ from the commit: fuzz/Cargo.lock", report["setup_error"])
+
+    def test_lock_resolution_failure_keeps_diagnostic_and_prevents_build(self):
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            record = {"preparation": {}}
+            def stale_lock(argv, **kwargs):
+                self.assertEqual(argv, ["cargo", "+" + FUZZ_TOOLCHAIN, "metadata", "--locked",
+                                        "--manifest-path", "fuzz/Cargo.toml", "--format-version", "1"])
+                kwargs["stderr"].write(b"error: the lock file needs to be updated but --locked was passed\n")
+                return subprocess.CompletedProcess(argv, 101)
+            with mock.patch.object(runner, "require_committed_source"), \
+                    mock.patch.object(runner.subprocess, "run", side_effect=stale_lock), \
+                    mock.patch.object(runner, "run_owned_process") as build:
+                with self.assertRaisesRegex(ValueError, "lock file needs to be updated"):
+                    runner.prepare_target(root, FUZZ_TOOLCHAIN, FUZZ_TARGET, "0" * 40,
+                                          {}, root, record, root / "report.json")
+                build.assert_not_called()
+            saved = json.loads((root / "report.json").read_text())
+            self.assertEqual(saved["preparation"]["metadata"]["exit_code"], 101)
+            self.assertEqual(saved["preparation"]["metadata"]["status"], "failed")
+            self.assertIn("metadata.stderr_sha256", saved["preparation"]["metadata"])
+
+    def test_metadata_and_prebuild_drift_stop_before_fuzzing(self):
+        for phase in ("metadata", "build"):
+            with self.subTest(phase=phase), self.repository() as (runner, root, sha, _):
+                before = runner.bound_source_manifest(root)
+                output = root / "target/attempt"
+                output.mkdir(parents=True)
+                record = {"preparation": {}, "source_bindings": {}}
+                real_run = subprocess.run
+                def metadata_or_git(argv, **kwargs):
+                    if argv[0] == "git":
+                        return real_run(argv, **kwargs)
+                    self.assertEqual(argv[2], "metadata")
+                    kwargs["stdout"].write(b"{}\n")
+                    if phase == "metadata":
+                        (root / "fuzz/Cargo.lock").write_bytes(b"unexpected metadata rewrite\n")
+                    return subprocess.CompletedProcess(argv, 0)
+                def mutate_during_build(argv, **kwargs):
+                    self.assertEqual(argv, runner.build_command(FUZZ_TOOLCHAIN, FUZZ_TARGET))
+                    (root / "fuzz/Cargo.lock").write_bytes(b"unexpected build rewrite\n")
+                    return subprocess.CompletedProcess(argv, 0)
+                with mock.patch.object(runner.subprocess, "run", side_effect=metadata_or_git), \
+                        mock.patch.object(runner, "run_owned_process", side_effect=mutate_during_build) as build:
+                    with self.assertRaisesRegex(ValueError, "source changed during"):
+                        runner.prepare_target(root, FUZZ_TOOLCHAIN, FUZZ_TARGET, sha,
+                                              before, output, record, output / "report.json")
+                    self.assertEqual(build.call_count, int(phase == "build"))
+
+    def test_workflow_rejects_prebuild_outside_committed_input_guard(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8").replace(
+            "      - name: Run bounded protocol fuzz target",
+            f"      - run: cargo +{FUZZ_TOOLCHAIN} fuzz build --fuzz-dir fuzz --sanitizer address protocol_line\n"
+            "      - name: Run bounded protocol fuzz target",
+        )
+        with self.assertRaisesRegex(AssertionError, "prebuild must remain"):
+            assert_workflow_contract(workflow)
+
+    def test_guarded_build_keeps_asan_for_every_target(self):
+        runner = load_runner()
+        for target in runner.SUPPORTED_TARGETS:
+            self.assertEqual(runner.build_command(FUZZ_TOOLCHAIN, target),
+                ["cargo", "+" + FUZZ_TOOLCHAIN, "fuzz", "build", "--fuzz-dir", "fuzz",
+                 "--sanitizer", "address", target])
 
 
 class FuzzToolCanaryTests(unittest.TestCase):

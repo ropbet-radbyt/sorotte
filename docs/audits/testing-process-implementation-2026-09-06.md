@@ -7,8 +7,10 @@ work remain intact; implementation uses a separate worktree. The
 
 This ledger distinguishes implemented contracts, local execution and external
 activation. It does not attest a later commit, product release or unexecuted
-environment. The App work was explicitly postponed by the user; no App,
-installation, private key, repository secret or variable was created.
+environment. This implementation did not create an App or credentials. The owner
+subsequently reported installing the App; fresh API reads confirmed its expected
+Actions configuration names and main's required-check policy. App-token read
+authorization remains a separate qualified-main check.
 The table records evidence before hosted candidate qualification. Subsequent
 results belong to the implementation PR and its immutable Actions attempts; this
 document is not a live declaration that every external gate has passed.
@@ -101,10 +103,11 @@ timeout/descendant cleanup, cancellation, immutable-attempt and source/binary-dr
 tests cover these paths. These local timing observations do not establish a hosted
 critical-path improvement.
 
-## Deferred App activation
+## App authorization
 
-The [prepared App setup](../PROTECTION_READER_SETUP.md) and credential-free manifest
-remain reviewable for the requested follow-up. Stable/dev publication will fail
-early until a repository-scoped Administration-read token is available. Ordinary
-PR checks and native candidate qualification use their normal read authority.
+The [App setup guide](../PROTECTION_READER_SETUP.md) and credential-free manifest
+record the authorization contract. The owner has supplied the expected Actions
+configuration; stable/dev publication must still prove a repository-scoped
+Administration-read token can inspect the policy. Ordinary PR checks and native
+candidate qualification use their normal read authority.
 No release/tag/product publication is part of this implementation task.

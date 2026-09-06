@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -269,6 +270,61 @@ try {
                 if error:
                     self.assertIn(error, observed["error"])
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell inherited module lookup")
+    def test_controller_and_watchdog_use_runtime_utility_commands_despite_shadowed_module_path(self):
+        # Reproduce the Python -> WinPS seam without requiring a particular
+        # installed pwsh version. An inherited Core-first path may resolve a
+        # different Utility module; the exact runtime import must restore both
+        # controller hashing and independent-watchdog JSON observation.
+        module_root = self.root / "inherited-modules"
+        shadow = module_root / "Microsoft.PowerShell.Utility"
+        shadow.mkdir(parents=True)
+        (shadow / "shadow.psm1").write_text("function Get-FileHash { throw 'shadow hash' }\n", encoding="utf-8")
+        manifest = shadow / "Microsoft.PowerShell.Utility.psd1"
+        manifest.write_text("@{RootModule='shadow.psm1';ModuleVersion='999.0.0';FunctionsToExport=@('Get-FileHash');CmdletsToExport=@()}\n", encoding="utf-8")
+        data = self.root / "manifest-input"
+        data.write_bytes(b"exact-reviewed-tool-manifest")
+        probe = self.root / "module-preflight.ps1"
+        probe.write_text(r'''
+param([string]$Controller,[string]$Watchdog,[string]$Shadow,[string]$Data)
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$results=[Collections.Generic.List[object]]::new()
+foreach ($source in @($Controller,$Watchdog)) {
+    Import-Module $Shadow -Force
+    $hashShadowed=$false
+    try { Get-FileHash -LiteralPath $Data -Algorithm SHA256 | Out-Null } catch { $hashShadowed=$_.Exception.Message -ceq 'shadow hash' }
+    if (-not $hashShadowed) { throw 'Fixture did not reproduce shadowed Utility hashing' }
+    $tokens=$null; $errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { throw 'Native entry point syntax failed' }
+    $imports=$ast.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Import-Module' -and $node.Extent.Text.Contains('Microsoft.PowerShell.Utility.psd1')},$false)
+    if ($imports.Count -ne 1) { throw 'Expected one explicit runtime Utility import in the actual entry point' }
+    . ([ScriptBlock]::Create($imports[0].Extent.Text))
+    $hash=(Get-FileHash -LiteralPath $Data -Algorithm SHA256).Hash.ToLowerInvariant()
+    $parsed='{"valid":true}' | ConvertFrom-Json
+    $module=(Get-Command Get-FileHash).Module.Path
+    if ($module -ine (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) { throw 'Hash command did not come from this PowerShell runtime' }
+    if ((Get-Command ConvertFrom-Json).Module.Path -ine $module) { throw 'JSON command did not come from this PowerShell runtime' }
+    $results.Add(@{source=[IO.Path]::GetFileName($source);hash=$hash;json_valid=$parsed.valid;shadow_reproduced=$true})
+}
+ConvertTo-Json -InputObject @($results) -Depth 4 -Compress
+''', encoding="utf-8")
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(probe),
+             "-Controller", str(ROOT / "scripts/native-runner-sandbox.ps1"), "-Watchdog", str(ROOT / "scripts/native-runner-watchdog.ps1"),
+             "-Shadow", str(manifest), "-Data", str(data)],
+            capture_output=True, text=True, timeout=15, env={**os.environ, "PSModulePath": str(module_root)},
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observed = json.loads(result.stdout)
+        self.assertEqual(len(observed), 2)
+        for item in observed:
+            self.assertTrue(item["shadow_reproduced"], item)
+            self.assertTrue(item["json_valid"], item)
+            self.assertEqual(item["hash"], hashlib.sha256(data.read_bytes()).hexdigest(), item)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell independent cleanup")
     def test_recovery_unregisters_even_when_sandbox_cli_or_python_is_unavailable(self):
         probe = self.root / "recover.ps1"
@@ -347,6 +403,7 @@ function Invoke-CapturedProcess {
                 controller = scripts / "native-runner-sandbox.ps1"
                 controller.write_text((ROOT / "scripts/native-runner-sandbox.ps1").read_text(), encoding="utf-8")
                 (scripts / "native-runner-receipt.ps1").write_text((ROOT / "scripts/native-runner-receipt.ps1").read_text(), encoding="utf-8")
+                (scripts / "native-runner-owner.ps1").write_text((ROOT / "scripts/native-runner-owner.ps1").read_text(), encoding="utf-8")
                 (scripts / "gui-native-smoke-process.ps1").write_text(helper, encoding="utf-8")
                 run = fixture_root / "target/verification/native-runners" / instance
                 (run / "output").mkdir(parents=True)

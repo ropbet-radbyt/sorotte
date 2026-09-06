@@ -22,7 +22,7 @@ def nextest_listing(scope: str = "media-lib", tests: dict[str, bool] | None = No
     tests = tests if tests is not None else {"tests::kept": False, "tests::old": True}
     arguments = inventory.SCOPES[scope]
     return {"test-count": len(tests), "rust-suites": {"binary": {
-        "package-name": arguments[1], "binary-name": arguments[1],
+        "package-name": arguments[1], "binary-name": arguments[-1] if "--bin" in arguments else arguments[1],
         "kind": "bin" if "--bin" in arguments else "lib", "status": "listed",
         "testcases": {name: {"kind": "test", "ignored": ignored, "filter-match": {"status": "matches"}}
                       for name, ignored in tests.items()},
@@ -47,6 +47,31 @@ class TestInventoryTests(unittest.TestCase):
         self.assertEqual(inventory.flatten(data), ["tests::kept", "tests::old"])
         self.assertEqual(inventory.listing(data, "media-lib"),
                          {"tests": ["tests::kept", "tests::old"], "ignored": ["tests::old"]})
+
+    def test_updater_scope_exposes_missing_extra_and_ignored_inventory_drift(self):
+        entry = inventory.validate(inventory.load(inventory.REVIEWED))["scopes"]["updater-bin"]
+        self.assertEqual(entry["cargo_scope"],
+                         ["-p", "sorotte-gui", "--all-features", "--bin", "sorotte-gui-updater"])
+        self.assertEqual(entry["ignored"], [])
+        self.assertIn("tests::windows_junction_fixture_reports_an_occupied_path_without_replacing_it", entry["tests"])
+        self.assertIn("tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open", entry["tests"])
+        expected = {"tests": entry["tests"], "ignored": entry["ignored"]}
+        original = {name: False for name in entry["tests"]}
+        self.assertEqual(inventory.listing(nextest_listing("updater-bin", original), "updater-bin"), expected)
+        first = entry["tests"][0]
+        for label, tests in (
+            ("removed", {name: ignored for name, ignored in original.items() if name != first}),
+            ("added", {**original, "tests::unreviewed_updater_case": False}),
+            ("newly_ignored", {**original, first: True}),
+        ):
+            with self.subTest(change=label):
+                actual = inventory.listing(nextest_listing("updater-bin", tests), "updater-bin")
+                difference = inventory.scope_difference(expected, actual)
+                self.assertEqual({key for key, names in difference.items() if names}, {label})
+        wrong_binary = nextest_listing("updater-bin", original)
+        wrong_binary["rust-suites"]["binary"]["binary-name"] = "sorotte-gui"
+        with self.assertRaisesRegex(ValueError, "wrong binary"):
+            inventory.listing(wrong_binary, "updater-bin")
 
     def test_renamed_deleted_added_and_ignored_status_changes_are_explicit(self):
         before = {"tests": ["tests::kept", "tests::old"], "ignored": ["tests::old"]}

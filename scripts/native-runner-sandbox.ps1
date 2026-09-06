@@ -12,6 +12,9 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+# Python launched from pwsh can preserve Core module paths in a Windows
+# PowerShell child. Resolve this runtime's hashing/JSON commands explicitly.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $repoRoot=Split-Path -Parent $PSScriptRoot
 $runBase=[IO.Path]::GetFullPath((Join-Path $repoRoot 'target\verification\native-runners'))
 $runRoot=[IO.Path]::GetFullPath((Join-Path $runBase $InstanceId.ToString()))
@@ -26,6 +29,7 @@ $wsb=$null
 $python=$null
 . (Join-Path $PSScriptRoot 'gui-native-smoke-process.ps1')
 . (Join-Path $PSScriptRoot 'native-runner-receipt.ps1')
+. (Join-Path $PSScriptRoot 'native-runner-owner.ps1')
 
 function Api([string]$Path,[string]$Method='GET') {
     $result=& gh.exe api --method $Method $Path
@@ -179,8 +183,13 @@ try {
     $config.Configuration.LogonCommand.Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\SorotteCIBootstrap\native-runner-guest.ps1 -InstanceId $InstanceId -ToolsManifestSha256 $($hashes['tools-manifest.json']) -ScriptSha256 $($hashes['native-runner-guest.ps1']) -HelperSha256 $($hashes['gui-native-smoke-process.ps1']) -ExporterSha256 $($hashes['native_failure_evidence.py'])"
     $config.Save("$runRoot\run.wsb")
     Save-Receipt
-    # Guardian survives controller interruption and knows only the owned UUID.
-    $guardianArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'native-runner-watchdog.ps1'),'-ControllerPid',[string]$PID,'-ControllerStartUtc',(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'),'-InstanceId',$InstanceId.ToString(),'-TimeoutMinutes',[string]$TimeoutMinutes)
+    # The guardian retains this exact controller's handle and can stop a late
+    # API return before deadline recovery removes the owned guest/registration.
+    $receipt['controller_pid']=$PID
+    $receipt['controller_started_at_utc']=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+    $receipt['controller_command_sha256']=Get-NativeControllerCommandSha256 (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").CommandLine
+    Save-Receipt
+    $guardianArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'native-runner-watchdog.ps1'),'-ControllerPid',[string]$PID,'-ControllerStartUtc',$receipt.controller_started_at_utc,'-ControllerCommandSha256',$receipt.controller_command_sha256,'-InstanceId',$InstanceId.ToString(),'-TimeoutMinutes',[string]$TimeoutMinutes)
     $guardian=Start-Process -FilePath powershell.exe -ArgumentList (($guardianArgs | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ') -WindowStyle Hidden -PassThru
     $null=Invoke-Control 'start' @('start','--id',$InstanceId.ToString(),'--config',$config.OuterXml)
     if (@(Get-GuestIds 'started') -notcontains $InstanceId.ToString()) { throw 'Requested isolated guest did not start' }

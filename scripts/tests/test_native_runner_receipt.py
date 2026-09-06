@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -142,7 +143,7 @@ while (-not [IO.File]::Exists((Join-Path $Output 'done'))) {
     def test_watchdog_records_unavailable_receipt_and_keeps_observing_owner(self):
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ("native-runner-watchdog.ps1", "native-runner-receipt.ps1"):
+        for name in ("native-runner-watchdog.ps1", "native-runner-receipt.ps1", "native-runner-owner.ps1"):
             (scripts / name).write_bytes((ROOT / "scripts" / name).read_bytes())
         (scripts / "native-runner-sandbox.ps1").write_text("throw 'Unexpected recovery: owned controller is alive'\n", encoding="utf-8")
         run_root = self.root / "target/verification/native-runners" / INSTANCE
@@ -154,7 +155,9 @@ while (-not [IO.File]::Exists((Join-Path $Output 'done'))) {
         owner = self.child(owner_script, "-Ready", str(self.root / "owner-ready"))
         self.wait_file(self.root / "owner-ready", owner)
         watchdog = self.child(scripts / "native-runner-watchdog.ps1", "-ControllerPid", str(owner.pid),
-                              "-ControllerStartUtc", (self.root / "owner-ready").read_text(), "-InstanceId", INSTANCE, "-TimeoutMinutes", "10")
+                              "-ControllerStartUtc", (self.root / "owner-ready").read_text(),
+                              "-ControllerCommandSha256", hashlib.sha256(subprocess.list2cmdline(owner.args).encode()).hexdigest(),
+                              "-InstanceId", INSTANCE, "-TimeoutMinutes", "10")
         self.wait_file(run_root / "watchdog-observation.json", watchdog)
         observation = json.loads((run_root / "watchdog-observation.json").read_text())
         self.assertEqual(observation["status"], "receipt-read-unavailable")

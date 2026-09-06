@@ -87,7 +87,7 @@ class TokenBoundaryTests(unittest.TestCase):
             self.assertFalse(output.exists())
             http.assert_not_called()
             self.assertIn("SOROTTE_PROTECTION_APP_PRIVATE_KEY", errors.getvalue())
-            self.assertIn("deferred", errors.getvalue())
+            self.assertIn("docs/PROTECTION_READER_SETUP.md", errors.getvalue())
 
     def test_missing_or_insufficient_protection_never_falls_back_to_normal_token(self):
         for status in (401, 403, 404):

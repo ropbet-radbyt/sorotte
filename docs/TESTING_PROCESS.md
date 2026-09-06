@@ -58,6 +58,9 @@ Review inventory additions, removals and ignore changes before updating
 Complete inventories supply totals; exact named selections still define required
 responsibilities. Empty selections, missing required tests and unexpected skips
 remain failures.
+The complete Windows updater transaction lane consumes the reviewed `updater-bin`
+scope directly. Adding, removing or ignoring an updater test therefore produces
+one explicit central inventory diff before it can qualify instrumented coverage.
 
 ## Required checks and source subjects
 
@@ -130,11 +133,11 @@ Maintenance fixture generators are never scheduled to rewrite trusted inputs.
 ## Release activation
 
 The new publication authorization needs classic branch-protection inspection
-in addition to successful trusted main-push checks. The user has postponed
-[Protection reader App setup](PROTECTION_READER_SETUP.md) to a follow-up. No App
-or credentials have been created. Publication authorization deliberately fails
-with an actionable setup error until that dependency is configured; PR testing
-and native candidate qualification do not require the App.
+in addition to successful trusted main-push checks. The owner has configured the
+[Protection reader App](PROTECTION_READER_SETUP.md); its expected Actions variable
+and secret names are present. The first qualified-main authorization must verify
+the App's actual read access. Publication fails closed when that proof is missing;
+PR testing and native candidate qualification do not require the App.
 
 Prepare and review code, finish hosted/native acceptance, activate the reviewed
 required-check policy, and complete App setup before using the new stable/dev

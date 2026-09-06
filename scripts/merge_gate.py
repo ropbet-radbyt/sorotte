@@ -25,8 +25,7 @@ PROTECTION_PATH = "branches/main/protection"
 PROTECTION_SETUP = (
     "Configure the repository-scoped Administration-read GitHub App using "
     "SOROTTE_PROTECTION_APP_ID and SOROTTE_PROTECTION_APP_PRIVATE_KEY; pass its "
-    "short-lived token as SOROTTE_PROTECTION_TOKEN. See docs/PROTECTION_READER_SETUP.md "
-    "(activation is deferred to a follow-up)."
+    "short-lived token as SOROTTE_PROTECTION_TOKEN. See docs/PROTECTION_READER_SETUP.md."
 )
 
 

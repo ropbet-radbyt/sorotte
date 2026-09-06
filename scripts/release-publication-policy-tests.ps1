@@ -69,55 +69,9 @@ try {
         -Remote origin `
         -Branch main
 
-    $guiWorkflow = Get-Content -Raw -LiteralPath (
-        Join-Path $RepoRoot ".github\workflows\sorotte-gui-release.yml"
-    )
-    if (-not $guiWorkflow.Contains("assert-github-source-tip.ps1")) {
-        throw "GUI dev publication does not verify the current main tip"
-    }
-
-    $serverWorkflow = Get-Content -Raw -LiteralPath (
-        Join-Path $RepoRoot ".github\workflows\publish-server-container.yml"
-    )
-    $serverWorkflow = $serverWorkflow -replace "`r`n?", "`n"
-    $explicitLatestPolicy = 'type=raw,value=latest,enable=${{ github.event_name == ''workflow_dispatch'' && inputs.push_latest == ''true'' }}'
-    $latestTagEntries = @(
-        $serverWorkflow -split "`n" |
-            ForEach-Object { $_.Trim() } |
-            Where-Object {
-                $_ -match '(^|,)type=raw(,|$)' -and
-                $_ -match '(^|,)value=latest(,|$)'
-            }
-    )
-    if (
-        $latestTagEntries.Count -ne 1 -or
-        $latestTagEntries[0] -cne $explicitLatestPolicy
-    ) {
-        throw "server latest publication is not restricted to explicit workflow dispatch"
-    }
-    $expectedPushLatestInput = @(
-        "  workflow_dispatch:",
-        "    inputs:",
-        "      push_latest:",
-        '        description: "Also promote this exact tested digest to latest"',
-        "        required: true",
-        '        default: "false"',
-        "        type: choice",
-        "        options:",
-        '          - "true"',
-        '          - "false"'
-    ) -join "`n"
-    if (
-        -not $serverWorkflow.Contains($expectedPushLatestInput) -or
-        (
-            [regex]::Matches(
-                $serverWorkflow,
-                '(?m)^      push_latest:\s*$'
-            ).Count -ne 1
-        )
-    ) {
-        throw "manual server latest promotion input is not an exact disabled-by-default choice"
-    }
+    # YAML publication contracts are checked structurally by apparatus preflight
+    # (WorkflowPolicyTests in test_server_container_verification.py). This runtime
+    # regression owns stale-versus-current Git source behavior only.
 
     Write-Host "Release publication policy regressions passed."
 }

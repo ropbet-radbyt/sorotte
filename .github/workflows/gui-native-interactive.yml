@@ -65,7 +65,7 @@ jobs:
           FORCE: ${{ github.event_name != 'push' && '--force' || '' }}
         run: >-
           python scripts/verify.py selected --plan target/verification/native-plan.json
-          --lane native $FORCE --github-output "$GITHUB_OUTPUT"
+          --lane native ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
 
   native_interactive:
     needs: selection

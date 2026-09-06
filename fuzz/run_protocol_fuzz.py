@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -11,10 +12,12 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 from fuzz_regressions import validate as validate_corpus_manifest
+from mutation_process import ProcessError, run as run_owned_process
 
 TARGET_NAME = "protocol_line"
 FRAMED_SESSION_TARGET_NAME = "framed_session"
@@ -46,6 +49,7 @@ SHARED_BOUND_SOURCE_PATHS = (
     "scripts/verification_tools.py",
     "scripts/verify.py",
     "scripts/test_inventory.py",
+    "scripts/mutation_process.py",
     "fuzz/Cargo.toml",
     "fuzz/Cargo.lock",
     "fuzz/run_protocol_fuzz.py",
@@ -54,6 +58,7 @@ SHARED_BOUND_SOURCE_PATHS = (
     "scripts/tests/test_known_defect_policy.py",
     "scripts/tests/test_protocol_fuzz_policy.py",
 )
+SHARED_BOUND_SOURCE_DIRECTORIES = (".cargo", "crates", "fuzz/fuzz_targets")
 BOUND_FIXED_SOURCE_PATHS = SHARED_BOUND_SOURCE_PATHS + (
     "crates/sorotte-protocol/Cargo.toml",
     "fuzz/fuzz_targets/protocol_line.rs",
@@ -149,7 +154,11 @@ def bound_source_manifest(
     else:
         raise ValueError(f"unsupported fuzz target: {target_name}")
 
-    paths = [repository_root / path for path in fixed_paths]
+    # Cargo builds this package's complete dependency graph even when only one
+    # fuzz binary is requested. Bind every local crate and Cargo configuration.
+    source_directories = SHARED_BOUND_SOURCE_DIRECTORIES
+    source_filter = lambda path: path.is_file()
+    paths = {repository_root / path for path in fixed_paths}
     for source_directory in source_directories:
         source_root = repository_root / source_directory
         if source_root.is_symlink() or not source_root.is_dir():
@@ -165,7 +174,7 @@ def bound_source_manifest(
             raise ValueError(
                 f"{source_label} source binding must contain at least one source file"
             )
-        paths.extend(sources)
+        paths.update(sources)
 
     entries = [
         file_manifest_entry(path, repository_root)
@@ -183,6 +192,115 @@ def bound_source_manifest(
         "aggregate_sha256": manifest_digest(entries),
         "files": entries,
     }
+
+
+def require_committed_source(
+    repository_root: pathlib.Path, source_sha: str, manifest: dict[str, Any]
+) -> None:
+    """Compare the actual build inputs with exact Git blobs, including inventory."""
+    git = ["git", "-c", f"safe.directory={repository_root.as_posix()}"]
+    if checked_output([*git, "rev-parse", "HEAD"], repository_root) != source_sha:
+        raise ValueError("fuzz source SHA differs from the checked-out commit")
+    roots = sorted(set(SHARED_BOUND_SOURCE_PATHS + SHARED_BOUND_SOURCE_DIRECTORIES))
+    tracked = subprocess.run(
+        [*git, "ls-tree", "-r", "-z", "--name-only", source_sha, "--", *roots],
+        cwd=repository_root, check=True, capture_output=True, timeout=30,
+    ).stdout
+    names = [entry["path"] for entry in manifest["files"]]
+    if set(tracked.decode("utf-8").rstrip("\0").split("\0")) != set(names):
+        raise ValueError("fuzz source inventory differs from the committed inputs")
+    if any("\n" in name or "\r" in name for name in names):
+        raise ValueError("fuzz source path cannot contain a newline")
+    payload = "".join(f"{source_sha}:{name}\n" for name in names).encode("utf-8")
+    result = subprocess.run(
+        [*git, "cat-file", "--batch"], input=payload, cwd=repository_root,
+        check=True, capture_output=True, timeout=30,
+    )
+    stream = io.BytesIO(result.stdout)
+    for entry in manifest["files"]:
+        header = stream.readline().decode("ascii").strip().split()
+        if len(header) != 3 or header[1] != "blob":
+            raise ValueError(f"fuzz committed source is not a blob: {entry['path']}")
+        body = stream.read(int(header[2]))
+        if stream.read(1) != b"\n":
+            raise ValueError("malformed committed fuzz source response")
+        if len(body) != entry["bytes"] or sha256_bytes(body) != entry["sha256"]:
+            raise ValueError(f"fuzz source bytes differ from the commit: {entry['path']}")
+    if stream.read():
+        raise ValueError("unexpected trailing committed fuzz source response")
+
+
+def locked_metadata_command(toolchain: str) -> list[str]:
+    # cargo-fuzz 0.13.2 has no --locked flag or Cargo-argument passthrough.
+    # Cargo metadata performs locked resolution without compiling the target.
+    return ["cargo", f"+{toolchain}", "metadata", "--locked", "--manifest-path",
+            "fuzz/Cargo.toml", "--format-version", "1"]
+
+
+def build_command(toolchain: str, target: str) -> list[str]:
+    if target not in SUPPORTED_TARGETS:
+        raise ValueError(f"unsupported fuzz target: {target}")
+    return [*cargo_fuzz_prefix(toolchain), "build", "--fuzz-dir", "fuzz",
+            "--sanitizer", "address", target]
+
+
+def prepare_target(
+    repository_root: pathlib.Path, toolchain: str, target: str,
+    source_sha: str, source_before: dict[str, Any], output: pathlib.Path,
+    report: dict[str, Any], report_path: pathlib.Path,
+) -> None:
+    """Keep resolution and prebuild inside the same committed-input boundary."""
+    require_committed_source(repository_root, source_sha, source_before)
+    metadata = locked_metadata_command(toolchain)
+    preparation = report["preparation"]
+    preparation["metadata"] = {"command": metadata, "status": "running"}
+    atomic_write_json(report_path, report)
+    started = time.monotonic()
+    print("[fuzz preparation] resolving committed dependencies with Cargo --locked", flush=True)
+    try:
+        with (output / "metadata.json").open("wb") as stdout, \
+                (output / "metadata.stderr").open("wb") as stderr:
+            result = subprocess.run(metadata, cwd=repository_root, stdout=stdout,
+                                    stderr=stderr, timeout=180, check=False)
+        preparation["metadata"].update(status="completed", exit_code=result.returncode)
+        if result.returncode:
+            diagnostic = (output / "metadata.stderr").read_text(encoding="utf-8", errors="replace")
+            raise ValueError(f"locked fuzz dependency resolution failed: {diagnostic[-4000:]}")
+    except BaseException as error:
+        preparation["metadata"].update(
+            status="timed_out" if isinstance(error, subprocess.TimeoutExpired) else "failed",
+            error=f"{type(error).__name__}: {error}",
+        )
+        raise
+    finally:
+        preparation["metadata"]["duration_seconds"] = round(time.monotonic() - started, 3)
+        for name in ("metadata.json", "metadata.stderr"):
+            if (output / name).is_file():
+                preparation["metadata"][name + "_sha256"] = sha256_file(output / name)
+        atomic_write_json(report_path, report)
+    after_metadata = bound_source_manifest(repository_root, target)
+    if after_metadata != source_before:
+        raise ValueError("fuzz source changed during locked dependency resolution")
+    require_committed_source(repository_root, source_sha, after_metadata)
+    command = build_command(toolchain, target)
+    preparation["build"] = {"command": command, "status": "running"}
+    atomic_write_json(report_path, report)
+    try:
+        result = run_owned_process(command, cwd=repository_root, timeout_seconds=600,
+                                   log_root=output / "build", label="fuzz-prebuild")
+        preparation["build"].update(status="completed", exit_code=result.returncode)
+        if result.returncode:
+            raise ValueError(f"fuzz target build failed with exit {result.returncode}; see build/console.log")
+    except BaseException as error:
+        preparation["build"].update(status="failed", error=f"{type(error).__name__}: {error}")
+        raise
+    finally:
+        atomic_write_json(report_path, report)
+    after_build = bound_source_manifest(repository_root, target)
+    report["source_bindings"]["after_build"] = after_build
+    if after_build != source_before:
+        raise ValueError("fuzz source changed during target build")
+    require_committed_source(repository_root, source_sha, after_build)
 
 
 def direct_file_manifest(directory: pathlib.Path) -> list[dict[str, Any]]:
@@ -509,9 +627,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "source_bindings": {
             "before": None,
+            "after_build": None,
             "after": None,
             "stable": None,
         },
+        "preparation": {},
         "command": None,
         "fuzzer_exit_code": None,
         "statistics": {},
@@ -529,8 +649,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["seed_corpus"]["files"] = seeds
         source_binding_before = bound_source_manifest(repository_root, args.target)
         report["source_bindings"]["before"] = source_binding_before
+        require_committed_source(repository_root, args.source_sha, source_binding_before)
         tools = tool_identities(args.toolchain, repository_root)
         report["tools"] = tools
+        prepare_target(repository_root, args.toolchain, args.target, args.source_sha,
+                       source_binding_before, output_root, report, report_path)
         command = fuzz_command(
             args.toolchain,
             corpus,
@@ -539,7 +662,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.target,
         )
         report["command"] = command
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError, ProcessError) as error:
+        try:
+            report["source_bindings"]["after"] = bound_source_manifest(repository_root, args.target)
+            report["source_bindings"]["stable"] = (
+                report["source_bindings"]["before"] == report["source_bindings"]["after"]
+            )
+        except (OSError, ValueError) as binding_error:
+            report["source_bindings"]["stable"] = False
+            report["evidence_errors"].append(f"post-preparation source binding failed: {binding_error}")
         report["finished_at"] = utc_now()
         report["status"] = "setup_failed"
         report["setup_error"] = f"{type(error).__name__}: {error}"
@@ -651,7 +782,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         source_binding_after = bound_source_manifest(repository_root, args.target)
         source_stable = source_binding_before == source_binding_after
-    except (OSError, ValueError) as error:
+        require_committed_source(repository_root, args.source_sha, source_binding_after)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         source_binding_after = None
         source_stable = False
         evidence_errors.append(

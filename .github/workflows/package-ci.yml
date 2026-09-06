@@ -42,7 +42,7 @@ jobs:
         id: select
         env:
           FORCE: ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
-        run: python scripts/verify.py selected --plan target/verification/package-plan.json --lane release $FORCE --github-output "$GITHUB_OUTPUT"
+        run: python scripts/verify.py selected --plan target/verification/package-plan.json --lane release ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Retain immutable package plan
         id: plan_upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

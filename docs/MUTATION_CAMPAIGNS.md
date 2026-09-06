@@ -127,6 +127,16 @@ test scope and two workers. Balanced counts are an initial scheduling heuristic;
 they do not establish equal runtime. The matrix starts historically expensive
 chunks first to limit the tail when runner concurrency is below the matrix size.
 
+Hosted execution allows at most ten mutation chunks at once, leaving capacity
+for Rust checks and required aggregates. In the uncapped PR #40 campaign on
+`ccb814c`, mutation occupied up to 17 of 20 observed concurrent jobs for that
+candidate; the ten-second fuzz aggregate queued for 237 seconds. A concurrent
+branch-protection probe also consumed runners, so this is not an account-quota
+measurement or an isolated benchmark. This cap can increase
+mutation completion time when other capacity is idle. Compare queue time and
+total required-check completion across subsequent campaigns before attributing
+an overall speedup to it; the mutant inventory and acceptance rules are unchanged.
+
 `mutation-required.json` records per-chunk execution time, unmutated build/test
 time, mutant build/test time, fresh finalizer listing executions and historical
 whole-job time where available. Compare the slowest chunk, total execution and

@@ -1,9 +1,10 @@
 # Protection reader setup
 
-**Activation is deferred to a follow-up at the user's request.** The repository
-contains prepared configuration and fail-closed integration only. No App has been
-registered, installed, or configured by this change; publication remains inactive
-until the owner completes that follow-up.
+The owner reported registering and installing the App on 6 September 2026. A
+fresh repository API check confirmed the expected Actions variable and secret
+names below are configured, and independently verified that `main` is protected.
+The first qualified-main authorization must still verify the App token's actual
+Administration-read access; configuration presence alone is not that proof.
 
 Stable and rolling development publication must read the current classic `main`
 protection, including administrator enforcement and strict required checks. The
