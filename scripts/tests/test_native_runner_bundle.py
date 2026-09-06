@@ -41,6 +41,12 @@ class NativeRunnerBundleTests(unittest.TestCase):
         self.patch = mock.patch.object(bundle, "PROFILE", self.profile_path)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # These are file-inventory fixtures, not executable Windows runtimes.
+        # Separate tests below execute the real offline Python/guest probe.
+        probe = mock.patch.object(bundle, "probe_python", return_value={
+            "distribution_files": ["Lib/site-packages/pip/__init__.py"]})
+        self.python_probe = probe.start()
+        self.addCleanup(probe.stop)
         self.output = self.root / "output"
 
     def prepare(self):
@@ -49,7 +55,10 @@ class NativeRunnerBundleTests(unittest.TestCase):
     def test_cold_and_warm_bundle_preserve_exact_input_inventory(self):
         manifest = self.prepare()
         self.assertEqual(bundle.validate(self.output), manifest)
-        self.assertEqual(manifest["files"], bundle.inventory(self.source))
+        source_files = bundle.inventory(self.source)
+        self.assertEqual({name: digest for name, digest in manifest["files"].items() if name in source_files}, source_files)
+        self.assertEqual(set(manifest["files"]) - source_files.keys(), {"python-runtime-probe.py", "python-runtime-contract.json"})
+        self.assertEqual(self.python_probe.call_args.args[0], self.output / "tools/python312")
         with self.assertRaises(FileExistsError):
             self.prepare()
 
@@ -84,6 +93,42 @@ class NativeRunnerBundleTests(unittest.TestCase):
         (self.source / "git/.credentials").write_text("canary-private")
         with self.assertRaisesRegex(ValueError, "credentials"):
             self.prepare()
+
+    def test_unusable_python_is_rejected_before_bundle_publication_or_download(self):
+        self.python_probe.side_effect = ValueError("selected native Python cannot execute pip")
+        with mock.patch.object(bundle, "download") as download:
+            with self.assertRaisesRegex(ValueError, "cannot execute pip"):
+                self.prepare()
+        download.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_revalidation_executes_readiness_instead_of_trusting_an_old_manifest(self):
+        self.prepare()
+        self.python_probe.side_effect = ValueError("required third-party import is unavailable")
+        with self.assertRaisesRegex(ValueError, "third-party import"):
+            bundle.validate(self.output)
+
+    def test_probe_and_requirements_contract_are_bound_even_if_manifest_is_resealed(self):
+        self.prepare()
+        for name in ("python-runtime-probe.py", "python-runtime-contract.json"):
+            with self.subTest(name=name):
+                target = self.output / "tools" / name
+                previous = target.read_bytes()
+                target.write_bytes(b"{}")
+                manifest_path = self.output / "tools-manifest.json"
+                manifest = bundle.read(manifest_path)
+                manifest["files"] = bundle.inventory(self.output / "tools")
+                manifest_path.write_text(json.dumps(manifest))
+                (self.output / "manifest.sha256").write_text(bundle.digest(manifest_path))
+                with self.assertRaisesRegex(ValueError, "readiness contract"):
+                    bundle.validate(self.output)
+                target.write_bytes(previous)
+
+    def test_current_pinned_runtime_contract_includes_required_native_imports(self):
+        contract = bundle.python_contract(self.profile["python_version"])
+        self.assertEqual(contract["requirements"]["pip"], contract["constraints"]["pip"])
+        self.assertEqual(set(contract["requirements"]), {"pip", "twisted", "pyopenssl", "cryptography", "service-identity"})
+        self.assertTrue({"unittest", "twisted.internet.reactor", "OpenSSL.SSL", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"}.issubset(contract["imports"]))
 
     def test_installed_collection_excludes_unrelated_python_packages_and_startup_hooks(self):
         installed = self.root / "installed"

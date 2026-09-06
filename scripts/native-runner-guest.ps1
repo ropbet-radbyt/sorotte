@@ -75,8 +75,11 @@ try {
     $env:PYTHONIOENCODING = 'utf-8'
     $env:PYTHONPATH = ''
     $env:PATH = "$env:PYTHONHOME;$env:PATH"
+    # Probe the copied interpreter at the exact path setup-python will select.
+    # No installation or network fallback belongs in readiness. Publish the
+    # Actions cache marker only after pip and the pinned interop imports work.
+    Invoke-Tool 'python-preflight' "$env:PYTHONHOME\python.exe" @('-I','-B',"$toolsRoot\python-runtime-probe.py",'--contract',"$toolsRoot\python-runtime-contract.json") 45000
     $null = New-Item -ItemType File -Path "$pythonVersion\x64.complete"
-    Invoke-Tool 'python-preflight' "$env:PYTHONHOME\python.exe" @('-c','import ssl,sys,unittest; assert ".".join(map(str,sys.version_info[:3])) == sys.argv[1]; print(sys.version); print(ssl.OPENSSL_VERSION)',[string]$manifest.profile.python_version)
     Copy-Item -LiteralPath "$toolsRoot\7zip" -Destination 'C:\Program Files\7-Zip' -Recurse
     Invoke-Tool '7zip-preflight' (Get-Command 7z.exe -ErrorAction Stop).Source @('i')
     $selectedBash = (Get-Command bash.exe -ErrorAction Stop).Source

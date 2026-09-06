@@ -42,11 +42,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-runner-prepar
 
 For a fresh host, install the profile's MSVC/SDK and standard portable tools,
 copy `verification/windows-native-tool-sources.example.json` to a local file,
-and set its eight explicit source paths. Python must be the clean installed
-3.12.10 runtime with pip. Collection copies the selected compiler/SDK/runtime
-components and pip's vendored dependencies, excluding unrelated Python user
-packages and startup hooks. No installer or global configuration runs on the
-host:
+and set its eight explicit source paths. Python must be a dedicated full
+3.12.10 runtime prepared with the pinned pip and legacy interop dependencies
+from `requirements/verification-constraints.txt` and
+`requirements/legacy-python-interop.txt`. Package installation is an explicit
+input-preparation step. Readiness never installs packages or accesses a package
+index. Collection copies the selected compiler/SDK/runtime components and only
+that pinned dependency closure, including its distribution metadata and native
+extensions; unrelated packages and `.pth` startup hooks are excluded.
 
 ```powershell
 python scripts/native_runner_bundle.py collect-installed `
@@ -57,7 +60,13 @@ python scripts/native_runner_bundle.py validate `
 ```
 
 The output includes `tools-manifest.json`, its digest and a closed tool-file
-inventory. Both host and guest check it. Cached downloads must match their
+inventory, shared Python readiness probe and requirements contract. Both host
+and guest check it. Preparation and validation execute the selected isolated
+interpreter, verify `python -m pip`, package versions and required native
+interop imports (including `zope.interface`). The guest repeats the probe at
+the exact Actions tool-cache path before publishing `x64.complete` or accepting
+a registration token. An embedded interpreter without pip is rejected before
+publication. Cached downloads must match their
 reviewed hashes; failed downloads leave no partial file or registration.
 Guest preflight compiles and executes harmless C/Rust programs, checks Python
 and Git Bash, then checks Explorer, the foreground session, input-desktop
@@ -288,3 +297,15 @@ regressions preserve failure behavior. The original drill and independent review
 remain in `target/verification/native-acceptance-drills/interrupt-3004fd38-7fbe-4da3-b814-f6fe953f4efe`.
 That resource-cleanup proof is retained, and final fault acceptance requires a
 new run with a successful watchdog completion record.
+
+The first full positive attempt of source
+`67679a7a112b78e9c591aec45f27194ab9f55ce4` failed in
+[run 34016530011](https://github.com/ropbet-radbyt/sorotte/actions/runs/34016530011)
+before any native scenarios ran: the retained portable Python lacked pip, but
+the old standard-library probe had marked its Actions cache complete. The
+original `17f1bbca...` input bundle and failed attempt remain preserved. The
+controller exported diagnostics, drained the failed job and removed its guest,
+runner and token files; the watchdog recorded completion. That cleanup does
+not qualify native behavior. The shared offline runtime probe closes this
+pre-registration gap; a fresh supported-runtime bundle and positive run are
+required.

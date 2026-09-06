@@ -13,10 +13,62 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import subprocess
 import urllib.request
 import uuid
 
 PROFILE = Path(__file__).resolve().parents[1] / "verification/windows-native-guest.json"
+PYTHON_PROBE = Path(__file__).with_name("native_python_probe.py")
+PYTHON_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements/legacy-python-interop.txt"
+PYTHON_CONSTRAINTS = PYTHON_REQUIREMENTS.with_name("verification-constraints.txt")
+
+
+def python_contract(version: str) -> dict:
+    def pins(path: Path, *, allow_constraint: bool = False) -> dict[str, str]:
+        result = {}
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line or (allow_constraint and line == "-c verification-constraints.txt"):
+                continue
+            match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9+_.-]+)", line)
+            if match is None:
+                raise ValueError("native Python inputs require exact reviewed package pins")
+            name = re.sub(r"[-_.]+", "-", match[1]).lower()
+            if name in result:
+                raise ValueError("native Python inputs repeat a package pin")
+            result[name] = match[2]
+        return result
+
+    constraints = pins(PYTHON_CONSTRAINTS)
+    requirements = pins(PYTHON_REQUIREMENTS, allow_constraint=True)
+    requirements["pip"] = constraints["pip"]
+    return {"schema_version": 1, "kind": "sorotte-native-python-contract", "python_version": version,
+            "requirements": requirements, "constraints": constraints,
+            "imports": ["unittest", "pip._internal.cli.main", "twisted.internet.reactor", "OpenSSL.SSL",
+                        "cryptography.hazmat.bindings._rust", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"],
+            "requirements_sha256": digest(PYTHON_REQUIREMENTS), "constraints_sha256": digest(PYTHON_CONSTRAINTS)}
+
+
+def probe_python(runtime: Path, contract: dict, *, collect_files: bool = False) -> dict:
+    arguments = [str(runtime / "python.exe"), "-I", "-B", str(PYTHON_PROBE),
+                 "--contract-json", json.dumps(contract, separators=(",", ":"))]
+    if collect_files:
+        arguments.append("--collect-files")
+    try:
+        process = subprocess.run(arguments, capture_output=True, text=True, encoding="utf-8", timeout=45,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("selected native Python readiness could not complete") from error
+    if process.returncode:
+        raise ValueError("selected native Python is not ready: " + process.stderr.strip()[-2000:])
+    if len(process.stdout) > 8 * 1024 * 1024:
+        raise ValueError("native Python readiness output exceeded its bound")
+    result = json.loads(process.stdout)
+    if (result.get("kind") != "sorotte-native-python-readiness" or result.get("result") != "passed"
+            or result.get("python_version") != contract["python_version"] or result.get("isolated") is not True
+            or result.get("pip_command") != "passed" or result.get("imports") != contract["imports"]):
+        raise ValueError("native Python readiness result is incomplete")
+    return result
 
 
 def read(path: Path) -> dict:
@@ -77,11 +129,15 @@ def prepare(tools: Path, output: Path, profile_path: Path = PROFILE) -> dict:
     validate_profile(profile)
     # Inventory first: copytree must never dereference a link into host files.
     inventory(tools)
+    contract = python_contract(profile["python_version"])
+    probe_python(tools / "python312", contract)
     output.mkdir(parents=True, exist_ok=False)
     payload = output / "tools"
     payload.mkdir()
     for name in profile["tool_directories"]:
         shutil.copytree(tools / name, payload / name)
+    shutil.copy2(PYTHON_PROBE, payload / "python-runtime-probe.py")
+    (payload / "python-runtime-contract.json").write_text(json.dumps(contract, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     for name, item in profile["downloads"].items():
         source = tools / name
         if source.is_file():
@@ -102,11 +158,36 @@ def prepare(tools: Path, output: Path, profile_path: Path = PROFILE) -> dict:
     return validate(output)
 
 
+def collect_python_runtime(source: Path, output: Path) -> Path:
+    """Copy a clean full runtime and only the constrained interop dependencies."""
+    inventory(source)
+    contract = python_contract(read(PROFILE)["python_version"])
+    readiness = probe_python(source, contract, collect_files=True)
+    output.mkdir(parents=True, exist_ok=False)
+    for pattern in ("python*.exe", "python*.dll", "vcruntime*.dll", "LICENSE.txt"):
+        for path in source.glob(pattern):
+            shutil.copy2(path, output / path.name)
+    shutil.copytree(source / "DLLs", output / "DLLs")
+    shutil.copytree(source / "Lib", output / "Lib",
+                    ignore=shutil.ignore_patterns("site-packages", "__pycache__", "sitecustomize.py", "usercustomize.py"))
+    for name in readiness["distribution_files"]:
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts or path.parts[:2] != ("Lib", "site-packages"):
+            raise ValueError("Python dependency file escapes the approved package directory")
+        destination = output / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, destination)
+    # In particular, namespace imports must still work without copied .pth code.
+    probe_python(output, contract)
+    return output
+
+
 def collect_installed(sources: dict, output: Path) -> Path:
     """Construct the portable layout from explicitly selected installed tools.
 
-    Copy only compiler/runtime responsibilities, excluding Python user packages
-    and credentials. Sources are local inputs to the sealed manifest, not a
+    Copy only compiler/runtime responsibilities and the pinned interop package
+    closure, excluding unrelated user packages and credentials. Sources are
+    local inputs to the sealed manifest, not a
     claim that an arbitrary installed version has been qualified already.
     """
     expected = {"msvc", "windows_sdk", "git", "powershell", "cmake", "ninja", "7zip", "python"}
@@ -119,6 +200,7 @@ def collect_installed(sources: dict, output: Path) -> Path:
     if roots["msvc"].name != profile["msvc_version"]:
         raise ValueError("installed MSVC source differs from the reviewed guest profile")
     output.mkdir(parents=True, exist_ok=False)
+    collect_python_runtime(roots["python"], output / "python312")
     for name in ("git", "powershell", "cmake", "7zip"):
         shutil.copytree(roots[name], output / name)
     for source, target in (("bin/Hostx64/x64", "bin"), ("include", "include"), ("lib/x64", "lib")):
@@ -132,20 +214,6 @@ def collect_installed(sources: dict, output: Path) -> Path:
         shutil.copytree(sdk / "Lib" / version / name / "x64", output / "sdk/lib" / name)
     (output / "ninja").mkdir()
     shutil.copy2(roots["ninja"], output / "ninja/ninja.exe")
-    runtime = output / "python312"
-    runtime.mkdir()
-    for pattern in ("python*.exe", "python*.dll", "vcruntime*.dll", "LICENSE.txt"):
-        for path in roots["python"].glob(pattern):
-            shutil.copy2(path, runtime / path.name)
-    shutil.copytree(roots["python"] / "DLLs", runtime / "DLLs")
-    shutil.copytree(roots["python"] / "Lib", runtime / "Lib",
-                    ignore=shutil.ignore_patterns("site-packages", "__pycache__", "sitecustomize.py", "usercustomize.py"))
-    # pip carries its dependencies under pip/_vendor. Copy no unrelated host
-    # packages, startup hooks or .pth files into the pristine guest interpreter.
-    packages = runtime / "Lib/site-packages"
-    packages.mkdir()
-    shutil.copytree(roots["python"] / "Lib/site-packages/pip", packages / "pip",
-                    ignore=shutil.ignore_patterns("__pycache__"))
     return output
 
 
@@ -159,12 +227,19 @@ def validate(bundle: Path) -> dict:
     validate_profile(value["profile"])
     if value["profile_sha256"] != digest(PROFILE) or value["profile"] != read(PROFILE):
         raise ValueError("tool inputs use a different reviewed guest profile")
+    contract = python_contract(value["profile"]["python_version"])
+    probe_path = bundle / "tools/python-runtime-probe.py"
+    contract_path = bundle / "tools/python-runtime-contract.json"
+    if (not probe_path.is_file() or probe_path.read_bytes() != PYTHON_PROBE.read_bytes()
+            or not contract_path.is_file() or read(contract_path) != contract):
+        raise ValueError("tool inputs lack the current reviewed native Python readiness contract")
     files = inventory(bundle / "tools")
     if value["files"] != files or set(value["profile"]["required_files"]) - files.keys():
         raise ValueError("tool input closure changed or is incomplete")
     for name, item in value["profile"]["downloads"].items():
         if files.get(name) != item["sha256"]:
             raise ValueError("download differs from reviewed guest profile")
+    probe_python(bundle / "tools/python312", contract)
     return value
 
 
