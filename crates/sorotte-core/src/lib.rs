@@ -123,3 +123,5 @@ mod tests {
         assert_eq!(error, DomainError::UserMissing("bob".to_owned()));
     }
 }
+
+
