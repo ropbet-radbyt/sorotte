@@ -43,9 +43,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-runner-prepar
 For a fresh host, install the profile's MSVC/SDK and standard portable tools,
 copy `verification/windows-native-tool-sources.example.json` to a local file,
 and set its eight explicit source paths. Python must be a dedicated full
-3.12.10 runtime prepared with the pinned pip and legacy interop dependencies
+3.12.10 runtime prepared with the pinned pip, legacy interop and policy dependencies
 from `requirements/verification-constraints.txt` and
-`requirements/legacy-python-interop.txt`. Package installation is an explicit
+`requirements/legacy-python-interop.txt` plus `requirements/ci-policy.txt`.
+The native canary's selected Python suites use the policy parser as well as
+interop. Package installation is an explicit
 input-preparation step. Readiness never installs packages or accesses a package
 index. Collection copies the selected compiler/SDK/runtime components and only
 that pinned dependency closure, including its distribution metadata and native
@@ -63,7 +65,8 @@ The output includes `tools-manifest.json`, its digest and a closed tool-file
 inventory, shared Python readiness probe and requirements contract. Both host
 and guest check it. Preparation and validation execute the selected isolated
 interpreter, verify `python -m pip`, package versions and required native
-interop imports (including `zope.interface`). The guest repeats the probe at
+interop and policy imports (including `zope.interface` and `yaml`). The contract
+binds both requirement files and the reviewed canary inventory. The guest repeats the probe at
 the exact Actions tool-cache path before publishing `x64.complete` or accepting
 a registration token. An embedded interpreter without pip is rejected before
 publication. Cached downloads must match their
@@ -309,3 +312,14 @@ runner and token files; the watchdog recorded completion. That cleanup does
 not qualify native behavior. The shared offline runtime probe closes this
 pre-registration gap; a fresh supported-runtime bundle and positive run are
 required.
+
+The following positive attempt of source `3bee8c3315031b38fc320f121da6ee1e2f211ef1`,
+[run 34019021984](https://github.com/ropbet-radbyt/sorotte/actions/runs/34019021984),
+passed isolated Python and Rust canary readiness but failed the selected Python
+canaries before GUI scenarios: the interop-only closure omitted PyYAML, and a
+nested WinPS guest check inherited Core module paths without `Get-FileHash`.
+Its original bundle, logs and successful resource cleanup remain separate from
+positive qualification. Readiness now includes the policy dependency closure;
+the guest resolves Utility commands from its own runtime before identity checks.
+The bootstrap regression rejects the explicit host or digest boundary and guards
+the first guest mutation, with a real inherited-module-path hash-guard regression.

@@ -20,7 +20,9 @@ import uuid
 PROFILE = Path(__file__).resolve().parents[1] / "verification/windows-native-guest.json"
 PYTHON_PROBE = Path(__file__).with_name("native_python_probe.py")
 PYTHON_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements/legacy-python-interop.txt"
+PYTHON_POLICY_REQUIREMENTS = PYTHON_REQUIREMENTS.with_name("ci-policy.txt")
 PYTHON_CONSTRAINTS = PYTHON_REQUIREMENTS.with_name("verification-constraints.txt")
+NATIVE_CANARIES = Path(__file__).resolve().parents[1] / "coverage/native-harness-canaries.json"
 
 
 def python_contract(version: str) -> dict:
@@ -41,12 +43,21 @@ def python_contract(version: str) -> dict:
 
     constraints = pins(PYTHON_CONSTRAINTS)
     requirements = pins(PYTHON_REQUIREMENTS, allow_constraint=True)
+    # Native readiness also runs the reviewed Python policy canaries. Their
+    # parser imports are prerequisites even though interop itself does not use
+    # them; bind both existing input files rather than testing only interop.
+    for name, policy_version in pins(PYTHON_POLICY_REQUIREMENTS, allow_constraint=True).items():
+        if name in requirements and requirements[name] != policy_version:
+            raise ValueError("native Python policy and interop pins disagree")
+        requirements[name] = policy_version
     requirements["pip"] = constraints["pip"]
     return {"schema_version": 1, "kind": "sorotte-native-python-contract", "python_version": version,
             "requirements": requirements, "constraints": constraints,
-            "imports": ["unittest", "pip._internal.cli.main", "twisted.internet.reactor", "OpenSSL.SSL",
+            "imports": ["unittest", "yaml", "pip._internal.cli.main", "twisted.internet.reactor", "OpenSSL.SSL",
                         "cryptography.hazmat.bindings._rust", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"],
-            "requirements_sha256": digest(PYTHON_REQUIREMENTS), "constraints_sha256": digest(PYTHON_CONSTRAINTS)}
+            "requirements_sha256": digest(PYTHON_REQUIREMENTS), "constraints_sha256": digest(PYTHON_CONSTRAINTS),
+            "policy_requirements_sha256": digest(PYTHON_POLICY_REQUIREMENTS),
+            "canary_inventory_sha256": digest(NATIVE_CANARIES)}
 
 
 def probe_python(runtime: Path, contract: dict, *, collect_files: bool = False) -> dict:

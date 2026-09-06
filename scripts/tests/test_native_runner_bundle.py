@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -126,9 +127,13 @@ class NativeRunnerBundleTests(unittest.TestCase):
 
     def test_current_pinned_runtime_contract_includes_required_native_imports(self):
         contract = bundle.python_contract(self.profile["python_version"])
+        self.assertEqual(contract["python_version"], self.profile["python_version"])
         self.assertEqual(contract["requirements"]["pip"], contract["constraints"]["pip"])
-        self.assertEqual(set(contract["requirements"]), {"pip", "twisted", "pyopenssl", "cryptography", "service-identity"})
-        self.assertTrue({"unittest", "twisted.internet.reactor", "OpenSSL.SSL", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"}.issubset(contract["imports"]))
+        self.assertEqual(set(contract["requirements"]), {"pip", "pyyaml", "twisted", "pyopenssl", "cryptography", "service-identity"})
+        self.assertEqual(contract["requirements"]["pyyaml"], "6.0.2")
+        self.assertEqual(contract["policy_requirements_sha256"], bundle.digest(bundle.PYTHON_POLICY_REQUIREMENTS))
+        self.assertEqual(contract["canary_inventory_sha256"], bundle.digest(canary.INVENTORY))
+        self.assertTrue({"unittest", "yaml", "twisted.internet.reactor", "OpenSSL.SSL", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"}.issubset(contract["imports"]))
 
     def test_installed_collection_excludes_unrelated_python_packages_and_startup_hooks(self):
         installed = self.root / "installed"
@@ -234,15 +239,59 @@ class NativeRunnerBundleTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "PowerShell syntax and host-refusal proof")
     def test_windows_guest_refuses_untrusted_bootstrap_without_side_effects(self):
-        result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                                 str(ROOT / "scripts/native-runner-guest.ps1"), "-InstanceId", "00000000-0000-0000-0000-000000000001",
-                                 "-ToolsManifestSha256", "0"*64, "-ScriptSha256", "0"*64, "-HelperSha256", "0"*64, "-ExporterSha256", "0"*64],
-                                capture_output=True, text=True, timeout=30)
+        marker = self.root / "guest-mutation-reached"
+        wrapper = self.root / "untrusted-bootstrap.ps1"
+        wrapper.write_text(r'''
+param([string]$Guest,[string]$Marker)
+$ErrorActionPreference='Stop'
+# New-Item is the first mutation after all host and bootstrap identity guards.
+# Stop there if any guard is bypassed, before guest setup or registration.
+function New-Item { [IO.File]::WriteAllText($Marker,'New-Item'); throw 'Guest mutation boundary was reached' }
+try {
+    & $Guest -InstanceId '00000000-0000-0000-0000-000000000001' -ToolsManifestSha256 ('0'*64) -ScriptSha256 ('0'*64) -HelperSha256 ('0'*64) -ExporterSha256 ('0'*64)
+    throw 'Untrusted bootstrap was accepted'
+} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+''', encoding="utf-8")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                 str(wrapper), "-Guest", str(ROOT / "scripts/native-runner-guest.ps1"), "-Marker", str(marker)],
+                                capture_output=True, text=True, timeout=30,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
         self.assertNotEqual(result.returncode, 0)
         # On an ordinary host the account check rejects before any desktop probe.
         # When this same canary runs inside the intended Sandbox, the deliberately
         # wrong self digest rejects before the work root or any tool is touched.
-        self.assertRegex(result.stderr, "runs only in Windows Sandbox|Bootstrap identity mismatch")
+        self.assertIn(result.stderr.strip(), {"This bootstrap runs only in Windows Sandbox.", "Bootstrap identity mismatch"})
+        self.assertFalse(marker.exists(), "untrusted bootstrap reached guest mutation/registration setup")
+
+    @unittest.skipUnless(sys.platform == "win32", "real inherited PowerShell Core module path")
+    def test_guest_bootstrap_hash_guard_rejects_before_mutation_under_inherited_core_modules(self):
+        core = shutil.which("pwsh.exe")
+        self.assertIsNotNone(core, "Windows native canaries require the workflow's PowerShell Core")
+        details = subprocess.run([core, "-NoProfile", "-NonInteractive", "-Command", "[Console]::Write($PSHOME)"],
+                                 check=True, capture_output=True, text=True, timeout=15,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+        modules = Path(details.stdout.strip()) / "Modules"
+        self.assertTrue(modules.is_dir())
+        source = (ROOT / "scripts/native-runner-guest.ps1").read_text()
+        imports = "\n".join(line for line in source.splitlines() if line.startswith("Import-Module "))
+        guard = source[source.index("foreach ($entry in @(@($PSCommandPath"):source.index("if (Test-Path -LiteralPath $workRoot)")]
+        marker = self.root / "hash-guard-mutation-reached"
+        probe = self.root / "guest-hash-boundary.ps1"
+        probe.write_text(r'''
+param([string]$InputDirectory,[string]$Marker)
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$inputRoot=$InputDirectory
+$ToolsManifestSha256='0'*64; $ScriptSha256='0'*64; $HelperSha256='0'*64; $ExporterSha256='0'*64
+''' + imports + "\n" + guard + "\n[IO.File]::WriteAllText($Marker,'past bootstrap identity')\n", encoding="utf-8")
+        result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                                 str(probe), "-InputDirectory", str(self.root), "-Marker", str(marker)],
+                                capture_output=True, text=True, timeout=15,
+                                env={**os.environ, "PSModulePath": str(modules)}, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Bootstrap identity mismatch", result.stderr)
+        self.assertNotIn("not recognized", result.stderr)
+        self.assertFalse(marker.exists())
 
     @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell controller pagination")
     def test_controller_paginates_with_old_cli_and_rejects_partial_or_unbounded_inventory(self):

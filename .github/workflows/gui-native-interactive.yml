@@ -292,7 +292,7 @@ jobs:
         with:
           python-version: "3.12.10"
 
-      - name: Install pinned native interop prerequisites
+      - name: Prepare and validate native prerequisites
         id: prerequisites
         if: steps.python.outcome == 'success'
         shell: pwsh

@@ -79,6 +79,17 @@ class NativePythonProbeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("native_probe_missing_binary", json.loads(result.stderr)["error"])
 
+    def test_missing_policy_parser_is_rejected_even_with_working_pip_and_interop_fixture(self):
+        contract = copy.deepcopy(self.contract)
+        contract["requirements"]["pyyaml"] = "6.0.2"
+        contract["constraints"]["pyyaml"] = "6.0.2"
+        contract["imports"].append("yaml")
+        result = self.invoke(contract=contract)
+        self.assertNotEqual(result.returncode, 0)
+        error = json.loads(result.stderr)["error"]
+        self.assertIn("pyyaml", error.lower())
+        self.assertNotIn("cannot execute pip", error)
+
     def test_system_site_path_cannot_supply_a_dependency_from_another_runtime(self):
         foreign = self.root / "foreign-runtime"
         metadata = foreign / "foreign_dependency-1.0.dist-info"

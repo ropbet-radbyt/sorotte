@@ -7,6 +7,9 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Nested WinPS checks launched by Python can inherit Core-only module paths.
+# Hash and JSON commands must come from this runtime before bootstrap checks.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if (($identity -split '\\')[-1] -ine 'WDAGUtilityAccount') {
     throw 'This bootstrap runs only in Windows Sandbox.'
