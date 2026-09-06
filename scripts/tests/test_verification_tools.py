@@ -99,6 +99,11 @@ class PinProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "legacy-python-interop.txt"):
             tools.validate_pin_projections(self.root)
 
+    def test_certificate_selftest_dependency_cannot_be_removed_from_bootstrap(self) -> None:
+        self.replace("requirements/ci-policy.txt", "cryptography==50.0.1\n", "")
+        with self.assertRaisesRegex(ValueError, "ci-policy.txt"):
+            tools.validate_pin_projections(self.root)
+
     def test_constraint_pin_duplicates_and_nested_directives_fail(self) -> None:
         path = self.root / "requirements/verification-constraints.txt"
         original = path.read_text(encoding="utf-8")

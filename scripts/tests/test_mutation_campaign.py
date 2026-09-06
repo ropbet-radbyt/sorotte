@@ -23,6 +23,28 @@ except ImportError:
 
 _REAL_IMMUTABLE_SOURCE = campaign.require_immutable_source
 
+
+class MutationToolchainSetupTests(unittest.TestCase):
+    def test_all_mutation_producers_install_declared_components_before_strict_probes(self):
+        import yaml
+        root = pathlib.Path(__file__).resolve().parents[2]
+        declared = campaign.tomllib.loads((root / "rust-toolchain.toml").read_text())["toolchain"]
+        workflow = yaml.safe_load((root / ".github/workflows/rust-mutation.yml").read_text())
+        for job in ("preparation", "mutation", "mutation-required"):
+            with self.subTest(job=job):
+                steps = workflow["jobs"][job]["steps"]
+                setup = [(index, step) for index, step in enumerate(steps)
+                         if step.get("uses", "").startswith("dtolnay/rust-toolchain@")]
+                self.assertEqual(len(setup), 1)
+                index, step = setup[0]
+                self.assertEqual(step["with"]["toolchain"], declared["channel"])
+                components = {component.strip() for component in step["with"].get("components", "").split(",")}
+                self.assertTrue(set(declared["components"]) <= components,
+                                "rustup setup must finish before strict cargo-mutants/stdout/stderr probes")
+                first_probe = next(i for i, step in enumerate(steps) if "python scripts/mutation_campaign.py" in step.get("run", ""))
+                self.assertLess(index, first_probe)
+
+
 class MutationCampaignTests(unittest.TestCase):
     git = fixtures.MutationRunnerTests.git
 

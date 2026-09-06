@@ -55,14 +55,16 @@ jobs:
         run: python scripts/verify.py preflight --phase static --output target/verification/preflight.json
       - name: Run cross-platform apparatus self-tests
         id: ci_run_cross_platform_apparatus_self_test_5b6af0e1
-        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
+        run: python scripts/verify.py run --lane static --output target/verification/apparatus-selftests --deadline-seconds 300
       - name: Preserve preflight receipt
         id: ci_preserve_preflight_receipt_6e315338
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: preflight-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: target/verification/preflight.json
+          path: |
+            target/verification/preflight.json
+            target/verification/apparatus-selftests/**
           if-no-files-found: error
           retention-days: 90
 

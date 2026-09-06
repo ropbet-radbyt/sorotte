@@ -1,7 +1,8 @@
 # Reviewed Python verification inputs
 
-Install the requirement file for the task: `requirements/ci-policy.txt` for YAML
-policy tests, `requirements/legacy-python-interop.txt` for the live Python
+Install the requirement file for the task: `requirements/ci-policy.txt` for the
+apparatus self-tests (YAML policy and certificate fixtures),
+`requirements/legacy-python-interop.txt` for the live Python
 reference, and `requirements/dependency-audit.txt` for the dependency auditor.
 Each selects its own top-level packages and references the same reviewed
 `verification-constraints.txt` beside it. Constraints limit selected versions;
@@ -17,6 +18,14 @@ environment marker, requested extra, and selected wheel hash in the closure.
 Reports, resolver commands, OS/interpreter identity, selected wheel URLs and
 SHA-256 hashes are retained locally under
 `target/verification/python-resolution/`. No global packages were installed.
+
+Hosted validation then exposed a missing certificate dependency in the
+apparatus bootstrap. `ci-policy.txt` now selects the already-reviewed
+`cryptography==50.0.1` as well as PyYAML. Six fresh constrained resolutions
+under `target/verification/python-resolution/hosted-bootstrap/` validate its
+four-package closure on the same OS/Python matrix; every selected wheel matches
+the earlier reviewed policy or interoperability resolution. The auditor and
+Twisted remain outside this self-test environment.
 
 The native resolvers were Windows Python 3.13.5/pip 25.1.1 and Ubuntu Python
 3.12.3/pip 24.0. The resolver's Python markers and wheel ABI were explicitly

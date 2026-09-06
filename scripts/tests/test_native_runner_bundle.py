@@ -346,6 +346,7 @@ function Invoke-CapturedProcess {
                 scripts.mkdir(parents=True)
                 controller = scripts / "native-runner-sandbox.ps1"
                 controller.write_text((ROOT / "scripts/native-runner-sandbox.ps1").read_text(), encoding="utf-8")
+                (scripts / "native-runner-receipt.ps1").write_text((ROOT / "scripts/native-runner-receipt.ps1").read_text(), encoding="utf-8")
                 (scripts / "gui-native-smoke-process.ps1").write_text(helper, encoding="utf-8")
                 run = fixture_root / "target/verification/native-runners" / instance
                 (run / "output").mkdir(parents=True)

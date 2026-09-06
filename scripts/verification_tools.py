@@ -192,7 +192,7 @@ def validate_pin_projections(root: Path = ROOT) -> dict:
     equal(hashlib.sha256(constraints_text.encode("utf-8")).hexdigest(), resolution["constraints-lf-sha256"], "reviewed constraints digest")
     for name, version in central_python.items():
         equal(constraints.get(name), version, f"constraints:{name}")
-    environments = {"ci-policy": {"pyyaml"}, "dependency-audit": {"pip-audit"}, "legacy-python-interop": set(interop)}
+    environments = {"ci-policy": {"pyyaml", "cryptography"}, "dependency-audit": {"pip-audit"}, "legacy-python-interop": set(interop)}
     for environment, selected in environments.items():
         path = f"requirements/{environment}.txt"
         equal(package_pins(read(path), path, directive=True), {name: central_python[name] for name in selected}, path)

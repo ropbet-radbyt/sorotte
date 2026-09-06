@@ -843,8 +843,15 @@ class CiPolicyTests(unittest.TestCase):
             self.jobs,
             "preflight",
             "Run cross-platform apparatus self-tests",
-            "python -m unittest discover -s scripts/tests -p 'test_*.py'",
+            "python scripts/verify.py run --lane static "
+            "--output target/verification/apparatus-selftests --deadline-seconds 300",
         )
+        preflight_receipt = named_step(self.jobs, "preflight", "Preserve preflight receipt")
+        self.assertEqual(preflight_receipt.get("if"), "always()")
+        self.assertEqual(preflight_receipt["with"]["path"].splitlines(), [
+            "target/verification/preflight.json",
+            "target/verification/apparatus-selftests/**",
+        ])
         self.assert_exact_run(
             self.jobs,
             "checks",
@@ -2290,7 +2297,7 @@ done""",
         )
         self.assertEqual(
             requirement_lines(CI_REQUIREMENTS),
-            ["-c verification-constraints.txt", "PyYAML==6.0.2"],
+            ["-c verification-constraints.txt", "PyYAML==6.0.2", "cryptography==50.0.1"],
         )
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),

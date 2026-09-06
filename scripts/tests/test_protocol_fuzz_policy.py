@@ -1029,15 +1029,21 @@ class FuzzCorpusAuthorityTests(unittest.TestCase):
 
     def test_runner_requires_shared_manifest_authority_before_outputs_or_tools(self) -> None:
         runner = load_runner()
-        with tempfile.TemporaryDirectory(dir=REPO_ROOT / "target") as temporary:
-            output = pathlib.Path(temporary) / "campaign"
-            with mock.patch.object(runner, "validate_corpus_manifest", side_effect=ValueError("empty reviewed corpus")), \
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "fresh-checkout"
+            root.mkdir()
+            output = root / "target" / "campaign"
+            self.assertFalse((root / "target").exists())
+            with mock.patch.object(runner, "__file__", str(root / "fuzz/run_protocol_fuzz.py")), \
+                    mock.patch.object(runner, "validate_corpus_manifest", side_effect=ValueError("empty reviewed corpus")) as authority, \
                     mock.patch.object(runner, "tool_identities") as tools:
                 with self.assertRaisesRegex(ValueError, "empty reviewed corpus"):
                     runner.main(["--toolchain", FUZZ_TOOLCHAIN, "--source-sha", "0" * 40, "--seconds", "1",
                                  "--seed-corpus", CORPUS_PATH, "--output-root", str(output)])
+                authority.assert_called_once_with(root=root, manifest=root / "coverage/fuzz-corpora.json")
                 tools.assert_not_called()
                 self.assertFalse(output.exists())
+                self.assertFalse((root / "target").exists())
 
     def test_all_targets_bind_global_selector_tool_and_corpus_sources(self) -> None:
         runner = load_runner()

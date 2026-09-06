@@ -421,6 +421,12 @@ def run_lane(lane: str, output: Path, deadline: int) -> dict:
     write(receipt, record)
     started = time.monotonic()
     environment = dict(os.environ)
+    # Hosted Windows supplies TEMP through an 8.3 alias. Canonicalize only
+    # the child's temporary paths so fixtures and resolved evidence paths use
+    # the same spelling, without changing the invoking shell or global state.
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        if environment.get(name):
+            environment[name] = str(Path(environment[name]).resolve())
     # Process-local Git trust only. Nested tests and wrappers inherit the exact
     # checkout exception; neither global configuration nor other worktrees change.
     count = int(environment.get("GIT_CONFIG_COUNT", "0"))
@@ -445,6 +451,44 @@ def run_lane(lane: str, output: Path, deadline: int) -> dict:
         record["cleanup"] = json.loads(process_receipt.read_text(encoding="utf-8"))["cleanup"] if process_receipt.exists() else {"status": "unavailable"}
         write(receipt, record)
     return record
+
+
+def gate_attempt(args: argparse.Namespace) -> dict:
+    """Retain a gate decision even when producer or selection validation fails."""
+    replay = [sys.executable, "scripts/verify.py", "gate", "--lane", args.lane,
+              "--selected", args.selected, "--source-sha", args.source_sha]
+    for option, value in (("--plan", args.plan), ("--base-sha", args.base_sha)):
+        if value is not None:
+            replay.extend((option, str(value)))
+    for option, values in (("--expected-job", args.expected_job), ("--job-result", args.job_result)):
+        for value in values:
+            replay.extend((option, value))
+    replay.extend(("--output", "FRESH_GATE_ATTEMPT.json"))
+    record = {"schema_version": 1, "kind": "required-gate", "source_sha": args.source_sha,
+              "base_sha": args.base_sha, "lane": args.lane, "selected": args.selected == "true",
+              "status": "incomplete", "created_at": now(), "primary_failure": None,
+              "requested_job_results": args.job_result, "expected_jobs": args.expected_job,
+              "selection_path": str(args.plan) if args.plan else None,
+              "observed_checkout_sha": None, "replay_command": replay,
+              "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "disposition": "unclassified", "cleanup": {"status": "not-applicable"}}
+    started = time.monotonic()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Do not erase a prior failure when a caller reuses its attempt path.
+    with args.output.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    try:
+        record["observed_checkout_sha"] = git("rev-parse", "HEAD")
+        record.update(gate(args.lane, args.selected == "true", args.job_result, args.expected_job,
+                           args.plan, args.base_sha, args.source_sha))
+        return record
+    except BaseException as error:
+        record.update(status="cancelled" if isinstance(error, KeyboardInterrupt) else "failed",
+                      primary_failure=str(error) or type(error).__name__)
+        raise
+    finally:
+        record["duration_seconds"] = round(time.monotonic() - started, 3)
+        write(args.output, record)
 
 
 def main() -> int:
@@ -483,6 +527,8 @@ def main() -> int:
     execute.add_argument("--deadline-seconds", type=int, default=1800)
     args = parser.parse_args()
     try:
+        if args.command == "gate":
+            return int(gate_attempt(args)["status"] != "passed")
         if args.command == "run":
             if not 1 <= args.deadline_seconds <= 7200:
                 raise ValueError("lane deadline must be between 1 and 7200 seconds")
@@ -495,7 +541,6 @@ def main() -> int:
             return 0
         result = (preflight(args.phase, args.tool, args.legacy) if args.command == "preflight" else
                   plan(args.base, args.head) if args.command == "plan" else
-                  gate(args.lane, args.selected == "true", args.job_result, args.expected_job, args.plan, args.base_sha, args.source_sha) if args.command == "gate" else
                   ledger(args.receipt, args.source_sha))
         write(args.output, result)
         if args.command == "ledger":

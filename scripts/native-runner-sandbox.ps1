@@ -25,6 +25,7 @@ $receiptPath=Join-Path $runRoot 'host-run.json'
 $wsb=$null
 $python=$null
 . (Join-Path $PSScriptRoot 'gui-native-smoke-process.ps1')
+. (Join-Path $PSScriptRoot 'native-runner-receipt.ps1')
 
 function Api([string]$Path,[string]$Method='GET') {
     $result=& gh.exe api --method $Method $Path
@@ -67,8 +68,7 @@ function Api-Items([string]$Path,[string]$Field,[ValidateRange(1,100)][int]$Maxi
     throw 'GitHub inventory exceeds the bounded pagination limit'
 }
 function Save-Receipt {
-    $receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$receiptPath.pending" -Encoding utf8
-    Move-Item -LiteralPath "$receiptPath.pending" -Destination $receiptPath -Force
+    Write-NativeRunnerReceipt -Path $receiptPath -Value $receipt
 }
 function Invoke-Control([string]$Name,[string[]]$Arguments,[int]$Timeout=120000) {
     $controlExe=if ($wsb) { $wsb } else { (Get-Command wsb.exe -ErrorAction Stop).Source }
@@ -130,7 +130,7 @@ function Remove-OwnedInstance {
 
 if ($CleanupOnly) {
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'Recovery requires the retained instance receipt' }
-    $saved=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+    $saved=Read-NativeRunnerReceipt -Path $receiptPath
     if ($saved.instance -cne $InstanceId.ToString() -or $saved.repository -cne $repo -or $saved.runner_name -cne $runnerName -or $saved.source_sha -notmatch '^[0-9a-f]{40}$') { throw 'Recovery receipt does not identify this owned instance' }
     $receipt=[ordered]@{}
     foreach ($entry in $saved.PSObject.Properties) { $receipt[$entry.Name]=$entry.Value }
