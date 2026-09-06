@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from verification_tools import ROOT, digest, identity, pins
+from diff_coverage import lexical_non_coverable_lines
 
 LIB = '''pub fn ordinary() -> u8 {
     11 // CANARY_UNIT
@@ -35,6 +36,33 @@ pub fn multiline(flag: bool) -> u8 {
 }
 #[test]
 fn multiline_test() { assert_eq!(multiline(true), 44); }
+fn tuple_pattern(first: Option<u8>, second: Option<u8>) -> u8 {
+    let (Some(first), Some(second)) = (
+        first, // PATTERN_TUPLE_FIRST_INPUT
+        second, // PATTERN_TUPLE_SECOND_INPUT
+    ) else { // STRUCTURAL_TUPLE_LET_ELSE
+        return 0; // PATTERN_TUPLE_REJECT
+    };
+    first + second // PATTERN_TUPLE_ACCEPT
+}
+struct Payload { value: u8 }
+fn nested_pattern(candidate: Option<Payload>) -> u8 {
+    let Some(Payload { // STRUCTURAL_NESTED_PATTERN
+        value,
+    }) = candidate // PATTERN_NESTED_INPUT
+    else {
+        return 0; // PATTERN_NESTED_REJECT
+    };
+    value // PATTERN_NESTED_ACCEPT
+}
+#[test]
+fn pattern_acceptance_and_rejection() {
+    assert_eq!(tuple_pattern(Some(3), Some(4)), 7);
+    assert_eq!(tuple_pattern(None, Some(4)), 0);
+    assert_eq!(tuple_pattern(Some(3), None), 0);
+    assert_eq!(nested_pattern(Some(Payload { value: 9 })), 9);
+    assert_eq!(nested_pattern(None), 0);
+}
 '''
 WORKER = '''fn child() -> u8 {
     22 // CANARY_CHILD
@@ -52,6 +80,15 @@ fn main() {
     }
 }
 '''
+
+PATTERN_EXECUTABLE_MARKERS = frozenset({
+    "PATTERN_TUPLE_FIRST_INPUT", "PATTERN_TUPLE_SECOND_INPUT",
+    "PATTERN_TUPLE_ACCEPT", "PATTERN_TUPLE_REJECT",
+    "PATTERN_NESTED_INPUT", "PATTERN_NESTED_ACCEPT", "PATTERN_NESTED_REJECT",
+})
+PATTERN_STRUCTURAL_MARKERS = frozenset({
+    "STRUCTURAL_TUPLE_LET_ELSE", "STRUCTURAL_NESTED_PATTERN",
+})
 
 
 def observations(report: dict, source: dict[str, str]) -> dict:
@@ -98,6 +135,71 @@ def source_view_observations(text: str) -> dict:
     if found["CANARY_MISS"] != 0 or any(value <= 0 for key, value in found.items() if key != "CANARY_MISS"):
         raise ValueError("source view lost known positive/negative line coverage")
     return found
+
+
+def pattern_observations(report: dict, text: str, source: dict[str, str]) -> dict:
+    """Require real pattern execution and independently absent wrapper regions.
+
+    A lexical exemption never substitutes for one of the required executable
+    markers. Both LLVM representations must retain every initializer and both
+    accept/reject branches before structural classification can pass.
+    """
+    expected = PATTERN_EXECUTABLE_MARKERS | PATTERN_STRUCTURAL_MARKERS
+    locations = {}
+    structural_lines = {}
+    for filename, content in source.items():
+        lines = content.splitlines()
+        structural_lines[filename] = lexical_non_coverable_lines(lines, source=filename)
+        for number, line in enumerate(lines, 1):
+            match = re.search(r"// ((?:PATTERN|STRUCTURAL)_[A-Z_]+)\s*$", line)
+            if match:
+                if match[1] in locations:
+                    raise ValueError("duplicate coverage pattern source marker")
+                locations[match[1]] = (filename, number)
+    if set(locations) != expected:
+        raise ValueError("coverage pattern source marker inventory incomplete")
+    entries = {}
+    for unit in report["data"]:
+        for entry in unit["files"]:
+            filename = Path(entry["filename"]).name
+            if filename in source:
+                if filename in entries:
+                    raise ValueError("duplicate coverage pattern source object")
+                entries[filename] = entry
+    text_counts = {}
+    for line in text.splitlines():
+        match = re.fullmatch(
+            r"\s*(\d+)\|\s*(\d*)\|.*// ((?:PATTERN|STRUCTURAL)_[A-Z_]+)\s*", line
+        )
+        if match:
+            marker = match[3]
+            if marker in text_counts:
+                raise ValueError("duplicate coverage pattern source-view marker")
+            if marker not in locations or int(match[1]) != locations[marker][1]:
+                raise ValueError("coverage pattern source-view line identity mismatch")
+            text_counts[marker] = int(match[2]) if match[2] else None
+    if set(text_counts) != expected:
+        raise ValueError("coverage pattern source-view inventory incomplete")
+    executable = {}
+    structural = {}
+    for marker, (filename, number) in locations.items():
+        entry = entries.get(filename)
+        if entry is None:
+            raise ValueError("coverage pattern source object missing")
+        counts = [segment[2] for segment in entry["segments"]
+                  if segment[0] == number and segment[3] is True and segment[4] is True]
+        if marker in PATTERN_EXECUTABLE_MARKERS:
+            if not counts or max(counts) <= 0 or text_counts[marker] != max(counts):
+                raise ValueError(f"coverage pattern executable mapping lost or disagrees: {marker}")
+            executable[marker] = max(counts)
+        else:
+            if counts or text_counts[marker] is not None:
+                raise ValueError(f"coverage pattern wrapper unexpectedly instrumented: {marker}")
+            if number not in structural_lines[filename]:
+                raise ValueError(f"coverage pattern wrapper misclassified as executable: {marker}")
+            structural[marker] = {"line": number, "llvm_json": "absent", "llvm_text": "blank",
+                                  "classification": "non-coverable"}
+    return {"executable": executable, "structural": structural}
 
 
 def run(output: Path) -> dict:
@@ -149,6 +251,10 @@ def run(output: Path) -> dict:
                 raise ValueError("coverage views disagree or source inputs changed")
             record.setdefault("artifacts", {})[variant] = {"inputs": inputs,
                 "json_sha256": digest(fixture / "coverage.json"), "source_view_sha256": digest(fixture / "source-view.txt")}
+            record.setdefault("pattern_variants", {})[variant] = pattern_observations(
+                report, (fixture / "source-view.txt").read_text(encoding="utf-8"),
+                {"lib.rs": LIB, "worker.rs": WORKER},
+            )
         record["status"] = "passed"
         return record
     except BaseException as error:

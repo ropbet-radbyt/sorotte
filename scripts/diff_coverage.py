@@ -2497,7 +2497,7 @@ def lexical_non_coverable_lines(
         if re.fullmatch(r"\.\.,?", code_stripped):
             result.add(number)
             continue
-        if re.fullmatch(r"(?:}\s*)?else\s*{", code_stripped):
+        if re.fullmatch(r"(?:[)\]}]\s*)*else\s*{", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(r"loop\s*{", code_stripped):
@@ -2511,6 +2511,20 @@ def lexical_non_coverable_lines(
             if arm.strip() in {"", "{"}:
                 result.add(number)
                 continue
+        # A nested tuple-variant/struct pattern before the initializer contains
+        # no independent executable expression. Requiring the complete line to
+        # end at the pattern's opening brace excludes initializers and guards;
+        # their following lines still need a real coverage mapping.
+        pattern_type = (
+            r"(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*::)*"
+            r"(?:Self|[A-Z][A-Za-z0-9_]*)"
+        )
+        if re.fullmatch(
+            rf"let\s+{pattern_type}\s*\(\s*{pattern_type}\s*{{",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
         if re.fullmatch(
             r"(?:let\s+|[A-Za-z_][A-Za-z0-9_]*:\s*)?"
             r"(?:(?:r#)?[A-Za-z_][A-Za-z0-9_]*::)*"
