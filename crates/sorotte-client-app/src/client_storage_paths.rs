@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 
-use crate::sorotte_ini::write_sorotte_ini_contents_atomically_at_path;
+use crate::sorotte_ini::{
+    clear_sorotte_ini_stored_client_settings_mvp_at_path, ensure_sorotte_ini_contents_at_path,
+    read_sorotte_ini_contents_consistently_at_path, update_sorotte_ini_contents_at_path,
+};
 
 pub const SOROTTE_CONFIG_FILE_NAME: &str = "sorotte.ini";
 pub const SOROTTE_CLIENT_CONFIG_PATH_ENV: &str = "SOROTTE_CLIENT_CONFIG_PATH";
@@ -409,31 +412,19 @@ pub fn persist_sorotte_client_install_locator(
         )
     })?;
     let locator_path = sorotte_client_install_locator_path(install_root);
-    if locator_path.exists() && !locator_path.is_file() {
-        return Err(anyhow!(
-            "install config locator is not a file: {}",
+    update_sorotte_ini_contents_at_path(&locator_path, |existing_contents| {
+        Ok(upsert_install_locator_config_root(
+            existing_contents.unwrap_or_default(),
+            install_root,
+            storage_root,
+        ))
+    })
+    .with_context(|| {
+        format!(
+            "failed updating install config locator {}",
             locator_path.display()
-        ));
-    }
-    let existing_contents = if locator_path.is_file() {
-        std::fs::read_to_string(&locator_path).map_err(|error| {
-            anyhow!(
-                "failed reading install config locator {}: {error}",
-                locator_path.display()
-            )
-        })?
-    } else {
-        String::new()
-    };
-    let updated_contents =
-        upsert_install_locator_config_root(&existing_contents, install_root, storage_root);
-    write_sorotte_ini_contents_atomically_at_path(&locator_path, updated_contents.as_bytes())
-        .map_err(|error| {
-            anyhow!(
-                "failed writing install config locator {}: {error}",
-                locator_path.display()
-            )
-        })
+        )
+    })
 }
 
 pub fn ensure_sorotte_client_install_locator(
@@ -441,48 +432,41 @@ pub fn ensure_sorotte_client_install_locator(
     default_storage_root: &Path,
 ) -> anyhow::Result<bool> {
     let locator_path = sorotte_client_install_locator_path(install_root);
-    if locator_path.exists() {
-        return Ok(false);
-    }
-    persist_sorotte_client_install_locator(install_root, default_storage_root)?;
-    Ok(true)
+    let contents = sorotte_client_install_locator_contents(install_root, default_storage_root);
+    ensure_sorotte_ini_contents_at_path(&locator_path, contents.as_bytes()).with_context(|| {
+        format!(
+            "failed ensuring install config locator {}",
+            locator_path.display()
+        )
+    })
 }
 
 pub fn load_sorotte_client_config_root_pointer_from_path(
     pointer_path: &Path,
 ) -> anyhow::Result<Option<PathBuf>> {
-    if !pointer_path.exists() {
-        return Ok(None);
-    }
-    if !pointer_path.is_file() {
-        return Err(anyhow!(
-            "config-root pointer is not a file: {}",
-            pointer_path.display()
-        ));
-    }
-    let contents = std::fs::read_to_string(pointer_path).map_err(|error| {
-        anyhow!(
-            "failed reading config-root pointer {}: {error}",
-            pointer_path.display()
-        )
-    })?;
-    Ok(trim_non_empty(contents.lines().next().unwrap_or_default()).map(PathBuf::from))
+    let contents =
+        read_sorotte_ini_contents_consistently_at_path(pointer_path).with_context(|| {
+            format!(
+                "failed reading config-root pointer {}",
+                pointer_path.display()
+            )
+        })?;
+    Ok(contents.and_then(|contents| {
+        trim_non_empty(contents.lines().next().unwrap_or_default()).map(PathBuf::from)
+    }))
 }
 
 pub fn persist_sorotte_client_config_root_pointer(
     default_storage_root: &Path,
     storage_root: &Path,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(default_storage_root).map_err(|error| {
-        anyhow!(
-            "failed creating default Sorotte config directory {}: {error}",
-            default_storage_root.display()
-        )
-    })?;
     let pointer_path = sorotte_client_config_root_pointer_path(default_storage_root);
-    std::fs::write(&pointer_path, storage_root.to_string_lossy().as_bytes()).map_err(|error| {
-        anyhow!(
-            "failed writing config-root pointer {}: {error}",
+    update_sorotte_ini_contents_at_path(&pointer_path, |_| {
+        Ok(storage_root.to_string_lossy().into_owned())
+    })
+    .with_context(|| {
+        format!(
+            "failed writing config-root pointer {}",
             pointer_path.display()
         )
     })
@@ -492,22 +476,12 @@ pub fn clear_sorotte_client_config_root_pointer(
     default_storage_root: &Path,
 ) -> anyhow::Result<bool> {
     let pointer_path = sorotte_client_config_root_pointer_path(default_storage_root);
-    if !pointer_path.exists() {
-        return Ok(false);
-    }
-    if !pointer_path.is_file() {
-        return Err(anyhow!(
-            "config-root pointer is not a file and cannot be cleared: {}",
-            pointer_path.display()
-        ));
-    }
-    std::fs::remove_file(&pointer_path).map_err(|error| {
-        anyhow!(
-            "failed clearing config-root pointer {}: {error}",
+    clear_sorotte_ini_stored_client_settings_mvp_at_path(&pointer_path).with_context(|| {
+        format!(
+            "failed clearing config-root pointer {}",
             pointer_path.display()
         )
-    })?;
-    Ok(true)
+    })
 }
 
 pub fn ensure_sorotte_client_storage_root(root: &Path) -> anyhow::Result<()> {
@@ -566,6 +540,68 @@ where
     I: Fn(&Path) -> bool,
     R: Fn(&Path) -> Option<String>,
 {
+    resolve_sorotte_client_storage_paths_with_reader(
+        lookup,
+        current_dir,
+        install_root,
+        &is_file,
+        |path| match read_to_string(path) {
+            Some(contents) => Ok(Some(contents)),
+            None if is_file(path) => {
+                Err(anyhow!("failed reading storage locator {}", path.display()))
+            }
+            None => Ok(None),
+        },
+        cli_config_path,
+        cli_config_root,
+    )
+    .ok()
+    .flatten()
+}
+
+/// Resolve storage locations with a transaction-consistent locator read.
+/// Metadata probes only label the default target; they cannot override locator bytes.
+pub fn try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root<F, C, E, I>(
+    lookup: &F,
+    current_dir: C,
+    install_root: E,
+    is_file: I,
+    cli_config_path: Option<PathBuf>,
+    cli_config_root: Option<PathBuf>,
+) -> anyhow::Result<Option<SorotteClientStoragePaths>>
+where
+    F: Fn(&str) -> Option<String>,
+    C: Fn() -> Option<PathBuf>,
+    E: Fn() -> Option<PathBuf>,
+    I: Fn(&Path) -> bool,
+{
+    resolve_sorotte_client_storage_paths_with_reader(
+        lookup,
+        current_dir,
+        install_root,
+        is_file,
+        read_sorotte_ini_contents_consistently_at_path,
+        cli_config_path,
+        cli_config_root,
+    )
+}
+
+fn resolve_sorotte_client_storage_paths_with_reader<F, C, E, I, R>(
+    lookup: &F,
+    current_dir: C,
+    install_root: E,
+    is_file: I,
+    read_to_string: R,
+    cli_config_path: Option<PathBuf>,
+    cli_config_root: Option<PathBuf>,
+) -> anyhow::Result<Option<SorotteClientStoragePaths>>
+where
+    F: Fn(&str) -> Option<String>,
+    C: Fn() -> Option<PathBuf>,
+    E: Fn() -> Option<PathBuf>,
+    I: Fn(&Path) -> bool,
+    R: Fn(&Path) -> anyhow::Result<Option<String>>,
+{
     let current_dir = current_dir();
     let install_root = install_root().map(|root| normalize_path(root, current_dir.clone()));
     let default_storage_root = default_sorotte_client_config_root_from_lookup(lookup);
@@ -574,23 +610,23 @@ where
         let fallback_default_storage_root = default_storage_root
             .clone()
             .unwrap_or_else(|| fallback_storage_root_for_path(&path, current_dir.clone()));
-        return Some(SorotteClientStoragePaths::from_config_path(
+        return Ok(Some(SorotteClientStoragePaths::from_config_path(
             path,
             fallback_default_storage_root,
             SorotteClientStorageSource::CliConfigPath,
             current_dir,
-        ));
+        )));
     }
     if let Some(root) = cli_config_root {
         let fallback_default_storage_root = default_storage_root
             .clone()
             .unwrap_or_else(|| normalize_path(root.clone(), current_dir.clone()));
-        return Some(SorotteClientStoragePaths::from_root(
+        return Ok(Some(SorotteClientStoragePaths::from_root(
             root,
             fallback_default_storage_root,
             SorotteClientStorageSource::CliConfigRoot,
             current_dir,
-        ));
+        )));
     }
     if let Some(path) =
         env_trimmed_from_lookup(lookup, SOROTTE_CLIENT_CONFIG_PATH_ENV).map(PathBuf::from)
@@ -598,12 +634,12 @@ where
         let fallback_default_storage_root = default_storage_root
             .clone()
             .unwrap_or_else(|| fallback_storage_root_for_path(&path, current_dir.clone()));
-        return Some(SorotteClientStoragePaths::from_config_path(
+        return Ok(Some(SorotteClientStoragePaths::from_config_path(
             path,
             fallback_default_storage_root,
             SorotteClientStorageSource::EnvConfigPath,
             current_dir,
-        ));
+        )));
     }
     if let Some(root) =
         env_trimmed_from_lookup(lookup, SOROTTE_CLIENT_CONFIG_ROOT_ENV).map(PathBuf::from)
@@ -611,49 +647,61 @@ where
         let fallback_default_storage_root = default_storage_root
             .clone()
             .unwrap_or_else(|| normalize_path(root.clone(), current_dir.clone()));
-        return Some(SorotteClientStoragePaths::from_root(
+        return Ok(Some(SorotteClientStoragePaths::from_root(
             root,
             fallback_default_storage_root,
             SorotteClientStorageSource::EnvConfigRoot,
             current_dir,
-        ));
+        )));
     }
 
-    let default_storage_root = default_storage_root?;
+    let Some(default_storage_root) = default_storage_root else {
+        return Ok(None);
+    };
     if let Some(install_root) = install_root {
         let locator_path = sorotte_client_install_locator_path(&install_root);
-        if is_file(&locator_path) {
-            if let Some(root) = read_to_string(&locator_path).and_then(|contents| {
+        if let Some(contents) = read_to_string(&locator_path).with_context(|| {
+            format!(
+                "failed reading install config locator {}",
+                locator_path.display()
+            )
+        })? {
+            if let Some(root) =
                 parse_sorotte_client_install_locator_config_root(&contents, &install_root)
-            }) {
-                return Some(SorotteClientStoragePaths::from_root(
+            {
+                return Ok(Some(SorotteClientStoragePaths::from_root(
                     root,
                     default_storage_root,
                     SorotteClientStorageSource::InstallConfigRoot,
                     None,
-                ));
+                )));
             }
-            return Some(SorotteClientStoragePaths::from_config_path(
+            return Ok(Some(SorotteClientStoragePaths::from_config_path(
                 locator_path,
                 default_storage_root,
                 SorotteClientStorageSource::InstallConfigRoot,
                 None,
-            ));
+            )));
         }
     }
 
     let pointer_path = sorotte_client_config_root_pointer_path(&default_storage_root);
-    if is_file(&pointer_path)
-        && let Some(root) = read_to_string(&pointer_path)
-            .and_then(|contents| trim_non_empty(contents.lines().next().unwrap_or_default()))
-            .map(PathBuf::from)
+    if let Some(root) = read_to_string(&pointer_path)
+        .with_context(|| {
+            format!(
+                "failed reading config-root pointer {}",
+                pointer_path.display()
+            )
+        })?
+        .and_then(|contents| trim_non_empty(contents.lines().next().unwrap_or_default()))
+        .map(PathBuf::from)
     {
-        return Some(SorotteClientStoragePaths::from_root(
+        return Ok(Some(SorotteClientStoragePaths::from_root(
             root,
             default_storage_root,
             SorotteClientStorageSource::PersistedConfigRoot,
             current_dir,
-        ));
+        )));
     }
 
     let candidate = default_storage_root.join(SOROTTE_CONFIG_FILE_NAME);
@@ -662,30 +710,43 @@ where
     } else {
         SorotteClientStorageSource::DefaultConfigTarget
     };
-    Some(SorotteClientStoragePaths {
+    Ok(Some(SorotteClientStoragePaths {
         config_path: candidate,
         storage_root: default_storage_root.clone(),
         default_storage_root,
         source,
-    })
+    }))
 }
 
+/// Compatibility wrapper. Read failures resolve to no path, never another root.
+/// Production callers should use the checked variant to report those failures.
 pub fn resolve_sorotte_client_storage_paths(
     cli_config_path: Option<PathBuf>,
     cli_config_root: Option<PathBuf>,
 ) -> Option<SorotteClientStoragePaths> {
+    try_resolve_sorotte_client_storage_paths(cli_config_path, cli_config_root)
+        .ok()
+        .flatten()
+}
+
+pub fn try_resolve_sorotte_client_storage_paths(
+    cli_config_path: Option<PathBuf>,
+    cli_config_root: Option<PathBuf>,
+) -> anyhow::Result<Option<SorotteClientStoragePaths>> {
     let install_root = current_sorotte_client_install_root();
     if let (Some(install_root), Some(default_storage_root)) =
         (install_root.as_ref(), default_sorotte_client_config_root())
     {
+        // Installing into a read-only application directory may prevent creating
+        // a default locator. The checked read below still distinguishes an absent
+        // locator from a busy, unreadable, or malformed filesystem entry.
         let _ = ensure_sorotte_client_install_locator(install_root, &default_storage_root);
     }
-    resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+    try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
         &|name| std::env::var(name).ok(),
         || std::env::current_dir().ok(),
         || install_root.clone(),
         Path::is_file,
-        |path| std::fs::read_to_string(path).ok(),
         cli_config_path,
         cli_config_root,
     )
@@ -711,6 +772,170 @@ mod tests {
         env
     }
 
+    struct LocatorFixture(PathBuf);
+
+    impl LocatorFixture {
+        fn new(label: &str) -> Self {
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "sorotte-locator-{label}-{}-{suffix}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            Self(root)
+        }
+    }
+
+    impl Drop for LocatorFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn checked_locator_reads_bytes_without_a_missing_metadata_fallback() {
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
+            &lookup(base_env()),
+            || Some(PathBuf::from("/cwd")),
+            || Some(PathBuf::from("/install")),
+            |_| panic!("locator metadata must not decide whether to read it"),
+            |_| Ok(Some("[settings]\nconfigRoot = selected-root\n".to_owned())),
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(paths.source, SorotteClientStorageSource::InstallConfigRoot);
+        assert_eq!(paths.storage_root, PathBuf::from("/install/selected-root"));
+    }
+
+    #[test]
+    fn checked_locator_read_errors_do_not_select_portable_or_default_roots() {
+        for install_root in [None, Some(PathBuf::from("/install"))] {
+            for kind in [
+                std::io::ErrorKind::TimedOut,
+                std::io::ErrorKind::PermissionDenied,
+            ] {
+                let error = resolve_sorotte_client_storage_paths_with_reader(
+                    &lookup(base_env()),
+                    || Some(PathBuf::from("/cwd")),
+                    || install_root.clone(),
+                    |_| panic!("failed locator reads must stop resolution"),
+                    |_| Err(std::io::Error::new(kind, "locator read unavailable").into()),
+                    None,
+                    None,
+                )
+                .expect_err("a busy/unreadable locator cannot choose another root");
+                assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().kind(), kind);
+            }
+        }
+    }
+
+    #[test]
+    fn compatibility_locator_read_failure_returns_no_path() {
+        let paths = resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+            &lookup(base_env()),
+            || None,
+            || Some(PathBuf::from("/install")),
+            |_| true,
+            |_| None,
+            None,
+            None,
+        );
+        assert!(
+            paths.is_none(),
+            "unreadable locator must not become a portable config"
+        );
+    }
+
+    #[test]
+    fn checked_locator_reports_invalid_utf8_instead_of_using_default_storage() {
+        let fixture = LocatorFixture::new("invalid-utf8");
+        std::fs::write(sorotte_client_install_locator_path(&fixture.0), [0xff]).unwrap();
+        let error = try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+            &lookup(base_env()),
+            || None,
+            || Some(fixture.0.clone()),
+            |_| false,
+            None,
+            None,
+        )
+        .expect_err("invalid locator bytes must not turn into a missing locator");
+        assert!(format!("{error:#}").contains("UTF-8"));
+    }
+
+    #[test]
+    fn ensure_install_locator_preserves_an_existing_read_only_document() {
+        let fixture = LocatorFixture::new("read-only");
+        let path = sorotte_client_install_locator_path(&fixture.0);
+        std::fs::write(&path, "[settings]\nconfigRoot = chosen-root\n").unwrap();
+        let original_permissions = std::fs::metadata(&path).unwrap().permissions();
+        let mut read_only = original_permissions.clone();
+        read_only.set_readonly(true);
+        std::fs::set_permissions(&path, read_only).unwrap();
+        let result = ensure_sorotte_client_install_locator(&fixture.0, &fixture.0.join("default"));
+        std::fs::set_permissions(&path, original_permissions).unwrap();
+        assert!(!result.expect("an existing read-only locator needs no publication"));
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "[settings]\nconfigRoot = chosen-root\n"
+        );
+    }
+
+    #[test]
+    fn install_locator_update_merges_after_the_prior_settings_transaction() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let fixture = LocatorFixture::new("merge");
+        let path = sorotte_client_install_locator_path(&fixture.0);
+        std::fs::write(&path, "[settings]\nconfigRoot = old-root\n").unwrap();
+        let (locked_tx, locked_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            update_sorotte_ini_contents_at_path(&writer_path, |existing| {
+                locked_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(format!(
+                    "{}\n[unrelated]\nretained = new-value\n",
+                    existing.unwrap()
+                ))
+            })
+        });
+        locked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (contended_tx, contended_rx) = mpsc::sync_channel(0);
+        let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        let install_root = fixture.0.clone();
+        let locator = std::thread::spawn(move || {
+            crate::sorotte_ini::on_next_settings_lock_contention(move || {
+                contended_tx.send(()).unwrap();
+            });
+            completed_tx
+                .send(persist_sorotte_client_install_locator(
+                    &install_root,
+                    &install_root.join("new-root"),
+                ))
+                .unwrap();
+        });
+        contended_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        completed_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        locator.join().unwrap();
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents.contains("retained = new-value"),
+            "locator must merge the newly committed document"
+        );
+        assert!(contents.contains("configRoot = new-root"));
+    }
     #[test]
     fn storage_paths_use_cli_path_before_all_other_sources() {
         let mut env = base_env();

@@ -121,7 +121,7 @@ pub(super) fn should_run_headless_automatic_update_check_legacy_compatible(
 pub(super) fn persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible(
     timestamp: &str,
 ) -> anyhow::Result<()> {
-    let Some(path) = resolve_sorotte_cli_config_path() else {
+    let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
     update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {

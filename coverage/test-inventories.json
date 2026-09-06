@@ -2,10 +2,10 @@
   "schema_version": 2,
   "status": "passed",
   "identity": {
-    "source_sha": "4000eca69b52003b66e81b6998d15c555e7eb6d1",
-    "tool_manifest_sha256": "6becd8318d751d97975d7e1309460acfe2b1f41370fd8dca64adfbaf5f687ed0",
+    "source_sha": "8297a56513bffc38d1e462f09f70da671d10dea7",
+    "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
     "working_source_dirty": true,
-    "working_source_sha256": "d27073ef0b6663ca58e8c06e541a159f8f35c4fed6b789dc03fa604110f0061e",
+    "working_source_sha256": "75043f51dd97be57e25e1f939154656fe87ac30aa7c7b16d226bfe56d4ff8f3a",
     "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
     "platform": "Windows",
     "machine": "AMD64",
@@ -15,7 +15,6 @@
     "run_id": null,
     "run_attempt": null
   },
-  "cargo_nextest_version": "cargo-nextest 0.9.137 (75ddba7e9 2026-05-26)\nrelease: 0.9.137\ncommit-hash: 75ddba7e911b44c5c0700dac0415d824403de9bd\ncommit-date: 2026-05-26\nhost: x86_64-pc-windows-msvc",
   "scopes": {
     "compat": {
       "cargo_scope": [
@@ -1803,6 +1802,7 @@
         "app::smoke_tests::portable_tcp_reconnect_smoke::gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect",
         "app::startup::tests::bootstrap_settings::gui_client_core_chat_loopback_bootstrap_overlays_settings_enable_chat",
         "app::startup::tests::bootstrap_settings::gui_client_core_chat_tcp_bootstrap_overrides_settings_enable_chat_and_seed_connection",
+        "app::startup::tests::bootstrap_settings::gui_startup_locator_read_failure_stops_before_loading_default_settings",
         "app::startup::tests::bootstrap_settings::gui_startup_settings_from_lookup_loads_stored_config_before_rendering",
         "app::startup::tests::bootstrap_settings::gui_startup_settings_from_lookup_merges_tcp_bootstrap_and_file_public_servers",
         "app::startup::tests::bootstrap_settings::gui_startup_settings_from_lookup_overlays_bootstrap_on_loaded_config",
@@ -1913,7 +1913,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "c1cdbf30379d83f2d8ac0d7bd772e308d4f56ab2496fd2e589b24dec8a22d547"
+      "listing_sha256": "9a2a9610cd26412dc37f8db9e1ce3384a3a46961a0c7a5aac378fdda1a44d66a"
     },
     "server-bin": {
       "cargo_scope": [
@@ -2128,9 +2128,15 @@
         "application::tests::room_pause_sync_fences_predecessor_only_for_canonical_playlist_owner",
         "application::tests::same_index_selected_entry_replacement_loads_under_a_fresh_physical_reset",
         "application::tests::worker_wait_keeps_player_integrations_maintained",
+        "client_storage_paths::tests::checked_locator_read_errors_do_not_select_portable_or_default_roots",
+        "client_storage_paths::tests::checked_locator_reads_bytes_without_a_missing_metadata_fallback",
+        "client_storage_paths::tests::checked_locator_reports_invalid_utf8_instead_of_using_default_storage",
+        "client_storage_paths::tests::compatibility_locator_read_failure_returns_no_path",
         "client_storage_paths::tests::current_exe_test_harness_detection_skips_cargo_deps_binaries",
+        "client_storage_paths::tests::ensure_install_locator_preserves_an_existing_read_only_document",
         "client_storage_paths::tests::ensure_storage_root_rejects_existing_file",
         "client_storage_paths::tests::install_locator_defaults_to_appdata_and_preserves_existing_file",
+        "client_storage_paths::tests::install_locator_update_merges_after_the_prior_settings_transaction",
         "client_storage_paths::tests::storage_paths_use_cli_path_before_all_other_sources",
         "client_storage_paths::tests::storage_paths_use_cli_root_before_env_sources",
         "client_storage_paths::tests::storage_paths_use_env_path_before_env_root",
@@ -2285,6 +2291,20 @@
         "sorotte_ini::duplicate_tests::duplicate_sections_roundtrip_and_save_idempotently",
         "sorotte_ini::duplicate_tests::missing_key_is_inserted_inside_the_final_matching_section",
         "sorotte_ini::duplicate_tests::public_writer_replaces_every_effective_duplicate_including_credentials",
+        "sorotte_ini::read_transaction_tests::busy_reader_errors_before_reading_instead_of_returning_missing_settings",
+        "sorotte_ini::read_transaction_tests::byte_update_failure_preserves_contents_and_releases_the_transaction",
+        "sorotte_ini::read_transaction_tests::cross_process_reader_observes_clear_only_after_the_writer_unlocks",
+        "sorotte_ini::read_transaction_tests::cross_process_reader_waits_through_a_writer_owned_missing_name",
+        "sorotte_ini::read_transaction_tests::empty_document_is_present_and_clear_is_absent_without_removing_the_lock",
+        "sorotte_ini::read_transaction_tests::first_sidecar_creation_discards_a_provisional_missing_read",
+        "sorotte_ini::read_transaction_tests::legacy_readonly_document_and_ensure_leave_the_directory_unchanged",
+        "sorotte_ini::read_transaction_tests::malformed_document_and_invalid_sidecar_are_errors_not_absence",
+        "sorotte_ini::read_transaction_tests::missing_reads_do_not_create_parent_directories_or_sidecars",
+        "sorotte_ini::read_transaction_tests::non_ascii_settings_names_keep_the_same_sidecar_identity",
+        "sorotte_ini::read_transaction_tests::readonly_existing_sidecar_supports_shared_reads_without_mutation",
+        "sorotte_ini::read_transaction_tests::settings_reader_process_fixture",
+        "sorotte_ini::read_transaction_tests::shared_readers_overlap_while_excluding_a_writer",
+        "sorotte_ini::read_transaction_tests::windows_case_aliases_share_the_read_lock_and_relocation_identity",
         "sorotte_ini::tests::clear_helper_removes_existing_settings_file",
         "sorotte_ini::tests::explicit_tls_policy_roundtrips_through_server_data",
         "sorotte_ini::tests::injected_pre_commit_failure_preserves_original_and_cleans_temporary_file",
@@ -2308,20 +2328,25 @@
         "sorotte_ini::tests::upsert_sorotte_ini_stored_client_settings_mvp_writes_plugin_enablement",
         "sorotte_ini::transaction_tests::callback_panic_releases_lock_and_a_retry_invokes_a_new_callback_once",
         "sorotte_ini::transaction_tests::canonical_aliases_share_the_lock_and_report_a_bounded_busy_error",
+        "sorotte_ini::transaction_tests::cooperating_readers_observe_complete_documents_through_repeated_replacement",
         "sorotte_ini::transaction_tests::crashed_process_releases_kernel_lock_without_removing_the_sidecar",
         "sorotte_ini::transaction_tests::initial_snapshot_can_be_saved_but_clear_of_a_missing_file_fences_that_snapshot",
-        "sorotte_ini::transaction_tests::readers_observe_complete_documents_through_repeated_atomic_replacement",
+        "sorotte_ini::transaction_tests::open_readers_keep_original_document_when_settings_are_replaced",
         "sorotte_ini::transaction_tests::relocation_uses_current_source_and_rolls_back_failed_publication",
         "sorotte_ini::transaction_tests::settings_writer_process_fixture",
         "sorotte_ini::transaction_tests::stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets",
         "sorotte_ini::transaction_tests::two_process_conflicting_updates_follow_transaction_commit_order",
         "sorotte_ini::transaction_tests::two_process_updates_wait_before_reading_and_preserve_disjoint_changes",
+        "sorotte_ini::transaction_tests::windows_raw_filesystem_readers_observe_complete_documents_through_replacement",
         "sorotte_ini::windows_tests::windows_inherited_acl_is_tightened_and_read_only_failure_preserves_bytes_and_acl",
         "sorotte_ini::windows_tests::windows_nested_new_settings_and_private_directories_use_protected_descriptors",
         "sorotte_ini::windows_tests::windows_new_file_and_empty_temporary_file_are_private_under_permissive_parent",
         "sorotte_ini::windows_tests::windows_protected_owner_and_dacl_survive_replacement_and_fault_cleanup"
       ],
-      "ignored": [],
+      "ignored": [
+        "sorotte_ini::read_transaction_tests::settings_reader_process_fixture",
+        "sorotte_ini::transaction_tests::windows_raw_filesystem_readers_observe_complete_documents_through_replacement"
+      ],
       "command": [
         "cargo",
         "nextest",
@@ -2337,7 +2362,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "f174584c587dece5333140186bfc348c725c9218d5e77a1e6f626a875d6d8f94"
+      "listing_sha256": "d3cc9f96b8bbfcfc3e6297d513baa7298fa0b1910be3ae9b3777b3d055102455"
     },
     "updater-bin": {
       "cargo_scope": [
@@ -2409,8 +2434,173 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b",
-      "reviewed_source_sha": "ccb814c89feba0f6f1590f26401b4ee2c6f0993b"
+      "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b"
     }
-  }
+  },
+  "attempts": [
+    {
+      "scope": "compat",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-compat",
+        "--all-features",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\compat.json",
+      "listing_sha256": "7a8edf24ca34ab7d717578cfad7831d84d12da1b21a8d7e73aa5e3aaec799cc1"
+    },
+    {
+      "scope": "mpv-lib",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-player-mpv",
+        "--all-features",
+        "--lib",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\mpv-lib.json",
+      "listing_sha256": "0ee3ab365d56af5d0b2aa62a0c86342443cc1d12d819749c89c2628970e29fff"
+    },
+    {
+      "scope": "gui-lib",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-gui",
+        "--all-features",
+        "--lib",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\gui-lib.json",
+      "listing_sha256": "9a2a9610cd26412dc37f8db9e1ce3384a3a46961a0c7a5aac378fdda1a44d66a"
+    },
+    {
+      "scope": "server-bin",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-server",
+        "--all-features",
+        "--bin",
+        "sorotte-server",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\server-bin.json",
+      "listing_sha256": "8b1751e36b2c1827dc4dbefc938981bd1aa71e89ca73651c92dd0f286559ba16"
+    },
+    {
+      "scope": "media-lib",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-media-match",
+        "--all-features",
+        "--lib",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\media-lib.json",
+      "listing_sha256": "06c8e2ec58a53ba34d6ac360ffbf82282bbf2e95280224d27c33f2c4efc95944"
+    },
+    {
+      "scope": "client-app-lib",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-client-app",
+        "--all-features",
+        "--lib",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\client-app-lib.json",
+      "listing_sha256": "d3cc9f96b8bbfcfc3e6297d513baa7298fa0b1910be3ae9b3777b3d055102455"
+    },
+    {
+      "scope": "updater-bin",
+      "command": [
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--run-ignored",
+        "all",
+        "--ignore-default-filter",
+        "-p",
+        "sorotte-gui",
+        "--all-features",
+        "--bin",
+        "sorotte-gui-updater",
+        "--message-format",
+        "json"
+      ],
+      "status": "passed",
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\synchronized-settings-inventory-proposal-2.listings\\updater-bin.json",
+      "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b"
+    }
+  ],
+  "cargo_nextest_version": "cargo-nextest 0.9.137 (75ddba7e9 2026-05-26)\nrelease: 0.9.137\ncommit-hash: 75ddba7e911b44c5c0700dac0415d824403de9bd\ncommit-date: 2026-05-26\nhost: x86_64-pc-windows-msvc",
+  "identity_after": {
+    "source_sha": "8297a56513bffc38d1e462f09f70da671d10dea7",
+    "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
+    "working_source_dirty": true,
+    "working_source_sha256": "75043f51dd97be57e25e1f939154656fe87ac30aa7c7b16d226bfe56d4ff8f3a",
+    "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
+    "platform": "Windows",
+    "machine": "AMD64",
+    "python": "3.13.5",
+    "runner_image": null,
+    "runner_image_version": null,
+    "run_id": null,
+    "run_attempt": null
+  },
+  "duration_seconds": 6.332
 }

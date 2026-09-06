@@ -32,7 +32,11 @@ pub(super) fn run_sorotte_gui() {
     if let Some(persisted_ui_state) = persisted_ui_state.as_ref() {
         persisted_ui_state.merge_into_startup_settings(&mut merged_settings);
     }
-    let startup_actions = gui_startup_actions_from_env(&merged_settings);
+    let startup_actions = gui_startup_actions_from_env(&merged_settings).unwrap_or_else(|error| {
+        exit_after_startup_error(format!(
+            "sorotte-gui failed to resolve config storage: {error}"
+        ))
+    });
     if let Err(error) = run_gui_host_with_startup_actions_and_gui_state(
         &settings,
         persisted_ui_state.as_ref(),

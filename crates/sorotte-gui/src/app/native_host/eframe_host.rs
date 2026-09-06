@@ -156,13 +156,16 @@ impl GuiAppHost for GuiEframeNativeHost {
             "Sorotte GUI",
             Self::native_options(),
             Box::new(move |creation_context| {
-                Ok(Box::new(GuiNativeApp::new(
-                    creation_context,
-                    state,
-                    runtime,
-                    runtime_pump,
-                    runtime_repaint_handle,
-                )))
+                Ok(Box::new(
+                    GuiNativeApp::new(
+                        creation_context,
+                        state,
+                        runtime,
+                        runtime_pump,
+                        runtime_repaint_handle,
+                    )
+                    .map_err(std::io::Error::other)?,
+                ))
             }),
         )
     }

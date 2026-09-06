@@ -293,6 +293,7 @@ jobs:
       - name: Execute subprocess-fixture parent contracts
         id: ci_execute_subprocess_fixture_parent_cont_0e28da11
         run: |
+          cargo nextest run --locked -p sorotte-client-app --lib --all-features --no-tests fail -E 'test(=sorotte_ini::read_transaction_tests::cross_process_reader_waits_through_a_writer_owned_missing_name)'
           cargo nextest run --locked -p sorotte-gui --lib --all-features --no-tests fail -E 'test(=app::runtime_queue::tests::process_shutdown::gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player)'
           cargo nextest run --locked -p sorotte-media-match --lib --all-features --no-tests fail -E 'test(=extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint)'
           cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication)'

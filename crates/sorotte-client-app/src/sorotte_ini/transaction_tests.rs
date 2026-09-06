@@ -258,7 +258,49 @@ fn initial_snapshot_can_be_saved_but_clear_of_a_missing_file_fences_that_snapsho
 }
 
 #[test]
+fn open_readers_keep_original_document_when_settings_are_replaced() {
+    use std::io::Read;
+
+    let fixture = Fixture::new("open-reader");
+    let before = format!("[unknown]\nvalue={}\n", "a".repeat(32768));
+    let after = format!("[unknown]\nvalue={}\n", "b".repeat(32768));
+    write_sorotte_ini_contents_atomically_at_path(&fixture.path(), before.as_bytes()).unwrap();
+    let mut reader = std::fs::File::open(fixture.path()).unwrap();
+
+    // The old handle remains open until after publication. Replacement must
+    // complete independently of readers, while new opens see the new document.
+    write_sorotte_ini_contents_atomically_at_path(&fixture.path(), after.as_bytes()).unwrap();
+    assert_eq!(std::fs::read_to_string(fixture.path()).unwrap(), after);
+    let mut observed = String::new();
+    reader.read_to_string(&mut observed).unwrap();
+    assert_eq!(observed, before);
+}
+
+#[test]
+fn cooperating_readers_observe_complete_documents_through_repeated_replacement() {
+    assert_complete_documents_during_replacement(|path| {
+        super::read_sorotte_ini_contents_consistently_at_path(path)
+            .unwrap()
+            .expect("a cooperating replacement must not appear missing")
+    });
+}
+
+#[cfg(not(windows))]
+#[test]
 fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
+    assert_complete_documents_during_replacement(|path| std::fs::read_to_string(path).unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "Windows NTFS raw concurrent opens can report missing during replacement; see microsoft/STL#5501"]
+fn windows_raw_filesystem_readers_observe_complete_documents_through_replacement() {
+    // Preserve the original strict OS probe. A passing run is not proof that the
+    // known namespace gap is fixed; application readers use the sidecar lock.
+    assert_complete_documents_during_replacement(|path| std::fs::read_to_string(path).unwrap());
+}
+
+fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> String) {
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -279,7 +321,7 @@ fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
             start.wait();
             let mut reads = 0;
             loop {
-                let observed = std::fs::read_to_string(&path).unwrap();
+                let observed = read(&path);
                 assert!(observed == before || observed == after);
                 reads += 1;
                 if stop.load(Ordering::Acquire) {
@@ -289,7 +331,7 @@ fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
         })
     };
     start.wait();
-    for index in 0..20 {
+    let write_result = (0..20).try_for_each(|index| {
         write_sorotte_ini_contents_atomically_at_path(
             &fixture.path(),
             if index % 2 == 0 {
@@ -298,10 +340,11 @@ fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
                 before.as_bytes()
             },
         )
-        .unwrap();
-    }
+    });
     stop.store(true, Ordering::Release);
-    assert!(reader.join().unwrap() > 0);
+    let read_result = reader.join();
+    write_result.unwrap();
+    assert!(read_result.unwrap() > 0);
 }
 
 #[cfg(unix)]
