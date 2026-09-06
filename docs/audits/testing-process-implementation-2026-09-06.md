@@ -91,7 +91,8 @@ commit and a separately installed constrained Python runtime. The saved second
 attempt is `target/verification/behavior-passed-nextest-2`; it supplements the
 failed first attempt instead of replacing it.
 
-The final apparatus suite passed 992 tests in 73.395 seconds, with four explicit
+At the initial implementation freeze, the apparatus suite passed 992 tests in
+73.395 seconds, with four explicit
 platform/privilege skips. All workflows passed actionlint and Rust formatting
 passed. Final Windows scaling acceptance took 114.648 seconds, including a cached
 0.35-second build, two warmups, six measured normal/large samples and two deliberate
@@ -102,6 +103,37 @@ existing successful scaling-report schema remains unchanged. Real process failur
 timeout/descendant cleanup, cancellation, immutable-attempt and source/binary-drift
 tests cover these paths. These local timing observations do not establish a hosted
 critical-path improvement.
+
+Subsequent candidate qualification exposed additional product and apparatus
+failures. The [Windows publication evidence](../evidence/testing/windows-settings-publication-2026-09-06.md)
+records the settings-reader repair and separately retained raw-filesystem
+quarantine. The [Seek acknowledgement evidence](../evidence/testing/seek-acknowledgement-play-ordering-2026-09-06.md)
+records a lost Play intent after a delayed earlier Seek acknowledgement, including
+the original hosted trace and deterministic runtime reproductions. These findings
+are distinct from the successful mutation campaigns, which measure assertion
+sensitivity.
+
+Candidate `3bee8c3315031b38fc320f121da6ee1e2f211ef1` passed its repaired coverage
+comparison at 85.12% ordinary and 91.26% critical changed-line coverage, with zero
+unmapped lines. Its full native attempt failed before GUI scenarios because the
+canary runtime lacked PyYAML and nested WinPS inherited incompatible module paths.
+The [native infrastructure record](../NATIVE_TEST_INFRASTRUCTURE.md) preserves
+those prerequisites, original attempts and cleanup boundaries. These observations
+do not qualify a later repaired candidate.
+
+The final local seek/native repair passed all 1,050 apparatus tests in 173.518
+seconds, with four explicit platform/privilege skips and successful owned-process
+cleanup. All seven reviewed test inventories matched without updates. Its core
+overlay also passed 21 focused regressions, 1,615 affected tests, the unchanged
+original failing sequence, all 39 real minimum-mpv lifecycle checks and all 72
+viable mutations in the new responsibility. One exact generated replacement was
+compiler-unviable; there were no survivors or timeouts. These results are bound
+under `target/verification/seek-echo-native-static-attempt-2/`,
+`target/verification/seek-play-repair/repair-closure.json` and
+`target/verification/seek-echo-mutation-attempt-2/`. Final documentation additions
+record these outcomes after the source-bound test attempts; they do not change
+the tested product or apparatus. Committed hosted and native acceptance remains
+separate.
 
 ## App authorization
 

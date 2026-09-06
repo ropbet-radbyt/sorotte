@@ -633,6 +633,7 @@ where
     }
 
     pub fn run_seek_to_position(&mut self, target_position: f64) -> Result<bool, PlayerError> {
+        self.playback_coordination.clear_local_seek_echo();
         self.refresh_player_projection_before_local_transport_intent()?;
         // Cleanup is retried from subsequent observations if the adapter
         // rejects it; a failed rate reset must not swallow the user's seek.
@@ -646,6 +647,7 @@ where
     }
 
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
+        self.playback_coordination.clear_local_seek_echo();
         self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();
@@ -659,6 +661,7 @@ where
     }
 
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
+        self.playback_coordination.clear_local_seek_echo();
         self.refresh_player_projection_before_local_transport_intent()?;
         let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
         let session_snapshot = self.session.snapshot_local_action_state();

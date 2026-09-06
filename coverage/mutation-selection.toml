@@ -10,11 +10,11 @@ shards = ["privacy-secret", "client-runtime-config", "settings-duplicate-keys", 
 
 [[dependency]]
 paths = ["crates/sorotte-protocol/**", "fixtures/**"]
-shards = ["protocol-codec", "client-ping", "client-inbound-order", "cli-framing", "server-auth", "server-local-clock", "server-resource-permits"]
+shards = ["protocol-codec", "client-ping", "client-inbound-order", "cli-framing", "server-auth", "server-local-clock", "server-resource-permits", "client-local-seek-echo"]
 
 [[dependency]]
 paths = ["crates/sorotte-client-core/**", "crates/sorotte-core/**"]
-shards = ["client-reconnect-state", "client-ping", "client-runtime-config", "client-inbound-order", "client-playlist-shuffle"]
+shards = ["client-reconnect-state", "client-ping", "client-runtime-config", "client-inbound-order", "client-playlist-shuffle", "client-local-seek-echo"]
 
 [[dependency]]
 paths = ["crates/sorotte-client-app/src/sorotte_ini/**", "crates/sorotte-client-app/src/sorotte_ini.rs", "crates/sorotte-gui/src/app/runtime_owner/requests/**", "crates/sorotte-cli/src/stored_settings*"]

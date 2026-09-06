@@ -221,6 +221,9 @@ where
         self.control.activate_protocol_connection_generation();
         let player_projection_is_current =
             self.refresh_player_projection_before_state_sync(clocks.response_at_seconds);
+        let local_seek_echo = self
+            .playback_coordination
+            .capture_local_seek_echo(&self.session, &inbound_state);
         let inbound_transport_revision = inbound_state
             .playstate
             .as_ref()
@@ -253,6 +256,8 @@ where
                 client_rtt,
                 clocks.received_at_seconds,
             );
+            self.playback_coordination
+                .finish_local_seek_echo(&self.session, local_seek_echo);
             return self.queue_connection_scoped_state_with_participant_status(
                 outbound_state,
                 true,
@@ -274,6 +279,8 @@ where
                     received_at_seconds: clocks.received_at_seconds,
                 },
             );
+        self.playback_coordination
+            .finish_local_seek_echo(&self.session, local_seek_echo);
         self.queue_connection_scoped_state_with_participant_status(
             outbound_state,
             true,

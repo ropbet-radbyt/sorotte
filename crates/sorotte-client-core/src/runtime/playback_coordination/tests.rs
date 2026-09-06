@@ -13,6 +13,8 @@ use sorotte_protocol::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
+mod seek_echo_tests;
+
 #[test]
 fn playback_barrier_start_defaults_to_immediate() {
     assert_eq!(PlaybackBarrierStartConfig::default().policy, None);

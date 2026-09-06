@@ -2895,6 +2895,27 @@ done""",
                         "require_baseline": True,
                     },
                     {
+                        "id": "client-local-seek-echo",
+                        "owner": "client-lifecycle",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ],
+                        "mutant_filter": "",
+                        "test_target": "lib",
+                        "test_filter": (
+                            "runtime::playback_coordination::tests::seek_echo_tests::"
+                        ),
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
                         "id": "client-runtime-config",
                         "owner": "client-configuration",
                         "package": "sorotte-client-app",
@@ -3528,6 +3549,27 @@ done""",
                             "report whose report, fingerprint, and send "
                             "timestamp are all required, so the generated "
                             "replacement cannot type-check"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": "client-local-seek-echo-candidate-default",
+                        "shard": "client-local-seek-echo",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::capture_local_seek_echo"
+                        ),
+                        "return_type": "-> Option<LocalSeekEchoCandidate>",
+                        "genre": "FnValue",
+                        "replacement": "Some(Default::default())",
+                        "reason": (
+                            "cargo-mutants requests Default for a Seek acknowledgement "
+                            "candidate whose emitted command identity and captured "
+                            "client counter are required, so the generated replacement "
+                            "cannot type-check"
                         ),
                         "review_by": "2026-11-30",
                     },
