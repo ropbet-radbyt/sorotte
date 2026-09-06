@@ -13,20 +13,32 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 INSTANCE = "00000000-0000-0000-0000-000000000123"
 
-# Only external process responses and clock durations are replaced. The actual
+# Only external process responses and phase/poll clocks are replaced. The actual
 # recovery entry point, ownership checks, pagination, cancellation/drain, receipt
 # publication, teardown ordering, and failure paths all run in Windows PowerShell.
+# Owned child WaitForExit/termination uses real time. Phase progress uses virtual
+# time so slow receipt I/O cannot exhaust a positive fixture's cleanup deadline.
 API_FIXTURE = r'''
 $script:RealCleanupCommand=${function:Invoke-NativeCleanupCommand}
 $script:RealCleanupContext=${function:New-NativeCleanupContext}
+function New-FixtureCleanupClock {
+    $clock=@{ElapsedMilliseconds=0}
+    $global:FixtureClocks.Add($clock)
+    return $clock
+}
+function Advance-FixtureCleanupClock([int]$Milliseconds) {
+    foreach ($clock in $global:FixtureClocks) { $clock.ElapsedMilliseconds+=$Milliseconds }
+    $global:FixtureElapsedMs+=$Milliseconds
+}
+function Invoke-FixtureCleanupPoll([int]$Milliseconds) {
+    # Model a delayed wake-up without sleeping or weakening the phase deadline.
+    Advance-FixtureCleanupClock ([Math]::Max($Milliseconds,5000))
+}
 function New-NativeCleanupContext($Directory,$BudgetMs,$ReceiptPath) {
     $context=& $script:RealCleanupContext $Directory $BudgetMs $ReceiptPath
-    $context.cancel_grace_ms=45
-    $context.force_grace_ms=45
-    $context.unregister_grace_ms=500
-    $context.poll_ms=5
     $context.call_timeout_ms=200
     if ($global:Case.mode -ceq 'api-hangs') { $context.budget_ms=400 }
+    if ($global:Case.mode -ceq 'confirmation-deadline') { $context.unregister_grace_ms=500 }
     return $context
 }
 function Invoke-NativeCleanupCommand($FilePath,$Arguments,$TimeoutMs) {
@@ -40,6 +52,7 @@ function Invoke-NativeCleanupCommand($FilePath,$Arguments,$TimeoutMs) {
     if ($Arguments.Count -ne 4 -or $Arguments[0] -cne 'api' -or $Arguments[1] -cne '--method') { throw 'Unexpected API command' }
     $method=$Arguments[2]; $path=$Arguments[3]
     $global:Calls.Add($method+':'+$path)
+    Advance-FixtureCleanupClock $global:Case.api_latency_ms
     if ($global:Case.mode -ceq 'api-hangs') {
         return (& $script:RealCleanupCommand -FilePath $global:Case.python -Arguments @('-c','import time; time.sleep(60)') -TimeoutMs $TimeoutMs)
     }
@@ -108,6 +121,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $global:Case=Get-Content -LiteralPath $Fixture -Raw | ConvertFrom-Json
 $global:Calls=[Collections.Generic.List[string]]::new()
+$global:FixtureClocks=[Collections.Generic.List[object]]::new()
+$global:FixtureElapsedMs=0
 $global:RunnerPresent=$true; $global:GuestPresent=$true
 $global:Complete=$global:Case.passed; $global:Busy=-not $global:Complete
 $global:NormalCancel=$false; $global:DeleteRetried=$false
@@ -157,7 +172,7 @@ if ($global:Case.request) {
     $receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
     $attempts.Add(@{receipt=$receipt;error=$errorText})
 } }
-@{attempts=@($attempts);calls=@($global:Calls);guest_present=$global:GuestPresent;runner_present=$global:RunnerPresent} | ConvertTo-Json -Depth 12 -Compress
+@{attempts=@($attempts);calls=@($global:Calls);guest_present=$global:GuestPresent;runner_present=$global:RunnerPresent;logical_elapsed_ms=$global:FixtureElapsedMs} | ConvertTo-Json -Depth 12 -Compress
 '''
 
 
@@ -168,12 +183,20 @@ class NativeRunnerCleanupTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
-    def recovery(self, mode="normal", *, passed=False, missing_wsb=False, missing_python=False, recoveries=1, request=False):
+    def recovery(self, mode="normal", *, passed=False, missing_wsb=False, missing_python=False, recoveries=1, request=False, api_latency_ms=80):
         root = self.root / f"{mode}-{missing_wsb}-{missing_python}"
         scripts = root / "scripts"
         scripts.mkdir(parents=True)
         for name in ("native-runner-sandbox.ps1", "native-runner-receipt.ps1", "native-runner-owner.ps1", "native-runner-cleanup.ps1"):
             shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+        cleanup = scripts / "native-runner-cleanup.ps1"
+        cleanup_source = cleanup.read_text(encoding="utf-8")
+        phase_clock = "[Diagnostics.Stopwatch]::StartNew()"
+        poll = "Start-Sleep -Milliseconds $Context.poll_ms"
+        self.assertEqual(cleanup_source.count(phase_clock), 4, "review each new cleanup phase clock")
+        self.assertEqual(cleanup_source.count(poll), 3, "review each new cleanup poll")
+        cleanup.write_text(cleanup_source.replace(phase_clock, "(New-FixtureCleanupClock)")
+            .replace(poll, "Invoke-FixtureCleanupPoll -Milliseconds $Context.poll_ms"), encoding="utf-8")
         with (scripts / "native-runner-cleanup.ps1").open("a", encoding="utf-8") as stream:
             stream.write(API_FIXTURE)
         (scripts / "gui-native-smoke-process.ps1").write_text(
@@ -191,7 +214,7 @@ class NativeRunnerCleanupTests(unittest.TestCase):
         fixture = root / "case.json"
         fixture.write_text(json.dumps({"mode": mode, "passed": passed, "missing_wsb": missing_wsb,
             "missing_python": missing_python, "recoveries": recoveries, "instance": INSTANCE, "python": sys.executable,
-            "request": request}), encoding="utf-8")
+            "request": request, "api_latency_ms": api_latency_ms}), encoding="utf-8")
         driver = root / "driver.ps1"
         driver.write_text(DRIVER, encoding="utf-8")
         started = time.monotonic()
@@ -270,6 +293,20 @@ class NativeRunnerCleanupTests(unittest.TestCase):
         self.assertIsNotNone(first["error"], result)
         self.assertTrue(second["receipt"]["tokens_removed"], result)
         self.assertIsNone(second["error"], result)
+
+    def test_delete_without_confirmation_time_remains_unconfirmed_until_later_recovery(self):
+        result = self.recovery("confirmation-deadline", recoveries=2)
+        first, second = result["attempts"]
+        self.assertFalse(first["receipt"]["runner_removed"], result)
+        self.assertTrue(first["receipt"]["sandbox_stopped"], result)
+        self.assertTrue(first["receipt"]["runner_delete_requested"], result)
+        self.assertIn("runner-unregister-unconfirmed", first["receipt"]["cleanup_errors"], result)
+        self.assertIsNotNone(first["error"], result)
+        self.assertTrue(second["receipt"]["runner_removed"], result)
+        self.assertFalse(second["receipt"]["automatic_unregister"], result)
+        self.assertIsNone(second["error"], result)
+        self.assertFalse(result["runner_present"], result)
+        self.assertGreater(result["logical_elapsed_ms"], 500, result)
 
     def test_stale_or_foreign_binding_refuses_mutation_but_stops_only_owned_guest(self):
         for mode in ("stale-attempt", "wrong-source", "wrong-workflow", "wrong-job-attempt", "wrong-runner", "wrong-runner-id", "rerun-before-normal", "rerun-before-force"):

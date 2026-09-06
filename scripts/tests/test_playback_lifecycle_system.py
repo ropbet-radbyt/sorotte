@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import pathlib
 import socket
@@ -1205,8 +1206,27 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
             self.assertIsNone(proxy.error)
 
     def test_protocol_fault_proxy_drops_only_armed_participant_status_frames(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        self.assert_participant_status_proxy_round_trip()
+
+    def test_protocol_fault_proxy_filtering_survives_a_delayed_ordinary_relay(self) -> None:
+        original_send = system.ProtocolFaultProxy._fragmented_send
+        delayed = threading.Event()
+
+        def relay(proxy, destination, data, **kwargs):
+            ordinary = b'{"State":{"playstate":{"position":1.0,"paused":true}}}\n'
+            if not delayed.is_set() and data == ordinary:
+                delayed.set()
+                time.sleep(0.35)
+            return original_send(proxy, destination, data, **kwargs)
+
+        with mock.patch.object(system.ProtocolFaultProxy, "_fragmented_send", relay):
+            self.assert_participant_status_proxy_round_trip()
+        self.assertTrue(delayed.is_set())
+
+    def assert_participant_status_proxy_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
             upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            resources.callback(system.ProtocolFaultProxy._close_socket, upstream)
             upstream.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             upstream.bind(("127.0.0.1", 0))
             upstream.listen(1)
@@ -1216,21 +1236,31 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
 
             def echo_server() -> None:
                 try:
-                    connection, _ = upstream.accept()
+                    try:
+                        connection, _ = upstream.accept()
+                    except OSError:
+                        return
                     with connection:
                         while not stop.is_set():
                             try:
                                 payload = connection.recv(4096)
+                                if not payload:
+                                    return
+                                connection.sendall(payload)
                             except OSError:
                                 return
-                            if not payload:
-                                return
-                            connection.sendall(payload)
                 finally:
                     upstream.close()
 
             echo_thread = threading.Thread(target=echo_server, daemon=True)
             echo_thread.start()
+
+            def stop_echo() -> None:
+                stop.set()
+                system.ProtocolFaultProxy._close_socket(upstream)
+                echo_thread.join(timeout=2.0)
+
+            resources.callback(stop_echo)
             root = pathlib.Path(directory)
             ledger = system.TraceLedger(root / "trace.jsonl", "status-proxy-test")
             proxy = system.ProtocolFaultProxy(
@@ -1239,8 +1269,11 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 role="follower",
                 ledger=ledger,
             )
+            resources.callback(proxy.close)
             client = socket.create_connection(("127.0.0.1", proxy.port), timeout=2.0)
-            client.settimeout(0.2)
+            resources.callback(client.close)
+            # Keep the same two-second exchange deadline as the other socket
+            # fixtures; this contract checks filtering, not response latency.
             ordinary = b'{"State":{"playstate":{"position":1.0,"paused":true}}}\n'
             dropped = b'{"State":{"playstate":{"position":2.0,"paused":true},"sorotteParticipantStatusV1":{"report":{"reportSequence":7}}}}\n'
             recovered = b'{"State":{"sorotteParticipantStatusV1":{"report":{"reportSequence":8}}}}\n'
@@ -1280,11 +1313,9 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 )
             )
 
-            client.close()
-            proxy.close()
-            stop.set()
-            echo_thread.join(timeout=2.0)
             self.assertIsNone(proxy.error)
+        self.assertFalse(echo_thread.is_alive())
+        self.assertFalse(proxy.thread.is_alive())
 
     def test_initial_player_verification_waits_for_delayed_proxy_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

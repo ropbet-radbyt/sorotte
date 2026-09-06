@@ -135,6 +135,23 @@ record these outcomes after the source-bound test attempts; they do not change
 the tested product or apparatus. Committed hosted and native acceptance remains
 separate.
 
+The [subsequent qualification-fixture record](../evidence/testing/qualification-fixture-failures-2026-09-06.md)
+preserves candidate `c4688af`'s successful native qualification and distinct
+Windows fixture-clock, protocol-echo deadline and mutation-baseline diagnostic
+failures. The two fixtures have controlled before/after reproductions. The GUI
+baseline process abort remains unclassified; supported failed-baseline outcomes
+now retain their primary phase and log identity instead of an unknown-summary
+error. These apparatus repairs leave production native scripts, the lifecycle
+proxy, product Rust code, coverage thresholds and mutation kill requirements
+unchanged.
+
+The combined fixture/diagnostic repair passed all 1,058 apparatus tests in
+143.307 seconds, with four explicit capability skips and successful owned-process
+cleanup. Its immutable local attempt is
+`target/verification/apparatus-fixture-static-attempt-1/`; final hosted checks
+must still use the committed repair source. This observed duration is not a
+controlled before/after performance comparison.
+
 ## App authorization
 
 The [App setup guide](../PROTECTION_READER_SETUP.md) and credential-free manifest

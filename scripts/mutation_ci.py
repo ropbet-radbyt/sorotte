@@ -58,6 +58,7 @@ PERCENT = re.compile(
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 KNOWN_SUMMARIES = {
     "Success",
+    "Failure",
     "CaughtMutant",
     "MissedMutant",
     "Timeout",
@@ -1165,6 +1166,13 @@ def require_phase_coherence(
     statuses = [str(phase["status"]) for phase in phases]
     if summary == "Success" and statuses != ["Success", "Success"]:
         raise MutationCiError(f"{label} successful baseline has failing phases")
+    # cargo-mutants 27.1.0 uses Failure for an unmutated build/test failure.
+    # A mutant with these phase results must instead be Unviable/CaughtMutant.
+    if summary == "Failure" and (
+        not statuses[-1].startswith("Failure(")
+        or statuses[:-1] not in ([], ["Success"])
+    ):
+        raise MutationCiError(f"{label} failed baseline has incoherent phases")
     if summary == "CaughtMutant" and (
         len(statuses) != 2
         or statuses[0] != "Success"
@@ -1336,10 +1344,17 @@ def evaluate_results(
         scenario = outcome["scenario"]
         if scenario == "Baseline":
             baseline_count += 1
-            if summary != "Success":
-                raise MutationCiError("baseline outcome did not succeed")
             if outcome["diff_path"] is not None:
                 raise MutationCiError("baseline outcome must not have a diff")
+            if summary not in {"Success", "Failure", "Timeout"}:
+                raise MutationCiError("baseline outcome has a mutant summary")
+            if summary != "Success":
+                terminal = phases[-1]
+                raise MutationCiError(
+                    f"unmutated baseline failed during {terminal['phase']} "
+                    f"({terminal['status']}); retained log {log_relative} "
+                    f"(sha256 {artifact_details[log_relative]['sha256']})"
+                )
             continue
         scenario_mapping = require_mapping(
             scenario,
@@ -1365,8 +1380,8 @@ def evaluate_results(
         if name in mutant_outcomes:
             raise MutationCiError(f"duplicate outcome for mutant {name!r}")
         mutant_outcomes[name] = summary
-        if summary == "Success":
-            raise MutationCiError("Success is valid only for the baseline")
+        if summary in {"Success", "Failure"}:
+            raise MutationCiError(f"{summary} is valid only for the baseline")
         diff_relative, diff_path = safe_artifact_path(
             results_dir,
             outcome["diff_path"],
