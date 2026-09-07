@@ -22,6 +22,8 @@ pub(super) use paths::{
     managed_stream_helper_bin_dir, managed_stream_helper_downloader_path,
     managed_stream_helper_path_prefixes,
 };
+#[cfg(test)]
+pub(super) use process::with_stream_helper_path_lookup_for_test;
 pub(super) use snapshot::{
     probe_stream_helper_runtime_snapshot, probe_stream_helper_startup_snapshot,
 };

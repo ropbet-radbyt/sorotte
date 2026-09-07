@@ -36,6 +36,68 @@ impl Drop for ProcessFixtureDirectory {
     }
 }
 
+// This fixture must remain unmanaged even if the target or temp ancestor is mpv.
+// The existing legacy classifier explicitly excludes mpvnet anywhere in the path.
+struct CopiedUnmanagedPlayer {
+    path: PathBuf,
+    release_marker: PathBuf,
+}
+
+impl CopiedUnmanagedPlayer {
+    fn new(fixture: &ProcessFixtureDirectory) -> Self {
+        let player = Self {
+            path: fixture.marker(&format!(
+                "sorotte-unmanaged-mpvnet-fixture{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+            release_marker: fixture.marker("release-leaf"),
+        };
+        std::fs::copy(
+            std::env::current_exe().expect("current test executable should be available"),
+            &player.path,
+        )
+        .expect("owned unmanaged fixture executable should be copied");
+        player
+    }
+}
+
+impl Drop for CopiedUnmanagedPlayer {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Err(error) = std::fs::write(&self.release_marker, b"release")
+        {
+            eprintln!("failed to release owned unmanaged fixture child during cleanup: {error}");
+        }
+        // The completion marker precedes process exit. Windows can briefly keep
+        // the copied image mapped; remove only this owned executable once it closes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error)
+                    if cfg!(windows)
+                        && error.kind() == std::io::ErrorKind::PermissionDenied
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    let message = format!(
+                        "failed to remove owned unmanaged fixture executable {}: {error}",
+                        self.path.display()
+                    );
+                    if std::thread::panicking() {
+                        eprintln!("{message}");
+                        return;
+                    }
+                    panic!("{message}");
+                }
+            }
+        }
+    }
+}
+
 fn wait_for_process_marker(path: &Path, description: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !path.exists() {
@@ -258,16 +320,17 @@ fn unmanaged_external_launch_hands_process_ownership_to_the_child() {
     ] {
         env.remove_var(key);
     }
-    let fixture = ProcessFixtureDirectory::new("ownership-handoff");
+    let fixture = ProcessFixtureDirectory::new("ownership-handoff-mpv-parent");
+    let player = CopiedUnmanagedPlayer::new(&fixture);
+    let player_path = player.path.to_string_lossy().into_owned();
+    assert!(
+        !crate::legacy_player_path_requests_managed_mpv_legacy_compatible(&player_path),
+        "the copied fixture must be unmanaged under its mpv-containing parent: {player_path}"
+    );
     env.set_var(PROCESS_FIXTURE_ROLE, "detached-leaf");
     env.set_var(PROCESS_FIXTURE_ROOT, &fixture.path);
     let overrides = LegacyClientArgOverrides {
-        player_path: Some(
-            std::env::current_exe()
-                .expect("current test executable should be available")
-                .to_string_lossy()
-                .into_owned(),
-        ),
+        player_path: Some(player_path),
         player_args: exact_fixture_args(),
         ..Default::default()
     };

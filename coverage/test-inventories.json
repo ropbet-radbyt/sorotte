@@ -2,14 +2,14 @@
   "schema_version": 2,
   "status": "passed",
   "identity": {
-    "source_sha": "67679a7a112b78e9c591aec45f27194ab9f55ce4",
+    "source_sha": "791dcdfea5790cac90241d9ce9d60423f65877f7",
     "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
     "working_source_dirty": true,
-    "working_source_sha256": "5521b5561879fe2dc42fe0cc9702ccfd7b074d643c625d79e1cc8f252d4986b3",
-    "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
+    "working_source_sha256": "845462f28c00e71d3480ed9de45569f08c1de8a4abeddb8d49b3b9403ccc6ae0",
+    "cargo_lock_sha256": "4b4228d1f0fc382698d18ced0278a62ac478336090f71705fd693a0794c75b6a",
     "platform": "Windows",
     "machine": "AMD64",
-    "python": "3.13.5",
+    "python": "3.12.10",
     "runner_image": null,
     "runner_image_version": null,
     "run_id": null,
@@ -199,7 +199,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "7a8edf24ca34ab7d717578cfad7831d84d12da1b21a8d7e73aa5e3aaec799cc1"
+      "listing_sha256": "c176c5899d372c527af723196b5e8d0e768f7826f94a7e70322b7d00146a3090"
     },
     "mpv-lib": {
       "cargo_scope": [
@@ -690,7 +690,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "0ee3ab365d56af5d0b2aa62a0c86342443cc1d12d819749c89c2628970e29fff"
+      "listing_sha256": "df4b620bbca3851d152681c411651526d0fa1af54bd3230261f29cef6e2d2f7b"
     },
     "gui-lib": {
       "cargo_scope": [
@@ -1839,6 +1839,7 @@
         "app::startup_support::tests::gui_client_core_chat_loopback_bootstrap_from_lookup_uses_existing_client_env_keys",
         "app::startup_support::tests::gui_client_core_chat_tcp_bootstrap_from_lookup_rejects_invalid_port",
         "app::startup_support::tests::gui_client_core_chat_tcp_bootstrap_from_lookup_uses_existing_client_env_keys",
+        "app::stream_support::process::path_lookup_tests::explicit_path_lookup_is_thread_local_and_restored_after_nested_unwind",
         "app::stream_support::tests::importing_stream_helper_binaries_populates_managed_helper_paths_and_metadata",
         "app::stream_support::tests::installed_stream_helper_validation_rejects_unusable_binaries",
         "app::stream_support::tests::managed_installation_staleness_depends_on_metadata_age",
@@ -1913,7 +1914,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "9a2a9610cd26412dc37f8db9e1ce3384a3a46961a0c7a5aac378fdda1a44d66a"
+      "listing_sha256": "9ebb362b55ad035d51e509109486f52228bc72ffb09db74fec3f49c044a234d5"
     },
     "server-bin": {
       "cargo_scope": [
@@ -1957,7 +1958,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "8b1751e36b2c1827dc4dbefc938981bd1aa71e89ca73651c92dd0f286559ba16"
+      "listing_sha256": "efb6a3a535a4d470cc52dfedd2010b2692018d0ca31ce0a171a2eec01608c562"
     },
     "media-lib": {
       "cargo_scope": [
@@ -2078,7 +2079,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "06c8e2ec58a53ba34d6ac360ffbf82282bbf2e95280224d27c33f2c4efc95944"
+      "listing_sha256": "9301b95f384951a2164422547f0ae785d84e17b173c8f222bef8a5ac346d6036"
     },
     "client-app-lib": {
       "cargo_scope": [
@@ -2329,6 +2330,13 @@
         "sorotte_ini::tests::upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings",
         "sorotte_ini::tests::upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings",
         "sorotte_ini::tests::upsert_sorotte_ini_stored_client_settings_mvp_writes_plugin_enablement",
+        "sorotte_ini::transaction::lock_release_tests::failed_read_releases_lock_without_replacing_its_primary_error",
+        "sorotte_ini::transaction::lock_release_tests::provisional_read_releases_the_lock_used_for_the_second_read",
+        "sorotte_ini::transaction::lock_release_tests::successful_read_releases_only_its_own_shared_lock",
+        "sorotte_ini::transaction::lock_release_tests::unwinding_read_releases_lock_without_masking_its_panic",
+        "sorotte_ini::transaction::lock_release_tests::writer_scope_releases_lock_while_a_duplicate_descriptor_survives",
+        "sorotte_ini::transaction::lock_release_tests::writer_unwind_releases_lock_while_a_duplicate_descriptor_survives",
+        "sorotte_ini::transaction::lock_release_tests::writer_validation_failure_releases_a_successfully_acquired_lock",
         "sorotte_ini::transaction_tests::callback_panic_releases_lock_and_a_retry_invokes_a_new_callback_once",
         "sorotte_ini::transaction_tests::canonical_aliases_share_the_lock_and_report_a_bounded_busy_error",
         "sorotte_ini::transaction_tests::cooperating_readers_observe_complete_documents_through_repeated_replacement",
@@ -2365,7 +2373,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "d53a46fcedde8d97e440a3987ed43514c22ccb8725f1fcf91cc1e0e85aa06ae7"
+      "listing_sha256": "738f35e879790c754d49b8bcb9ad1a056c6a7b6601b5a1aa26eeb166c865ea53"
     },
     "updater-bin": {
       "cargo_scope": [
@@ -2437,7 +2445,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b"
+      "listing_sha256": "7a0b6a064a681f2d765084376ecb2dd062d5b067a223aa6bbe8f1390842415c5"
     }
   },
   "attempts": [
@@ -2458,8 +2466,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\compat.json",
-      "listing_sha256": "7a8edf24ca34ab7d717578cfad7831d84d12da1b21a8d7e73aa5e3aaec799cc1"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\compat.json",
+      "listing_sha256": "c176c5899d372c527af723196b5e8d0e768f7826f94a7e70322b7d00146a3090"
     },
     {
       "scope": "mpv-lib",
@@ -2479,8 +2487,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\mpv-lib.json",
-      "listing_sha256": "0ee3ab365d56af5d0b2aa62a0c86342443cc1d12d819749c89c2628970e29fff"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\mpv-lib.json",
+      "listing_sha256": "df4b620bbca3851d152681c411651526d0fa1af54bd3230261f29cef6e2d2f7b"
     },
     {
       "scope": "gui-lib",
@@ -2500,8 +2508,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\gui-lib.json",
-      "listing_sha256": "9a2a9610cd26412dc37f8db9e1ce3384a3a46961a0c7a5aac378fdda1a44d66a"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\gui-lib.json",
+      "listing_sha256": "9ebb362b55ad035d51e509109486f52228bc72ffb09db74fec3f49c044a234d5"
     },
     {
       "scope": "server-bin",
@@ -2522,8 +2530,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\server-bin.json",
-      "listing_sha256": "8b1751e36b2c1827dc4dbefc938981bd1aa71e89ca73651c92dd0f286559ba16"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\server-bin.json",
+      "listing_sha256": "efb6a3a535a4d470cc52dfedd2010b2692018d0ca31ce0a171a2eec01608c562"
     },
     {
       "scope": "media-lib",
@@ -2543,8 +2551,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\media-lib.json",
-      "listing_sha256": "06c8e2ec58a53ba34d6ac360ffbf82282bbf2e95280224d27c33f2c4efc95944"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\media-lib.json",
+      "listing_sha256": "9301b95f384951a2164422547f0ae785d84e17b173c8f222bef8a5ac346d6036"
     },
     {
       "scope": "client-app-lib",
@@ -2564,8 +2572,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\client-app-lib.json",
-      "listing_sha256": "d53a46fcedde8d97e440a3987ed43514c22ccb8725f1fcf91cc1e0e85aa06ae7"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\client-app-lib.json",
+      "listing_sha256": "738f35e879790c754d49b8bcb9ad1a056c6a7b6601b5a1aa26eeb166c865ea53"
     },
     {
       "scope": "updater-bin",
@@ -2586,24 +2594,24 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\native-python-coverage-inventory-proposal-1.listings\\updater-bin.json",
-      "listing_sha256": "510383559470a567f295c303a478e7b9ecaa4e13e70e77954a0c458da9847e7b"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\updater-bin.json",
+      "listing_sha256": "7a0b6a064a681f2d765084376ecb2dd062d5b067a223aa6bbe8f1390842415c5"
     }
   ],
   "cargo_nextest_version": "cargo-nextest 0.9.137 (75ddba7e9 2026-05-26)\nrelease: 0.9.137\ncommit-hash: 75ddba7e911b44c5c0700dac0415d824403de9bd\ncommit-date: 2026-05-26\nhost: x86_64-pc-windows-msvc",
   "identity_after": {
-    "source_sha": "67679a7a112b78e9c591aec45f27194ab9f55ce4",
+    "source_sha": "791dcdfea5790cac90241d9ce9d60423f65877f7",
     "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
     "working_source_dirty": true,
-    "working_source_sha256": "5521b5561879fe2dc42fe0cc9702ccfd7b074d643c625d79e1cc8f252d4986b3",
-    "cargo_lock_sha256": "9511755e3fc987911d196eef818a617a2a54cdead3eca7c682533b8a0c84f4c9",
+    "working_source_sha256": "845462f28c00e71d3480ed9de45569f08c1de8a4abeddb8d49b3b9403ccc6ae0",
+    "cargo_lock_sha256": "4b4228d1f0fc382698d18ced0278a62ac478336090f71705fd693a0794c75b6a",
     "platform": "Windows",
     "machine": "AMD64",
-    "python": "3.13.5",
+    "python": "3.12.10",
     "runner_image": null,
     "runner_image_version": null,
     "run_id": null,
     "run_attempt": null
   },
-  "duration_seconds": 25.159
+  "duration_seconds": 103.578
 }

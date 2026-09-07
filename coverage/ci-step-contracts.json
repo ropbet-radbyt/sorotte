@@ -993,6 +993,18 @@
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "workspace_default",
+      "display_name": "Default-feature Cargo workspace tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "checks",
+      "step_id": "workspace_default_evidence",
+      "display_name": "Preserve default-feature workspace evidence"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
       "job_id": "preflight",
       "step_id": "ci_setup_actionlint_toolchain_bca40e4c",
       "display_name": "Setup actionlint toolchain"
@@ -1284,6 +1296,18 @@
       "job_id": "rust_windows_tests",
       "step_id": "ci_install_live_compatibility_prerequisit_d64088f1",
       "display_name": "Install live compatibility prerequisites"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "workspace_default",
+      "display_name": "Default-feature Cargo workspace tests"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "rust_windows_tests",
+      "step_id": "workspace_default_evidence",
+      "display_name": "Preserve default-feature workspace evidence"
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",

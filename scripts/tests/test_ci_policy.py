@@ -422,6 +422,51 @@ def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
         raise AssertionError("coverage canary failures must retain command logs and maps while excluding compiled targets")
 
 
+def validate_default_workspace_bindings(workflow: dict[str, Any]) -> None:
+    jobs = workflow["jobs"]
+    for job_id, target, prerequisites, checkout, gate_name in (
+        ("checks", "linux", "Install Linux test prerequisites", "Checkout", "Enforce complete Linux test gate"),
+        ("rust_windows_tests", "windows", "Install live compatibility prerequisites", "Checkout Sorotte", "Enforce complete Windows test gate"),
+    ):
+        job = jobs[job_id]
+        step = named_step(jobs, job_id, "Default-feature Cargo workspace tests")
+        upload = named_step(jobs, job_id, "Preserve default-feature workspace evidence")
+        gate = named_step(jobs, job_id, gate_name)
+        output = f"target/verification/workspace-default-{target}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
+        expected = f"python scripts/verify.py run --lane workspace-default --output {output} --deadline-seconds 1200"
+        if (normalized(step.get("run", "")) != expected or "if" in step
+                or step.get("continue-on-error") != "true" or "env" in step):
+            raise AssertionError("default workspace must execute the bounded ordinary Cargo lane")
+        if job.get("if") != "github.event_name != 'schedule'" or "continue-on-error" in job:
+            raise AssertionError("default workspace worker cannot skip PR/main or tolerate failure")
+        if "ref" in named_step(jobs, job_id, checkout).get("with", {}):
+            raise AssertionError("default workspace must retain the prospective PR merge checkout")
+        for environment in (workflow.get("env", {}), job.get("env", {})):
+            if "RUST_TEST_THREADS" in environment:
+                raise AssertionError("ordinary Cargo workspace cannot override harness concurrency")
+        steps = job["steps"]
+        if not (steps.index(named_step(jobs, job_id, prerequisites)) < steps.index(step)
+                < steps.index(upload) < steps.index(named_step(jobs, job_id, "Nextest fail-on-flaky workspace tests"))
+                < steps.index(gate)):
+            raise AssertionError("default workspace prerequisites, evidence and final gate ordering changed")
+        expected_gate_env = {
+            "DEFAULT_WORKSPACE_OUTCOME": "${{ steps.workspace_default.outcome }}",
+            "NEXTEST_OUTCOME": "${{ steps.nextest.outcome }}",
+            "DOCTEST_OUTCOME": "${{ steps.doctests.outcome }}",
+        }
+        if gate.get("if") != "always()" or "continue-on-error" in gate or gate.get("env") != expected_gate_env:
+            raise AssertionError("final test gate must require each actual producer outcome")
+        default_check = ('test "$DEFAULT_WORKSPACE_OUTCOME" = success' if target == "linux" else
+                         'if ($env:DEFAULT_WORKSPACE_OUTCOME -ne "success") { throw "default-feature workspace tests did not pass" }')
+        if default_check not in gate.get("run", "").splitlines():
+            raise AssertionError("final test gate omitted the successful default workspace requirement")
+        if (upload.get("if") != "always()" or "continue-on-error" in upload
+                or upload.get("uses") != PINNED_USES["actions/upload-artifact"]
+                or upload.get("with") != {"name": output.removeprefix("target/verification/"),
+                                         "path": output, "if-no-files-found": "error", "retention-days": "14"}):
+            raise AssertionError("default workspace evidence must be retained for every attempt")
+
+
 class CiPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -1079,6 +1124,7 @@ done""",
             "checks",
             "Enforce complete Linux test gate",
             """
+            test "$DEFAULT_WORKSPACE_OUTCOME" = success
             test "$NEXTEST_OUTCOME" = success
             test "$DOCTEST_OUTCOME" = success
             """,
@@ -1087,6 +1133,7 @@ done""",
         self.assertEqual(
             linux_enforcement.get("env"),
             {
+                "DEFAULT_WORKSPACE_OUTCOME": "${{ steps.workspace_default.outcome }}",
                 "NEXTEST_OUTCOME": "${{ steps.nextest.outcome }}",
                 "DOCTEST_OUTCOME": "${{ steps.doctests.outcome }}",
             },
@@ -1527,6 +1574,7 @@ done""",
             "rust_windows_tests",
             "Enforce complete Windows test gate",
             """
+            if ($env:DEFAULT_WORKSPACE_OUTCOME -ne "success") { throw "default-feature workspace tests did not pass" }
             if ($env:NEXTEST_OUTCOME -ne "success") { throw "nextest failed or found a flaky test" }
             if ($env:DOCTEST_OUTCOME -ne "success") { throw "doctests failed" }
             """,
@@ -1535,6 +1583,7 @@ done""",
         self.assertEqual(
             windows_test_enforcement.get("env"),
             {
+                "DEFAULT_WORKSPACE_OUTCOME": "${{ steps.workspace_default.outcome }}",
                 "NEXTEST_OUTCOME": "${{ steps.nextest.outcome }}",
                 "DOCTEST_OUTCOME": "${{ steps.doctests.outcome }}",
             },
@@ -4539,6 +4588,44 @@ done""",
             "github.event_name != 'workflow_dispatch' }}",
         )
 
+    def test_default_workspace_remains_required_in_both_ordinary_rust_workers(self) -> None:
+        validate_default_workspace_bindings(self.workflow)
+
+    def test_default_workspace_binding_rejects_missing_skipped_or_bypassed_execution(self) -> None:
+        for job_id in ("checks", "rust_windows_tests"):
+            for mutation in ("missing", "skip", "unbounded", "head-checkout", "job-skip", "serial",
+                             "missing-outcome", "conclusion", "missing-enforcement", "optional-gate", "lost-artifact"):
+                with self.subTest(job=job_id, mutation=mutation):
+                    changed = copy.deepcopy(self.workflow)
+                    jobs = changed["jobs"]
+                    job = jobs[job_id]
+                    step = named_step(jobs, job_id, "Default-feature Cargo workspace tests")
+                    gate = next(item for item in job["steps"] if "DEFAULT_WORKSPACE_OUTCOME" in item.get("env", {}))
+                    if mutation == "missing":
+                        job["steps"].remove(step)
+                    elif mutation == "skip":
+                        step["if"] = "false"
+                    elif mutation == "unbounded":
+                        step["run"] = "cargo test --locked --workspace"
+                    elif mutation == "head-checkout":
+                        job["steps"][0]["with"]["ref"] = HEAD_REF
+                    elif mutation == "job-skip":
+                        job["if"] = "github.event_name == 'push'"
+                    elif mutation == "serial":
+                        job.setdefault("env", {})["RUST_TEST_THREADS"] = "1"
+                    elif mutation == "missing-outcome":
+                        del gate["env"]["DEFAULT_WORKSPACE_OUTCOME"]
+                    elif mutation == "conclusion":
+                        gate["env"]["DEFAULT_WORKSPACE_OUTCOME"] = "${{ steps.workspace_default.conclusion }}"
+                    elif mutation == "missing-enforcement":
+                        gate["run"] = "\n".join(line for line in gate["run"].splitlines() if "DEFAULT_WORKSPACE_OUTCOME" not in line)
+                    elif mutation == "optional-gate":
+                        gate["continue-on-error"] = "true"
+                    elif mutation == "lost-artifact":
+                        named_step(jobs, job_id, "Preserve default-feature workspace evidence")["if"] = "success()"
+                    with self.assertRaises(AssertionError):
+                        validate_default_workspace_bindings(changed)
+
     def test_nextest_gate_cannot_be_disabled_or_tolerated(self) -> None:
         command = "python scripts/nextest_ci.py run --repo-root ."
         replaced = self.workflow_text.replace(
@@ -4579,6 +4666,7 @@ done""",
                 "checks",
                 "Enforce complete Linux test gate",
                 """
+                test "$DEFAULT_WORKSPACE_OUTCOME" = success
                 test "$NEXTEST_OUTCOME" = success
                 test "$DOCTEST_OUTCOME" = success
                 """,
