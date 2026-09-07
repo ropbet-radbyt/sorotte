@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sorotte-protocol-fuzz-${{ github.ref }}
+  group: sorotte-protocol-fuzz-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
 
 env:
@@ -300,7 +300,7 @@ jobs:
           retention-days: 14
 
   fuzz-required:
-    name: fuzz-required
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'fuzz-required' || format('fuzz-{0}', github.event_name) }}
     if: always()
     needs: [selection, protocol-fuzz, framed-session-fuzz, mpv-framed-transcript-fuzz]
     runs-on: ubuntu-24.04

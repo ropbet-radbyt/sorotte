@@ -14,6 +14,8 @@ It also records the subsequent Windows receipt-canary timeout, controlled
 reproduction, preserved assertions and bounded supervision repair.
 The later persistence-fixture follow-up distinguishes an unexplained native abort
 from a separately reproduced, unintended background HTTP dependency.
+The scheduled-check follow-up records a nightly job publishing a skipped check
+under a reserved release name, and the event isolation that prevents the collision.
 
 ## Local command ladder
 
@@ -91,6 +93,14 @@ producers. A no-op must match independently supplied event base/head and a
 recomputed plan. Artifact names identify attempts so retries retain earlier
 evidence. Stable step IDs let policy tests tolerate label changes while preserving
 commands, dependency edges, source authority and outcome enforcement.
+
+The seven required check names are reserved for PR and main-push runs. Scheduled
+and manually dispatched aggregates use event-qualified names, including jobs that
+are skipped: GitHub still creates a check for a skipped job. Their concurrency
+groups also include the event, so assurance runs cannot cancel or replace the
+main-push run being qualified. Release authorization still requires exactly one
+successful check from each trusted main-push producer; it never substitutes a
+scheduled or manually dispatched result.
 
 See [mutation campaigns](MUTATION_CAMPAIGNS.md) for balanced chunks, exact inventory
 union and streaming cleanup; [native infrastructure](NATIVE_TEST_INFRASTRUCTURE.md)

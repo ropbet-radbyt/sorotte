@@ -2484,7 +2484,9 @@ done""",
         self.assertEqual(self.mutation_workflow["on"]["push"], {"branches": ["main"]})
         required_graph(jobs, "mutation-required", {"selection", "preparation", "mutation"},
                        dependency_conditions={"mutation": "needs.preparation.outputs.matrix != '[]'"})
-        self.assertEqual(jobs["mutation-required"].get("name"), "mutation-required")
+        self.assertEqual(jobs["mutation-required"].get("name"),
+                         "${{ (github.event_name == 'push' || github.event_name == 'pull_request') && "
+                         "'mutation-required' || format('mutation-{0}', github.event_name) }}")
         self.assertEqual(jobs["mutation"]["strategy"]["fail-fast"], "false")
         for job_id, operation in (("preparation", "prepare"), ("mutation", "run"), ("mutation-required", "verify")):
             producer = command_step(jobs[job_id], "scripts/mutation_campaign.py " + operation,

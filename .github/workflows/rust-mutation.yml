@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sorotte-mutation-${{ github.ref }}
+  group: sorotte-mutation-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -173,7 +173,7 @@ jobs:
           retention-days: 14
 
   mutation-required:
-    name: mutation-required
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'mutation-required' || format('mutation-{0}', github.event_name) }}
     if: ${{ always() }}
     needs: [selection, preparation, mutation]
     runs-on: ubuntu-24.04

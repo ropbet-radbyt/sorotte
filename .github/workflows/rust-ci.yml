@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sorotte-ci-${{ github.event.pull_request.number || github.ref }}
+  group: sorotte-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
 
 env:
@@ -1380,7 +1380,7 @@ jobs:
           test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
 
   verification_required:
-    name: verification-required
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'verification-required' || format('verification-{0}', github.event_name) }}
     if: ${{ always() && github.event_name != 'schedule' }}
     needs:
       - checks
@@ -1618,7 +1618,7 @@ jobs:
         run: ./scripts/server-release-verify.ps1 -NoWorkspace
 
   merge-required:
-    name: merge-required
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'merge-required' || format('merge-{0}', github.event_name) }}
     if: always() && github.event_name != 'schedule'
     needs: [preflight, semver, verification_required, apparatus-canaries]
     runs-on: ubuntu-24.04

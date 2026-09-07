@@ -165,7 +165,7 @@ def assert_workflow_contract(text: str) -> None:
     workflow = parse_workflow(text)
     require(workflow.get("permissions") == {"contents": "read"}, "read-only permissions")
     require(workflow.get("concurrency") == {
-        "group": "sorotte-protocol-fuzz-${{ github.ref }}",
+        "group": "sorotte-protocol-fuzz-${{ github.event_name }}-${{ github.ref }}",
         "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}",
     }, "fuzz concurrency contract changed")
     require(workflow.get("on") == {
@@ -270,7 +270,9 @@ def assert_workflow_contract(text: str) -> None:
             "tool and regression failures must retain evidence")
 
     gate = jobs["fuzz-required"]
-    require(gate.get("name") == "fuzz-required" and gate.get("if") == "always()" and
+    require(gate.get("name") ==
+            "${{ (github.event_name == 'push' || github.event_name == 'pull_request') && "
+            "'fuzz-required' || format('fuzz-{0}', github.event_name) }}" and gate.get("if") == "always()" and
             set(gate.get("needs", [])) == {"selection", *PRODUCERS}, "stable gate must observe every producer and selection")
     authority = command_step(gate, ["test"])
     require(command_tokens(authority) == ["test", "$SELECTION_RESULT", "=", "success"] and

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: package-verification-${{ github.event.pull_request.number || github.ref }}
+  group: package-verification-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -128,6 +128,7 @@ jobs:
           retention-days: 14
 
   package-required:
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'package-required' || format('package-{0}', github.event_name) }}
     if: always()
     needs: [preflight, archive]
     runs-on: ubuntu-24.04
