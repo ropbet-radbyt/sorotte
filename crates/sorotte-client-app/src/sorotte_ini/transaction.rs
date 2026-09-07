@@ -16,11 +16,38 @@ thread_local! {
     pub(super) static CONTENTION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+type AcquiredHook = Box<dyn FnOnce(&File)>;
+
+#[cfg(test)]
+thread_local! {
+    static ACQUIRED_HOOK: std::cell::RefCell<Option<AcquiredHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn notify_lock_acquired(file: &File) {
+    let hook = ACQUIRED_HOOK.with(|hook| hook.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(file);
+    }
+}
+
 /// A persistent sidecar is essential: locking the replaced settings file or
 /// unlinking the sidecar after unlock would let clients lock different files.
 pub(super) struct SettingsTransaction {
-    lock: File,
+    lock: SettingsLock,
     path: PathBuf,
+}
+
+struct SettingsLock(File);
+
+impl Drop for SettingsLock {
+    fn drop(&mut self) {
+        // A concurrent process launch can inherit the open file description.
+        // Closing our handle alone would leave its lock held until that child
+        // executes or exits. Release the lock at the end of its owning scope.
+        let _ = self.0.unlock();
+    }
 }
 
 impl SettingsTransaction {
@@ -31,7 +58,7 @@ impl SettingsTransaction {
     pub(super) fn acquire_with_timeout(path: &Path, timeout: Duration) -> anyhow::Result<Self> {
         let deadline = Instant::now() + timeout;
         let (lock, path) = prepare_writer_lock(path)?;
-        lock_file(&lock, &path, false, deadline)?;
+        let lock = lock_file(lock, &path, false, deadline)?;
         validate_destination(&path)?;
         Ok(Self { lock, path })
     }
@@ -41,15 +68,15 @@ impl SettingsTransaction {
     }
 
     pub(super) fn was_cleared(&self) -> io::Result<bool> {
-        Ok(self.lock.metadata()?.len() != 0)
+        Ok(self.lock.0.metadata()?.len() != 0)
     }
 
     // Keep a durable, nonsecret tombstone before deleting the settings file. A
     // missing file after Clear is distinct from first-run initialization; a
     // stale first-run/full snapshot must not repopulate cleared credentials.
     pub(super) fn mark_cleared(&self) -> io::Result<()> {
-        self.lock.set_len(1)?;
-        self.lock.sync_all()
+        self.lock.0.set_len(1)?;
+        self.lock.0.sync_all()
     }
 }
 
@@ -79,18 +106,23 @@ where
         return Ok(None);
     };
     if let Some(lock) = open_existing_lock(&path)? {
-        lock_file(&lock, &path, true, deadline)?;
+        let _lock = lock_file(lock, &path, true, deadline)?;
         return read(&path);
     }
     let provisional = read(&path);
     if let Some(lock) = open_existing_lock(&path)? {
-        lock_file(&lock, &path, true, deadline)?;
+        let _lock = lock_file(lock, &path, true, deadline)?;
         return read(&path);
     }
     provisional
 }
 
-fn lock_file(file: &File, path: &Path, shared: bool, deadline: Instant) -> anyhow::Result<()> {
+fn lock_file(
+    file: File,
+    path: &Path,
+    shared: bool,
+    deadline: Instant,
+) -> anyhow::Result<SettingsLock> {
     loop {
         let result = if shared {
             file.try_lock_shared()
@@ -98,7 +130,12 @@ fn lock_file(file: &File, path: &Path, shared: bool, deadline: Instant) -> anyho
             file.try_lock()
         };
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                let lock = SettingsLock(file);
+                #[cfg(test)]
+                notify_lock_acquired(&lock.0);
+                return Ok(lock);
+            }
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 #[cfg(test)]
                 CONTENTION_HOOK.with(|hook| {
@@ -274,3 +311,6 @@ fn resolve_settings_path(path: &Path, create_parent: bool) -> anyhow::Result<Opt
     }
     Err(anyhow!("stored settings file symlink chain is too long"))
 }
+
+#[cfg(test)]
+mod lock_release_tests;
