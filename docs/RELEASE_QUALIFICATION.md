@@ -47,6 +47,15 @@ authorize reuse. Dev and stable refs/channels retain separate
 qualifications. Failed jobs may be retried within the same Actions run while
 successful platform jobs and their immutable artifacts are retained.
 
+The repository's `.gitattributes` fixes text checkouts to LF across Linux,
+hosted Windows and the isolated native runner. Image files and the retained
+fuzz corpora explicitly disable text conversion. Release input records hash
+actual checked-out bytes; the same commit with different working-tree line
+endings cannot authorize bundle reuse. The checkout regression exercises both
+Git `core.autocrlf` settings and preserves framing and binary corpus bytes.
+An input mismatch reports the affected path count and up to ten names, without
+logging file contents; the original qualified input inventory remains in the bundle.
+
 ## Prepare the release version
 
 Before committing or qualifying a release candidate, update

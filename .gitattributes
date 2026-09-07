@@ -1,3 +1,9 @@
+# Release producers and consumers must see identical tracked text bytes,
+# regardless of each runner's core.autocrlf or core.eol settings.
+* text=auto eol=lf
+# Keep image bytes outside text conversion even when Git settings differ.
+*.ico -text
+*.png -text
 # Cross-platform LLVM line maps bind to identical Rust source bytes.
 *.rs text eol=lf
 # Fuzz seeds include framing control bytes and retained crashes; never rewrite them.

@@ -21,6 +21,152 @@ from scripts.tests.test_playback_release_gate import materialize_bundle, SHA, MO
 from scripts import verify_server_container as container
 
 
+class CheckoutSourceIdentityTests(unittest.TestCase):
+    CORPUS_DIRECTORIES = (
+        "crates/sorotte-protocol/tests/corpus/protocol_parser",
+        "crates/sorotte-cli/tests/corpus/framed_session",
+        "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript",
+    )
+    OLD_ATTRIBUTES = (
+        "*.rs text eol=lf\n"
+        + "".join(f"{directory}/** -text\n" for directory in CORPUS_DIRECTORIES)
+    ).encode()
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        empty_config = self.root / "empty-config"
+        empty_config.write_bytes(b"")
+        empty_hooks = self.root / "empty-hooks"
+        empty_hooks.mkdir()
+        # These local Git fixtures must not inherit user hooks, attributes,
+        # signing requirements, or a parent worktree/index from the caller.
+        environment = {key: value for key, value in os.environ.items()
+                       if not key.upper().startswith("GIT_")}
+        environment.update({
+            "GIT_CONFIG_GLOBAL": str(empty_config), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "core.attributesFile", "GIT_CONFIG_VALUE_0": str(empty_config),
+            "GIT_CONFIG_KEY_1": "core.hooksPath", "GIT_CONFIG_VALUE_1": str(empty_hooks),
+            "GIT_CONFIG_KEY_2": "commit.gpgSign", "GIT_CONFIG_VALUE_2": "false",
+        })
+        environment_patch = mock.patch.dict(os.environ, environment, clear=True)
+        environment_patch.start()
+        self.addCleanup(environment_patch.stop)
+
+    def git(self, root: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-c", f"safe.directory={root.as_posix()}", *arguments],
+            cwd=root, check=True, capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+
+    def checkout_fixture(self, attributes: bytes) -> tuple[str, dict[str, bytes], dict[str, Path]]:
+        source = self.root / "source"
+        source.mkdir()
+        self.git(source, "init", "--quiet", "--template", str(self.root / "empty-hooks"))
+        self.git(source, "config", "core.autocrlf", "false")
+        self.git(source, "config", "core.eol", "lf")
+        payloads = {
+            ".gitattributes": attributes,
+            "Cargo.toml": b'[workspace.package]\nversion = "0.2.10"\n',
+            "Cargo.lock": b"# Fixture lockfile\nversion = 4\n",
+            "src/lib.rs": b"pub fn fixture() -> bool {\n    true\n}\n",
+            "scripts/preparation.py": b'print("fixture build input")\n',
+            "scripts/prepare.ps1": b'Write-Output "fixture build input"\n',
+            ".github/workflows/build.yml": b"name: fixture\non: workflow_dispatch\n",
+            "coverage/policy.json": b'{"fixture": true}\n',
+            "docs/release.md": b"Fixture release instructions\n",
+            "coverage/playback-lifecycle.toml": MODEL_PATH.read_bytes().replace(b"\r\n", b"\n"),
+            "images/fixture.ico": b"\x00\x00\x01\x00\xff\r\nicon\n",
+            "images/fixture.png": b"\x89PNG\r\n\x1a\n\x00\xff\r\npayload\n",
+        }
+        for directory in self.CORPUS_DIRECTORIES:
+            # No NUL in the framing seed: Git's binary heuristic alone cannot
+            # protect the protocol's intentional CRLF delimiters.
+            payloads[f"{directory}/framing-seed"] = b'{"frame":1}\r\n{"frame":2}\r\n'
+            payloads[f"{directory}/binary-seed"] = b"\x00\xff\r\n\x80\n\r"
+        for name, body in payloads.items():
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        self.git(source, "add", "--all")
+        self.git(source, "-c", "user.name=Checkout fixture", "-c",
+                 "user.email=checkout-fixture@example.invalid", "commit", "--quiet", "-m", "Fixture")
+        sha = self.git(source, "rev-parse", "HEAD")
+        checkouts = {}
+        for name, autocrlf, eol in (("lf", "false", "lf"), ("autocrlf", "true", "lf"),
+                                    ("crlf", "false", "crlf")):
+            checkout = self.root / name
+            self.git(self.root, "clone", "--quiet", "--local", "--no-hardlinks", "--no-checkout",
+                     str(source), str(checkout))
+            self.git(checkout, "config", "core.autocrlf", autocrlf)
+            self.git(checkout, "config", "core.eol", eol)
+            self.git(checkout, "checkout", "--quiet", "--detach", sha)
+            self.assertEqual(self.git(checkout, "rev-parse", "HEAD"), sha)
+            self.assertEqual(self.git(checkout, "status", "--porcelain", "--untracked-files=all"), "")
+            self.assertEqual(self.git(checkout, "config", "core.autocrlf"), autocrlf)
+            self.assertEqual(self.git(checkout, "config", "core.eol"), eol)
+            checkouts[name] = checkout
+        return sha, payloads, checkouts
+
+    def source_bound_bundle(self, producer: Path, sha: str) -> tuple[Path, Path, dict]:
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        manifest = materialize_bundle(bundle, "windows-x86_64")
+        manifest["candidate_sha"] = sha
+        manifest["product_version"] = "0.2.10"
+        manifest["build_inputs"]["candidate_sha"] = sha
+        manifest["build_inputs"]["source_files"] = qualification.clean_source(producer, sha)
+        manifest["build_inputs"]["producer"]["workflow_sha"] = sha
+        manifest["build_inputs"]["source_ref"] = "refs/tags/v0.2.10"
+        manifest_path = bundle / "candidate-manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        complete = self.root / "complete.json"
+        complete.write_text(json.dumps({
+            "kind": "sorotte-playback-release-complete-gate", "result": "passed",
+            "candidate_sha": sha,
+            "candidate_manifest_sha256": {
+                "windows-x86_64": qualification.artifact_input.sha256_file(manifest_path),
+                "linux-x86_64": "b" * 64,
+            },
+            "model_sha256": qualification.artifact_input.sha256_file(
+                producer / "coverage/playback-lifecycle.toml"),
+            "required_system_transitions": ["fixture-transition"],
+            "system_transition_coverage": ["fixture-transition"],
+        }), encoding="utf-8")
+        return bundle, complete, manifest
+
+    def test_same_clean_sha_under_rust_only_policy_does_not_authorize_different_input_bytes(self) -> None:
+        sha, payloads, checkouts = self.checkout_fixture(self.OLD_ATTRIBUTES)
+        bundle, complete, manifest = self.source_bound_bundle(checkouts["lf"], sha)
+        consumer = checkouts["autocrlf"]
+        actual = qualification.clean_source(consumer, sha)
+        self.assertNotEqual(actual, manifest["build_inputs"]["source_files"])
+        for path in ("Cargo.toml", "scripts/preparation.py"):
+            self.assertEqual((consumer / path).read_bytes(), payloads[path].replace(b"\n", b"\r\n"))
+        self.assertEqual((consumer / "src/lib.rs").read_bytes(), payloads["src/lib.rs"])
+        with self.assertRaisesRegex(qualification.QualificationError,
+                                    "qualified build source inputs differ from consumer checkout") as error:
+            qualification.consume(bundle, complete, consumer, sha, "windows-x86_64", "stable", None)
+        self.assertIn("'Cargo.toml'", str(error.exception))
+
+    def test_repository_policy_preserves_exact_inputs_and_allows_cross_config_bundle_consumption(self) -> None:
+        attributes = (MODEL_PATH.parents[1] / ".gitattributes").read_bytes()
+        sha, payloads, checkouts = self.checkout_fixture(attributes)
+        bundle, complete, manifest = self.source_bound_bundle(checkouts["lf"], sha)
+        expected = {name: hashlib.sha256(body).hexdigest() for name, body in payloads.items()}
+        for name, consumer in checkouts.items():
+            with self.subTest(checkout=name):
+                self.assertEqual(qualification.clean_source(consumer, sha), expected)
+                for path, body in payloads.items():
+                    self.assertEqual((consumer / path).read_bytes(), body, path)
+                self.assertEqual(
+                    qualification.consume(bundle, complete, consumer, sha, "windows-x86_64", "stable", None),
+                    manifest,
+                )
+
+
 class QualificationReceiptTests(unittest.TestCase):
     def complete(self, root: Path, manifest: dict) -> Path:
         path = root.parent / "complete.json"
