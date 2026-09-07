@@ -7,6 +7,10 @@ the [design and baseline](audits/testing-apparatus-audit-2026-09-06.md); the
 what has actually been exercised. Historical timings are observations of those
 revisions, not a current promise.
 
+The [first coordinated stable-release attempt](audits/v0.2.10-release-attempt.md)
+records three additional apparatus failures, their reproductions and the narrow
+repairs in the corrected point-release candidate.
+
 ## Local command ladder
 
 Use the repository's Rust toolchain and Python 3.11–3.13. Install the reviewed

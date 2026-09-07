@@ -4,9 +4,11 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import pathlib
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -1444,6 +1446,86 @@ class PublicationAndFinalGateTests(unittest.TestCase):
                     attestation_path=paths["attestation"],
                     publication_report_path=paths["public"],
                 )
+
+
+class ImmutableBuildMetadataCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        workflow = yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        self.step = next(step for step in workflow["jobs"]["publish"]["steps"]
+                         if step.get("id") == "build_info")
+        self.temporary = tempfile.TemporaryDirectory(prefix="container-metadata-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name)
+        self.environment = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        self.environment.update({
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "Metadata fixture",
+            "GIT_AUTHOR_EMAIL": "metadata@example.invalid",
+            "GIT_COMMITTER_NAME": "Metadata fixture",
+            "GIT_COMMITTER_EMAIL": "metadata@example.invalid",
+            "GIT_AUTHOR_DATE": "2020-01-02T03:04:05+0000",
+        })
+        self.git("init", "--quiet", "--template=", ".")
+        self.output = self.root / "github-output.txt"
+        self.output.write_text("existing=preserved\n", encoding="utf-8")
+        self.environment["GITHUB_OUTPUT"] = str(self.output)
+
+    def git(self, *arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={self.root.as_posix()}", "-c", "commit.gpgsign=false",
+             *arguments],
+            cwd=self.root, env=self.environment, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def commit(self, committer_date: str) -> str:
+        self.environment["GIT_COMMITTER_DATE"] = committer_date
+        self.git("commit", "--quiet", "--allow-empty", "-m", "Metadata fixture")
+        return self.git("rev-parse", "HEAD")
+
+    def run_metadata(self, source: str) -> subprocess.CompletedProcess[str]:
+        self.assertEqual(self.step.get("shell"), "python")
+        script = self.root / "actual-workflow-metadata.py"
+        script.write_text(self.step["run"], encoding="utf-8")
+        environment = {**self.environment, "GITHUB_SHA": source}
+        return subprocess.run(
+            [sys.executable, str(script)], cwd=self.root, env=environment,
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def test_actual_workflow_command_uses_requested_commit_in_canonical_utc(self) -> None:
+        for committer_date, expected in (
+            ("2026-09-07T13:53:22+1000", "2026-09-07T03:53:22Z"),
+            ("2026-09-07T00:15:00+1000", "2026-09-06T14:15:00Z"),
+            ("2026-09-07T23:45:00-0730", "2026-09-08T07:15:00Z"),
+        ):
+            with self.subTest(committer_date=committer_date):
+                source = self.commit(committer_date)
+                self.assertNotEqual(source, self.commit("2027-01-01T00:00:00+0000"))
+                self.output.write_text("existing=preserved\n", encoding="utf-8")
+                result = self.run_metadata(source)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.output.read_text(encoding="utf-8"),
+                                 f"existing=preserved\ncreated={expected}\n")
+                inspected = valid_local_inspection()
+                inspected[0]["Config"]["Labels"][container.EXPECTED_CREATED_LABEL] = expected
+                with mock.patch.object(container, "_docker_json", return_value=inspected):
+                    identity = container.inspect_local_image(
+                        TEST_IMAGE, expected_source_sha=SOURCE_SHA, expected_source_url=SOURCE_URL,
+                    )
+                self.assertEqual(identity["created"], expected)
+
+    def test_missing_commit_fails_without_appending_a_created_label(self) -> None:
+        self.commit("2026-09-07T13:53:22+1000")
+        before = self.output.read_bytes()
+        result = self.run_metadata("0" * 40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.output.read_bytes(), before)
 
 
 class WorkflowPolicyTests(unittest.TestCase):
