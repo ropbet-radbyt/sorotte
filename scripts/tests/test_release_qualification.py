@@ -587,7 +587,9 @@ class PackageWorkflowTests(unittest.TestCase):
             for job in workflow["jobs"].values():
                 steps = job.get("steps", [])
                 for index, step in enumerate(steps):
-                    if "merge_gate.py authorize-release" not in step.get("run", ""):
+                    if not any(command in step.get("run", "") for command in (
+                        "merge_gate.py authorize-release", "container_promotion.py prepare",
+                    )):
                         continue
                     authorizations += 1
                     token = steps[index - 1]

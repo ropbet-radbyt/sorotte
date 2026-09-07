@@ -221,7 +221,7 @@ def _run(
             list(command),
             check=False,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -230,11 +230,21 @@ def _run(
     except (OSError, subprocess.TimeoutExpired) as error:
         raise VerificationError(f"command could not complete: {command[0]}: {error}") from error
     if check and result.returncode != 0:
-        output = result.stdout.strip()
+        output = "\n".join(
+            f"{name}:\n{value.strip()}"
+            for name, value in (("stdout", result.stdout), ("stderr", result.stderr))
+            if value
+        )
         raise VerificationError(
             f"command exited {result.returncode}: {' '.join(command)}\n{output}"
         )
     return result
+
+
+def _diagnostic_output(result: subprocess.CompletedProcess[str]) -> str:
+    # Logs and push progress use both streams; JSON/scalar consumers use stdout.
+    # Separate pipes preserve each stream, not their interleaving order.
+    return "\n".join(output for output in (result.stdout, result.stderr) if output)
 
 
 def _docker_json(command: Sequence[str], description: str) -> Any:
@@ -801,8 +811,9 @@ def _write_container_log_and_remove(
     try:
         for attempt in range(CONTAINER_LOG_CAPTURE_ATTEMPTS):
             logs = _run(["docker", "logs", name], check=False)
-            path.write_text(logs.stdout, encoding="utf-8", newline="\n")
-            if logs.returncode == 0 and marker in logs.stdout:
+            output = _diagnostic_output(logs)
+            path.write_text(output, encoding="utf-8", newline="\n")
+            if logs.returncode == 0 and marker in output:
                 break
             if attempt + 1 < CONTAINER_LOG_CAPTURE_ATTEMPTS:
                 time.sleep(CONTAINER_LOG_CAPTURE_RETRY_SECONDS)
@@ -823,7 +834,7 @@ def _write_container_log_and_remove(
         removed = _run(["docker", "rm", "--force", name], check=False)
         if removed.returncode != 0:
             cleanup_errors.append(
-                f"docker rm exited {removed.returncode}: {removed.stdout.strip()}"
+                f"docker rm exited {removed.returncode}: {_diagnostic_output(removed).strip()}"
             )
     except VerificationError as error:
         cleanup_errors.append(str(error))
@@ -1288,7 +1299,7 @@ def publish_tested_image(
     for tag in tags:
         _run(["docker", "image", "tag", local_image, tag])
         result = _run(["docker", "image", "push", tag], timeout=15 * 60)
-        digests = sorted(set(PUSH_DIGEST_RE.findall(result.stdout)))
+        digests = sorted(set(PUSH_DIGEST_RE.findall(_diagnostic_output(result))))
         if len(digests) != 1:
             raise VerificationError(
                 f"docker push for {tag} must report exactly one manifest digest: {digests}"
@@ -2429,6 +2440,7 @@ def _command_digest(args: argparse.Namespace) -> None:
 def promote_approved_digest(
     *, evidence_dir: Path, expected_digest: str, expected_source_sha: str,
     expected_source_url: str, version_tag: str, output_dir: Path,
+    before_latest_assignment: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Promote one explicitly authorized prior publication; never build an image."""
     _validate_digest(expected_digest)
@@ -2482,10 +2494,15 @@ def promote_approved_digest(
     # Fresh anonymous tag/config/layer and live Cosign checks precede mutation.
     verify_publication(**public_args)
     latest = f"{image_name}:latest"
+    if before_latest_assignment is not None:
+        before_latest_assignment()
     _run(["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", latest, digest_ref])
     promoted = dict(publish)
-    promoted["tags"] = sorted(set(publish["tags"]) | {latest})
-    promoted["pushes"] = [*publish["pushes"], *([] if latest in publish["tags"] else [{"tag": latest, "digest": expected_digest}])]
+    promoted["tags"] = list(publish["tags"])
+    promoted["pushes"] = list(publish["pushes"])
+    if latest not in promoted["tags"]:
+        promoted["tags"].append(latest)
+        promoted["pushes"].append({"tag": latest, "digest": expected_digest})
     promoted_path = output_dir / "publish-report.json"
     _write_json(promoted_path, promoted)
     public_args["publish_report_path"] = promoted_path

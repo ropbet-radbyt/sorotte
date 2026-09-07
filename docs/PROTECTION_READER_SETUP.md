@@ -50,6 +50,14 @@ waits for normal checks before minting, so waiting cannot consume the token's
 one-hour lifetime. These inputs and revocation default were verified against the
 [pinned action definition](https://github.com/actions/create-github-app-token/blob/fee1f7d63c2ff003460e3d139729b119787bc349/action.yml).
 
+Container promotion authenticates its tooling against exact current protected
+`main` and separately verifies the already-published source, its trusted main
+checks, annotated tag and latest stable release identity. It repeats these
+checks immediately before assigning the approved digest to `latest`. The same
+repository-scoped App supplies Administration read; the promotion workflow's
+normal token supplies the existing registry write permission. Both authority
+observations are retained without credentials.
+
 The private key is forwarded by name only to publication workflows. Package CI,
 pull-request CI, and native candidate jobs receive no App credential. Rotating the
 key means adding the replacement secret, verifying a read authorization, then

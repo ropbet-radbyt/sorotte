@@ -304,9 +304,11 @@ Stable publication runs through `coordinated stable release` after protected-mai
 approval. It shares the Windows/Linux lifecycle qualification with archive
 consumers, attaches server assets automatically, and verifies their public
 bytes. Use its manual `publish=false` option for full qualification without
-publication. To promote `latest`, run `publish sorotte-server container` at the
-approved release tag with `publication_run_id`, `approved_digest`, and
-`version_tag`. See [release qualification](RELEASE_QUALIFICATION.md) for exact
+publication. To promote `latest`, run `publish sorotte-server container` on
+qualified `main` with `publication_run_id`, `approved_digest`, and `version_tag`
+for the current latest stable release. The promotion tool and the published
+release retain separate source identities, so reviewed tooling can promote an
+existing signed release. See [release qualification](RELEASE_QUALIFICATION.md) for exact
 reuse, dry-run and failed-stage retry rules.
 
 GitHub Container Registry packages are private on first publish. Public
