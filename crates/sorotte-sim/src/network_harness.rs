@@ -351,8 +351,13 @@ fn handle_connection(
     request_counts: &Mutex<BTreeMap<String, usize>>,
     controls: ConnectionFaultControls<'_>,
 ) -> Option<HttpRequestRecord> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    // Windows accepts inherit the listener's nonblocking mode. These worker threads
+    // consume complete headers synchronously, so the socket timeouts need blocking I/O.
+    stream.set_nonblocking(false).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .ok()?;
     let request = read_request_headers(&mut stream).ok()?;
     let (path, range_start, range_end) = parse_request(&request)?;
     let Some(fixture) = fixtures.get(&path) else {
@@ -730,6 +735,108 @@ mod tests {
         let record = &server.requests()[0];
         assert_eq!(record.transmitted_body_bytes, 12);
         assert!(record.disconnected_early);
+    }
+
+    #[test]
+    fn nonblocking_accepted_connection_consumes_fragmented_request_before_disconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        // Force the Windows inheritance condition on every supported platform.
+        accepted.set_nonblocking(true).unwrap();
+        client
+            .write_all(b"GET /drop.mp4 HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let fixtures = BTreeMap::from([(
+                "/drop.mp4".to_owned(),
+                HttpMediaFixture::static_bytes("video/mp4", vec![7; 64]).with_faults(
+                    NetworkFaultProfile {
+                        disconnect_after_body_bytes: Some(12),
+                        ..NetworkFaultProfile::default()
+                    },
+                ),
+            )]);
+            entered_tx.send(()).unwrap();
+            let record = handle_connection(
+                accepted,
+                &fixtures,
+                &Mutex::new(BTreeMap::new()),
+                ConnectionFaultControls {
+                    hold_after_body_bytes: &BTreeMap::new(),
+                    burst_stalls: BurstStallControl {
+                        armed: &AtomicBool::new(true),
+                        global_one_shot: false,
+                        consumed: &Mutex::new(BTreeSet::new()),
+                        deferred_announcement_count: &AtomicUsize::new(0),
+                        applied_count: &AtomicUsize::new(0),
+                        completed_count: &AtomicUsize::new(0),
+                    },
+                    held_transmission_count: &AtomicUsize::new(0),
+                    held_transmissions_released: &AtomicBool::new(false),
+                    shutdown: &AtomicBool::new(false),
+                },
+            );
+            finished_tx.send(()).unwrap();
+            record
+        });
+
+        let entered = entered_rx.recv_timeout(Duration::from_secs(1));
+        // Keep the final header fragment withheld after the worker has entered.
+        // An inherited nonblocking stream otherwise abandons the partial request.
+        let finished_before_headers = finished_rx.recv_timeout(Duration::from_millis(100));
+        let written = client.write_all(b"Connection: close\r\n\r\n");
+        let mut response = Vec::new();
+        let read = client.read_to_end(&mut response);
+        drop(client);
+        drop(listener);
+        let record = worker.join();
+
+        // Join the bounded worker and close both client/listener before assertions.
+        entered.expect("connection worker should enter");
+        assert!(
+            matches!(
+                finished_before_headers,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "connection worker must wait for complete request headers: {finished_before_headers:?}"
+        );
+        written.expect("remaining request headers should write");
+        read.expect("truncated response should still be readable");
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(
+            response
+                .windows(20)
+                .any(|window| window == b"Content-Length: 64\r\n")
+        );
+        let body_start = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("response headers should terminate")
+            + 4;
+        assert_eq!(&response[body_start..], &[7; 12]);
+        assert_eq!(
+            record.expect("connection worker should exit"),
+            Some(HttpRequestRecord {
+                path: "/drop.mp4".to_owned(),
+                range_start: None,
+                range_end_inclusive: None,
+                status_code: 200,
+                advertised_body_bytes: 64,
+                transmitted_body_bytes: 12,
+                disconnected_early: true,
+            })
+        );
     }
 
     #[test]

@@ -1259,6 +1259,7 @@ done""",
                     "target/verification/coverage-line-map.json\n"
                     "target/verification/coverage-profile-lanes.json\n"
                     "target/verification/coverage-profile-logs/\n"
+                    "target/verification/server-fixture-failures/\n"
                 ),
                 "if-no-files-found": "warn",
                 "retention-days": "14",
@@ -2504,6 +2505,7 @@ done""",
             """,
         )
         upload = named_step(coverage_jobs, "coverage", "Upload coverage artifact")
+        self.assertEqual(upload.get("if"), "always()")
         self.assertEqual(
             upload.get("uses"),
             PINNED_USES["actions/upload-artifact"],
@@ -2518,6 +2520,7 @@ done""",
                     "target/coverage-line-map.json\n"
                     "target/verification/coverage-profile-lanes.json\n"
                     "target/verification/coverage-profile-logs/\n"
+                    "target/verification/server-fixture-failures/\n"
                 ),
                 "if-no-files-found": "error",
                 "retention-days": "14",

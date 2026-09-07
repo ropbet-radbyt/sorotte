@@ -1,7 +1,8 @@
 mod support;
 
-use std::{fs, thread, time::Duration};
+use std::{fs, path::Path, thread, time::Duration};
 
+use rusqlite::Connection;
 use serde_json::{Value, json};
 use sorotte_protocol::{PingPayload, ProtocolMessage, StatePayload, TlsPayload};
 
@@ -46,6 +47,184 @@ fn fixture_timeout_preserves_primary_failure_and_next_case_runs_after_cleanup() 
     ));
     let mut client = next.wait_for_ipv4(port);
     client.hello("independent-case", "fixture-cleanup");
+}
+
+fn with_persistence_database(test: impl FnOnce(&Path)) {
+    struct OwnedDirectory(std::path::PathBuf);
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            if let Err(error) = fs::remove_dir_all(&self.0) {
+                if thread::panicking() {
+                    eprintln!(
+                        "persistence fixture cleanup failed for {:?}: {error}",
+                        self.0
+                    );
+                } else {
+                    panic!(
+                        "persistence fixture cleanup failed for {:?}: {error}",
+                        self.0
+                    );
+                }
+            }
+        }
+    }
+    let directory = temporary_directory_path("committed-playlist-observer");
+    fs::create_dir(&directory).expect("new private persistence fixture directory should create");
+    let directory = OwnedDirectory(directory);
+    test(&directory.0.join("rooms.sqlite3"));
+}
+
+#[test]
+fn fixture_persistence_wait_requires_committed_playlist_and_index() {
+    with_persistence_database(|database| {
+        let mut writer = Connection::open(database).expect("fixture database should open");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE persistent_rooms (
+                     name TEXT PRIMARY KEY, playlistJson TEXT, playlistIndex INTEGER
+                 );",
+            )
+            .expect("fixture persistence schema should create");
+        let transaction = writer
+            .transaction()
+            .expect("fixture transaction should begin");
+        transaction
+            .execute(
+                "INSERT INTO persistent_rooms VALUES (?1, ?2, ?3)",
+                rusqlite::params!["room", r#"["committed.mkv"]"#, 0],
+            )
+            .expect("fixture should stage the expected playlist");
+        let failure = wait_for_committed_playlist(
+            database,
+            "room",
+            &["committed.mkv"],
+            0,
+            Duration::from_millis(20),
+        )
+        .expect_err("an uncommitted row must not authorize a hard restart");
+        assert!(
+            failure.contains("committed room row is absent"),
+            "{failure}"
+        );
+        assert_eq!(
+            transaction
+                .query_row("SELECT COUNT(*) FROM persistent_rooms", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("the writer should see its staged row"),
+            1,
+            "the expected row must actually exist inside the still-uncommitted transaction"
+        );
+        assert!(
+            !transaction.is_autocommit(),
+            "the observer must not commit the writer"
+        );
+        transaction.commit().expect("fixture write should commit");
+        wait_for_committed_playlist(
+            database,
+            "room",
+            &["committed.mkv"],
+            0,
+            Duration::from_secs(1),
+        )
+        .expect("the committed playlist and index should authorize a hard restart");
+        for (files, index) in [(["different.mkv"], 0), (["committed.mkv"], 1)] {
+            let failure = wait_for_committed_playlist(
+                database,
+                "room",
+                &files,
+                index,
+                Duration::from_millis(20),
+            )
+            .expect_err("both the committed playlist and its index must match");
+            assert!(
+                failure.contains("committed.mkv") && failure.contains("playlistIndex=Some(0)"),
+                "{failure}"
+            );
+        }
+        wait_for_committed_playlist(
+            database,
+            "room",
+            &["committed.mkv"],
+            0,
+            Duration::from_secs(1),
+        )
+        .expect("negative observations must leave the committed row unchanged");
+    });
+}
+
+#[test]
+fn fixture_persistence_wait_reports_database_failures() {
+    with_persistence_database(|database| {
+        let observe = || {
+            wait_for_committed_playlist(
+                database,
+                "room",
+                &["committed.mkv"],
+                0,
+                Duration::from_millis(20),
+            )
+        };
+        let failure = observe().expect_err("the observer must not create a missing database");
+        assert!(failure.contains("read-only open failed"), "{failure}");
+        assert!(!database.exists());
+        let writer = Connection::open(database).expect("fixture database should open");
+        let failure = observe().expect_err("a missing persistence schema must fail");
+        assert!(
+            failure.contains("no such table: persistent_rooms"),
+            "{failure}"
+        );
+        writer
+            .execute_batch(
+                "CREATE TABLE persistent_rooms (
+                     name TEXT PRIMARY KEY, playlistJson TEXT, playlistIndex INTEGER
+                 );
+                 INSERT INTO persistent_rooms VALUES ('room', 'not-json', 0);",
+            )
+            .expect("malformed fixture row should write");
+        let failure = observe().expect_err("invalid committed playlist JSON must fail");
+        assert!(
+            failure.contains("invalid committed playlist JSON") && failure.contains("not-json"),
+            "{failure}"
+        );
+        writer
+            .execute(
+                "UPDATE persistent_rooms SET playlistJson = ?1, playlistIndex = 'not-an-index'",
+                [r#"["committed.mkv"]"#],
+            )
+            .expect("invalid fixture index should write");
+        let failure = observe().expect_err("invalid committed index type must fail");
+        assert!(
+            failure.contains("committed row query failed") && failure.contains("playlistIndex"),
+            "{failure}"
+        );
+        writer
+            .execute("UPDATE persistent_rooms SET playlistIndex = 0", [])
+            .expect("fixture index should repair");
+        writer
+            .execute_batch("BEGIN EXCLUSIVE;")
+            .expect("fixture should hold a real exclusive SQLite lock");
+        let failure = observe().expect_err("a locked row must not authorize a restart");
+        assert!(
+            failure.contains("committed row could not be read") && failure.contains("locked"),
+            "{failure}"
+        );
+        assert!(
+            !writer.is_autocommit(),
+            "the observer must not release the writer's lock"
+        );
+        writer
+            .execute_batch("ROLLBACK;")
+            .expect("fixture lock should release");
+        wait_for_committed_playlist(
+            database,
+            "room",
+            &["committed.mkv"],
+            0,
+            Duration::from_secs(1),
+        )
+        .expect("observation should recover after the fixture releases its lock");
+    });
 }
 
 fn server_args(port: u16, extra: &[&str]) -> Vec<String> {
@@ -348,7 +527,7 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
         });
         drop(alice);
         drop(watcher);
-        thread::sleep(Duration::from_millis(500));
+        server.wait_for_persisted_playlist(&rooms_db, "persisted-room", &["persisted.mkv"], 0);
     }
 
     {
@@ -372,10 +551,12 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
         );
         let mut saw_playlist = false;
         let mut saw_hello = false;
+        let mut captured_frames = Vec::new();
         for _ in 0..8 {
-            let message = bob
-                .read_message()
-                .expect("persistent server should respond after restart");
+            let message = bob.read_message().unwrap_or_else(|| {
+                panic!("persistent server closed after restart; frames={captured_frames:?}")
+            });
+            captured_frames.push(message_value(&message));
             saw_playlist |= message_pointer_eq(
                 &message,
                 "/Set/playlistChange/files",
@@ -388,7 +569,10 @@ fn release_verify_persistence_permanent_rooms_and_isolation() {
         }
         assert!(
             saw_playlist,
-            "persisted room should restore playlist after server restart"
+            "persisted room should restore playlist after server restart; \
+             frames={captured_frames:?} stdout={:?} stderr={:?}",
+            server.stdout.text(),
+            server.stderr.text()
         );
         bob.write_message(&ProtocolMessage::list_request());
         let rooms = expect_list_rooms(bob.read_until_kind("List"));
@@ -570,7 +754,12 @@ fn release_verify_real_python_clients_against_rust_binary() {
         direct.write_message(&set_playlist_message(&["python-persisted.mkv"]));
         direct.write_message(&set_playlist_index_message(0));
         drop(direct);
-        thread::sleep(Duration::from_millis(500));
+        persistent_server.wait_for_persisted_playlist(
+            &rooms_db,
+            "python-persisted",
+            &["python-persisted.mkv"],
+            0,
+        );
     }
     {
         let mut persistent_server = ServerProcess::spawn(&server_args(

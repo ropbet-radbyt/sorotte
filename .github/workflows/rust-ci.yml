@@ -975,6 +975,7 @@ jobs:
             target/verification/coverage-line-map.json
             target/verification/coverage-profile-lanes.json
             target/verification/coverage-profile-logs/
+            target/verification/server-fixture-failures/
           if-no-files-found: warn
           retention-days: 14
           overwrite: true

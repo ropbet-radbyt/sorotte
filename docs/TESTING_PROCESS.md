@@ -16,6 +16,11 @@ The later persistence-fixture follow-up distinguishes an unexplained native abor
 from a separately reproduced, unintended background HTTP dependency.
 The scheduled-check follow-up records a nightly job publishing a skipped check
 under a reserved release name, and the event isolation that prevents the collision.
+The [fixture boundary follow-up](audits/test-fixture-boundaries-2026-09-08.md)
+records two tests that passed on the PR and failed on the identical main tree:
+an unobserved persistence commit before a hard restart and an accepted HTTP
+socket inheriting nonblocking mode. It distinguishes controlled reproductions
+from the incomplete diagnostics of the original executions.
 
 ## Local command ladder
 
