@@ -654,10 +654,16 @@ class CiPolicyTests(unittest.TestCase):
                     seen.add(action)
         self.assertEqual(seen, NODE24_ACTIONS)
 
-    def test_rust_coverage_sources_are_canonical_lf_on_every_platform(self) -> None:
+    def test_release_and_coverage_sources_are_canonical_lf_with_opaque_input_exceptions(self) -> None:
         self.assertEqual(
             GIT_ATTRIBUTES_PATH.read_text(encoding="utf-8").splitlines(),
             [
+                "# Release producers and consumers must see identical tracked text bytes,",
+                "# regardless of each runner's core.autocrlf or core.eol settings.",
+                "* text=auto eol=lf",
+                "# Keep image bytes outside text conversion even when Git settings differ.",
+                "*.ico -text",
+                "*.png -text",
                 "# Cross-platform LLVM line maps bind to identical Rust source bytes.",
                 "*.rs text eol=lf",
                 "# Fuzz seeds include framing control bytes and retained crashes; never rewrite them.",

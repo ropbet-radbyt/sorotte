@@ -166,8 +166,18 @@ def consume(bundle_dir: Path, complete_path: Path, root: Path, sha: str, target_
     if not isinstance(inputs, dict):
         raise QualificationError("legacy bundle cannot authorize release reuse")
     validate_inputs(inputs, sha=sha, target_platform=target_platform, channel=channel)
-    if clean_source(root, sha) != inputs["source_files"]:
-        raise QualificationError("qualified build source inputs differ from consumer checkout")
+    consumer_source = clean_source(root, sha)
+    qualified_source = inputs["source_files"]
+    if consumer_source != qualified_source:
+        differing = sorted(
+            name for name in consumer_source.keys() | qualified_source.keys()
+            if consumer_source.get(name) != qualified_source.get(name)
+        )
+        preview = ", ".join(repr(name) for name in differing[:10])
+        raise QualificationError(
+            "qualified build source inputs differ from consumer checkout "
+            f"({len(differing)} paths; first {min(10, len(differing))}: {preview})"
+        )
     if expected_run_id:
         if (inputs["producer"]["run_id"] != expected_run_id
             or inputs["producer"]["repository"] != os.environ.get("GITHUB_REPOSITORY")
