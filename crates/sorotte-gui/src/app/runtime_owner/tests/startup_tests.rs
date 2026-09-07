@@ -4,6 +4,50 @@ use crate::app::runtime_owner::{
 };
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 
+struct StartupConfigFixture {
+    root: PathBuf,
+}
+
+impl StartupConfigFixture {
+    fn new(label: &str) -> Self {
+        let unique_suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .expect("startup fixture temporary directory should exist")
+            .join(format!(
+                "sorotte-gui-startup-config-{label}-{}-{unique_suffix}",
+                std::process::id()
+            ));
+        std::fs::create_dir(&root).expect("startup fixture should own a new temporary directory");
+        Self { root }
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.root.join("sorotte.ini")
+    }
+}
+
+impl Drop for StartupConfigFixture {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.root) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "startup fixture cleanup failed for {:?}: {error}",
+                    self.root
+                );
+            } else {
+                panic!(
+                    "startup fixture cleanup failed for {:?}: {error}",
+                    self.root
+                );
+            }
+        }
+    }
+}
+
 fn managed_mpv_test_child() -> std::process::Child {
     use std::process::{Command, Stdio};
 
@@ -1402,8 +1446,9 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
 
 #[test]
 fn gui_persisted_config_runtime_owner_startup_player_lookup_honors_test_player_env() {
+    let fixture = StartupConfigFixture::new("player-lookup");
     let owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
-        Some(PathBuf::from("C:/Config/sorotte.ini")),
+        Some(fixture.config_path()),
         &|name| match name {
             "SOROTTE_GUI_ENABLE_TEST_PLAYER" => Some("true".to_owned()),
             _ => None,
@@ -1416,7 +1461,7 @@ fn gui_persisted_config_runtime_owner_startup_player_lookup_honors_test_player_e
     assert_eq!(owner.player_unavailability_reason, None);
 
     let detached_owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
-        Some(PathBuf::from("C:/Config/sorotte.ini")),
+        Some(fixture.config_path()),
         &|_name| None,
     );
     assert!(detached_owner.player.is_none());
@@ -1531,9 +1576,10 @@ fn explicit_mpv_ipc_launch_state_honors_selected_players_saved_streaming_overrid
 
 #[test]
 fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active_session() {
+    let fixture = StartupConfigFixture::new("auto-attach");
     let (mut owner, _session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
-            Some(PathBuf::from("C:/Config/sorotte.ini")),
+            Some(fixture.config_path()),
             &|name| match name {
                 "SOROTTE_GUI_ENABLE_TEST_PLAYER" => Some("true".to_owned()),
                 _ => None,
@@ -2130,8 +2176,9 @@ fn gui_persisted_config_runtime_owner_applies_deferred_stream_helper_snapshot_on
 
 #[test]
 fn gui_persisted_config_runtime_owner_retry_without_player_path_keeps_setup_guidance() {
+    let fixture = StartupConfigFixture::new("retry-player");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
-        Some(PathBuf::from("C:/Config/sorotte.ini")),
+        Some(fixture.config_path()),
         &|_name| None,
     );
     let initial_reason = owner.player_unavailability_reason.clone();

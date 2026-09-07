@@ -4510,10 +4510,9 @@ done""",
             with self.subTest(neighbor=neighbor):
                 self.assertIsNone(re.search(mutant_filter, neighbor))
 
-    def test_feature_pushes_are_not_duplicated_with_pull_request_runs(self) -> None:
+    def test_rust_pushes_only_qualify_main_without_duplicate_feature_or_tag_runs(self) -> None:
         triggers = self.workflow["on"]
-        self.assertEqual(triggers["push"]["branches"], ["main"])
-        self.assertEqual(triggers["push"]["tags"], ["v*", "server-v*"])
+        self.assertEqual(triggers["push"], {"branches": ["main"]})
         self.assertIn("pull_request", triggers)
         self.assertEqual(
             triggers["workflow_dispatch"],

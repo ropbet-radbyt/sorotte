@@ -102,10 +102,19 @@ jobs:
 
       - name: Capture immutable build metadata
         id: build_info
-        shell: bash
+        shell: python
         run: |
-          set -euo pipefail
-          printf 'created=%s\n' "$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+          import datetime
+          import os
+          import subprocess
+
+          epoch = int(subprocess.check_output(
+              ["git", "show", "-s", "--format=%ct", os.environ["GITHUB_SHA"]],
+              text=True, timeout=30,
+          ).strip())
+          created = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8", newline="\n") as output:
+              output.write(f"created={created}\n")
 
       - name: Define publication tags and OCI labels
         id: meta

@@ -37,6 +37,12 @@ another stable lifecycle campaign. The orchestrator:
    receipts beyond the Actions retention window. Native raw logs remain private;
    their diagnostic projection is distinct from a passing qualification.
 
+`rust-ci.yml` runs the required Rust checks for main and PRs; release tags do not
+start a second copy on the same commit. The stable orchestrator requires the
+existing protected-main checks and executes its distinct release obligations.
+Duplicate required checks remain an authorization error, including duplicates
+from another manually requested Rust campaign on the same source.
+
 Version 2 bundle manifests record exact source files, Cargo inputs, compiler/Cargo/Python
 binary hashes, target, default features, release profile, absence of
 instrumentation, channel/ref, runner image and OS, resolved OS/Python packages,
@@ -55,6 +61,11 @@ endings cannot authorize bundle reuse. The checkout regression exercises both
 Git `core.autocrlf` settings and preserves framing and binary corpus bytes.
 An input mismatch reports the affected path count and up to ten names, without
 logging file contents; the original qualified input inventory remains in the bundle.
+The workspace receipt checks cleanliness before and after executing tests. A
+dirty checkout reports its status-entry count and up to ten entries without file
+contents. Passing test assertions cannot certify a changed checkout. Tests must
+own and remove their temporary configuration directories, including cache locks
+created by constructors and other indirect operations.
 
 ## Prepare the release version
 
@@ -140,6 +151,10 @@ actual-image protocol, TLS, persistence, non-root, shutdown, SBOM, signature and
 anonymous registry checks. Its binary is a distinct build from the host Linux
 archive; the shared lifecycle prerequisite is not a claim of container binary
 identity. Build timestamps use the source commit time rather than retry time.
+The metadata step reads the requested commit's Unix timestamp and renders it as
+UTC with a `Z` suffix. The image verifier still rejects offset timestamps and
+other noncanonical values. The actual workflow command is tested against Git
+commits with different timezone offsets and a missing source revision.
 
 The keyless certificate SAN identifies the reusable signer
 `publish-server-container.yml@refs/tags/<version>` because Fulcio uses

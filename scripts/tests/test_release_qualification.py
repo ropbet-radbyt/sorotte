@@ -167,6 +167,52 @@ class CheckoutSourceIdentityTests(unittest.TestCase):
                 )
 
 
+    def test_passing_workspace_command_cannot_certify_test_written_inputs(self) -> None:
+        attributes = (MODEL_PATH.parents[1] / ".gitattributes").read_bytes()
+        sha, _, checkouts = self.checkout_fixture(attributes)
+        checkout = checkouts["lf"]
+        qualification.clean_source(checkout, sha)
+        original_run = subprocess.run
+        cargo_commands = []
+        private_contents = "PRIVATE_TEST_OUTPUT_MUST_NOT_APPEAR_IN_DIAGNOSTICS"
+
+        def test_process(command, **kwargs):
+            if command[0] != "cargo":
+                return original_run(command, **kwargs)
+            cargo_commands.append(command)
+            self.assertEqual(kwargs["cwd"], checkout)
+            generated = checkout / "test-cache" / ".media-index-activation.lock"
+            generated.parent.mkdir()
+            generated.write_text(private_contents, encoding="utf-8")
+            (checkout / "src/lib.rs").write_text(private_contents, encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(qualification.subprocess, "run", side_effect=test_process):
+            with self.assertRaisesRegex(qualification.QualificationError, "release source must be clean") as error:
+                qualification.workspace_receipt(checkout, sha, "linux-x86_64", "default")
+        self.assertEqual(cargo_commands, [["cargo", "test", "--locked", "--workspace"]])
+        diagnostic = str(error.exception)
+        self.assertIn("2 status entries", diagnostic)
+        self.assertIn("src/lib.rs", diagnostic)
+        self.assertIn("test-cache/.media-index-activation.lock", diagnostic)
+        self.assertNotIn(private_contents, diagnostic)
+
+    def test_dirty_source_diagnostic_bounds_the_path_inventory(self) -> None:
+        attributes = (MODEL_PATH.parents[1] / ".gitattributes").read_bytes()
+        sha, _, checkouts = self.checkout_fixture(attributes)
+        checkout = checkouts["lf"]
+        for index in range(12):
+            (checkout / f"generated-{index:02}.txt").write_text("unreported contents", encoding="utf-8")
+        with self.assertRaisesRegex(qualification.QualificationError, "12 status entries; first 10") as error:
+            qualification.clean_source(checkout, sha)
+        diagnostic = str(error.exception)
+        self.assertIn("generated-00.txt", diagnostic)
+        self.assertIn("generated-09.txt", diagnostic)
+        self.assertNotIn("generated-10.txt", diagnostic)
+        self.assertNotIn("generated-11.txt", diagnostic)
+        self.assertNotIn("unreported contents", diagnostic)
+
+
 class QualificationReceiptTests(unittest.TestCase):
     def complete(self, root: Path, manifest: dict) -> Path:
         path = root.parent / "complete.json"

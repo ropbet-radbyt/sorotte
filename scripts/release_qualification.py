@@ -71,8 +71,13 @@ def write(path: Path, value: dict) -> None:
 def clean_source(root: Path, sha: str) -> dict:
     if not SHA.fullmatch(sha) or run(["git", "rev-parse", "HEAD"], root) != sha:
         raise QualificationError("release source differs from exact candidate SHA")
-    if run(["git", "status", "--porcelain", "--untracked-files=all"], root):
-        raise QualificationError("release source must be clean")
+    status_entries = run(["git", "status", "--porcelain", "--untracked-files=all"], root).splitlines()
+    if status_entries:
+        preview = ", ".join(repr(entry) for entry in status_entries[:10])
+        raise QualificationError(
+            "release source must be clean "
+            f"({len(status_entries)} status entries; first {min(10, len(status_entries))}: {preview})"
+        )
     files = run(["git", "ls-files", "-z"], root).split("\0")
     identities = {}
     for name in sorted(filter(None, files)):
