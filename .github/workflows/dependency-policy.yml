@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dependencies-${{ github.ref }}
+  group: dependencies-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -140,7 +140,7 @@ jobs:
           retention-days: 30
 
   dependency-required:
-    name: dependency-required
+    name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'dependency-required' || format('dependency-{0}', github.event_name) }}
     if: always()
     needs: [selection, rust, python]
     runs-on: ubuntu-24.04
