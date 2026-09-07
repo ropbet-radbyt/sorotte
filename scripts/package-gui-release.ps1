@@ -2,7 +2,10 @@ param(
     [string]$OutputDir = "target/gui-release",
     [ValidateSet("stable", "dev")]
     [string]$Channel = "stable",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$QualifiedBundle = "",
+    [string]$QualificationReceipt = "",
+    [string]$QualificationRunId = $env:GITHUB_RUN_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,7 +70,7 @@ function Assert-PathInsideRepo {
 }
 
 function Get-SorotteGuiVersion {
-    $metadataJson = & cargo metadata --no-deps --format-version 1
+    $metadataJson = & cargo metadata --locked --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
         throw "cargo metadata failed with exit code $LASTEXITCODE"
     }
@@ -80,12 +83,11 @@ function Get-SorotteGuiVersion {
 }
 
 function Get-GitSha {
-    if ($env:GITHUB_SHA) {
-        return [string]$env:GITHUB_SHA
-    }
+    # GitHub's PR event SHA can name a merge while this producer checks out the
+    # reviewed head. Metadata must identify the checkout that supplied the bytes.
     $sha = & git rev-parse HEAD 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        return "unknown"
+    if ($LASTEXITCODE -ne 0 -or $sha -notmatch '^[0-9a-f]{40}$') {
+        throw "Package source must resolve to a complete Git commit"
     }
     return [string]$sha
 }
@@ -193,13 +195,23 @@ function Copy-ReleaseFile {
 
 Assert-WindowsX64
 
+if ([bool]$QualifiedBundle -ne [bool]$QualificationReceipt) {
+    throw "QualifiedBundle and QualificationReceipt must be supplied together"
+}
+if ($QualifiedBundle) {
+    $QualifiedBundle = Resolve-PackagePath $QualifiedBundle
+    & python scripts/release_qualification.py consume --candidate-sha (Get-GitSha) --platform windows-x86_64 --channel $Channel --bundle-dir $QualifiedBundle --complete-receipt $QualificationReceipt --expected-run-id $QualificationRunId
+    if ($LASTEXITCODE -ne 0) { throw "GUI qualification receipt does not authorize these exact bundle bytes" }
+    $SkipBuild = $true
+}
+
 if (-not $SkipBuild) {
     Write-Host "==> Building sorotte-gui release binaries" -ForegroundColor Cyan
-    & cargo build --release -p sorotte-gui --bin sorotte-gui
+    & cargo build --locked --release -p sorotte-gui --bin sorotte-gui
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build sorotte-gui failed with exit code $LASTEXITCODE"
     }
-    & cargo build --release -p sorotte-gui --bin sorotte-gui-updater
+    & cargo build --locked --release -p sorotte-gui --bin sorotte-gui-updater
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build sorotte-gui-updater failed with exit code $LASTEXITCODE"
     }
@@ -249,7 +261,7 @@ if (Test-Path -LiteralPath $symbolsRoot) {
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $artifactsRoot | Out-Null
 
-$releaseDir = Join-Path $RepoRoot "target/release"
+$releaseDir = if ($QualifiedBundle) { $QualifiedBundle } else { Join-Path $RepoRoot "target/release" }
 Copy-ReleaseFile (Join-Path $releaseDir "sorotte-gui.exe") (Join-Path $packageRoot "sorotte-gui.exe")
 Copy-ReleaseFile (Join-Path $releaseDir "sorotte-gui-updater.exe") (Join-Path $packageRoot "sorotte-gui-updater.exe")
 Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "README.md")

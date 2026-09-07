@@ -342,7 +342,8 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_install
             || None,
             || Some(install_root.clone()),
             std::path::Path::is_file,
-        );
+        )
+        .expect("readable install locator should resolve");
 
     assert_eq!(
         source,

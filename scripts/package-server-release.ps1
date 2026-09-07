@@ -1,6 +1,9 @@
 param(
     [string]$OutputDir = "target/server-release",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$QualifiedBundle = "",
+    [string]$QualificationReceipt = "",
+    [string]$QualificationRunId = $env:GITHUB_RUN_ID
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,7 +128,7 @@ function Write-Utf8ArtifactFile {
 }
 
 function Get-SorotteServerVersion {
-    $metadataJson = & cargo metadata --no-deps --format-version 1
+    $metadataJson = & cargo metadata --locked --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) {
         throw "cargo metadata failed with exit code $LASTEXITCODE"
     }
@@ -176,9 +179,19 @@ function Copy-ReleaseFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+if ([bool]$QualifiedBundle -ne [bool]$QualificationReceipt) {
+    throw "QualifiedBundle and QualificationReceipt must be supplied together"
+}
+if ($QualifiedBundle) {
+    $QualifiedBundle = Resolve-PackagePath $QualifiedBundle
+    & python scripts/release_qualification.py consume --candidate-sha (Get-SourceSha) --platform (Get-ReleasePlatform) --channel stable --bundle-dir $QualifiedBundle --complete-receipt $QualificationReceipt --expected-run-id $QualificationRunId
+    if ($LASTEXITCODE -ne 0) { throw "Server qualification receipt does not authorize these exact bundle bytes" }
+    $SkipBuild = $true
+}
+
 if (-not $SkipBuild) {
     Write-Host "==> Building sorotte-server release binary" -ForegroundColor Cyan
-    & cargo build --release -p sorotte-server --bin sorotte-server
+    & cargo build --locked --release -p sorotte-server --bin sorotte-server
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
@@ -210,7 +223,12 @@ if (Test-Path -LiteralPath $symbolsRoot) {
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $artifactsRoot | Out-Null
 
-$binarySource = Join-Path (Join-Path $RepoRoot "target/release") $binaryName
+$releaseDir = if ($QualifiedBundle) { $QualifiedBundle } else { Join-Path $RepoRoot "target/release" }
+$binarySource = Join-Path $releaseDir $binaryName
+if (-not $packageForWindows) {
+    & chmod +x $binarySource
+    if ($LASTEXITCODE -ne 0) { throw "Could not restore executable mode for qualified server" }
+}
 Copy-ReleaseFile $binarySource (Join-Path $packageRoot $binaryName)
 Copy-ReleaseFile (Join-Path $RepoRoot "README.md") (Join-Path $packageRoot "README.md")
 Copy-ReleaseFile (Join-Path $RepoRoot "docs/SERVER_RELEASE.md") (Join-Path $packageRoot "SERVER_RELEASE.md")
@@ -249,7 +267,7 @@ Write-Utf8ArtifactFile `
 
 $pdbPath = $null
 if ($packageForWindows) {
-    $candidatePdbPath = Join-Path $RepoRoot "target/release/sorotte_server.pdb"
+    $candidatePdbPath = Join-Path $releaseDir "sorotte_server.pdb"
     if (Test-Path -LiteralPath $candidatePdbPath -PathType Leaf) {
         $pdbPath = $candidatePdbPath
     }

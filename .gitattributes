@@ -1,2 +1,6 @@
 # Cross-platform LLVM line maps bind to identical Rust source bytes.
 *.rs text eol=lf
+# Fuzz seeds include framing control bytes and retained crashes; never rewrite them.
+crates/sorotte-protocol/tests/corpus/protocol_parser/** -text
+crates/sorotte-cli/tests/corpus/framed_session/** -text
+crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript/** -text

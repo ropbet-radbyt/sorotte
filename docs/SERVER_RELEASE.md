@@ -236,7 +236,7 @@ Run the strict release gate from the workspace root:
 powershell -ExecutionPolicy Bypass -File scripts/server-release-verify.ps1
 ```
 
-The gate bootstraps the pinned Syncplay `v1.7.5` oracle into `.interop-cache/syncplay-legacy` when `SYNCPLAY_LEGACY_ROOT` is not set, then runs the normal cargo checks plus the strict `sorotte-server` binary release matrix. Python prerequisites are required:
+The gate bootstraps the pinned Syncplay `v1.7.5` oracle into `.interop-cache/syncplay-legacy` when `SYNCPLAY_LEGACY_ROOT` is not set. Every configured or cloned oracle must match the clean commit recorded in `coverage/verification-tools.toml`. It then runs the normal locked Cargo checks plus the strict `sorotte-server` binary release matrix. Python prerequisites are required:
 
 ```powershell
 python -m pip install -r requirements/legacy-python-interop.txt
@@ -286,8 +286,8 @@ Release-tag runs build and push immutable source tags:
 - `ghcr.io/ropbet-radbyt/sorotte-server:sha-<full-40-character-sha>`
 
 The mutable `ghcr.io/ropbet-radbyt/sorotte-server:latest` tag is promoted only
-by an explicit manual workflow run with `push_latest` set to `true`. Re-running
-an older tag workflow cannot move `latest` backward.
+by an explicit manual workflow run naming the approved publication run, manifest
+digest and version tag. Promotion copies that digest without rebuilding.
 
 Publication is intentionally later than testing. The workflow builds and loads
 one local `linux/amd64` image, checks its source/config/RootFS identity, consumes
@@ -300,21 +300,14 @@ gate rejects any mismatch among the local image-config identity, runtime and
 restart evidence, SBOM, pushed manifest, signature, attestation, or public
 manifest/config bytes.
 
-To publish manually:
-
-1. Push the workflow to GitHub.
-2. Open the repository in GitHub.
-3. Go to `Actions`.
-4. Run `publish sorotte-server container`; set `push_latest` to `true` only
-   when intentionally promoting that selected revision.
-5. After the first push (even if the later anonymous comparison correctly
-   fails for a private new package), open the package page for
-   `sorotte-server`.
-6. Go to `Package settings`.
-7. Change visibility to `Public` if the image should be anonymously pullable.
-8. If the first run stopped at anonymous public verification because a new
-   package was private, rerun the workflow after changing visibility and
-   require the uploaded `final-gate-report.json` to pass.
+Stable publication runs through `coordinated stable release` after protected-main
+approval. It shares the Windows/Linux lifecycle qualification with archive
+consumers, attaches server assets automatically, and verifies their public
+bytes. Use its manual `publish=false` option for full qualification without
+publication. To promote `latest`, run `publish sorotte-server container` at the
+approved release tag with `publication_run_id`, `approved_digest`, and
+`version_tag`. See [release qualification](RELEASE_QUALIFICATION.md) for exact
+reuse, dry-run and failed-stage retry rules.
 
 GitHub Container Registry packages are private on first publish. Public
 container packages can be pulled anonymously after package visibility is

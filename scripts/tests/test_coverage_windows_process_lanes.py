@@ -337,7 +337,6 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         self.assertEqual(root, self.target)
 
     def test_exact_libtest_oracle_accepts_every_lane(self) -> None:
-        total = 0
         for lane in lanes.PROFILE_LANES:
             with self.subTest(lane=lane):
                 oracle = lanes.libtest_oracle(
@@ -350,8 +349,19 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     oracle["tests"],
                     sorted(lanes.EXPECTED_TESTS[lane]),
                 )
-                total += oracle["passed"]
-        self.assertEqual(total, 99)
+
+    def test_complete_updater_lane_uses_reviewed_inventory_and_rejects_partial_or_ignored_runs(self) -> None:
+        lane = "updater-transaction-process"
+        self.assertEqual(lanes.EXPECTED_TESTS[lane], tuple(lanes.reviewed_tests("updater-bin")))
+        complete = self.libtest_output(lane)
+        fixture_test = b"tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open"
+        for faulty in (
+            complete.replace(b"test " + fixture_test + b" ... ok\n", b""),
+            complete.replace(b"test result:", b"test tests::unreviewed_updater_case ... ok\ntest result:"),
+            complete.replace(b"test " + fixture_test + b" ... ok", b"test " + fixture_test + b" ... ignored"),
+        ):
+            with self.subTest(output=faulty), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, faulty, b"")
 
     def test_mpv_lane_filtered_counts_share_reviewed_inventory_size(self) -> None:
         for lane in (
@@ -365,6 +375,35 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                     lanes.MPV_LIBTEST_INVENTORY_SIZE,
                 )
         self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 459)
+
+    def test_shared_settings_reader_lane_preserves_acl_coverage_and_exact_registered_parents(self) -> None:
+        lane = "shared-settings-reader"
+        expected = tuple(name for name in lanes.reviewed_tests("client-app-lib")
+                         if name.startswith(lanes.SETTINGS_READER_PREFIX)
+                         and name != lanes.SETTINGS_READER_FIXTURE)
+        self.assertEqual(lanes.EXPECTED_TESTS[lane], expected)
+        self.assertEqual(len(expected), 13)
+        self.assertIn(lanes.SETTINGS_READER_PREFIX + "windows_case_aliases_share_the_read_lock_and_relocation_identity", expected)
+        for parent in ("cross_process_reader_waits_through_a_writer_owned_missing_name",
+                       "cross_process_reader_observes_clear_only_after_the_writer_unlocks"):
+            self.assertIn(lanes.SETTINGS_READER_PREFIX + parent, expected)
+        self.assertEqual(lanes.LANE_COMMANDS[lane][-2:], ("--skip", lanes.SETTINGS_READER_FIXTURE))
+        self.assertEqual(len(lanes.EXPECTED_TESTS["private-settings"]), 4)
+        self.assertIn("sorotte_ini::windows_tests::", lanes.LANE_COMMANDS["private-settings"])
+        self.assertEqual(len(expected) + lanes.EXPECTED_FILTERED_OUT[lane], len(lanes.reviewed_tests("client-app-lib")))
+
+    def test_shared_settings_reader_rejects_missing_extra_ignored_or_standalone_helper_results(self) -> None:
+        lane = "shared-settings-reader"
+        complete = self.libtest_output(lane)
+        parent = (lanes.SETTINGS_READER_PREFIX + "cross_process_reader_waits_through_a_writer_owned_missing_name").encode()
+        for faulty in (
+            complete.replace(b"test " + parent + b" ... ok\n", b""),
+            complete.replace(b"test result:", b"test unreviewed_reader ... ok\ntest result:"),
+            complete.replace(b"test " + parent + b" ... ok", b"test " + parent + b" ... ignored"),
+            complete.replace(b"test result:", b"test " + lanes.SETTINGS_READER_FIXTURE.encode() + b" ... ok\ntest result:"),
+        ):
+            with self.subTest(output=faulty), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, faulty, b"")
 
     def test_libtest_oracle_requires_rust_singular_one_test_grammar(self) -> None:
         lane = "server-platform-signal"

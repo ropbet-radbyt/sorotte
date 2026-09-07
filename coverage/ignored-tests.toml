@@ -17,6 +17,32 @@ prerequisites = ["standalone mpv binary", "local media asset", "Windows IPC supp
 operating_systems = ["windows"]
 
 [[ignored_test]]
+id = "IGN-CLI-009"
+source = "crates/sorotte-client-app/src/sorotte_ini/transaction_tests.rs"
+test = "windows_raw_filesystem_readers_observe_complete_documents_through_replacement"
+source_reason = "Windows NTFS raw concurrent opens can report missing during replacement; see microsoft/STL#5501"
+tier = "quarantined"
+owner = "cli"
+rationale = "The unchanged strict raw-reader assertion reproduced OS2 on NTFS with legacy rename, POSIX rename and native hard-link replacement. Required application coverage now tests shared-sidecar reads; this retained OS diagnostic must not be presented as product qualification."
+prerequisites = ["Windows NTFS filesystem", "concurrent raw filesystem readers"]
+operating_systems = ["windows"]
+tracking = "https://github.com/microsoft/STL/issues/5501; docs/evidence/testing/windows-settings-publication-2026-09-06.md"
+review_by = "2026-10-06"
+
+[[ignored_test]]
+id = "IGN-CLI-010"
+source = "crates/sorotte-client-app/src/sorotte_ini/read_transaction_tests.rs"
+test = "settings_reader_process_fixture"
+source_reason = "settings reader subprocess entry point, invoked by cross-process reader contracts"
+tier = "subprocess-fixture"
+owner = "cli"
+rationale = "Both causal reader contracts launch this exact child with owned path and control variables to prove that replacement and Clear stay hidden until the writer releases its lock."
+prerequisites = ["cross-process reader parent contracts", "parent-owned settings path and control endpoint"]
+operating_systems = ["linux", "macos", "windows"]
+required_job = "checks"
+parent_test = "sorotte_ini::read_transaction_tests::cross_process_reader_waits_through_a_writer_owned_missing_name"
+
+[[ignored_test]]
 id = "IGN-CLI-002"
 source = "crates/sorotte-cli/src/tests/mpv_smoke/explicit_ipc_desync_fastforward.rs"
 test = "connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_server_playstate_fastforward_via_ping_forward_delay_to_real_player"

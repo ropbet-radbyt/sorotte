@@ -417,6 +417,21 @@ fn authoritative_reconciliation_normalizes_paused_internal_seek_like_event_ingre
     adapter.playback_restart_sequence = 1;
     adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
 
+    // The raw seek edge can arrive before the cache/pause/core-idle properties
+    // needed to recognize a settled paused internal resync. A sparse consumer
+    // has already observed that edge when authoritative reconciliation follows.
+    adapter.handle_ipc_event(&json!({
+        "event": MPV_EVENT_PROPERTY_CHANGE,
+        "name": MPV_PROPERTY_SEEKING,
+        "data": true,
+    }));
+    let mut consumer = PlayerTransportTelemetryUpdate::default();
+    for update in adapter.pending_transport_telemetry_updates.drain(..) {
+        consumer.merge_from(update);
+    }
+    assert_eq!(consumer.phase, Some(PlayerTransportPhase::Seeking));
+    assert_eq!(consumer.seeking, Some(true));
+
     adapter.reconcile_lifecycle_from_authority();
 
     assert_eq!(
@@ -428,6 +443,15 @@ fn authoritative_reconciliation_normalizes_paused_internal_seek_like_event_ingre
         adapter.transport_phase,
         PlayerTransportPhase::ReadyPaused,
         "a reconciliation poll must not re-latch settled paused playback in Seeking"
+    );
+    for update in adapter.pending_transport_telemetry_updates.drain(..) {
+        consumer.merge_from(update);
+    }
+    assert_eq!(consumer.phase, Some(PlayerTransportPhase::ReadyPaused));
+    assert_eq!(
+        consumer.seeking,
+        Some(false),
+        "reconciliation must close the seeking edge already observed by a sparse telemetry consumer"
     );
 }
 

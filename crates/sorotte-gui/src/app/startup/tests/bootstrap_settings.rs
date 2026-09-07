@@ -238,3 +238,36 @@ fn gui_tcp_bootstrap_tls_policy_uses_merged_credentials_and_explicit_override() 
         "an explicit configured TLS policy must remain authoritative"
     );
 }
+
+#[test]
+fn gui_startup_locator_read_failure_stops_before_loading_default_settings() {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "sorotte-gui-locator-error-{}-{suffix}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("sorotte.ini"), [0xff]).unwrap();
+    let env_root = test_default_sorotte_config_env_root().display().to_string();
+    let result = super::super::gui_startup_settings_from_lookup_with_install_root(
+        |name| match name {
+            "APPDATA" if cfg!(windows) => Some(env_root.clone()),
+            "HOME" if !cfg!(windows) => Some(env_root.clone()),
+            _ => None,
+        },
+        |_| Err("unexpected public-server file read".to_owned()),
+        || None,
+        || Some(root.clone()),
+        |_| false,
+        |_| panic!("locator read failure must stop before loading another config"),
+    );
+    let _ = std::fs::remove_dir_all(root);
+    let error = result.expect_err("GUI startup should report an unreadable locator");
+    assert!(
+        error.contains("failed reading install config locator"),
+        "{error}"
+    );
+}

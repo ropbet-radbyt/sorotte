@@ -75,11 +75,13 @@ fn normalized_tls_server_host(host: &str) -> &str {
         .unwrap_or(host)
 }
 
-fn cli_plex_cache_path() -> Option<std::path::PathBuf> {
-    crate::config_paths::resolve_sorotte_cli_config_path().and_then(|path| {
-        path.parent()
-            .map(|parent| parent.join("cache").join(CLI_PLEX_CACHE_FILE_NAME))
-    })
+fn cli_plex_cache_path() -> anyhow::Result<Option<std::path::PathBuf>> {
+    Ok(
+        crate::config_paths::resolve_sorotte_cli_config_path()?.and_then(|path| {
+            path.parent()
+                .map(|parent| parent.join("cache").join(CLI_PLEX_CACHE_FILE_NAME))
+        }),
+    )
 }
 
 pub(super) fn emit_application_service_events(events: Vec<ClientEvent>) {
@@ -722,7 +724,7 @@ where
             .configure_plex_service(
                 plex_config,
                 CLI_PLEX_CLIENT_IDENTIFIER,
-                cli_plex_cache_path(),
+                cli_plex_cache_path()?,
             )
             .await,
     );

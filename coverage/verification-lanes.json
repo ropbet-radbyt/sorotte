@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "required_checks": {
+    "verification-required": ".github/workflows/rust-ci.yml",
+    "merge-required": ".github/workflows/rust-ci.yml",
+    "mutation-required": ".github/workflows/rust-mutation.yml",
+    "fuzz-required": ".github/workflows/rust-fuzz.yml",
+    "dependency-required": ".github/workflows/dependency-policy.yml",
+    "package-required": ".github/workflows/package-ci.yml",
+    "native-required": ".github/workflows/native-required.yml"
+  },
+  "lanes": [
+    {
+      "id": "static",
+      "owner": "verification maintainers",
+      "command": "python scripts/verify.py preflight --phase static",
+      "always": true
+    },
+    {
+      "id": "behavior",
+      "owner": "crate maintainers",
+      "command": "cargo nextest run --locked --workspace --all-features --profile ci",
+      "patterns": [
+        "crates/**",
+        "Cargo.*",
+        "rust-toolchain.toml",
+        ".cargo/**"
+      ]
+    },
+    {
+      "id": "semver",
+      "owner": "API maintainers",
+      "command": "pwsh -File scripts/check-semver.ps1 -BaselineRev BASE",
+      "patterns": [
+        "crates/**",
+        "Cargo.*"
+      ]
+    },
+    {
+      "id": "coverage",
+      "owner": "crate maintainers",
+      "command": "python scripts/coverage_profile_lanes.py --help",
+      "patterns": [
+        "crates/**",
+        "fixtures/**",
+        "Cargo.*"
+      ]
+    },
+    {
+      "id": "mutation",
+      "owner": "crate maintainers",
+      "command": "python scripts/mutation_campaign.py --help",
+      "patterns": [
+        "crates/**",
+        "fixtures/**",
+        "Cargo.*"
+      ]
+    },
+    {
+      "id": "fuzz",
+      "owner": "protocol and player maintainers",
+      "command": "python scripts/fuzz_regressions.py replay",
+      "patterns": [
+        "crates/**",
+        "fuzz/**",
+        "Cargo.*"
+      ]
+    },
+    {
+      "id": "dependencies",
+      "owner": "security maintainers",
+      "command": "cargo deny --locked check",
+      "patterns": [
+        "**/Cargo.toml",
+        "**/Cargo.lock",
+        "Cargo.*",
+        "deny.toml",
+        "**/requirements*.txt",
+        "Dockerfile"
+      ]
+    },
+    {
+      "id": "native",
+      "owner": "Windows GUI maintainers",
+      "command": "powershell -File scripts/native-runner-sandbox.ps1 -Help",
+      "patterns": [
+        "crates/**",
+        "fixtures/**",
+        "Cargo.*"
+      ]
+    },
+    {
+      "id": "release",
+      "owner": "release maintainers",
+      "command": "python scripts/merge_gate.py authorize-release --candidate-sha SHA --output RECEIPT",
+      "patterns": [
+        "Dockerfile",
+        "dist/**",
+        "crates/**",
+        "Cargo.*"
+      ]
+    }
+  ],
+  "apparatus_patterns": [
+    "scripts/**",
+    "coverage/**",
+    "verification/**",
+    ".github/**",
+    ".config/**",
+    ".cargo/**",
+    "rust-toolchain.toml",
+    ".gitattributes"
+  ],
+  "documentation_patterns": [
+    "docs/**",
+    "*.md",
+    "LICENSE*",
+    ".gitignore"
+  ],
+  "gate_producers": {
+    "release": ["archive"],
+    "fuzz": [
+      "protocol-fuzz",
+      "framed-session-fuzz",
+      "mpv-framed-transcript-fuzz"
+    ],
+    "dependencies": [
+      "rust",
+      "python"
+    ],
+    "merge": [
+      "preflight",
+      "semver",
+      "verification",
+      "canaries"
+    ]
+  }
+}

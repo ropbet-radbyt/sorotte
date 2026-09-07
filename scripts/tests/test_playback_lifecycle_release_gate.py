@@ -226,9 +226,7 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         )
         self.assertIn("--platform windows-x86_64", bundle)
         self.assertIn("--artifact gui=target/release/sorotte-gui.exe", bundle)
-        vertical = normalized(
-            named_step(self.windows, "Run exact GUI baseline and terminal fault modes")["run"]
-        )
+        vertical = normalized("\n".join(step.get("run", "") for step in self.windows["steps"]))
         self.assertEqual(vertical.count("gui-real-mpv-vertical.ps1"), 4)
         for switch in (
             "ExerciseFaultingHttpRecovery",
@@ -292,29 +290,17 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
             ["gui-release", "playback-lifecycle-release-gate"],
         )
 
-        server_jobs = self.server_release["jobs"]
-        server_gate = server_jobs["playback-lifecycle-release-gate"]
-        self.assertEqual(
-            server_gate["uses"],
-            "./.github/workflows/playback-lifecycle-release-gate.yml",
-        )
-        self.assertEqual(server_gate["with"]["candidate_sha"], "${{ github.sha }}")
-        self.assertEqual(
-            server_jobs["server-release"]["needs"],
-            "playback-lifecycle-release-gate",
-        )
-
-        container_jobs = self.container_release["jobs"]
-        container_gate = container_jobs["playback-lifecycle-release-gate"]
-        self.assertEqual(
-            container_gate["uses"],
-            "./.github/workflows/playback-lifecycle-release-gate.yml",
-        )
-        self.assertEqual(container_gate["with"]["candidate_sha"], "${{ github.sha }}")
-        self.assertEqual(
-            container_jobs["publish"]["needs"],
-            "playback-lifecycle-release-gate",
-        )
+        coordinated = yaml.load((REPO_ROOT / ".github/workflows/stable-release.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        jobs = coordinated["jobs"]
+        self.assertEqual(jobs["playback-lifecycle-release-gate"]["needs"], "authorize-source")
+        self.assertEqual(jobs["playback-lifecycle-release-gate"]["with"]["candidate_sha"], "${{ github.sha }}")
+        for consumer in ("server-archives", "gui-archive", "container"):
+            needs = jobs[consumer]["needs"]
+            self.assertIn("playback-lifecycle-release-gate", [needs] if isinstance(needs, str) else needs)
+        self.assertIn("workflow_call", self.server_release["on"])
+        self.assertNotIn("push", self.server_release["on"])
+        self.assertNotIn("push", self.container_release["on"])
+        self.assertEqual(sum(job.get("uses", "").endswith("/playback-lifecycle-release-gate.yml") for job in jobs.values()), 1)
 
 
 if __name__ == "__main__":

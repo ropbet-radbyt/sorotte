@@ -34,6 +34,17 @@ class MutationSelectionTests(unittest.TestCase):
     def test_docs_do_not_trigger_mutation_work(self):
         self.assertEqual(self.select("docs/DEVELOPMENT.md", "README.md", "crates/sorotte-secret/README.md", "fixtures/README.md"), set())
 
+    def test_windows_checkout_line_endings_preserve_immutable_policy_identity(self):
+        self.assertTrue(selection.checkout_matches_blob(b"schema_version=1\n", b"schema_version=1\r\n"))
+        self.assertFalse(selection.checkout_matches_blob(b"schema_version=1\n", b"schema_version=2\r\n"))
+        self.assertFalse(selection.checkout_matches_blob(None, b"schema_version=1\r\n"))
+        self.assertFalse(selection.checkout_matches_blob(b"field = true\n", b"field=true\r\n"))
+
+    def test_shared_verification_apparatus_selects_full_campaign(self):
+        expected = {shard["id"] for shard in self.policy["shard"]}
+        for path in (".gitattributes", "scripts/verify.py", "scripts/verification_tools.py", "scripts/test_inventory.py", "coverage/verification-tools.toml", "coverage/verification-lanes.json", "coverage/test-inventories.json"):
+            self.assertEqual(self.select(path), expected)
+
     def test_selectors_and_lockfiles_recompute_all_shards(self):
         all_shards = {shard["id"] for shard in self.policy["shard"]}
         for path in ("Cargo.lock", "Cargo.toml", "coverage/mutation-policy.toml", "coverage/mutation-selection.toml", "scripts/mutation_ci.py", "scripts/artifact_input.py"):

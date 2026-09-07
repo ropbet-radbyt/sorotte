@@ -153,7 +153,9 @@ EXPECTED_COMPAT_TESTS = (
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_latency_metrics_matches_runtime_core_behavior",
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_propagation_matches_runtime_core_behavior",
 )
-EXPECTED_COMPAT_TOTAL_TESTS = 152
+from test_inventory import reviewed as reviewed_tests
+
+EXPECTED_COMPAT_TOTAL_TESTS = len(reviewed_tests("compat"))
 EXPECTED_COMPAT_FILTERED_OUT = (
     EXPECTED_COMPAT_TOTAL_TESTS - len(EXPECTED_COMPAT_TESTS)
 )

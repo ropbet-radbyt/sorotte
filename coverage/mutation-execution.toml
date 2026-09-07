@@ -1,0 +1,43 @@
+schema_version = 1
+# Execution partition only: mutation-policy.toml still owns every source,
+# selector, baseline, survivor/timeout threshold and reviewed unviable entry.
+target_mutants_per_chunk = 48
+max_chunks_per_shard = 8
+reference_run = "https://github.com/ropbet-radbyt/sorotte/actions/runs/33958176599"
+reference_sha = "9ced745e5aae40c782b7ef110c5434db3c9b6a6e"
+
+# Measured whole-job seconds from the audited final 0.2.9 candidate. These
+# guide initial parallelism; they are not per-mutant timings or an SLA.
+[historical_job_seconds]
+client-app-participant-status-lifecycle = 300
+cli-participant-status-lifecycle = 391
+plex-http-origin = 135
+server-participant-status = 4005
+cli-framing = 1508
+gui-playlist-delivery-fence = 1223
+client-participant-status-runtime = 1076
+client-participant-status = 996
+client-reconnect-state = 927
+client-participant-status-outbox = 258
+client-inbound-order = 226
+client-playlist-shuffle = 282
+server-auth = 311
+client-ping = 393
+privacy-secret = 72
+server-local-clock = 284
+participant-status-protocol = 174
+gui-participant-status = 817
+server-persistence-arbitration = 379
+client-runtime-config = 446
+settings-duplicate-keys = 217
+player-mpv-explicit-ipc-retry = 271
+server-resource-permits = 417
+protocol-codec = 307
+
+[minimum_chunks]
+server-participant-status = 4
+cli-framing = 2
+gui-playlist-delivery-fence = 2
+client-participant-status-runtime = 2
+client-participant-status = 2
+client-reconnect-state = 2

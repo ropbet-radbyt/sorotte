@@ -248,6 +248,85 @@ class MutationEvaluationTests(unittest.TestCase):
             report["inventory"]["pre_run_canonical_sha256"],
         )
 
+    def failed_baseline(self, *, phase: str = "Test", status=None, summary="Failure"):
+        baseline = self.fixture.outcomes["outcomes"][0]
+        baseline["summary"] = summary
+        terminal = self.fixture.phase(
+            phase, {"Failure": 101} if status is None else status, no_run=phase == "Build"
+        )
+        baseline["phase_results"] = (
+            [self.fixture.phase("Build", "Success", no_run=True), terminal]
+            if phase == "Test" else [terminal]
+        )
+        self.fixture.outcomes["outcomes"] = [baseline]
+        for key in ("total_mutants", "caught", "missed", "unviable", "timeout", "success"):
+            self.fixture.outcomes[key] = 0
+        self.fixture.write()
+        for status_file in mutation_ci.STATUS_FILES.values():
+            (self.fixture.results / status_file).write_text("", encoding="utf-8")
+        return baseline
+
+    def test_failed_unmutated_test_preserves_phase_exit_and_abort_log_identity(self) -> None:
+        self.failed_baseline()
+        # Real cargo-mutants 27.1.0 emitted Failure after the hosted GUI binary
+        # printed all 36 assertions passed, then aborted during process exit.
+        baseline_log = self.fixture.results / "log/baseline.log"
+        raw = (
+            b"test result: ok. 36 passed; 0 failed; 0 ignored\n"
+            b"process didn't exit successfully (signal: 6, SIGABRT: process abort signal)\n"
+        )
+        baseline_log.write_bytes(raw)
+        with self.assertRaises(mutation_ci.MutationCiError) as caught:
+            self.evaluate(exit_code=4)
+        message = str(caught.exception)
+        self.assertIn("unmutated baseline failed during Test (Failure(101))", message)
+        self.assertIn("log/baseline.log", message)
+        self.assertIn(hashlib.sha256(raw).hexdigest(), message)
+        self.assertEqual(baseline_log.read_bytes(), raw)
+
+    def test_failed_unmutated_build_is_not_an_unviable_mutant(self) -> None:
+        self.failed_baseline(phase="Build")
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError,
+            r"unmutated baseline failed during Build \(Failure\(101\)\)",
+        ):
+            self.evaluate(exit_code=4)
+
+    def test_baseline_timeout_preserves_its_own_failure_phase(self) -> None:
+        self.failed_baseline(status="Timeout", summary="Timeout")
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError, r"unmutated baseline failed during Test \(Timeout\)"
+        ):
+            self.evaluate(exit_code=4)
+
+    def test_failure_summary_rejects_successful_or_timed_out_phases(self) -> None:
+        for phase, status in (("Build", "Success"), ("Build", "Timeout"),
+                              ("Test", "Success"), ("Test", "Timeout")):
+            with self.subTest(phase=phase, status=status):
+                self.failed_baseline(phase=phase, status=status)
+                with self.assertRaisesRegex(mutation_ci.MutationCiError, "incoherent phases"):
+                    self.evaluate(exit_code=4)
+
+    def test_failure_summary_cannot_count_a_mutant_as_caught(self) -> None:
+        self.fixture.outcomes["outcomes"][1]["summary"] = "Failure"
+        self.rewrite_outcomes()
+        with self.assertRaisesRegex(
+            mutation_ci.MutationCiError, "Failure is valid only for the baseline"
+        ):
+            self.evaluate(exit_code=4)
+
+    def test_failed_baseline_still_requires_a_safe_log_and_no_mutant_diff(self) -> None:
+        baseline = self.failed_baseline()
+        baseline["log_path"] = "../outside.log"
+        self.rewrite_outcomes()
+        with self.assertRaisesRegex(mutation_ci.MutationCiError, "safe relative artifact path"):
+            self.evaluate(exit_code=4)
+        baseline["log_path"] = "log/baseline.log"
+        baseline["diff_path"] = "diff/mutant.diff"
+        self.rewrite_outcomes()
+        with self.assertRaisesRegex(mutation_ci.MutationCiError, "baseline outcome must not have a diff"):
+            self.evaluate(exit_code=4)
+
     def test_top_level_mutant_with_null_function_metadata_is_supported(self) -> None:
         self.fixture.mutant["function"] = None
         self.fixture.outcomes["outcomes"][1]["scenario"]["Mutant"]["function"] = None
@@ -1135,6 +1214,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))
@@ -1258,6 +1338,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             self.assertEqual(argv[:2], ["cargo", "test"])
@@ -1346,6 +1427,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))
@@ -1397,6 +1479,7 @@ require_baseline = true
             argv: list[str],
             *,
             cwd: pathlib.Path,
+            **_options,
         ) -> subprocess.CompletedProcess[str]:
             self.assertEqual(cwd, self.repo)
             calls.append(list(argv))

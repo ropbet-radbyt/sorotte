@@ -1,0 +1,170 @@
+[
+  {
+    "path": "coverage/mutation-policy.toml",
+    "line": 149,
+    "text": "id = \"server-participant-status\"",
+    "file_sha256": "cc2a41710d65bb3e6a0c58f0304e57207a54eec734e67a90c7c8ab4cdb4e0213"
+  },
+  {
+    "path": "crates/sorotte-server/tests/support/mod.rs",
+    "line": 365,
+    "text": "            .expect(\"server response should read\");",
+    "file_sha256": "b007f23e879567a29001273cd477390ff898ed0c3503fedcab1359675ac287dc"
+  },
+  {
+    "path": ".github/workflows/rust-ci.yml",
+    "line": 98,
+    "text": "      - name: Behavior evidence self-tests",
+    "file_sha256": "ecaf88a3a195eabc3fd4f1acbb7620893a1092afb9f184c5b586bb8b5a6d7b81"
+  },
+  {
+    "path": "scripts/mutation_ci.py",
+    "line": 1944,
+    "text": "        test_listing = run_process(cargo_test_inventory_command(shard), cwd=repo_root)",
+    "file_sha256": "5dddeea5fea743eebc8dfc9dd040a5ab1547f6e4fb0226a77f3f97627084a2a0"
+  },
+  {
+    "path": ".github/workflows/rust-mutation.yml",
+    "line": 147,
+    "text": "  participant-status-evidence-set:",
+    "file_sha256": "b22afcda3ead4db5736b5fbd23296185dd66e01b4f89b9e60e610dc184058512"
+  },
+  {
+    "path": "scripts/mutation_ci.py",
+    "line": 1618,
+    "text": "def run_process(",
+    "file_sha256": "5dddeea5fea743eebc8dfc9dd040a5ab1547f6e4fb0226a77f3f97627084a2a0"
+  },
+  {
+    "path": "scripts/mutation_ci.py",
+    "line": 1820,
+    "text": "        producer = run_process(mutation_command, cwd=repo_root)",
+    "file_sha256": "5dddeea5fea743eebc8dfc9dd040a5ab1547f6e4fb0226a77f3f97627084a2a0"
+  },
+  {
+    "path": "scripts/compat_live_interop.py",
+    "line": 83,
+    "text": "EXPECTED_DISCOVERED_TESTS = 152",
+    "file_sha256": "e5c0223bce3b7c783c1891dbc72e8cced0cb0e7f8730eaf446608af41af6654b"
+  },
+  {
+    "path": "scripts/coverage_profile_lanes.py",
+    "line": 156,
+    "text": "EXPECTED_COMPAT_TOTAL_TESTS = 152",
+    "file_sha256": "e7b13af471b3cfd1b697909748b1ad04af285a2a5c22b8bbec2c6508cc9443fe"
+  },
+  {
+    "path": "scripts/coverage_windows_process_lanes.py",
+    "line": 373,
+    "text": "MPV_LIBTEST_INVENTORY_SIZE = 459",
+    "file_sha256": "570e09f9613f882b0cff2050d54b1b91c0751eedffada22d9a0bba2b105e22d4"
+  },
+  {
+    "path": "scripts/coverage_profile_lanes.py",
+    "line": 514,
+    "text": "def show_env_environment(",
+    "file_sha256": "e7b13af471b3cfd1b697909748b1ad04af285a2a5c22b8bbec2c6508cc9443fe"
+  },
+  {
+    "path": "scripts/coverage_profile_lanes.py",
+    "line": 1487,
+    "text": "        # RUSTC_WRAPPER is not part of Cargo's ordinary artifact freshness",
+    "file_sha256": "e7b13af471b3cfd1b697909748b1ad04af285a2a5c22b8bbec2c6508cc9443fe"
+  },
+  {
+    "path": ".github/workflows/sorotte-gui-release.yml",
+    "line": 91,
+    "text": "  playback-lifecycle-release-gate:",
+    "file_sha256": "acfcd483020869beeda763b5e3b7e9a1d38eb4ee4e71f255ef203dcf32462fec"
+  },
+  {
+    "path": ".github/workflows/sorotte-server-release.yml",
+    "line": 14,
+    "text": "  playback-lifecycle-release-gate:",
+    "file_sha256": "3d81a905fc3afe9776684d3ff926bbdc8202da0d1668cadd9950654b2910abd2"
+  },
+  {
+    "path": ".github/workflows/publish-server-container.yml",
+    "line": 35,
+    "text": "  playback-lifecycle-release-gate:",
+    "file_sha256": "672e26265a3390236d46ebfccecb4688f67f9a65c44779f410070fe0794ea6d9"
+  },
+  {
+    "path": ".github/workflows/playback-lifecycle-release-gate.yml",
+    "line": 241,
+    "text": "      - name: Attest ephemeral interactive Windows runner",
+    "file_sha256": "03d85259d99a38fe75c74a1062f028a81b86bb97e066ab55a3a1198e842143f7"
+  },
+  {
+    "path": ".github/workflows/playback-lifecycle-release-gate.yml",
+    "line": 403,
+    "text": "      - name: Upload Windows platform lifecycle attestation",
+    "file_sha256": "03d85259d99a38fe75c74a1062f028a81b86bb97e066ab55a3a1198e842143f7"
+  },
+  {
+    "path": ".github/workflows/playback-lifecycle-release-gate.yml",
+    "line": 181,
+    "text": "      - name: Upload privacy-safe lifecycle release evidence",
+    "file_sha256": "03d85259d99a38fe75c74a1062f028a81b86bb97e066ab55a3a1198e842143f7"
+  },
+  {
+    "path": "crates/sorotte-server/tests/server_release_verify.rs",
+    "line": 36,
+    "text": "fn release_verify_test_lock() -> MutexGuard<'static, ()> {",
+    "file_sha256": "9e8f737ffa1dca667cb967ad518f5f1737cc113f6c8bb4d3620706cd2df3fd4d"
+  },
+  {
+    "path": "crates/sorotte-server/tests/support/mod.rs",
+    "line": 321,
+    "text": "            .set_read_timeout(Some(Duration::from_secs(3)))",
+    "file_sha256": "b007f23e879567a29001273cd477390ff898ed0c3503fedcab1359675ac287dc"
+  },
+  {
+    "path": ".github/workflows/rust-ci.yml",
+    "line": 155,
+    "text": "      - name: Execute subprocess-fixture parent contracts",
+    "file_sha256": "ecaf88a3a195eabc3fd4f1acbb7620893a1092afb9f184c5b586bb8b5a6d7b81"
+  },
+  {
+    "path": "scripts/server-release-verify.ps1",
+    "line": 150,
+    "text": "function Ensure-LegacyOracle {",
+    "file_sha256": "c9721b8de5e1d8a1b0776670898ec46e6ce85151a38f8a4b382948040b6b87af"
+  },
+  {
+    "path": "scripts/server-release-verify.ps1",
+    "line": 282,
+    "text": "    Invoke-CargoStep \"fmt\" @(\"fmt\", \"--all\", \"--\", \"--check\")",
+    "file_sha256": "c9721b8de5e1d8a1b0776670898ec46e6ce85151a38f8a4b382948040b6b87af"
+  },
+  {
+    "path": ".github/workflows/sorotte-server-release.yml",
+    "line": 55,
+    "text": "      - name: Package server release",
+    "file_sha256": "3d81a905fc3afe9776684d3ff926bbdc8202da0d1668cadd9950654b2910abd2"
+  },
+  {
+    "path": "crates/sorotte-server/tests/support/mod.rs",
+    "line": 208,
+    "text": "        let mut child = Command::new(env!(\"CARGO_BIN_EXE_sorotte-server\"))",
+    "file_sha256": "b007f23e879567a29001273cd477390ff898ed0c3503fedcab1359675ac287dc"
+  },
+  {
+    "path": "coverage/ignored-tests.toml",
+    "line": 1,
+    "text": "schema_version = 1",
+    "file_sha256": "633ce182fbaae46aa29d031edd911d5b8cfbb3686d452431e36679d098661d6a"
+  },
+  {
+    "path": ".github/workflows/rust-fuzz.yml",
+    "line": 45,
+    "text": "jobs:",
+    "file_sha256": "28ee03232c1d2ef0e4c9543385b92c726b638dd4d0923ccdee9df08133a0d979"
+  },
+  {
+    "path": "scripts/tests/test_ci_policy.py",
+    "line": 705,
+    "text": "    def test_required_jobs_have_structurally_bound_commands(self) -> None:",
+    "file_sha256": "c93578cbcfc64afac49a872b9b2b6ffe6d7bee64e06cf60138463172be5db049"
+  }
+]

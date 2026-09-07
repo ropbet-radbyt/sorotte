@@ -1,0 +1,62 @@
+name: trusted native obligation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-required-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VERIFICATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  VERIFICATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+jobs:
+  native-required:
+    name: native-required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - name: Checkout exact candidate on an unprivileged hosted worker
+        id: ci_checkout_exact_candidate_on_an_unprivi_53ca91c8
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_941fa0bc
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Compute obligations from the immutable event subjects
+        id: ci_compute_obligations_from_the_immutable_533de821
+        run: >-
+          python scripts/verify.py plan --base "$VERIFICATION_BASE" --head "$VERIFICATION_SHA"
+          --output target/verification/native-plan.json
+      - name: Require exact trusted native execution or validate no applicable work
+        id: ci_require_exact_trusted_native_execution_f18f6936
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/native_required.py --base-sha "$VERIFICATION_BASE" --source-sha "$VERIFICATION_SHA"
+          --plan target/verification/native-plan.json --wait-seconds 5400
+          --output target/verification/native-required.json
+      - name: Preserve this required native decision
+        id: ci_preserve_this_required_native_decision_ee4c3e2c
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-required-${{ env.VERIFICATION_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/verification/native-plan.json
+            target/verification/native-required.json
+          if-no-files-found: error
+          retention-days: 90

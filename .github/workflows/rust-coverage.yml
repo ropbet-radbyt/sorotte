@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
@@ -23,11 +23,13 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout
+        id: ci_checkout_da921ccf
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout pinned legacy reference for merged coverage
+        id: ci_checkout_pinned_legacy_reference_for_m_ec068844
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -36,43 +38,67 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_28203453
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
+        id: ci_setup_python_a82b5f17
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install merged coverage prerequisites
+        id: ci_install_merged_coverage_prerequisites_88f6261a
         run: >-
           python -m pip install --disable-pip-version-check
           -r requirements/legacy-python-interop.txt
 
       - name: Install pinned cargo-llvm-cov
+        id: ci_install_pinned_cargo_llvm_cov_48d631a6
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 
+      - name: Validate real coverage producer before Linux collection
+        id: coverage_tool_canary
+        run: python scripts/coverage_tool_canary.py --output target/verification/coverage-canary-linux
+
+      - name: Retain Linux coverage producer canary receipt
+        id: coverage_canary_receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-canary-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/verification/coverage-canary-linux/**
+            !target/verification/coverage-canary-linux/**/target/**
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Generate merged behavioral coverage profiles
+        id: ci_generate_merged_behavioral_coverage_pr_2f931006
         run: >-
           python scripts/coverage_profile_lanes.py run
           --repo-root .
           --output target/verification/coverage-profile-lanes.json
 
       - name: Export pinned LLVM JSON
+        id: ci_export_pinned_llvm_json_61c5184b
         run: >-
           cargo llvm-cov report --json --skip-functions
           --output-path target/coverage.json
 
       - name: Export native LLVM source view
+        id: ci_export_native_llvm_source_view_d974deed
         run: >-
           cargo llvm-cov report --text
           --output-path target/coverage.txt
 
       - name: Build source-bound physical line map
+        id: ci_build_source_bound_physical_line_map_c642b590
         run: >-
           python scripts/llvm_cov_line_map.py
           --repo-root .
@@ -81,6 +107,7 @@ jobs:
           --output target/coverage-line-map.json
 
       - name: Upload coverage artifact
+        id: ci_upload_coverage_artifact_060006a8
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sorotte-llvm-coverage
@@ -95,7 +122,7 @@ jobs:
           overwrite: true
 
   windows-process-coverage:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 25
     env:
       CARGO_TARGET_DIR: target/llvm-cov-windows-process
@@ -104,43 +131,67 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout
+        id: ci_checkout_a2839d4f
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_4f669f70
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
+        id: ci_setup_python_cfc09ad9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install pinned cargo-llvm-cov
+        id: ci_install_pinned_cargo_llvm_cov_f780e77a
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
 
+      - name: Validate real coverage producer before Windows collection
+        id: coverage_tool_canary
+        run: python scripts/coverage_tool_canary.py --output target/verification/coverage-canary-windows
+
+      - name: Retain Windows coverage producer canary receipt
+        id: coverage_canary_receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-canary-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/verification/coverage-canary-windows/**
+            !target/verification/coverage-canary-windows/**/target/**
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Generate Windows process coverage profiles
+        id: ci_generate_windows_process_coverage_prof_c74d5696
         run: >-
           python scripts/coverage_windows_process_lanes.py run
           --repo-root .
           --output target/verification/coverage-windows-process-lanes.json
 
       - name: Export Windows LLVM JSON
+        id: ci_export_windows_llvm_json_97adc147
         run: >-
           cargo llvm-cov report --json --skip-functions
           --output-path target/coverage-windows-process.json
 
       - name: Export Windows LLVM source view
+        id: ci_export_windows_llvm_source_view_bc6fcc4a
         run: >-
           cargo llvm-cov report --text
           --output-path target/coverage-windows-process.txt
 
       - name: Build Windows source-bound physical line map
+        id: ci_build_windows_source_bound_physical_li_ec4c2eff
         run: >-
           python scripts/llvm_cov_line_map.py
           --repo-root .
@@ -149,6 +200,7 @@ jobs:
           --output target/coverage-windows-process-line-map.json
 
       - name: Upload Windows process coverage artifact
+        id: ci_upload_windows_process_coverage_artifa_7bed17a2
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -1,14 +1,24 @@
 name: Sorotte native GUI interactive contract
 
-run-name: Native GUI interactive contract for ${{ inputs.source_sha }}
+run-name: Native GUI interactive contract for ${{ inputs.source_sha || github.sha }}
 
 on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 0'
   workflow_dispatch:
     inputs:
       source_sha:
         description: Full trusted Sorotte commit SHA to validate
         required: true
         type: string
+      native_dpi:
+        description: Actual native display profile (none runs only the full inventory)
+        required: false
+        type: choice
+        default: none
+        options: ['none', '96', '144', '192']
 
 permissions:
   contents: read
@@ -18,7 +28,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  selection:
+    name: Select trusted native obligation before provisioning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      selected: ${{ steps.select.outputs.selected }}
+    steps:
+      - name: Checkout exact workflow revision on a hosted worker
+        id: ci_checkout_exact_workflow_revision_on_a__a7d8eed6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Setup Python for applicability
+        id: ci_setup_python_for_applicability_30d60e1b
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Bind requested source before native queueing
+        id: ci_bind_requested_source_before_native_qu_171d9099
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: test "$REQUESTED_SOURCE_SHA" = "$GITHUB_SHA"
+      - name: Compute native applicability from immutable source and event base
+        id: ci_compute_native_applicability_from_immu_78c2583a
+        env:
+          BASE_SHA: ${{ github.event.before || github.sha }}
+        run: >-
+          python scripts/verify.py plan --base "$BASE_SHA" --head "$GITHUB_SHA"
+          --output target/verification/native-plan.json
+      - name: Queue only applicable or explicitly requested native execution
+        id: select
+        env:
+          FORCE: ${{ github.event_name != 'push' && '--force' || '' }}
+        run: >-
+          python scripts/verify.py selected --plan target/verification/native-plan.json
+          --lane native ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
+
   native_interactive:
+    needs: selection
+    if: needs.selection.outputs.selected == 'true'
     name: Strict native GUI inventory (ephemeral interactive Windows)
     runs-on:
       - self-hosted
@@ -29,13 +80,15 @@ jobs:
     timeout-minutes: 45
     env:
       NATIVE_ARTIFACT_ROOT: ${{ github.workspace }}\target\verification\gui-native-smoke
+      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}\.interop-cache\syncplay-legacy
+      SYNCPLAY_REQUIRE_LIVE_INTEROP: '1'
     steps:
       - name: Attest ephemeral interactive runner before checkout
         id: preflight
         continue-on-error: true
         shell: pwsh
         env:
-          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           Set-StrictMode -Version Latest
@@ -52,6 +105,8 @@ jobs:
           }
 
           $null = New-Item -ItemType Directory -Force -Path $env:NATIVE_CI_EVIDENCE_ROOT
+          Require-RunnerCondition ($env:GITHUB_EVENT_NAME -ne 'schedule' -or $env:GITHUB_REF -ceq 'refs/heads/main') `
+              'scheduled native work must use trusted main'
           $requestedSha = [string]$env:REQUESTED_SOURCE_SHA
           $runnerContract = [string]$env:SOROTTE_NATIVE_RUNNER_CONTRACT
           $runnerInstanceId = [string]$env:SOROTTE_NATIVE_RUNNER_INSTANCE_ID
@@ -63,6 +118,10 @@ jobs:
 
           Require-RunnerCondition ($requestedSha -cmatch '^[0-9a-f]{40}$') `
               "source_sha must be a full lowercase commit SHA"
+          Require-RunnerCondition ($requestedSha -ceq $env:GITHUB_SHA) `
+              "source_sha must equal the authorized workflow revision; dispatch that revision with --ref"
+          Require-RunnerCondition ($env:SOROTTE_NATIVE_RUNNER_INPUTS_SHA256 -cmatch '^[0-9a-f]{64}$') `
+              "runner must identify its verified portable tool input manifest"
           Require-RunnerCondition ($env:GITHUB_ACTIONS -eq "true") `
               "preflight must run inside GitHub Actions"
           Require-RunnerCondition ($platform -eq "Win32NT") `
@@ -158,6 +217,8 @@ jobs:
               kind = "sorotte-native-interactive-preflight"
               result = $preflightResult
               requested_source_sha = $requestedSha
+              workflow_source_sha = $env:GITHUB_SHA
+              runner_inputs_sha256 = $env:SOROTTE_NATIVE_RUNNER_INPUTS_SHA256
               runner_contract = $runnerContract
               runner_instance_id = $runnerInstanceId
               runner_max_jobs = $runnerMaxJobs
@@ -183,7 +244,7 @@ jobs:
         if: steps.preflight.outcome == 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 1
           clean: true
           persist-credentials: false
@@ -193,7 +254,7 @@ jobs:
         if: steps.checkout.outcome == 'success'
         shell: pwsh
         env:
-          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           Set-StrictMode -Version Latest
@@ -229,15 +290,27 @@ jobs:
         if: steps.rust.outcome == 'success'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12.10"
 
-      - name: Install pinned native interop prerequisites
+      - name: Prepare and validate native prerequisites
         id: prerequisites
         if: steps.python.outcome == 'success'
         shell: pwsh
-        run: >-
-          python -m pip install --disable-pip-version-check
-          -r requirements/legacy-python-interop.txt
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}\sorotte-native-${{ github.run_id }}-${{ github.run_attempt }}\target
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements/legacy-python-interop.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $reference = python -c 'import json; from scripts.verification_tools import pins; print(json.dumps(pins()["references"]))' | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git clone --no-checkout --filter=blob:none $reference.'legacy-url' $env:SYNCPLAY_LEGACY_ROOT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $env:SYNCPLAY_LEGACY_ROOT checkout --detach $reference.'legacy-sha'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verification_tools.py verify-legacy $env:SYNCPLAY_LEGACY_ROOT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/native_harness_canary.py --output target/verification/native-readiness.json
+          exit $LASTEXITCODE
 
       - name: Run exact strict native GUI inventory
         id: native
@@ -262,6 +335,20 @@ jobs:
               --scenario detached-missing-media `
               --scenario missing-media-continue `
               --scenario transport
+          exit $LASTEXITCODE
+
+      - name: Validate measured native display profile
+        id: display
+        if: steps.native.outcome == 'success' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.native_dpi != '' && inputs.native_dpi != 'none'))
+        continue-on-error: true
+        shell: pwsh
+        env:
+          EXPECTED_NATIVE_DPI: ${{ inputs.native_dpi || '144' }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}\sorotte-native-${{ github.run_id }}-${{ github.run_attempt }}\target
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/gui-display-matrix.ps1 `
+              -ExpectedNativeDpi ([int]$env:EXPECTED_NATIVE_DPI) `
+              -OutputDir "target/verification/native-display-${{ github.run_id }}-${{ github.run_attempt }}" -NoBuild
           exit $LASTEXITCODE
 
       - name: Validate and bind native evidence inventory
@@ -352,7 +439,7 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           NATIVE_CI_EVIDENCE_ROOT: ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
@@ -381,20 +468,42 @@ jobs:
                   Join-Path $env:NATIVE_CI_EVIDENCE_ROOT "lane-outcomes.json"
               ) -Encoding utf8
 
+      - name: Project privacy-safe native diagnostic evidence
+        id: safe_export
+        if: always()
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          NATIVE_OUTCOME: ${{ steps.native.outcome }}
+          DISPLAY_OUTCOME: ${{ steps.display.outcome }}
+        run: |
+          $safeRoot = "${{ runner.temp }}\native-safe-${{ github.run_id }}-${{ github.run_attempt }}"
+          $null = New-Item -ItemType Directory -Path $safeRoot
+          if ((Test-Path scripts/native_failure_evidence.py) -and (Get-Command python -ErrorAction SilentlyContinue)) {
+              python scripts/native_failure_evidence.py export --root "target/verification" --output "$safeRoot\native" `
+                  --source-sha $env:EXPECTED_SOURCE_SHA --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT `
+                  --stage native-inventory --cleanup unavailable --mode-outcome "native=$env:NATIVE_OUTCOME" --mode-outcome "display=$env:DISPLAY_OUTCOME"
+              $nativeExport = $LASTEXITCODE
+              python scripts/native_failure_evidence.py export --root "${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}" --output "$safeRoot\preflight" `
+                  --source-sha $env:EXPECTED_SOURCE_SHA --run-id $env:GITHUB_RUN_ID --run-attempt $env:GITHUB_RUN_ATTEMPT `
+                  --stage native-preflight --cleanup unavailable
+              if ($nativeExport -eq 0 -and $LASTEXITCODE -eq 0) { exit 0 }
+          }
+          @{schema_version=1;kind='sorotte-native-diagnostic';authoritative=$false;source_sha=$env:EXPECTED_SOURCE_SHA;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;stage='export';cleanup='unavailable';records=@(@{status='unavailable';reason='exporter-unavailable-before-checkout-or-setup'})} |
+              ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$safeRoot\diagnostic.json" -Encoding utf8
+
       - name: Upload all native interactive evidence
         id: evidence_upload
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-interactive-${{ inputs.source_sha }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}\sorotte-native-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-            ${{ env.NATIVE_ARTIFACT_ROOT }}
+          name: native-interactive-${{ inputs.source_sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\native-safe-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
-          retention-days: 14
-          overwrite: true
+          retention-days: 90
 
       - name: Enforce complete native interactive lane
+        id: enforce
         if: always()
         shell: pwsh
         env:
@@ -408,6 +517,9 @@ jobs:
           NATIVE_INVENTORY_OUTCOME: ${{ steps.native_inventory.outcome }}
           LANE_SUMMARY_OUTCOME: ${{ steps.lane_summary.outcome }}
           EVIDENCE_UPLOAD_OUTCOME: ${{ steps.evidence_upload.outcome }}
+          SAFE_EXPORT_OUTCOME: ${{ steps.safe_export.outcome }}
+          DISPLAY_OUTCOME: ${{ steps.display.outcome }}
+          DISPLAY_REQUIRED: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.native_dpi != '' && inputs.native_dpi != 'none') }}
         run: |
           $outcomes = [ordered]@{
               preflight = $env:PREFLIGHT_OUTCOME
@@ -420,6 +532,10 @@ jobs:
               native_inventory = $env:NATIVE_INVENTORY_OUTCOME
               lane_summary = $env:LANE_SUMMARY_OUTCOME
               evidence_upload = $env:EVIDENCE_UPLOAD_OUTCOME
+              safe_export = $env:SAFE_EXPORT_OUTCOME
+          }
+          if ($env:DISPLAY_REQUIRED -eq 'true' -and $env:DISPLAY_OUTCOME -ne 'success') {
+              throw "native display profile was required but did not pass"
           }
           $failed = @(
               $outcomes.GetEnumerator() |

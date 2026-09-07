@@ -28,138 +28,88 @@ env:
   VERIFICATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  checks:
-    if: github.event_name != 'schedule'
-    name: Rust all-feature contract (Linux)
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    env:
-      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
-    defaults:
-      run:
-        working-directory: .
+  preflight:
+    name: Apparatus preflight (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
     steps:
       - name: Checkout
+        id: ci_checkout_1066f6c2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_63e0b3e6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install reviewed policy prerequisites
+        id: ci_install_reviewed_policy_prerequisites_63e3ab01
+        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
+      - name: Setup actionlint toolchain
+        id: ci_setup_actionlint_toolchain_bca40e4c
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Validate GitHub Actions workflows
+        id: ci_validate_github_actions_workflows_02097a68
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          command -v shellcheck
+          shellcheck --version
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Validate static apparatus and environment
+        id: ci_validate_static_apparatus_and_environm_13d8d14c
+        run: python scripts/verify.py preflight --phase static --output target/verification/preflight.json
+      - name: Run cross-platform apparatus self-tests
+        id: ci_run_cross_platform_apparatus_self_test_5b6af0e1
+        run: python scripts/verify.py run --lane static --output target/verification/apparatus-selftests --deadline-seconds 300
+      - name: Preserve preflight receipt
+        id: ci_preserve_preflight_receipt_6e315338
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preflight-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/verification/preflight.json
+            target/verification/apparatus-selftests/**
+          if-no-files-found: error
+          retention-days: 90
+
+  semver:
+    name: Public Rust API compatibility
+    if: github.event_name != 'schedule'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        id: ci_checkout_2858a3e2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Checkout pinned legacy reference for Linux tests
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Syncplay/syncplay
-          ref: d1c5f85af377c960c5a940707c4d01bc84fd9c3f
-          path: .interop-cache/syncplay-legacy
-          persist-credentials: false
-
       - name: Setup Rust
+        id: ci_setup_rust_dd1a8f55
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
-          components: rustfmt, clippy
-
-      - name: Install pinned cargo-nextest
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
-        with:
-          tool: cargo-nextest@0.9.137
-          fallback: none
-
       - name: Install pinned cargo-semver-checks
+        id: ci_install_pinned_cargo_semver_checks_712626c6
         if: github.event_name == 'pull_request'
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-semver-checks@0.50.0
           fallback: none
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-
-      - name: Install Linux test prerequisites
-        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt -r requirements/legacy-python-interop.txt
-
-      - name: Setup actionlint toolchain
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version: "1.26.x"
-          cache: false
-
-      - name: Validate GitHub Actions workflows
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-
-      - name: Validate critical responsibility coverage
-        run: python scripts/critical_boundaries.py --repo-root .
-
-      - name: Validate current architecture references
-        run: python scripts/architecture_index.py --repo-root .
-
-      - name: Behavior evidence self-tests
-        run: python -m unittest discover -s scripts/tests -p "test_*.py" -v
-
-      - name: Validate behavior catalog
-        run: python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
-
-      - name: Validate playback lifecycle model
-        run: python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml
-
-      - name: Execute playback lifecycle oracle
-        run: >-
-          python scripts/playback_lifecycle_oracle.py witness-summary
-          --model coverage/playback-lifecycle.toml
-          --compact
-
-      - name: Replay playback lifecycle seeds
-        run: >-
-          python scripts/playback_lifecycle_oracle.py run-suite
-          --schedule-dir fixtures/playback-lifecycle
-
-      - name: Required state-aware playback lifecycle exploration
-        id: lifecycle_explore
-        continue-on-error: true
-        run: >-
-          python scripts/playback_lifecycle_oracle.py explore
-          --model coverage/playback-lifecycle.toml
-          --seed 0x50A077E20260831
-          --cases 64
-          --steps 128
-          --failure-dir target/verification/playback-lifecycle-model-failures
-          --compact
-
-      - name: Upload minimized lifecycle model failures
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playback-lifecycle-model-failures
-          path: target/verification/playback-lifecycle-model-failures
-          if-no-files-found: ignore
-          retention-days: 14
-          overwrite: true
-
-      - name: Enforce state-aware playback lifecycle exploration
-        if: always()
-        env:
-          LIFECYCLE_EXPLORE_OUTCOME: ${{ steps.lifecycle_explore.outcome }}
-        run: test "$LIFECYCLE_EXPLORE_OUTCOME" = success
-
-      - name: Validate ignored test policy
-        run: python scripts/ignored_test_policy.py validate --registry coverage/ignored-tests.toml
-
-      - name: Validate known-defect characterizations
-        run: >-
-          python scripts/known_defect_policy.py validate
-          --registry coverage/known-defects.toml
-          --catalog coverage/behaviors.toml
-
-      - name: Execute subprocess-fixture parent contracts
-        run: |
-          cargo nextest run --locked -p sorotte-gui --lib --all-features --no-tests fail -E 'test(=app::runtime_queue::tests::process_shutdown::gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player)'
-          cargo nextest run --locked -p sorotte-media-match --lib --all-features --no-tests fail -E 'test(=extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint)'
-          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication)'
-          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits)'
-
       - name: Enforce public Rust API compatibility
+        id: ci_enforce_public_rust_api_compatibility_cc4e4e07
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
@@ -193,11 +143,164 @@ jobs:
               --baseline-rev "$baseline_sha"
           done
 
+  checks:
+    needs: preflight
+    if: github.event_name != 'schedule'
+    name: Rust all-feature contract (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        id: ci_checkout_d90905a1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout pinned legacy reference for Linux tests
+        id: ci_checkout_pinned_legacy_reference_for_l_23ad1e00
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Syncplay/syncplay
+          ref: d1c5f85af377c960c5a940707c4d01bc84fd9c3f
+          path: .interop-cache/syncplay-legacy
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: ci_setup_rust_3716b49a
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
       - name: Cargo fmt
+        id: ci_cargo_fmt_938a90c3
         run: cargo fmt --all --check
 
+
+      - name: Install pinned cargo-nextest
+        id: ci_install_pinned_cargo_nextest_45b95333
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-nextest@0.9.137
+          fallback: none
+
+
+      - name: Setup Python
+        id: ci_setup_python_5070f49f
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Restore immutable locked crate downloads
+        id: ci_restore_immutable_locked_crate_downloa_2f67b294
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5 resolved 2026-09-06
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+      - name: Verify cached archives and reconstruct corrupt inputs
+        id: ci_verify_cached_archives_and_reconstruct_01570f70
+        run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
+
+
       - name: Cargo clippy
+        id: ci_cargo_clippy_62374563
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Install Linux test prerequisites
+        id: ci_install_linux_test_prerequisites_873e54bb
+        run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt -r requirements/legacy-python-interop.txt
+
+      - name: Validate critical responsibility coverage
+        id: ci_validate_critical_responsibility_cover_b9f74f9f
+        run: python scripts/critical_boundaries.py --repo-root .
+
+      - name: Validate current architecture references
+        id: ci_validate_current_architecture_referenc_b959d8a4
+        run: python scripts/architecture_index.py --repo-root .
+
+      - name: Validate retained fuzz byte inventory
+        id: ci_validate_retained_fuzz_byte_inventory_c35b756f
+        run: python scripts/fuzz_regressions.py validate
+
+      - name: Validate behavior catalog
+        id: ci_validate_behavior_catalog_c5812aa0
+        run: python scripts/behavior_evidence.py validate --catalog coverage/behaviors.toml
+
+      - name: Validate playback lifecycle model
+        id: ci_validate_playback_lifecycle_model_5cee5d6c
+        run: python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml
+
+      - name: Execute playback lifecycle oracle
+        id: ci_execute_playback_lifecycle_oracle_83540f12
+        run: >-
+          python scripts/playback_lifecycle_oracle.py witness-summary
+          --model coverage/playback-lifecycle.toml
+          --compact
+
+      - name: Replay playback lifecycle seeds
+        id: ci_replay_playback_lifecycle_seeds_2a1d6bcf
+        run: >-
+          python scripts/playback_lifecycle_oracle.py run-suite
+          --schedule-dir fixtures/playback-lifecycle
+
+      - name: Required state-aware playback lifecycle exploration
+        id: lifecycle_explore
+        continue-on-error: true
+        run: >-
+          python scripts/playback_lifecycle_oracle.py explore
+          --model coverage/playback-lifecycle.toml
+          --seed 0x50A077E20260831
+          --cases 64
+          --steps 128
+          --failure-dir target/verification/playback-lifecycle-model-failures
+          --compact
+
+      - name: Upload minimized lifecycle model failures
+        id: ci_upload_minimized_lifecycle_model_failu_bad90c2c
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-model-failures
+          path: target/verification/playback-lifecycle-model-failures
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
+      - name: Enforce state-aware playback lifecycle exploration
+        id: ci_enforce_state_aware_playback_lifecycle_69221c7a
+        if: always()
+        env:
+          LIFECYCLE_EXPLORE_OUTCOME: ${{ steps.lifecycle_explore.outcome }}
+        run: test "$LIFECYCLE_EXPLORE_OUTCOME" = success
+
+      - name: Validate ignored test policy
+        id: ci_validate_ignored_test_policy_0e7c4525
+        run: python scripts/ignored_test_policy.py validate --registry coverage/ignored-tests.toml
+
+      - name: Validate known-defect characterizations
+        id: ci_validate_known_defect_characterization_a3b12695
+        run: >-
+          python scripts/known_defect_policy.py validate
+          --registry coverage/known-defects.toml
+          --catalog coverage/behaviors.toml
+
+      - name: Execute subprocess-fixture parent contracts
+        id: ci_execute_subprocess_fixture_parent_cont_0e28da11
+        run: |
+          cargo nextest run --locked -p sorotte-client-app --lib --all-features --no-tests fail -E 'test(=sorotte_ini::read_transaction_tests::cross_process_reader_waits_through_a_writer_owned_missing_name)'
+          cargo nextest run --locked -p sorotte-gui --lib --all-features --no-tests fail -E 'test(=app::runtime_queue::tests::process_shutdown::gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player)'
+          cargo nextest run --locked -p sorotte-media-match --lib --all-features --no-tests fail -E 'test(=extraction::process::tests::cancellation_after_audio_launch_is_not_a_degraded_fingerprint)'
+          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=bridge_resource::security_tests::independent_processes_repair_one_corrupt_cache_without_partial_publication)'
+          cargo nextest run --locked -p sorotte-player-mpv --lib --all-features --no-tests fail -E 'test(=managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits)'
+
+
+
 
       - name: Nextest fail-on-flaky workspace tests
         id: nextest
@@ -210,6 +313,7 @@ jobs:
         run: cargo test --locked --workspace --all-features --doc
 
       - name: Upload Linux nextest attempt evidence
+        id: ci_upload_linux_nextest_attempt_evidence_419fdb81
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -220,6 +324,7 @@ jobs:
           overwrite: true
 
       - name: Enforce complete Linux test gate
+        id: ci_enforce_complete_linux_test_gate_00ae2b22
         if: always()
         env:
           NEXTEST_OUTCOME: ${{ steps.nextest.outcome }}
@@ -229,29 +334,34 @@ jobs:
           test "$DOCTEST_OUTCOME" = success
 
       - name: Cache-pause acknowledged-stream regression
+        id: ci_cache_pause_acknowledged_stream_regres_e4d87df7
         run: >-
           cargo test --locked -p sorotte-player-mpv --all-features
           --test repro_acknowledged_cache_pause
 
   lifecycle_contract:
+    needs: preflight
     if: github.event_name != 'schedule'
     name: lifecycle-contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout
+        id: ci_checkout_1193c5c5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_0c0f6add
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_e2be83f8
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
@@ -292,6 +402,7 @@ jobs:
           --output target/verification/evidence.lifecycle-contract.json
 
       - name: Upload lifecycle evidence
+        id: ci_upload_lifecycle_evidence_17bb7f16
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -302,6 +413,7 @@ jobs:
           overwrite: true
 
       - name: Enforce complete lifecycle lane
+        id: ci_enforce_complete_lifecycle_lane_96f93b31
         if: always()
         env:
           REDUCER_OUTCOME: ${{ steps.reducer.outcome }}
@@ -315,20 +427,23 @@ jobs:
           test "$EVIDENCE_OUTCOME" = success
 
   gui_semantic:
+    needs: preflight
     if: github.event_name != 'schedule'
     name: gui-semantic
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
       CARGO_TARGET_DIR: ${{ github.workspace }}/target/gui-semantic
     steps:
       - name: Checkout prospective merge revision
+        id: ci_checkout_prospective_merge_revision_f3dc527d
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
+        id: ci_checkout_pinned_legacy_reference_1abca5c1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -337,22 +452,26 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_53ae2e1b
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_d47dc5c6
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install live semantic prerequisites
+        id: ci_install_live_semantic_prerequisites_b5a7d470
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements/legacy-python-interop.txt
 
       - name: Run complete semantic inventory on prospective merge
+        id: ci_run_complete_semantic_inventory_on_pro_d722ebb5
         run: >-
           cargo run --quiet --locked -p sorotte-gui
           --features gui-semantic-smoke,live-python-interop
@@ -360,6 +479,7 @@ jobs:
           --json
 
       - name: Checkout exact evidence revision
+        id: ci_checkout_exact_evidence_revision_4cd22c15
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
@@ -367,6 +487,7 @@ jobs:
           persist-credentials: false
 
       - name: Reconcile exact evidence prerequisites
+        id: ci_reconcile_exact_evidence_prerequisites_103d4314
         working-directory: evidence-source
         run: python -m pip install --disable-pip-version-check -r requirements/legacy-python-interop.txt
 
@@ -386,6 +507,7 @@ jobs:
           --output target/verification/evidence.gui-semantic.json
 
       - name: Upload semantic evidence
+        id: ci_upload_semantic_evidence_de4e304b
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -396,15 +518,17 @@ jobs:
           overwrite: true
 
       - name: Enforce complete semantic lane
+        id: ci_enforce_complete_semantic_lane_157f9651
         if: always()
         env:
           EVIDENCE_OUTCOME: ${{ steps.evidence.outcome }}
         run: test "$EVIDENCE_OUTCOME" = success
 
   rust_windows_tests:
+    needs: preflight
     if: github.event_name != 'schedule'
     name: Windows all-feature tests
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 25
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}\.interop-cache\syncplay-legacy
@@ -413,11 +537,13 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout Sorotte
+        id: ci_checkout_sorotte_ddf2e145
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
+        id: ci_checkout_pinned_legacy_reference_f8abf6a8
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -426,31 +552,51 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_a4bd0f12
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
+        id: ci_install_pinned_cargo_nextest_5e3279cd
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-nextest@0.9.137
           fallback: none
 
       - name: Setup Python
+        id: ci_setup_python_a95e0bb1
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
+      - name: Restore immutable locked crate downloads
+        id: ci_restore_immutable_locked_crate_downloa_a170feb4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5 resolved 2026-09-06
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+      - name: Verify cached archives and reconstruct corrupt inputs
+        id: ci_verify_cached_archives_and_reconstruct_ec66cc47
+        run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
+
+
       - name: Validate Windows semver wrapper
+        id: ci_validate_windows_semver_wrapper_6ba0767b
         shell: pwsh
         run: python -m unittest scripts.tests.test_semver_wrapper -v
 
       - name: Install live compatibility prerequisites
+        id: ci_install_live_compatibility_prerequisit_d64088f1
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements/legacy-python-interop.txt
+
+      - name: Check reviewed compile-dependent inventories
+        id: ci_check_reviewed_compile_dependent_inven_57396f6a
+        run: python scripts/test_inventory.py check --output target/verification/test-inventory.json
 
       - name: Nextest fail-on-flaky workspace tests
         id: nextest
@@ -465,6 +611,7 @@ jobs:
         run: cargo test --locked --workspace --all-features --doc
 
       - name: Upload Windows nextest attempt evidence
+        id: ci_upload_windows_nextest_attempt_evidenc_3a3e4ff8
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -475,6 +622,7 @@ jobs:
           overwrite: true
 
       - name: Enforce complete Windows test gate
+        id: ci_enforce_complete_windows_test_gate_6dbad039
         if: always()
         shell: pwsh
         env:
@@ -485,17 +633,20 @@ jobs:
           if ($env:DOCTEST_OUTCOME -ne "success") { throw "doctests failed" }
 
   rust_windows_release:
+    needs: preflight
     if: github.event_name != 'schedule'
     name: Windows release and packaging checks
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 20
     steps:
       - name: Checkout Sorotte
+        id: ci_checkout_sorotte_ee8140a6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_5f716fa8
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
@@ -522,6 +673,7 @@ jobs:
         run: ./scripts/release-publication-policy-tests.ps1
 
       - name: Enforce complete Windows release gate
+        id: ci_enforce_complete_windows_release_gate_3efb173a
         if: always()
         shell: pwsh
         env:
@@ -534,29 +686,45 @@ jobs:
           if ($env:RELEASE_POLICY_OUTCOME -ne "success") { throw "release policy tests failed" }
 
   rust_windows_coverage:
+    needs: [preflight, apparatus-canaries]
     if: github.event_name != 'schedule'
     name: Windows process coverage producer
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 20
     steps:
       - name: Checkout exact Windows coverage revision
+        id: ci_checkout_exact_windows_coverage_revisi_4c9d2529
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust coverage toolchain
+        id: ci_setup_rust_coverage_toolchain_c9fc4241
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
+        id: ci_setup_python_eadf1fed
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
+      - name: Restore immutable locked crate downloads
+        id: ci_restore_immutable_locked_crate_downloa_d55585b0
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5 resolved 2026-09-06
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+      - name: Verify cached archives and reconstruct corrupt inputs
+        id: ci_verify_cached_archives_and_reconstruct_23f4a250
+        run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
+
+
       - name: Install pinned cargo-llvm-cov for Windows process coverage
+        id: ci_install_pinned_cargo_llvm_cov_for_wind_cb5b68bd
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
@@ -607,6 +775,7 @@ jobs:
           --output target/verification/coverage-windows-process-line-map.json
 
       - name: Upload Windows process coverage evidence
+        id: ci_upload_windows_process_coverage_eviden_b72bef08
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -622,6 +791,7 @@ jobs:
           overwrite: true
 
       - name: Enforce complete Windows coverage gate
+        id: ci_enforce_complete_windows_coverage_gate_74686b2b
         if: always()
         shell: pwsh
         env:
@@ -642,10 +812,11 @@ jobs:
       - rust_windows_tests
       - rust_windows_release
       - rust_windows_coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Enforce complete parallel Windows behavior gate
+        id: ci_enforce_complete_parallel_windows_beha_8b56a8ff
         env:
           WINDOWS_TESTS_RESULT: ${{ needs.rust_windows_tests.result }}
           WINDOWS_RELEASE_RESULT: ${{ needs.rust_windows_release.result }}
@@ -656,20 +827,23 @@ jobs:
           test "$WINDOWS_COVERAGE_RESULT" = success
 
   coverage_linux:
+    needs: [preflight, apparatus-canaries]
     if: github.event_name != 'schedule'
     name: Linux merged coverage producer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
     steps:
       - name: Checkout exact coverage revision
+        id: ci_checkout_exact_coverage_revision_751ea2db
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Checkout pinned legacy reference for merged coverage
+        id: ci_checkout_pinned_legacy_reference_for_m_c7ba1fc2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -678,22 +852,37 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust coverage toolchain
+        id: ci_setup_rust_coverage_toolchain_4700e040
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
+        id: ci_setup_python_ebd91995
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
+      - name: Restore immutable locked crate downloads
+        id: ci_restore_immutable_locked_crate_downloa_d56f8d2b
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5 resolved 2026-09-06
+        with:
+          path: ~/.cargo/registry/cache
+          key: cargo-downloads-${{ runner.os }}-1.97.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+      - name: Verify cached archives and reconstruct corrupt inputs
+        id: ci_verify_cached_archives_and_reconstruct_a4d2be46
+        run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
+
+
       - name: Install merged coverage prerequisites
+        id: ci_install_merged_coverage_prerequisites_234f17f8
         run: >-
           python -m pip install --disable-pip-version-check
           -r requirements/legacy-python-interop.txt
 
       - name: Install pinned cargo-llvm-cov
+        id: ci_install_pinned_cargo_llvm_cov_37f9d2b9
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
         with:
           tool: cargo-llvm-cov@0.8.4
@@ -736,6 +925,7 @@ jobs:
           --output target/verification/coverage-line-map.json
 
       - name: Upload Linux merged coverage evidence
+        id: ci_upload_linux_merged_coverage_evidence_d1b2b381
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -751,6 +941,7 @@ jobs:
           overwrite: true
 
       - name: Enforce complete Linux coverage producer
+        id: ci_enforce_complete_linux_coverage_produc_69f86aea
         if: always()
         env:
           PROFILES_OUTCOME: ${{ steps.coverage_profiles.outcome }}
@@ -769,10 +960,11 @@ jobs:
       - rust_windows_coverage
       - coverage_linux
     name: coverage-diff
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout exact coverage revision
+        id: ci_checkout_exact_coverage_revision_10845ddb
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
@@ -780,18 +972,21 @@ jobs:
           persist-credentials: false
 
       - name: Download exact Windows process coverage evidence
+        id: ci_download_exact_windows_process_coverag_2054a97e
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: verification-windows-process-coverage
           path: target/windows-process-coverage
 
       - name: Download exact Linux merged coverage evidence
+        id: ci_download_exact_linux_merged_coverage_e_b2dfc293
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: verification-linux-merged-coverage
           path: target
 
       - name: Setup Python
+        id: ci_setup_python_aa276a4b
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
@@ -835,6 +1030,7 @@ jobs:
           --json-out target/verification/diff-coverage.json
 
       - name: Enforce complete changed-line coverage evidence
+        id: ci_enforce_complete_changed_line_coverage_c46ed6fd
         if: always()
         env:
           BASE_OUTCOME: ${{ steps.coverage_base.outcome }}
@@ -861,6 +1057,7 @@ jobs:
           --output target/verification/coverage-ci-phases.json
 
       - name: Upload changed-line coverage evidence
+        id: ci_upload_changed_line_coverage_evidence_08a4e026
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -880,9 +1077,10 @@ jobs:
           overwrite: true
 
   compat-live-tls:
+    needs: preflight
     name: Complete live Python compatibility
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
@@ -891,11 +1089,13 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout
+        id: ci_checkout_712fbfbe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
+        id: ci_checkout_pinned_legacy_reference_d0db2cc4
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -904,22 +1104,26 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_031f75ce
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_e12eb386
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install pinned live Python prerequisites
+        id: ci_install_pinned_live_python_prerequisit_bba8919c
         run: >-
           python -m pip install --disable-pip-version-check
           -r requirements/legacy-python-interop.txt
 
       - name: Strict complete live Python compatibility
+        id: ci_strict_complete_live_python_compatibil_d02a6652
         env:
           SYNCPLAY_REQUIRE_LIVE_INTEROP: "1"
         run: >-
@@ -928,12 +1132,14 @@ jobs:
           --output target/verification/compat-live-interop.json
 
       - name: Validate live compatibility evidence schema
+        id: ci_validate_live_compatibility_evidence_s_5f62a05f
         if: always()
         run: >-
           python scripts/compat_live_interop.py validate
           --report target/verification/compat-live-interop.json
 
       - name: Upload live compatibility evidence
+        id: ci_upload_live_compatibility_evidence_d18a80d5
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -947,6 +1153,7 @@ jobs:
           overwrite: true
 
   media-match-generated-media:
+    needs: preflight
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -955,22 +1162,26 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout Sorotte
+        id: ci_checkout_sorotte_e740c16e
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_82ca280f
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install generated-media tools
+        id: ci_install_generated_media_tools_3b763091
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends ffmpeg
 
       - name: Verify generated-media tools
+        id: ci_verify_generated_media_tools_7b98165c
         run: |
           command -v ffmpeg
           command -v ffprobe
@@ -978,12 +1189,14 @@ jobs:
           ffprobe -version
 
       - name: Required generated-media Media Match V3 diagnostic
+        id: ci_required_generated_media_media_match_v_fc97f7a1
         run: |
           cargo test --locked -p sorotte-media-match --test generated_media_v3 \
             v3_manifest_harness_runs_small_synthetic_case \
             -- --ignored --exact --nocapture
 
   mpv-pr-semantics:
+    needs: preflight
     name: mpv semantics (${{ matrix.mpv_identity }})
     strategy:
       fail-fast: false
@@ -1004,17 +1217,20 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout Sorotte
+        id: ci_checkout_sorotte_16a00989
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_4e3863e3
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install supported mpv build dependencies
+        id: ci_install_supported_mpv_build_dependenci_b2dcc34f
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
@@ -1033,6 +1249,7 @@ jobs:
             pkg-config
 
       - name: Checkout pinned official mpv source
+        id: ci_checkout_pinned_official_mpv_source_565036bb
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: mpv-player/mpv
@@ -1041,12 +1258,14 @@ jobs:
           persist-credentials: false
 
       - name: Verify supported mpv source revision
+        id: ci_verify_supported_mpv_source_revision_addc97fa
         working-directory: target/mpv-supported
         run: >-
           test "$(git rev-parse 'HEAD^{commit}')" =
           "$MPV_SOURCE_SHA"
 
       - name: Build pinned supported mpv
+        id: ci_build_pinned_supported_mpv_fe8bfb89
         working-directory: target/mpv-supported
         run: |
           meson setup build \
@@ -1070,6 +1289,7 @@ jobs:
           meson compile -C build ./mpv:executable
 
       - name: Verify supported mpv version
+        id: ci_verify_supported_mpv_version_3d750cce
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           python3 scripts/mpv_version_matrix.py validate \
@@ -1081,9 +1301,11 @@ jobs:
             --binary mpv
 
       - name: Verify Sorotte candidate revision
+        id: ci_verify_sorotte_candidate_revision_03e2dbaf
         run: test "$(git rev-parse 'HEAD^{commit}')" = "$GITHUB_SHA"
 
       - name: Build packaged playback lifecycle candidates
+        id: ci_build_packaged_playback_lifecycle_cand_2e5b88d5
         run: cargo build --locked -p sorotte-server -p sorotte-cli
 
       - name: Required packaged multi-client real mpv lifecycle
@@ -1108,6 +1330,7 @@ jobs:
             --output-dir target/verification/playback-lifecycle-safe-evidence
 
       - name: Upload privacy-safe packaged lifecycle evidence
+        id: ci_upload_privacy_safe_packaged_lifecycle_c146affa
         if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1118,12 +1341,14 @@ jobs:
           overwrite: true
 
       - name: Required real mpv pause, seek, resume, and bounded-fetch semantics
+        id: ci_required_real_mpv_pause_seek_resume_an_4588eef8
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           cargo test --locked -p sorotte-sim --test mpv_rebuffer_harness \
             real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
 
       - name: Required real mpv cache-cap drain and input-resume semantics
+        id: ci_required_real_mpv_cache_cap_drain_and__4269069f
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           cargo test --locked -p sorotte-sim --test mpv_rebuffer_harness \
@@ -1131,6 +1356,7 @@ jobs:
             -- --ignored --exact --nocapture
 
       - name: Required real mpv premature-disconnect recovery semantics
+        id: ci_required_real_mpv_premature_disconnect_ff908420
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           cargo test --locked -p sorotte-sim --test mpv_rebuffer_harness \
@@ -1138,6 +1364,7 @@ jobs:
             -- --ignored --exact --nocapture
 
       - name: Full deterministic HTTP-stall and rebuffer harness
+        id: ci_full_deterministic_http_stall_and_rebu_adb8771d
         run: |
           export PATH="$GITHUB_WORKSPACE/target/mpv-supported/build:$PATH"
           cargo test --locked -p sorotte-sim --test mpv_rebuffer_harness \
@@ -1145,6 +1372,7 @@ jobs:
             -- --ignored --exact --nocapture
 
       - name: Enforce packaged lifecycle verification and safe evidence
+        id: ci_enforce_packaged_lifecycle_verificatio_d976c54f
         if: always()
         env:
           PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME: ${{ steps.playback_lifecycle_system.outcome }}
@@ -1165,21 +1393,24 @@ jobs:
       - compat-live-tls
       - media-match-generated-media
       - mpv-pr-semantics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout exact verification revision
+        id: ci_checkout_exact_verification_revision_254342e3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Python
+        id: ci_setup_python_7ac3a0a3
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Download lifecycle evidence
+        id: ci_download_lifecycle_evidence_aa0ff663
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1187,6 +1418,7 @@ jobs:
           path: target/downloaded-evidence/lifecycle
 
       - name: Download semantic evidence
+        id: ci_download_semantic_evidence_7613f16e
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1194,6 +1426,7 @@ jobs:
           path: target/downloaded-evidence/semantic
 
       - name: Aggregate required behavior evidence
+        id: ci_aggregate_required_behavior_evidence_063224c8
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
           LIFECYCLE_RESULT: ${{ needs.lifecycle_contract.result }}
@@ -1223,6 +1456,7 @@ jobs:
             --output target/verification/evidence.aggregate.json
 
       - name: Upload aggregate evidence
+        id: ci_upload_aggregate_evidence_4732e4c7
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1237,7 +1471,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-22.04]
+        runner: [ubuntu-24.04, ubuntu-22.04]
     runs-on: ${{ matrix.runner }}
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
@@ -1246,11 +1480,13 @@ jobs:
         working-directory: .
     steps:
       - name: Checkout
+        id: ci_checkout_ccabee4f
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
+        id: ci_checkout_pinned_legacy_reference_c941ab53
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Syncplay/syncplay
@@ -1259,30 +1495,33 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_e998340b
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_4a126615
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install pinned live Python prerequisites
+        id: ci_install_pinned_live_python_prerequisit_68cdb36b
         run: >-
           python -m pip install --disable-pip-version-check
           -r requirements/legacy-python-interop.txt
 
-      - name: Cargo clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Cargo test
+        id: ci_cargo_test_89b6689e
         env:
           PROPTEST_CASES: "2048"
         run: cargo test --locked --workspace --all-features
 
       - name: Nightly state-aware playback lifecycle exploration
+        id: ci_nightly_state_aware_playback_lifecycle_10ae53ea
         run: >-
           python scripts/playback_lifecycle_oracle.py explore
           --model coverage/playback-lifecycle.toml
@@ -1293,6 +1532,7 @@ jobs:
           --compact
 
       - name: Upload nightly minimized lifecycle model failures
+        id: ci_upload_nightly_minimized_lifecycle_mod_4c3b6544
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1303,11 +1543,13 @@ jobs:
           overwrite: true
 
       - name: Cache-pause acknowledged-stream regression
+        id: ci_cache_pause_acknowledged_stream_regres_cfee6eb1
         run: >-
           cargo test --locked -p sorotte-player-mpv --all-features
           --test repro_acknowledged_cache_pause
 
       - name: Strict complete live Python compatibility
+        id: ci_strict_complete_live_python_compatibil_87507182
         env:
           SYNCPLAY_REQUIRE_LIVE_INTEROP: "1"
         run: >-
@@ -1316,12 +1558,14 @@ jobs:
           --output target/verification/compat-live-interop.json
 
       - name: Validate nightly live compatibility evidence schema
+        id: ci_validate_nightly_live_compatibility_ev_5c6c02a3
         if: always()
         run: >-
           python scripts/compat_live_interop.py validate
           --report target/verification/compat-live-interop.json
 
       - name: Upload nightly live compatibility evidence
+        id: ci_upload_nightly_live_compatibility_evid_ed7c76bb
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -1339,33 +1583,130 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, windows-latest]
+        runner: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: .
     steps:
       - name: Checkout
+        id: ci_checkout_ae744adc
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Rust
+        id: ci_setup_rust_268ae967
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Setup Python
+        id: ci_setup_python_00b7c64c
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Install server release prerequisites
+        id: ci_install_server_release_prerequisites_76270f74
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements/legacy-python-interop.txt
 
       - name: Strict server release verification
+        id: ci_strict_server_release_verification_f9c53b2b
         shell: pwsh
         run: ./scripts/server-release-verify.ps1 -NoWorkspace
+
+  merge-required:
+    name: merge-required
+    if: always() && github.event_name != 'schedule'
+    needs: [preflight, semver, verification_required, apparatus-canaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact verification revision
+        id: ci_checkout_exact_verification_revision_f4733e9e
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_ac5b74fe
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Enforce complete CI producer graph
+        id: ci_enforce_complete_ci_producer_graph_adc01d5e
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          SEMVER_RESULT: ${{ needs.semver.result }}
+          CANARIES_RESULT: ${{ needs['apparatus-canaries'].result }}
+          VERIFICATION_RESULT: ${{ needs.verification_required.result }}
+        run: >-
+          python scripts/verify.py gate --lane merge --source-sha "$VERIFICATION_SHA"
+          --expected-job preflight --expected-job semver --expected-job verification --expected-job canaries
+          --job-result "preflight=$PREFLIGHT_RESULT"
+          --job-result "semver=$SEMVER_RESULT"
+          --job-result "verification=$VERIFICATION_RESULT"
+          --job-result "canaries=$CANARIES_RESULT"
+          --output target/verification/merge-required.json
+      - name: Preserve required result
+        id: ci_preserve_required_result_16c01f0f
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: merge-required-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/merge-required.json
+          if-no-files-found: error
+          retention-days: 90
+
+  apparatus-canaries:
+    name: Real coverage producer canary (${{ matrix.os }})
+    needs: preflight
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        id: ci_checkout_4a2b10f9
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VERIFICATION_SHA }}
+          persist-credentials: false
+      - name: Setup Python
+        id: ci_setup_python_5524d797
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Setup pinned coverage Rust
+        id: ci_setup_pinned_coverage_rust_d381279c
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        with:
+          toolchain: 1.97.1
+          components: llvm-tools-preview
+      - name: Install pinned coverage tool
+        id: ci_install_pinned_coverage_tool_1066d362
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: cargo-llvm-cov@0.8.4
+          fallback: none
+      - name: Exercise ordinary standalone and child profile registration
+        id: ci_exercise_ordinary_standalone_and_child_6b83424e
+        run: python scripts/coverage_tool_canary.py --output target/verification/coverage-tool-canary
+      - name: Preserve real producer evidence
+        id: ci_preserve_real_producer_evidence_a0731aac
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-tool-canary-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/verification/coverage-tool-canary/**
+            !target/verification/coverage-tool-canary/**/target/**
+          if-no-files-found: error
+          retention-days: 90

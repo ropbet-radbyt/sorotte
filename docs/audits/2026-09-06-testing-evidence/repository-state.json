@@ -1,0 +1,21 @@
+{
+  "captured_at_utc": "2026-09-05T23:30:10.676775+00:00",
+  "branch": {
+    "name": "main",
+    "protected": false,
+    "sha": "4000eca69b52003b66e81b6998d15c555e7eb6d1"
+  },
+  "tag": {
+    "name": "v0.2.9",
+    "sha": "4000eca69b52003b66e81b6998d15c555e7eb6d1"
+  },
+  "classic_protection": {
+    "message": "Branch not protected",
+    "documentation_url": "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+    "status": "404"
+  },
+  "applicable_rules": [],
+  "candidate_sha": "9ced745e5aae40c782b7ef110c5434db3c9b6a6e",
+  "candidate_and_merge_tree": "e57689b86eb9d323e34bc70df255790664ef7c7d",
+  "note": "Read-only live API snapshot; no branch or rules settings changed."
+}

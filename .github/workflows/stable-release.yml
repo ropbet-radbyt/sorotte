@@ -1,0 +1,247 @@
+name: coordinated stable release
+
+on:
+  push:
+    tags: ["v*", "server-v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish qualified artifacts (requires a release tag; false is a full dry run)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: coordinated-stable-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  authorize-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Require protected main and complete trusted checks
+        id: ci_require_protected_main_and_complete_tr_9eb72761
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: >-
+          python scripts/merge_gate.py authorize-release
+          --candidate-sha "${{ github.sha }}"
+          --output target/release-authorization.json
+      - name: Require a tag for publication
+        id: ci_require_a_tag_for_publication_e1cc92e5
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          case "$RELEASE_REF" in refs/tags/v*|refs/tags/server-v*) ;; *) exit 1 ;; esac
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-authorization-${{ github.sha }}
+          path: target/release-authorization.json
+          if-no-files-found: error
+          retention-days: 90
+
+  playback-lifecycle-release-gate:
+    needs: authorize-source
+    uses: ./.github/workflows/playback-lifecycle-release-gate.yml
+    with:
+      candidate_sha: ${{ github.sha }}
+      channel: stable
+
+  default-workspace:
+    needs: authorize-source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: windows-2025
+            platform: windows-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Prepare immutable server qualification prerequisites
+        id: ci_prepare_immutable_server_qualification_fc15a940
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements/legacy-python-interop.txt
+          if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed" }
+          ./scripts/server-release-verify.ps1 -Stage Prepare -ReportDir target/server-release-prepare
+      - name: Execute default-feature workspace obligation once
+        id: ci_execute_default_feature_workspace_obli_0482bcb2
+        run: >-
+          python scripts/release_qualification.py workspace
+          --candidate-sha "${{ github.sha }}" --platform "${{ matrix.platform }}"
+          --output target/release-workspace.json
+      - name: Qualify server behavior with the exact default workspace receipt
+        id: ci_qualify_server_behavior_with_the_exact_1def2da5
+        shell: pwsh
+        run: ./scripts/server-release-verify.ps1 -Stage Behavior -WorkspaceReceipt target/release-workspace.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-workspace-${{ matrix.platform }}-${{ github.sha }}
+          path: target/release-workspace.json
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: release-server-behavior-${{ matrix.platform }}-${{ github.sha }}
+          path: target/server-release-verify/server-release-report.*
+          if-no-files-found: warn
+          retention-days: 90
+
+  server-archives:
+    needs: [playback-lifecycle-release-gate, default-workspace]
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+    uses: ./.github/workflows/sorotte-server-release.yml
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+    with:
+      publish: ${{ github.event_name == 'push' || inputs.publish }}
+
+  gui-archive:
+    if: ${{ !startsWith(github.ref, 'refs/tags/server-v') }}
+    needs: playback-lifecycle-release-gate
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+    uses: ./.github/workflows/sorotte-gui-release.yml
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+    with:
+      qualified: true
+      publish: ${{ github.event_name == 'push' || inputs.publish }}
+
+  container:
+    needs: playback-lifecycle-release-gate
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/publish-server-container.yml
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+    with:
+      publish: ${{ github.event_name == 'push' || inputs.publish }}
+
+  retain-release-qualification:
+    if: ${{ always() && needs.server-archives.result == 'success' && needs.container.result == 'success' && (needs.gui-archive.result == 'success' || (startsWith(github.ref, 'refs/tags/server-v') && needs.gui-archive.result == 'skipped')) }}
+    needs: [server-archives, gui-archive, container]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Download complete build and lifecycle authority
+        id: ci_download_complete_build_and_lifecycle__eb431787
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-qualification-record-${{ github.sha }}
+          path: target/durable-qualification/lifecycle
+      - name: Download original protected-source authority
+        id: ci_download_original_protected_source_aut_25176c30
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-authorization-${{ github.sha }}
+          path: target/durable-qualification/authorization
+      - name: Download exact default workspace receipts
+        id: ci_download_exact_default_workspace_recei_1bc59cb3
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-workspace-*-${{ github.sha }}
+          path: target/durable-qualification/workspace
+      - name: Seal compact durable receipt inventory
+        id: ci_seal_compact_durable_receipt_inventory_8d7e50cd
+        run: >-
+          python scripts/release_qualification.py archive-evidence --candidate-sha "${{ github.sha }}"
+          --evidence-dir target/durable-qualification --output-dir target/qualification-archives
+      - name: Mint repository-scoped protection reader
+        if: github.event_name == 'push' || inputs.publish
+        id: protection-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Recheck publication authorization before durable attachment
+        id: ci_recheck_publication_authorization_befo_61e8954e
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/durable-publication-authorization.json
+      - name: Attach durable qualification receipts
+        id: ci_attach_durable_qualification_receipts_6a5e5997
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/release_assets.py attach --repository "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG" --artifacts-dir target/qualification-archives
+      - name: Verify public durable receipt bytes
+        id: ci_verify_public_durable_receipt_bytes_6054399b
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/release_assets.py verify-public --repository "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG" --artifacts-dir target/qualification-archives
+          --report target/durable-publication-report.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: durable-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/qualification-archives/*
+            target/durable-publication-report.json
+          if-no-files-found: error
+          retention-days: 90

@@ -6,8 +6,11 @@ Use the [current architecture and verification index](CURRENT_ARCHITECTURE.md)
 for crate responsibilities, owned boundaries, normative contracts, and proof
 entrypoints. Historical audits and release ledgers describe their recorded
 snapshots; they do not replace the current source or attest later candidates.
-The [0.2.9 implementation ledger](audits/v0.2.9-implementation.md) records the
-current audit closure, executed validation, and unavailable environments.
+The [0.2.9 implementation ledger](audits/v0.2.9-implementation.md) records that
+release's audit closure. Use the [testing process](TESTING_PROCESS.md) for the
+supported preflight, command ladder, required checks, inventory updates and
+evidence reuse. Its [implementation ledger](audits/testing-process-implementation-2026-09-06.md)
+separates executed validation from pending hosted or native acceptance.
 
 ## Workspace Layout
 
@@ -33,15 +36,15 @@ For documentation-only edits, record the skipped code checks in the PR notes.
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
 ```
 
 For all-features checks:
 
 ```powershell
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
 ```
 
 For public Rust API changes, install the pinned compatibility checker and

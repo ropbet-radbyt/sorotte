@@ -5,7 +5,7 @@ use std::{
 
 use super::env_trimmed;
 use sorotte_client_app::app_boundary::storage::{
-    SorotteClientStoragePaths, resolve_sorotte_client_storage_paths,
+    SorotteClientStoragePaths, try_resolve_sorotte_client_storage_paths,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -42,15 +42,16 @@ pub(super) fn sorotte_cli_gui_state_root_override() -> Option<PathBuf> {
     env_trimmed("SOROTTE_CLIENT_GUI_STATE_ROOT").map(PathBuf::from)
 }
 
-pub(super) fn resolve_sorotte_cli_storage_paths() -> Option<SorotteClientStoragePaths> {
+pub(super) fn resolve_sorotte_cli_storage_paths()
+-> anyhow::Result<Option<SorotteClientStoragePaths>> {
     let overrides = current_cli_config_path_overrides();
-    resolve_sorotte_client_storage_paths(overrides.config_path, overrides.config_root)
+    try_resolve_sorotte_client_storage_paths(overrides.config_path, overrides.config_root)
 }
 
-pub(super) fn resolve_sorotte_cli_storage_root() -> Option<PathBuf> {
-    resolve_sorotte_cli_storage_paths().map(|paths| paths.storage_root)
+pub(super) fn resolve_sorotte_cli_storage_root() -> anyhow::Result<Option<PathBuf>> {
+    Ok(resolve_sorotte_cli_storage_paths()?.map(|paths| paths.storage_root))
 }
 
-pub(super) fn resolve_sorotte_cli_config_path() -> Option<PathBuf> {
-    resolve_sorotte_cli_storage_paths().map(|paths| paths.config_path)
+pub(super) fn resolve_sorotte_cli_config_path() -> anyhow::Result<Option<PathBuf>> {
+    Ok(resolve_sorotte_cli_storage_paths()?.map(|paths| paths.config_path))
 }

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "purpose": "Independent fixture for native fake versus actual server wire obligations",
+  "username": "native-peer",
+  "room": "native-contract-room",
+  "exchanges": [
+    {"State":{"playstate":{"position":0.0,"paused":true,"doSeek":true},"ignoringOnTheFly":{"client":1}}},
+    {"State":{"playstate":{"position":0.0,"paused":true},"ignoringOnTheFly":{"client":2}}},
+    {"State":{"ignoringOnTheFly":{"client":3}}},
+    {"State":{"playstate":{"position":1.25,"paused":false,"doSeek":true},"ignoringOnTheFly":{"client":4294967295}}}
+  ]
+}

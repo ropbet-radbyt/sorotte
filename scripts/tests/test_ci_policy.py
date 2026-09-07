@@ -9,6 +9,10 @@ import unittest
 from typing import Any
 
 import yaml
+try:
+    from ci_invariants import by_contract, canonicalize_labels, command_step, required_graph
+except ModuleNotFoundError:
+    from scripts.ci_invariants import by_contract, canonicalize_labels, command_step, required_graph
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -39,6 +43,10 @@ MPV_SOURCE_EXPRESSION = (
 )
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
+    "actions/cache": (
+        "caa296126883cff596d87d8935842f9db880ef25",
+        "v5 resolved 2026-09-06",
+    ),
     "actions/checkout": (
         "3d3c42e5aac5ba805825da76410c181273ba90b1",
         "v7.0.1",
@@ -81,7 +89,7 @@ NODE24_ACTIONS = frozenset(
     }
 )
 USES_LINE = re.compile(
-    r"^\s*uses:\s*([^@\s]+)@([^\s#]+)\s+#\s+(.+?)\s*$",
+    r"^\s*(?:-\s+)?uses:\s*([^@\s]+)@([^\s#]+)\s+#\s+(.+?)\s*$",
     re.MULTILINE,
 )
 
@@ -90,26 +98,16 @@ def normalized(value: str) -> str:
     return " ".join(part for part in value.split() if part != "\\")
 
 
-def parse_workflow(workflow: str) -> dict[str, Any]:
+def parse_workflow(workflow: str, path: pathlib.Path = WORKFLOW_PATH) -> dict[str, Any]:
     parsed = yaml.load(workflow, Loader=yaml.BaseLoader)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("jobs"), dict):
         raise AssertionError("workflow must contain a jobs mapping")
+    parsed["jobs"] = canonicalize_labels(parsed["jobs"], path)
     return parsed
 
 
 def named_step(jobs: dict[str, Any], job_id: str, name: str) -> dict[str, Any]:
-    job = jobs[job_id]
-    matches = [
-        step
-        for step in job.get("steps", [])
-        if isinstance(step, dict) and step.get("name") == name
-    ]
-    if len(matches) != 1:
-        raise AssertionError(
-            f"job {job_id} must contain exactly one step named {name!r}; "
-            f"found {len(matches)}"
-        )
-    return matches[0]
+    return by_contract(jobs, job_id, name)
 
 
 def requirement_lines(path: pathlib.Path) -> list[str]:
@@ -286,6 +284,34 @@ def validate_pull_request_ignored_bindings(
             raise AssertionError(f"{entry['id']} invocation cannot tolerate failure")
 
 
+def validate_full_coverage_canaries(jobs: dict[str, Any]) -> None:
+    producers = {
+        "coverage": ("Linux", "Generate merged behavioral coverage profiles"),
+        "windows-process-coverage": ("Windows", "Generate Windows process coverage profiles"),
+    }
+    for job_id, (platform, producer_name) in producers.items():
+        job = jobs[job_id]
+        canary = named_step(jobs, job_id, f"Validate real coverage producer before {platform} collection")
+        install = named_step(jobs, job_id, "Install pinned cargo-llvm-cov")
+        producer = named_step(jobs, job_id, producer_name)
+        output = f"target/verification/coverage-canary-{platform.lower()}"
+        if normalized(canary.get("run", "")) != f"python scripts/coverage_tool_canary.py --output {output}":
+            raise AssertionError("full coverage must first run the isolated real tool canary")
+        if "if" in canary or "continue-on-error" in canary:
+            raise AssertionError("coverage canary cannot be conditional or tolerate failure")
+        if not job["steps"].index(install) < job["steps"].index(canary) < job["steps"].index(producer):
+            raise AssertionError("coverage canary must follow tool setup and precede expensive collection")
+        upload = named_step(jobs, job_id, f"Retain {platform} coverage producer canary receipt")
+        if (upload.get("if") != "always()" or "continue-on-error" in upload
+                or upload.get("uses") != PINNED_USES["actions/upload-artifact"]):
+            raise AssertionError("coverage canary must always retain its actual failure receipt")
+        if upload.get("with") != {
+            "name": f"coverage-canary-{platform.lower()}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+            "path": f"{output}/**\n!{output}/**/target/**\n", "if-no-files-found": "error", "retention-days": "90",
+        }:
+            raise AssertionError("coverage canary retention must be complete and immutable per attempt")
+
+
 def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
     windows_workers = [
         "rust_windows_tests",
@@ -296,12 +322,13 @@ def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
         job = jobs.get(job_id)
         if not isinstance(job, dict):
             raise AssertionError(f"parallel Windows worker {job_id!r} is missing")
-        if job.get("runs-on") != "windows-latest":
+        if job.get("runs-on") != "windows-2025":
             raise AssertionError(f"parallel Windows worker {job_id!r} moved off Windows")
         if job.get("if") != "github.event_name != 'schedule'":
             raise AssertionError(f"parallel Windows worker {job_id!r} is not a PR gate")
-        if "needs" in job:
-            raise AssertionError(f"parallel Windows worker {job_id!r} was serialized")
+        expected_needs = ["preflight", "apparatus-canaries"] if job_id == "rust_windows_coverage" else "preflight"
+        if job.get("needs") != expected_needs:
+            raise AssertionError(f"parallel Windows worker {job_id!r} lost its preflight/producer-canary prerequisites")
         if "continue-on-error" in job:
             raise AssertionError(f"parallel Windows worker {job_id!r} tolerates failure")
 
@@ -333,8 +360,8 @@ def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
         raise AssertionError("rust_windows aggregate does not require every success")
 
     linux_producer = jobs.get("coverage_linux")
-    if not isinstance(linux_producer, dict) or "needs" in linux_producer:
-        raise AssertionError("Linux coverage producer is missing or serialized")
+    if not isinstance(linux_producer, dict) or linux_producer.get("needs") != ["preflight", "apparatus-canaries"]:
+        raise AssertionError("Linux coverage producer lost its preflight/producer-canary prerequisites or was serialized")
     coverage_policy = jobs.get("coverage_diff")
     if not isinstance(coverage_policy, dict):
         raise AssertionError("coverage_diff policy job is missing")
@@ -388,6 +415,12 @@ def validate_parallel_ci_graph(jobs: dict[str, Any]) -> None:
     if "coverage_linux" in required_needs:
         raise AssertionError("internal Linux producer leaked into the public contract")
 
+    canary_upload = named_step(jobs, "apparatus-canaries", "Preserve real producer evidence")
+    canary_root = "target/verification/coverage-tool-canary"
+    if (canary_upload.get("if") != "always()"
+            or canary_upload.get("with", {}).get("path") != f"{canary_root}/**\n!{canary_root}/**/target/**\n"):
+        raise AssertionError("coverage canary failures must retain command logs and maps while excluding compiled targets")
+
 
 class CiPolicyTests(unittest.TestCase):
     @classmethod
@@ -398,11 +431,11 @@ class CiPolicyTests(unittest.TestCase):
         cls.coverage_workflow_text = COVERAGE_WORKFLOW_PATH.read_text(
             encoding="utf-8"
         )
-        cls.coverage_workflow = parse_workflow(cls.coverage_workflow_text)
+        cls.coverage_workflow = parse_workflow(cls.coverage_workflow_text, COVERAGE_WORKFLOW_PATH)
         cls.mutation_workflow_text = MUTATION_WORKFLOW_PATH.read_text(
             encoding="utf-8"
         )
-        cls.mutation_workflow = parse_workflow(cls.mutation_workflow_text)
+        cls.mutation_workflow = parse_workflow(cls.mutation_workflow_text, MUTATION_WORKFLOW_PATH)
         with CATALOG_PATH.open("rb") as handle:
             cls.catalog = tomllib.load(handle)
         with IGNORED_TESTS_PATH.open("rb") as handle:
@@ -593,7 +626,7 @@ class CiPolicyTests(unittest.TestCase):
             self.assertTrue(matches, f"{path} must contain action uses")
             parsed_uses = [
                 step["uses"]
-                for job in parse_workflow(workflow_text)["jobs"].values()
+                for job in parse_workflow(workflow_text, path)["jobs"].values()
                 for step in job.get("steps", [])
                 if "uses" in step
             ]
@@ -627,6 +660,10 @@ class CiPolicyTests(unittest.TestCase):
             [
                 "# Cross-platform LLVM line maps bind to identical Rust source bytes.",
                 "*.rs text eol=lf",
+                "# Fuzz seeds include framing control bytes and retained crashes; never rewrite them.",
+                "crates/sorotte-protocol/tests/corpus/protocol_parser/** -text",
+                "crates/sorotte-cli/tests/corpus/framed_session/** -text",
+                "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript/** -text",
             ],
         )
 
@@ -678,7 +715,7 @@ class CiPolicyTests(unittest.TestCase):
             job.get("strategy"),
             {
                 "fail-fast": "false",
-                "matrix": {"runner": ["ubuntu-latest", "windows-latest"]},
+                "matrix": {"runner": ["ubuntu-24.04", "windows-2025"]},
             },
         )
         self.assertEqual(job.get("runs-on"), "${{ matrix.runner }}")
@@ -785,7 +822,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         actionlint_setup = named_step(
             self.jobs,
-            "checks",
+            "preflight",
             "Setup actionlint toolchain",
         )
         self.assertEqual(
@@ -798,16 +835,33 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assert_exact_run(
             self.jobs,
-            "checks",
+            "preflight",
             "Validate GitHub Actions workflows",
+            "command -v shellcheck shellcheck --version "
             "go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
+            allowed_if="runner.os == 'Linux'",
         )
+        actionlint_validation = named_step(self.jobs, "preflight", "Validate GitHub Actions workflows")
+        self.assertEqual(actionlint_setup.get("if"), "runner.os == 'Linux'")
+        self.assertEqual(actionlint_validation.get("if"), "runner.os == 'Linux'")
+        self.assertEqual(actionlint_validation.get("shell"), "bash")
+        self.assertNotIn("continue-on-error", actionlint_validation)
+        preflight_names = [step.get("name") for step in self.jobs["preflight"]["steps"]]
+        self.assertLess(preflight_names.index("Setup actionlint toolchain"), preflight_names.index("Validate GitHub Actions workflows"))
+        self.assertLess(preflight_names.index("Validate GitHub Actions workflows"), preflight_names.index("Run cross-platform apparatus self-tests"))
         self.assert_exact_run(
             self.jobs,
-            "checks",
-            "Behavior evidence self-tests",
-            'python -m unittest discover -s scripts/tests -p "test_*.py" -v',
+            "preflight",
+            "Run cross-platform apparatus self-tests",
+            "python scripts/verify.py run --lane static "
+            "--output target/verification/apparatus-selftests --deadline-seconds 300",
         )
+        preflight_receipt = named_step(self.jobs, "preflight", "Preserve preflight receipt")
+        self.assertEqual(preflight_receipt.get("if"), "always()")
+        self.assertEqual(preflight_receipt["with"]["path"].splitlines(), [
+            "target/verification/preflight.json",
+            "target/verification/apparatus-selftests/**",
+        ])
         self.assert_exact_run(
             self.jobs,
             "checks",
@@ -918,7 +972,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         linux_semver_installer = named_step(
             self.jobs,
-            "checks",
+            "semver",
             "Install pinned cargo-semver-checks",
         )
         self.assertEqual(
@@ -939,7 +993,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         linux_semver = self.assert_exact_run(
             self.jobs,
-            "checks",
+            "semver",
             "Enforce public Rust API compatibility",
             """set -euo pipefail
 baseline_sha="${{ github.event.pull_request.base.sha }}"
@@ -973,8 +1027,8 @@ done""",
             allowed_if="github.event_name == 'pull_request'",
         )
         self.assertLess(
-            linux_step_names.index("Install pinned cargo-semver-checks"),
-            linux_step_names.index("Enforce public Rust API compatibility"),
+            self.jobs["semver"]["steps"].index(linux_semver_installer),
+            self.jobs["semver"]["steps"].index(linux_semver),
         )
         self.assertNotIn("env", linux_semver)
         self.assertEqual(linux_semver.get("shell"), "bash")
@@ -1033,7 +1087,7 @@ done""",
         )
 
         coverage_producer = self.jobs["coverage_linux"]
-        self.assertNotIn("needs", coverage_producer)
+        self.assertEqual(coverage_producer.get("needs"), ["preflight", "apparatus-canaries"])
         self.assertEqual(
             coverage_producer.get("env"),
             {
@@ -1802,6 +1856,15 @@ done""",
         serialized_windows["rust_windows_release"]["needs"] = "rust_windows_tests"
         mutations.append(("serialized-windows-worker", serialized_windows))
 
+        for producer in ("coverage_linux", "rust_windows_coverage"):
+            missing_canary = copy.deepcopy(self.jobs)
+            missing_canary[producer]["needs"] = "preflight"
+            mutations.append((f"missing-coverage-canary-{producer}", missing_canary))
+
+        missing_canary_logs = copy.deepcopy(self.jobs)
+        named_step(missing_canary_logs, "apparatus-canaries", "Preserve real producer evidence")["with"]["path"] = "target/verification/coverage-tool-canary/**/receipt.json"
+        mutations.append(("missing-coverage-canary-failure-logs", missing_canary_logs))
+
         serialized_policy = copy.deepcopy(self.jobs)
         serialized_policy["coverage_diff"]["needs"] = [
             "rust_windows",
@@ -1850,6 +1913,37 @@ done""",
         for mutation, jobs in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
                 validate_parallel_ci_graph(jobs)
+
+    def test_full_coverage_canary_order_and_failure_retention_are_required(self) -> None:
+        original = self.coverage_workflow["jobs"]
+        validate_full_coverage_canaries(original)
+        for job_id, platform, producer_name in (
+            ("coverage", "Linux", "Generate merged behavioral coverage profiles"),
+            ("windows-process-coverage", "Windows", "Generate Windows process coverage profiles"),
+        ):
+            for mutation in ("missing", "conditional", "tolerated", "late", "unretained", "overwrite", "missing-logs"):
+                jobs = copy.deepcopy(original)
+                steps = jobs[job_id]["steps"]
+                canary = named_step(jobs, job_id, f"Validate real coverage producer before {platform} collection")
+                upload = named_step(jobs, job_id, f"Retain {platform} coverage producer canary receipt")
+                if mutation == "missing":
+                    steps.remove(canary)
+                elif mutation == "conditional":
+                    canary["if"] = "false"
+                elif mutation == "tolerated":
+                    canary["continue-on-error"] = "true"
+                elif mutation == "late":
+                    producer = named_step(jobs, job_id, producer_name)
+                    steps.remove(canary)
+                    steps.insert(steps.index(producer) + 1, canary)
+                elif mutation == "unretained":
+                    upload.pop("if")
+                elif mutation == "overwrite":
+                    upload["with"]["overwrite"] = "true"
+                elif mutation == "missing-logs":
+                    upload["with"]["path"] = f"target/verification/coverage-canary-{platform.lower()}/receipt.json"
+                with self.subTest(job=job_id, mutation=mutation), self.assertRaises(AssertionError):
+                    validate_full_coverage_canaries(jobs)
 
     def test_mpv_version_matrix_rejects_missing_newest_or_floating_sources(
         self,
@@ -2118,10 +2212,13 @@ done""",
 
         lifecycle = self.sorotte_checkouts("lifecycle_contract")
         coverage_producer = self.sorotte_checkouts("coverage_linux")
+        coverage_canary = self.sorotte_checkouts("apparatus-canaries")
         coverage = self.sorotte_checkouts("coverage_diff")
         aggregate = self.sorotte_checkouts("verification_required")
         self.assertEqual(lifecycle[0]["with"]["ref"], HEAD_REF)
         self.assertEqual(coverage_producer[0]["with"]["ref"], HEAD_REF)
+        self.assertEqual(len(coverage_canary), 1)
+        self.assertEqual(coverage_canary[0]["with"]["ref"], HEAD_REF)
         self.assertEqual(coverage[0]["with"]["ref"], HEAD_REF)
         self.assertEqual(coverage[0]["with"]["fetch-depth"], "0")
         self.assertEqual(aggregate[0]["with"]["ref"], HEAD_REF)
@@ -2208,10 +2305,14 @@ done""",
                 for checkout in syncplay_checkouts
             )
         )
-        self.assertEqual(requirement_lines(CI_REQUIREMENTS), ["PyYAML==6.0.2"])
+        self.assertEqual(
+            requirement_lines(CI_REQUIREMENTS),
+            ["-c verification-constraints.txt", "PyYAML==6.0.2", "cryptography==50.0.1"],
+        )
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),
             [
+                "-c verification-constraints.txt",
                 "twisted==26.4.0",
                 "pyopenssl==26.4.0",
                 "cryptography==50.0.1",
@@ -2371,239 +2472,31 @@ done""",
 
     def test_scheduled_mutation_shard_is_pinned_bounded_and_fail_closed(self) -> None:
         jobs = self.mutation_workflow["jobs"]
-        self.assertEqual(set(jobs), {"selection", "mutation", "participant-status-evidence-set"})
+        self.assertEqual(set(jobs), {"selection", "preparation", "mutation", "mutation-required"})
         self.assertEqual(self.mutation_workflow["permissions"], {"contents": "read"})
-        self.assertEqual(
-            self.mutation_workflow["on"],
-            {
-                "workflow_dispatch": "",
-                "pull_request": {
-                    "paths": [
-                        ".github/workflows/rust-mutation.yml",
-                        "coverage/mutation-policy.toml",
-                        "coverage/mutation-report-set.json",
-                        "scripts/mutation_ci.py",
-                        "scripts/mutation_selection.py",
-                        "scripts/artifact_input.py",
-                        "coverage/mutation-selection.toml",
-                        "Cargo.toml",
-                        "Cargo.lock",
-                        "rust-toolchain.toml",
-                        ".cargo/**",
-                        "crates/**",
-                        "fixtures/**",
-                        "crates/sorotte-protocol/src/lib.rs",
-                        "crates/sorotte-protocol/src/state.rs",
-                        "crates/sorotte-protocol/src/participant_status.rs",
-                        "crates/sorotte-player-api/src/lib.rs",
-                        "crates/sorotte-player-mpv/src/adapter.rs",
-                        "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
-                        "crates/sorotte-player-mpv/src/adapter/state.rs",
-                        "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
-                        "crates/sorotte-client-core/src/**",
-                        "crates/sorotte-client-app/src/**",
-                        "crates/sorotte-cli/src/**",
-                        "crates/sorotte-server/src/**",
-                        "crates/sorotte-gui/src/**",
-                        "!crates/**/*.md",
-                        "!fixtures/**/*.md",
-                    ]
-                },
-                "schedule": [{"cron": "15 4 * * 0"}],
-            },
-        )
-        self.assertEqual(
-            self.mutation_workflow["concurrency"],
-            {
-                "group": "sorotte-mutation-${{ github.ref }}",
-                "cancel-in-progress": "true",
-            },
-        )
-        job = jobs["mutation"]
-        self.assertEqual(job["name"], "Mutation (${{ matrix.shard }})")
-        self.assertEqual(job["runs-on"], "ubuntu-latest")
-        self.assertEqual(job["timeout-minutes"], "120")
-        self.assertEqual(job["needs"], "selection")
-        self.assertEqual(job["if"], "${{ needs.selection.outputs.shards != '[]' }}")
-        pull_request_shards = [
-            "participant-status-protocol",
-            "client-participant-status",
-            "client-participant-status-runtime",
-            "client-participant-status-outbox",
-            "server-participant-status",
-            "gui-participant-status",
-            "gui-playlist-delivery-fence",
-            "player-mpv-explicit-ipc-retry",
-            "client-app-participant-status-lifecycle",
-            "cli-participant-status-lifecycle",
-        ]
-        all_shards = [
-            "privacy-secret",
-            "server-auth",
-            "protocol-codec",
-            *pull_request_shards,
-            "client-reconnect-state",
-            "client-runtime-config",
-            "client-ping",
-            "server-persistence-arbitration",
-            "client-inbound-order",
-            "client-playlist-shuffle",
-            "cli-framing",
-        ]
-        matrix_expression = "${{ fromJSON(needs.selection.outputs.shards) }}"
-
-        participant_status_boundaries = {
-            "crates/sorotte-protocol/src/lib.rs",
-            "crates/sorotte-protocol/src/state.rs",
-            "crates/sorotte-protocol/src/participant_status.rs",
-            "crates/sorotte-player-api/src/lib.rs",
-            "crates/sorotte-player-mpv/src/adapter.rs",
-            "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
-            "crates/sorotte-player-mpv/src/adapter/state.rs",
-            "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
-            "crates/sorotte-client-core/src/**",
-            "crates/sorotte-client-app/src/**",
-            "crates/sorotte-cli/src/**",
-            "crates/sorotte-server/src/**",
-            "crates/sorotte-gui/src/**",
-        }
-        self.assertLessEqual(
-            participant_status_boundaries,
-            set(self.mutation_workflow["on"]["pull_request"]["paths"]),
-            "every participant-status production boundary must trigger its mutation shards",
-        )
-        self.assertEqual(
-            job["strategy"],
-            {
-                "fail-fast": "false",
-                "matrix": {"shard": matrix_expression},
-            },
-        )
-        self.assertNotIn("continue-on-error", job)
-
-        checkout = named_step(jobs, "mutation", "Checkout")
-        self.assertEqual(checkout.get("uses"), PINNED_USES["actions/checkout"])
-        self.assertEqual(
-            checkout.get("with"),
-            {"persist-credentials": "false"},
-        )
-        rust = named_step(jobs, "mutation", "Setup Rust")
-        self.assertEqual(rust.get("uses"), PINNED_USES["dtolnay/rust-toolchain"])
-        self.assertEqual(
-            rust.get("with"),
-            {
-                "toolchain": "1.97.1",
-                "components": "rustfmt, clippy",
-            },
-        )
-        python = named_step(jobs, "mutation", "Setup Python")
-        self.assertEqual(python.get("uses"), PINNED_USES["actions/setup-python"])
-        self.assertEqual(python.get("with"), {"python-version": "3.11"})
-        installer = named_step(jobs, "mutation", "Install pinned cargo-mutants")
-        self.assertEqual(
-            installer.get("uses"),
-            PINNED_USES["taiki-e/install-action"],
-        )
-        self.assertEqual(
-            installer.get("with"),
-            {"tool": "cargo-mutants@27.1.0", "fallback": "none"},
-        )
-        self.assert_exact_run(
-            jobs,
-            "mutation",
-            "Validate mutation policy",
-            """
-            python scripts/mutation_ci.py validate
-            --repo-root .
-            --policy coverage/mutation-policy.toml
-            --shard ${{ matrix.shard }}
-            """,
-        )
-        self.assert_exact_run(
-            jobs,
-            "mutation",
-            "Run source-bound mutation shard",
-            """
-            python scripts/mutation_ci.py run
-            --repo-root .
-            --policy coverage/mutation-policy.toml
-            --shard ${{ matrix.shard }}
-            --results-root target/mutation-ci/${{ matrix.shard }}
-            --output target/verification/mutation-${{ matrix.shard }}.json
-            """,
-        )
-        self.assert_exact_run(
-            jobs,
-            "mutation",
-            "Verify mutation evidence matches current source",
-            """
-            python scripts/mutation_ci.py verify-report
-            --repo-root .
-            --policy coverage/mutation-policy.toml
-            --shard ${{ matrix.shard }}
-            --report target/verification/mutation-${{ matrix.shard }}.json
-            """,
-        )
-        upload = named_step(jobs, "mutation", "Upload mutation evidence")
-        self.assertEqual(upload.get("if"), "always()")
-        self.assertEqual(
-            upload.get("uses"),
-            PINNED_USES["actions/upload-artifact"],
-        )
-        self.assertEqual(
-            upload.get("with"),
-            {
-                "name": "sorotte-mutation-${{ matrix.shard }}",
-                "path": (
-                    "target/verification/mutation-${{ matrix.shard }}.json\n"
-                    "target/mutation-ci/${{ matrix.shard }}\n"
-                ),
-                "if-no-files-found": "error",
-                "retention-days": "14",
-                "overwrite": "true",
-            },
-        )
-
-        evidence_job = jobs["participant-status-evidence-set"]
-        self.assertEqual(evidence_job["name"], "Participant-status mutation evidence set")
-        self.assertEqual(evidence_job["if"], "${{ always() && (needs.selection.result != 'success' || needs.selection.outputs.shards != '[]') }}")
-        self.assertEqual(evidence_job["needs"], ["selection", "mutation"])
-        self.assertEqual(evidence_job["runs-on"], "ubuntu-latest")
-        self.assertEqual(evidence_job["timeout-minutes"], "30")
-        evidence_checkout = named_step(
-            jobs,
-            "participant-status-evidence-set",
-            "Checkout",
-        )
-        self.assertEqual(evidence_checkout.get("uses"), PINNED_USES["actions/checkout"])
-        download = named_step(
-            jobs,
-            "participant-status-evidence-set",
-            "Download mutation reports",
-        )
-        self.assertEqual(
-            download.get("uses"),
-            PINNED_USES["actions/download-artifact"],
-        )
-        self.assertEqual(
-            download.get("with"),
-            {
-                "pattern": "sorotte-mutation-*",
-                "path": "target",
-                "merge-multiple": "true",
-            },
-        )
-        self.assert_exact_run(
-            jobs,
-            "participant-status-evidence-set",
-            "Verify the uniquely selected participant-status report set",
-            """
-            python scripts/mutation_ci.py verify-report-set
-            --repo-root .
-            --policy coverage/mutation-policy.toml
-            --manifest coverage/mutation-report-set.json
-            """,
-        )
+        self.assertEqual(self.mutation_workflow["on"]["pull_request"], "")
+        self.assertEqual(self.mutation_workflow["on"]["push"], {"branches": ["main"]})
+        required_graph(jobs, "mutation-required", {"selection", "preparation", "mutation"},
+                       dependency_conditions={"mutation": "needs.preparation.outputs.matrix != '[]'"})
+        self.assertEqual(jobs["mutation-required"].get("name"), "mutation-required")
+        self.assertEqual(jobs["mutation"]["strategy"]["fail-fast"], "false")
+        for job_id, operation in (("preparation", "prepare"), ("mutation", "run"), ("mutation-required", "verify")):
+            producer = command_step(jobs[job_id], "scripts/mutation_campaign.py " + operation,
+                                    allowed_if="always()" if operation == "verify" else None)
+            self.assertNotIn("continue-on-error", producer)
+            installers = [step for step in jobs[job_id]["steps"] if step.get("with", {}).get("tool") == "cargo-mutants@27.1.0"]
+            self.assertEqual(len(installers), 1)
+            self.assertEqual(installers[0]["uses"], PINNED_USES["taiki-e/install-action"])
+            self.assertEqual(installers[0]["with"]["fallback"], "none")
+        worker = command_step(jobs["mutation"], "scripts/mutation_campaign.py run")
+        for argument in ("--chunk", "--campaign", "--attempt", "--deadline-seconds"):
+            self.assertIn(argument, worker["run"])
+        finalizer = command_step(jobs["mutation-required"], "scripts/mutation_campaign.py verify", allowed_if="always()")
+        for argument in ("--base", "--head", "--selection-result", "--preparation-result", "--mutation-result", "--artifacts"):
+            self.assertIn(argument, finalizer["run"])
+        uploads = [step for step in jobs["mutation"]["steps"] if step.get("uses") == PINNED_USES["actions/upload-artifact"]]
+        self.assertTrue(uploads)
+        self.assertTrue(all(step.get("if") == "always()" and step["with"].get("if-no-files-found") == "error" for step in uploads))
 
         self.assertEqual(
             {
@@ -2993,6 +2886,27 @@ done""",
                         "mutant_filter": "",
                         "test_target": "lib",
                         "test_filter": "",
+                        "jobs": 2,
+                        "timeout_seconds": 60,
+                        "build_timeout_seconds": 120,
+                        "minimum_viable_kill_percent": "100.00",
+                        "max_missed": 0,
+                        "max_timeouts": 0,
+                        "require_baseline": True,
+                    },
+                    {
+                        "id": "client-local-seek-echo",
+                        "owner": "client-lifecycle",
+                        "package": "sorotte-client-core",
+                        "files": [
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ],
+                        "mutant_filter": "",
+                        "test_target": "lib",
+                        "test_filter": (
+                            "runtime::playback_coordination::tests::seek_echo_tests::"
+                        ),
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -3635,6 +3549,27 @@ done""",
                             "report whose report, fingerprint, and send "
                             "timestamp are all required, so the generated "
                             "replacement cannot type-check"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": "client-local-seek-echo-candidate-default",
+                        "shard": "client-local-seek-echo",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::capture_local_seek_echo"
+                        ),
+                        "return_type": "-> Option<LocalSeekEchoCandidate>",
+                        "genre": "FnValue",
+                        "replacement": "Some(Default::default())",
+                        "reason": (
+                            "cargo-mutants requests Default for a Seek acknowledgement "
+                            "candidate whose emitted command identity and captured "
+                            "client counter are required, so the generated replacement "
+                            "cannot type-check"
                         ),
                         "review_by": "2026-11-30",
                     },
@@ -4614,15 +4549,8 @@ done""",
                 continue_on_error="true",
             )
 
-        disabled = self.workflow_text.replace(
-            "      - name: Nextest fail-on-flaky workspace tests\n"
-            "        id: nextest",
-            "      - name: Nextest fail-on-flaky workspace tests\n"
-            "        if: false\n"
-            "        id: nextest",
-            1,
-        )
-        disabled_jobs = parse_workflow(disabled)["jobs"]
+        disabled_jobs = copy.deepcopy(self.jobs)
+        named_step(disabled_jobs, "checks", "Nextest fail-on-flaky workspace tests")["if"] = "false"
         with self.assertRaises(AssertionError):
             self.assert_exact_run(
                 disabled_jobs,

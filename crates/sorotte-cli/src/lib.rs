@@ -275,13 +275,8 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
     if client_arg_overrides.should_halt_for_legacy_force_gui_prompt_compatibility() {
         return Ok(());
     }
-    let stored_settings = match load_sorotte_cli_stored_settings_mvp_legacy_compatible() {
-        Ok(settings) => settings,
-        Err(error) => {
-            eprintln!("warning: failed to load stored Sorotte settings: {error}");
-            None
-        }
-    };
+    let stored_settings = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+        .map_err(|error| anyhow!("failed to load stored Sorotte settings: {error:#}"))?;
     if let Some(stored_settings) = stored_settings.as_ref() {
         if let Some(line) = stored_force_gui_prompt_compatibility_line_legacy_compatible(
             &client_arg_overrides,

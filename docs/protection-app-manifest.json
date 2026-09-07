@@ -1,0 +1,13 @@
+{
+  "name": "Sorotte Protection Reader",
+  "url": "https://github.com/ropbet-radbyt/sorotte",
+  "description": "Read Sorotte classic branch protection before qualification and publication.",
+  "public": false,
+  "default_permissions": {
+    "administration": "read",
+    "metadata": "read"
+  },
+  "default_events": [],
+  "request_oauth_on_install": false,
+  "setup_on_update": false
+}

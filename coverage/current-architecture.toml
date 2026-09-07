@@ -1,11 +1,11 @@
 schema_version = 1
 
 [release]
-version = "0.2.9"
-base_sha = "af226f1a6402c17d563c08cb7627af052c318254"
+version = "0.2.10"
+base_sha = "4000eca69b52003b66e81b6998d15c555e7eb6d1"
 fixing_sha = "pending"
 hosted = "pending"
-note = "The landed v0.2.8 main tree equals audit base 8b9ee43. v0.2.9 changes remain uncommitted; local results below describe their recorded implementation inputs, not a published release."
+note = "The landed v0.2.9 release is the base for v0.2.10. Boundary-local evidence and remaining-work notes below retain their historical v0.2.9 implementation context; they do not qualify this release candidate. The fixing commit and hosted qualification for v0.2.10 remain pending."
 
 [[crate]]
 name = "sorotte-secret"

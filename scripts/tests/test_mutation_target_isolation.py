@@ -21,7 +21,7 @@ class MutationTargetIsolationTests(unittest.TestCase):
         }
         completed = subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.dict(os.environ, inherited), mock.patch.object(
-            mutation_ci.subprocess, "run", return_value=completed
+            mutation_ci.mutation_process, "run", return_value=completed
         ) as run:
             mutation_ci.run_process(["cargo", "mutants", "--jobs", "2"], cwd=pathlib.Path.cwd())
             environment = run.call_args.kwargs["env"]
@@ -32,7 +32,7 @@ class MutationTargetIsolationTests(unittest.TestCase):
 
     def test_ordinary_inventory_keeps_its_selected_build_cache(self):
         completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(mutation_ci.subprocess, "run", return_value=completed) as run:
+        with mock.patch.object(mutation_ci.mutation_process, "run", return_value=completed) as run:
             mutation_ci.run_process(["cargo", "test", "--list"], cwd=pathlib.Path.cwd())
             self.assertIsNone(run.call_args.kwargs["env"])
 

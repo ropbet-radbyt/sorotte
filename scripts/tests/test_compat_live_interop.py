@@ -34,13 +34,7 @@ def command_result(
 
 
 def complete_test_inventory() -> list[str]:
-    tests = set(interop.EXPECTED_IGNORED_TESTS)
-    tests.update(interop.REQUIRED_LIVE_SENTINELS)
-    index = 0
-    while len(tests) < interop.EXPECTED_DISCOVERED_TESTS:
-        tests.add(f"tests::policy_fixture_{index:03d}")
-        index += 1
-    return sorted(tests)
+    return interop.reviewed_tests("compat")
 
 
 def inventory_document(tests: list[str] | None = None) -> dict[str, object]:

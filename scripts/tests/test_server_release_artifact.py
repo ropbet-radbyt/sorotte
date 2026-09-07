@@ -660,8 +660,8 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         workflow = (REPO_ROOT / ".github" / "workflows" / "sorotte-server-release.yml").read_text(
             encoding="utf-8"
         )
-        package_step = workflow.index("- name: Package server release")
-        verify_step = workflow.index("- name: Verify packaged server release")
+        package_step = workflow.index("- name: Construct server archive from qualified bytes")
+        verify_step = workflow.index("- name: Consume exact server archive including runtime boundaries")
         upload_step = workflow.index("- name: Upload server package")
         self.assertLess(package_step, verify_step)
         self.assertLess(verify_step, upload_step)
@@ -669,7 +669,7 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         self.assertIn('--expected-source-sha "${{ github.sha }}"', workflow)
         self.assertIn("target/server-release/artifacts/*", workflow)
         self.assertIn("target/server-release/artifact-verification.json", workflow)
-        report_step = workflow[workflow.index("- name: Upload verification report") : upload_step]
+        report_step = workflow[workflow.index("- name: Upload archive-consumption receipt") : upload_step]
         self.assertIn("if: always()", report_step)
 
     def test_release_workflow_actions_are_commit_pinned(self) -> None:
@@ -683,7 +683,7 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         local_workflows = [line for line in action_lines if line.startswith("uses: ./")]
         self.assertEqual(
             local_workflows,
-            ["uses: ./.github/workflows/playback-lifecycle-release-gate.yml"],
+            [],
         )
         for line in action_lines:
             if line.startswith("uses: ./"):

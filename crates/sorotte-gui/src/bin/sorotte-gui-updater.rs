@@ -3315,16 +3315,67 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    fn create_test_junction(path: &Path, target: &Path) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        // cmd treats forward-slash components as switches even though Rust's
+        // filesystem APIs accept them. absolute preserves the location while
+        // supplying Windows-native separators without following any links.
+        let path = std::path::absolute(path)
+            .map_err(|error| format!("invalid junction path {}: {error:?}", path.display()))?;
+        let target = std::path::absolute(target)
+            .map_err(|error| format!("invalid junction target {}: {error:?}", target.display()))?;
+        let before = fs::symlink_metadata(&path);
+        let output = Command::new("cmd")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&path)
+            .arg(&target)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| {
+                format!(
+                    "failed starting cmd /D /C mklink /J {:?} {:?}: {error:?}; path_before={before:?}",
+                    path, target
+                )
+            })?;
+        if !output.status.success() {
+            return Err(format!(
+                "cmd /D /C mklink /J {:?} {:?} failed: status={:?}; stdout={:?}; stderr={:?}; path_before={before:?}; path_after={:?}; target={:?}",
+                path,
+                target,
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                fs::symlink_metadata(&path),
+                fs::symlink_metadata(&target),
+            ));
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "junction command succeeded but {} is unavailable: {error:?}",
+                path.display()
+            )
+        })?;
+        if !metadata_is_reparse_or_symlink(&metadata) {
+            return Err(format!(
+                "junction command did not create a reparse point at {}: {metadata:?}",
+                path.display()
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(any(unix, windows))]
     fn replace_with_test_link(root: &Path, path: &Path, label: &str) {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("failed clearing link path {}: {error}", path.display()),
-        }
-
         #[cfg(unix)]
         {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("failed clearing link path {}: {error:?}", path.display()),
+            }
             let link_target = write_relative(
                 root,
                 &format!("link-source-{label}.txt"),
@@ -3337,20 +3388,124 @@ mod tests {
         {
             let link_target = root.join(format!("link-source-{label}"));
             fs::create_dir(&link_target).unwrap();
-            let status = Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(path)
-                .arg(&link_target)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap();
+            let staged = root.join(format!("link-staged-{label}"));
+            create_test_junction(&staged, &link_target).unwrap_or_else(|error| panic!("{error}"));
+
+            // Do not delete and immediately reuse the journal artifact's name.
+            // Keep any original bytes under this fixture's ownership until its
+            // guard drops, after readers have released their handles.
+            match fs::symlink_metadata(path) {
+                Ok(metadata) => {
+                    assert!(
+                        metadata.is_file() && !metadata_is_reparse_or_symlink(&metadata),
+                        "unexpected original link fixture at {}: {metadata:?}",
+                        path.display()
+                    );
+                    let retired = root.join(format!("link-retired-{label}"));
+                    assert!(
+                        fs::symlink_metadata(&retired)
+                            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                    );
+                    fs::rename(path, &retired).unwrap_or_else(|error| {
+                        panic!(
+                            "failed retiring owned link input {} to {}: {error:?}",
+                            path.display(),
+                            retired.display()
+                        )
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!(
+                    "failed inspecting link fixture {}: {error:?}",
+                    path.display()
+                ),
+            }
+            fs::rename(&staged, path).unwrap_or_else(|error| {
+                panic!(
+                    "failed installing prepared junction {} at exact journal artifact {}: {error:?}; destination={:?}; staged={:?}",
+                    staged.display(), path.display(), fs::symlink_metadata(path), fs::symlink_metadata(&staged)
+                )
+            });
             assert!(
-                status.success(),
-                "test setup could not create a directory junction at {}",
-                path.display()
+                metadata_is_reparse_or_symlink(&fs::symlink_metadata(path).unwrap()),
+                "the exact journal artifact must contain the prepared junction"
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_link_fixture_replaces_an_input_while_its_original_handle_is_open() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let fixture = DurabilityFixtureRoot::new("link-open-input");
+        let path = write_relative(
+            &fixture.path.join("target"),
+            "artifact.tmp",
+            b"held original input",
+        );
+        let mut held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+
+        replace_with_test_link(&fixture.path, &path, "held-input");
+
+        assert!(metadata_is_reparse_or_symlink(
+            &fs::symlink_metadata(&path).unwrap()
+        ));
+        let mut original = Vec::new();
+        held.read_to_end(&mut original).unwrap();
+        assert_eq!(original, b"held original input");
+        assert_eq!(
+            fs::read(fixture.path.join("link-retired-held-input")).unwrap(),
+            b"held original input"
+        );
+        assert!(!fixture.path.join("link-staged-held-input").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_junction_fixture_reports_an_occupied_path_without_replacing_it() {
+        let fixture = DurabilityFixtureRoot::new("junction-occupied-input");
+        let occupied = write_relative(&fixture.path, "occupied.bin", b"occupied sentinel");
+        let target = fixture.path.join("link-target");
+        fs::create_dir(&target).unwrap();
+
+        let error = create_test_junction(&occupied, &target)
+            .expect_err("mklink must reject an occupied fixture path");
+        for evidence in [
+            "cmd /D /C mklink /J",
+            "occupied.bin",
+            "status=",
+            "stdout=",
+            "stderr=",
+            "path_before=Ok",
+            "path_after=Ok",
+        ] {
+            assert!(
+                error.contains(evidence),
+                "missing {evidence} in junction diagnostic: {error}"
+            );
+        }
+        assert_eq!(fs::read(&occupied).unwrap(), b"occupied sentinel");
+        assert!(!metadata_is_reparse_or_symlink(
+            &fs::symlink_metadata(&occupied).unwrap()
+        ));
+
+        // Exercise a spelling accepted by Rust but interpreted as a switch by
+        // cmd without the fixture helper's native-path normalization.
+        fs::create_dir(fixture.path.join("nested")).unwrap();
+        let fresh = fixture.path.join("nested/fresh-junction");
+        create_test_junction(&fresh, &target).unwrap_or_else(|error| panic!("{error}"));
+        assert!(metadata_is_reparse_or_symlink(
+            &fs::symlink_metadata(&fresh).unwrap()
+        ));
     }
 
     #[test]
@@ -4104,12 +4259,13 @@ mod tests {
         for mode in MatrixRecoveryMode::ALL {
             for artifact in MatrixArtifact::ALL {
                 schedules += 1;
-                let root = test_root(&format!(
+                let fixture = DurabilityFixtureRoot::new(&format!(
                     "journal-link-{}-{}",
                     mode.label(),
                     artifact.label()
                 ));
-                let plan = recovery_matrix_plan(&root);
+                let root = &fixture.path;
+                let plan = recovery_matrix_plan(root);
                 let journal = journal_for_plan(&plan).unwrap();
                 write_journal_header(&plan.journal_path, &journal).unwrap();
                 prepare_and_install_matrix(&plan);
@@ -4118,7 +4274,7 @@ mod tests {
                 }
                 let artifact_path = matrix_artifact_path(&plan, MatrixFileKind::Existing, artifact);
                 replace_with_test_link(
-                    &root,
+                    root,
                     &artifact_path,
                     &format!("{}-{}", mode.label(), artifact.label()),
                 );
@@ -4155,15 +4311,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         #[cfg(windows)]
         {
-            let status = Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&link)
-                .arg(&real)
-                .status()
-                .unwrap();
-            if !status.success() {
-                return;
-            }
+            create_test_junction(&link, &real).unwrap_or_else(|error| panic!("{error}"));
         }
 
         let error = ensure_directory_is_not_reparse_point(&link)

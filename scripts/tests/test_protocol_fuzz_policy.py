@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import copy
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import pathlib
 import re
+import shutil
+import subprocess
+import sys
 import shlex
 import tempfile
 import tomllib
@@ -40,14 +47,18 @@ FUZZ_RUNNER_PATH = REPO_ROOT / "fuzz" / "run_protocol_fuzz.py"
 FUZZ_GITIGNORE_PATH = REPO_ROOT / "fuzz" / ".gitignore"
 
 CORPUS_PATH = "crates/sorotte-protocol/tests/corpus/protocol_parser"
-CORPUS_FILE_COUNT = 16
+CORPUS_MANIFEST_PATH = REPO_ROOT / "coverage/fuzz-corpora.json"
+CORPUS_MANIFEST = json.loads(CORPUS_MANIFEST_PATH.read_text(encoding="utf-8"))
+APPLICABILITY_POLICY = json.loads((REPO_ROOT / "coverage/verification-lanes.json").read_text(encoding="utf-8"))
+CORPUS_COUNTS = {target["id"]: len(target["files"]) for target in CORPUS_MANIFEST["targets"]}
+CORPUS_FILE_COUNT = CORPUS_COUNTS["protocol_line"]
 FRAMED_SESSION_CORPUS_PATH = "crates/sorotte-cli/tests/corpus/framed_session"
-FRAMED_SESSION_CORPUS_FILE_COUNT = 18
+FRAMED_SESSION_CORPUS_FILE_COUNT = CORPUS_COUNTS["framed_session"]
 FRAMED_SESSION_CORPUS_DIRECTORY = REPO_ROOT / FRAMED_SESSION_CORPUS_PATH
 MPV_FRAMED_TRANSCRIPT_CORPUS_PATH = (
     "crates/sorotte-player-mpv/tests/corpus/framed_ipc_transcript"
 )
-MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT = 12
+MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT = CORPUS_COUNTS["mpv_framed_transcript"]
 MPV_FRAMED_TRANSCRIPT_CORPUS_DIRECTORY = (
     REPO_ROOT / MPV_FRAMED_TRANSCRIPT_CORPUS_PATH
 )
@@ -72,74 +83,23 @@ FRAMED_SESSION_TARGET = "framed_session"
 MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH = "target/fuzz-ci/mpv-framed-transcript"
 MPV_FRAMED_TRANSCRIPT_TARGET = "mpv_framed_transcript"
 
-PINNED_USES = {
-    "Checkout": (
-        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-    ),
-    "Setup pinned nightly Rust": (
-        "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
-    ),
-    "Setup Python": (
-        "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
-    ),
-    "Upload protocol fuzz evidence": (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-    ),
+PINNED_ACTIONS = {
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "dtolnay/rust-toolchain": "4cda84d5c5c54efe2404f9d843567869ab1699d4",
+    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "taiki-e/install-action": "67729d5c413db75907f0ad1e39bb04b9c868ff60",
 }
-EXPECTED_STEP_NAMES = [
-    "Checkout",
-    "Setup pinned nightly Rust",
-    "Setup Python",
-    "Install CI policy prerequisites",
-    "Install pinned cargo-fuzz",
-    "Verify exact fuzz toolchain",
-    "Validate protocol fuzz policy",
-    "Build protocol fuzz target",
-    "Run bounded protocol fuzz target",
-    "Upload protocol fuzz evidence",
-]
-EXPECTED_FRAMED_SESSION_STEP_NAMES = [
-    "Checkout",
-    "Setup pinned nightly Rust",
-    "Setup Python",
-    "Install CI policy prerequisites",
-    "Install pinned cargo-fuzz",
-    "Verify exact fuzz toolchain",
-    "Validate protocol fuzz policy",
-    "Build framed-session fuzz target",
-    "Run bounded framed-session fuzz target",
-    "Upload framed-session fuzz evidence",
-]
-EXPECTED_MPV_FRAMED_TRANSCRIPT_STEP_NAMES = [
-    "Checkout",
-    "Setup pinned nightly Rust",
-    "Setup Python",
-    "Install CI policy prerequisites",
-    "Install pinned cargo-fuzz",
-    "Verify exact fuzz toolchain",
-    "Validate protocol fuzz policy",
-    "Build mpv framed-transcript fuzz target",
-    "Run bounded mpv framed-transcript fuzz target",
-    "Upload mpv framed-transcript fuzz evidence",
-]
-EXPECTED_PATHS = [
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "coverage/behaviors.toml",
-    "coverage/known-defects.toml",
-    "crates/**",
-    "fuzz/**",
-    ".github/workflows/rust-fuzz.yml",
-    "requirements/ci-policy.txt",
-    "scripts/known_defect_policy.py",
-    "scripts/tests/test_known_defect_policy.py",
-    "scripts/tests/test_protocol_fuzz_policy.py",
-]
-USES_LINE = re.compile(
-    r"^\s*uses:\s*([^@\s]+)@([0-9a-f]{40})\s+#\s+\S.*$",
-    re.MULTILINE,
-)
+PRODUCERS = {
+    "protocol-fuzz": (FUZZ_TARGET, CORPUS_PATH, FUZZ_OUTPUT_PATH, "sorotte-protocol-fuzz"),
+    "framed-session-fuzz": (FRAMED_SESSION_TARGET, FRAMED_SESSION_CORPUS_PATH,
+                            FRAMED_SESSION_OUTPUT_PATH, "sorotte-framed-session-fuzz"),
+    "mpv-framed-transcript-fuzz": (MPV_FRAMED_TRANSCRIPT_TARGET, MPV_FRAMED_TRANSCRIPT_CORPUS_PATH,
+                                    MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH, "sorotte-mpv-framed-transcript-fuzz"),
+}
+ATTEMPT_SUFFIX = "-${{ github.run_id }}-${{ github.run_attempt }}"
+BASE_EXPRESSION = "${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}"
 
 
 def require(condition: bool, message: str) -> None:
@@ -179,470 +139,156 @@ def assert_cargo_fuzz_installer(step: dict[str, Any], context: str) -> None:
     require("with" not in step, f"{context} installer must not carry action inputs")
 
 
+def command_step(job: dict[str, Any], prefix: list[str]) -> dict[str, Any]:
+    matches = [step for step in job["steps"] if "run" in step
+               and command_tokens(step)[:len(prefix)] == prefix]
+    require(len(matches) == 1, f"expected exactly one command starting {prefix}")
+    return matches[0]
+
+
+def action_step(job: dict[str, Any], action: str) -> dict[str, Any]:
+    matches = [step for step in job["steps"] if step.get("uses", "").startswith(action + "@")]
+    require(len(matches) == 1, f"expected exactly one {action}")
+    return matches[0]
+
+
 def workflow_path_covers(path: str) -> bool:
-    return any(
-        path == pattern
-        or (
-            pattern.endswith("/**")
-            and path.startswith(pattern.removesuffix("**"))
-        )
-        for pattern in EXPECTED_PATHS
-    )
+    # A workflow trigger alone is insufficient: its selector must also require fuzz.
+    scripts = str(REPO_ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from scripts import verify
+    return any(lane["id"] == "fuzz" and lane["selected"] for lane in verify.select([path], APPLICABILITY_POLICY))
 
 
 def assert_workflow_contract(text: str) -> None:
     workflow = parse_workflow(text)
     require(workflow.get("permissions") == {"contents": "read"}, "read-only permissions")
-    require(
-        workflow.get("concurrency")
-        == {
-            "group": "sorotte-protocol-fuzz-${{ github.ref }}",
-            "cancel-in-progress": (
-                "${{ github.event_name != 'schedule' "
-                "&& github.event_name != 'workflow_dispatch' }}"
-            ),
-        },
-        "fuzz concurrency contract changed",
-    )
+    require(workflow.get("concurrency") == {
+        "group": "sorotte-protocol-fuzz-${{ github.ref }}",
+        "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}",
+    }, "fuzz concurrency contract changed")
+    require(workflow.get("on") == {
+        "pull_request": "", "push": {"branches": ["main"]}, "workflow_dispatch": "",
+        "schedule": [{"cron": "45 3 * * 3"}],
+    }, "always-present PR/main gate and weekly/manual qualification are required")
+    require(workflow.get("env", {}).get("VERIFICATION_SHA") ==
+            "${{ github.event.pull_request.head.sha || github.sha }}", "exact candidate SHA required")
+    jobs = workflow["jobs"]
+    require(set(jobs) == {"selection", "fuzz-required", *PRODUCERS}, "fuzz producer/gate graph changed")
+    for job_id, job in jobs.items():
+        require(job.get("runs-on") == "ubuntu-24.04", "reviewed Linux image required")
+        for step in job["steps"]:
+            require("continue-on-error" not in step and "continue-on-error" not in job, "failures must propagate")
+            if "uses" in step:
+                action, _, pin = step["uses"].partition("@")
+                require(PINNED_ACTIONS.get(action) == pin, "every action must retain its reviewed commit pin")
+            if "run" in step:
+                require("if" not in step, "verification commands cannot be conditionally omitted")
+            if step.get("uses", "").startswith("actions/upload-artifact@"):
+                inputs = step.get("with", {})
+                require(inputs.get("name", "").endswith(ATTEMPT_SUFFIX), "evidence must be immutable per attempt")
+                require(inputs.get("if-no-files-found") == "error" and "overwrite" not in inputs,
+                        "missing evidence and artifact overwrites must fail closed")
+        checkout = action_step(job, "actions/checkout")["with"]
+        require(checkout.get("ref") == "${{ env.VERIFICATION_SHA }}" and
+                checkout.get("persist-credentials") == "false", "checkout must bind exact head without credentials")
+        require(action_step(job, "actions/setup-python").get("with") == {"python-version": "3.11"}, "Python pin changed")
+        if job_id in ("selection", "fuzz-required"):
+            require(checkout.get("fetch-depth") == "0", "selection/gate require exact base history")
+            require(job.get("timeout-minutes") == "5", "small gate timeout required")
+    selection = jobs["selection"]
+    require("if" not in selection and "needs" not in selection, "selection must always execute")
+    require(selection.get("outputs") == {"selected": "${{ steps.select.outputs.selected }}"}, "selector output contract")
+    command_step(selection, ["python", "scripts/verify.py", "preflight", "--phase", "static"])
+    plan = command_step(selection, ["python", "scripts/verify.py", "plan"])
+    require(command_tokens(plan) == ["python", "scripts/verify.py", "plan", "--base", "$BASE_SHA",
+                                   "--head", "$VERIFICATION_SHA", "--output", "target/verification/plan.json"],
+            "plan must bind base and head")
+    require(plan.get("env") == {"BASE_SHA": BASE_EXPRESSION}, "plan base identity required")
+    select = command_step(selection, ["python", "scripts/verify.py", "selected"])
+    require(select.get("id") == "select" and command_tokens(select) == ["python", "scripts/verify.py", "selected",
+        "--plan", "target/verification/plan.json", "--lane", "fuzz", "${FORCE:+$FORCE}", "--github-output", "$GITHUB_OUTPUT"],
+        "selector must use the source-bound plan")
+    require(select.get("env", {}).get("FORCE") ==
+            "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--force' || '' }}",
+            "scheduled/manual runs must qualify the full campaign")
+    require(action_step(selection, "actions/upload-artifact").get("with", {}).get("name") == "fuzz-plan" + ATTEMPT_SUFFIX,
+            "source plan artifact identity")
 
-    triggers = workflow.get("on")
-    require(isinstance(triggers, dict), "workflow triggers must be explicit")
-    require(
-        set(triggers) == {"pull_request", "push", "workflow_dispatch", "schedule"},
-        "workflow trigger set changed",
-    )
-    require(
-        triggers["pull_request"] == {"paths": EXPECTED_PATHS},
-        "pull-request paths changed",
-    )
-    require(
-        triggers["push"] == {"branches": ["main"], "paths": EXPECTED_PATHS},
-        "push must be restricted to main to avoid duplicate feature-branch runs",
-    )
-    require(triggers["workflow_dispatch"] == "", "dispatch must remain enabled")
-    require(
-        triggers["schedule"] == [{"cron": "45 3 * * 3"}],
-        "weekly schedule changed",
-    )
+    for job_id, (target, corpus, output, artifact) in PRODUCERS.items():
+        job = jobs[job_id]
+        require(job.get("needs") == "selection" and job.get("if") == "needs.selection.outputs.selected == 'true'",
+                "only explicit applicability may omit a producer")
+        require(job.get("timeout-minutes") == "25" and job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
+                "bounded event-specific duration required")
+        require(action_step(job, "dtolnay/rust-toolchain").get("with") ==
+                {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"}, "exact ASan toolchain required")
+        install = command_step(job, ["cargo", f"+{FUZZ_TOOLCHAIN}", "install"])
+        assert_cargo_fuzz_installer(install, job_id)
+        verify = command_step(job, ["test"])["run"]
+        require('test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"' in verify and
+                f"rustc +{FUZZ_TOOLCHAIN} -vV" in verify, "runtime tool identity checks required")
+        require(command_tokens(command_step(job, ["python", "-m", "unittest"])) ==
+                ["python", "-m", "unittest", "scripts.tests.test_protocol_fuzz_policy", "-v"], "policy check required")
+        require(command_tokens(command_step(job, ["python", "-m", "pip"])) ==
+                ["python", "-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements/ci-policy.txt"],
+                "locked policy prerequisites required")
+        require(not any(command_tokens(step)[:4] == ["cargo", f"+{FUZZ_TOOLCHAIN}", "fuzz", "build"]
+                        for step in job["steps"] if "run" in step),
+                "prebuild must remain inside the runner's committed-source guard")
+        run = command_step(job, ["python", "fuzz/run_protocol_fuzz.py"])
+        expected = ["python", "fuzz/run_protocol_fuzz.py"]
+        if target != FUZZ_TARGET: expected += ["--target", target]
+        expected += ["--toolchain", FUZZ_TOOLCHAIN, "--source-sha", "${{ env.VERIFICATION_SHA }}", "--seconds",
+                     "${FUZZ_SECONDS}", "--seed-corpus", corpus, "--corpus-manifest", "coverage/fuzz-corpora.json",
+                     "--output-root", output]
+        require(command_tokens(run) == expected, "source, target, reviewed corpus and budget must remain exact")
+        require(job["steps"].index(install) < job["steps"].index(run), "guarded build/run order")
+        uploads = [step for step in job["steps"] if step.get("with", {}).get("path") == output]
+        require(len(uploads) == 1, "one retained artifact per target required")
+        upload = uploads[0]
+        require(upload.get("if") == "always()" and upload.get("with") == {
+            "name": artifact + ATTEMPT_SUFFIX, "path": output, "if-no-files-found": "error", "retention-days": "14",
+        }, "all failure evidence must upload without replacing past attempts")
 
-    require(
-        set(workflow["jobs"])
-        == {
-            "protocol-fuzz",
-            "framed-session-fuzz",
-            "mpv-framed-transcript-fuzz",
-        },
-        "unexpected fuzz jobs",
-    )
-    job = workflow["jobs"]["protocol-fuzz"]
-    require(job.get("runs-on") == "ubuntu-latest", "fuzzing must run on Linux")
-    require(job.get("timeout-minutes") == "25", "job timeout must remain bounded")
-    require(
-        job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
-        "event-specific fuzz duration changed",
-    )
-    require(
-        [step.get("name") for step in job.get("steps", [])] == EXPECTED_STEP_NAMES,
-        "fuzz step order changed",
-    )
+    protocol = jobs["protocol-fuzz"]
+    canary = command_step(protocol, ["python", "scripts/fuzz_tool_canary.py"])
+    require(command_tokens(canary) == ["python", "scripts/fuzz_tool_canary.py", "--output", "target/fuzz-tool-canary"],
+            "real pinned-tool canary required")
+    replay = command_step(protocol, ["python", "scripts/fuzz_regressions.py"])
+    require(command_tokens(replay) == ["python", "scripts/fuzz_regressions.py", "replay", "--output", "target/fuzz-regressions.json"],
+            "retained product regression replay required")
+    require(action_step(protocol, "taiki-e/install-action").get("with") ==
+            {"tool": "cargo-nextest@0.9.137", "fallback": "none"}, "replay needs the pinned deterministic test runner")
+    build = command_step(protocol, ["python", "fuzz/run_protocol_fuzz.py"])
+    require(protocol["steps"].index(canary) < protocol["steps"].index(replay) < protocol["steps"].index(build),
+            "tool/replay canaries must precede the product campaign")
+    evidence = [step for step in protocol["steps"] if step.get("with", {}).get("name") == "fuzz-tool-canary" + ATTEMPT_SUFFIX]
+    require(len(evidence) == 1 and evidence[0].get("if") == "always()" and
+            evidence[0]["with"]["path"].splitlines() == ["target/fuzz-tool-canary", "target/fuzz-regressions.json"],
+            "tool and regression failures must retain evidence")
 
-    uses_matches = USES_LINE.findall(text)
-    require(
-        len(uses_matches) == len(PINNED_USES) * 3,
-        "every action in all fuzz jobs must be commit-pinned",
-    )
-    for step_name, expected_uses in PINNED_USES.items():
-        step = named_step(job, step_name)
-        require(step.get("uses") == expected_uses, f"{step_name} action pin changed")
-
-    checkout = named_step(job, "Checkout")
-    require(
-        checkout.get("with") == {"persist-credentials": "false"},
-        "checkout credentials must not persist",
-    )
-    rust = named_step(job, "Setup pinned nightly Rust")
-    require(
-        rust.get("with")
-        == {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"},
-        "nightly fuzz toolchain must be dated and include rust-src",
-    )
-    python = named_step(job, "Setup Python")
-    require(python.get("with") == {"python-version": "3.11"}, "Python pin changed")
-    installer = named_step(job, "Install pinned cargo-fuzz")
-    assert_cargo_fuzz_installer(installer, "protocol fuzz")
-
-    require(
-        command_tokens(named_step(job, "Install CI policy prerequisites"))
-        == [
-            "python",
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "-r",
-            "requirements/ci-policy.txt",
-        ],
-        "policy prerequisite command changed",
-    )
-    verify_command = named_step(job, "Verify exact fuzz toolchain").get("run", "")
-    require(
-        'test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"' in verify_command,
-        "cargo-fuzz runtime version check missing",
-    )
-    require(
-        f"rustc +{FUZZ_TOOLCHAIN} -vV" in verify_command,
-        "nightly runtime identity check missing",
-    )
-    require(
-        command_tokens(named_step(job, "Validate protocol fuzz policy"))
-        == [
-            "python",
-            "-m",
-            "unittest",
-            "scripts.tests.test_protocol_fuzz_policy",
-            "-v",
-        ],
-        "standalone fuzz policy check changed",
-    )
-    require(
-        command_tokens(named_step(job, "Build protocol fuzz target"))
-        == [
-            "cargo",
-            f"+{FUZZ_TOOLCHAIN}",
-            "fuzz",
-            "build",
-            "--fuzz-dir",
-            "fuzz",
-            "--sanitizer",
-            "address",
-            FUZZ_TARGET,
-        ],
-        "fuzz build contract changed",
-    )
-    require(
-        command_tokens(named_step(job, "Run bounded protocol fuzz target"))
-        == [
-            "python",
-            "fuzz/run_protocol_fuzz.py",
-            "--toolchain",
-            FUZZ_TOOLCHAIN,
-            "--source-sha",
-            "${{ github.sha }}",
-            "--seconds",
-            "${FUZZ_SECONDS}",
-            "--seed-corpus",
-            CORPUS_PATH,
-            "--expected-seed-count",
-            str(CORPUS_FILE_COUNT),
-            "--output-root",
-            FUZZ_OUTPUT_PATH,
-        ],
-        "bounded fuzz runner command changed",
-    )
-
-    upload = named_step(job, "Upload protocol fuzz evidence")
-    require(upload.get("if") == "always()", "fuzz evidence must upload on failure")
-    require(
-        upload.get("with")
-        == {
-            "name": "sorotte-protocol-fuzz",
-            "path": FUZZ_OUTPUT_PATH,
-            "if-no-files-found": "error",
-            "retention-days": "14",
-            "overwrite": "true",
-        },
-        "fuzz evidence retention contract changed",
-    )
-
-    framed_job = workflow["jobs"]["framed-session-fuzz"]
-    require(
-        framed_job.get("runs-on") == "ubuntu-latest",
-        "framed-session fuzzing must run on Linux",
-    )
-    require(
-        framed_job.get("timeout-minutes") == "25",
-        "framed-session job timeout must remain bounded",
-    )
-    require(
-        framed_job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
-        "framed-session event-specific duration changed",
-    )
-    require(
-        [step.get("name") for step in framed_job.get("steps", [])]
-        == EXPECTED_FRAMED_SESSION_STEP_NAMES,
-        "framed-session step order changed",
-    )
-    for step_name in (
-        "Checkout",
-        "Setup pinned nightly Rust",
-        "Setup Python",
-    ):
-        require(
-            named_step(framed_job, step_name).get("uses")
-            == PINNED_USES[step_name],
-            f"framed-session {step_name} action pin changed",
-        )
-    require(
-        named_step(framed_job, "Upload framed-session fuzz evidence").get("uses")
-        == PINNED_USES["Upload protocol fuzz evidence"],
-        "framed-session upload action pin changed",
-    )
-    require(
-        named_step(framed_job, "Checkout").get("with")
-        == {"persist-credentials": "false"},
-        "framed-session checkout credentials must not persist",
-    )
-    require(
-        named_step(framed_job, "Setup pinned nightly Rust").get("with")
-        == {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"},
-        "framed-session nightly toolchain contract changed",
-    )
-    require(
-        named_step(framed_job, "Setup Python").get("with")
-        == {"python-version": "3.11"},
-        "framed-session Python pin changed",
-    )
-    assert_cargo_fuzz_installer(
-        named_step(framed_job, "Install pinned cargo-fuzz"),
-        "framed-session fuzz",
-    )
-    require(
-        command_tokens(named_step(framed_job, "Install CI policy prerequisites"))
-        == [
-            "python",
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "-r",
-            "requirements/ci-policy.txt",
-        ],
-        "framed-session policy prerequisite command changed",
-    )
-    framed_verify = named_step(
-        framed_job,
-        "Verify exact fuzz toolchain",
-    ).get("run", "")
-    require(
-        'test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"'
-        in framed_verify,
-        "framed-session cargo-fuzz runtime check missing",
-    )
-    require(
-        f"rustc +{FUZZ_TOOLCHAIN} -vV" in framed_verify,
-        "framed-session nightly runtime identity check missing",
-    )
-    require(
-        command_tokens(named_step(framed_job, "Validate protocol fuzz policy"))
-        == [
-            "python",
-            "-m",
-            "unittest",
-            "scripts.tests.test_protocol_fuzz_policy",
-            "-v",
-        ],
-        "framed-session policy check changed",
-    )
-    require(
-        command_tokens(named_step(framed_job, "Build framed-session fuzz target"))
-        == [
-            "cargo",
-            f"+{FUZZ_TOOLCHAIN}",
-            "fuzz",
-            "build",
-            "--fuzz-dir",
-            "fuzz",
-            "--sanitizer",
-            "address",
-            FRAMED_SESSION_TARGET,
-        ],
-        "framed-session fuzz build contract changed",
-    )
-    require(
-        command_tokens(named_step(framed_job, "Run bounded framed-session fuzz target"))
-        == [
-            "python",
-            "fuzz/run_protocol_fuzz.py",
-            "--target",
-            FRAMED_SESSION_TARGET,
-            "--toolchain",
-            FUZZ_TOOLCHAIN,
-            "--source-sha",
-            "${{ github.sha }}",
-            "--seconds",
-            "${FUZZ_SECONDS}",
-            "--seed-corpus",
-            FRAMED_SESSION_CORPUS_PATH,
-            "--expected-seed-count",
-            str(FRAMED_SESSION_CORPUS_FILE_COUNT),
-            "--output-root",
-            FRAMED_SESSION_OUTPUT_PATH,
-        ],
-        "bounded framed-session runner command changed",
-    )
-    framed_upload = named_step(framed_job, "Upload framed-session fuzz evidence")
-    require(
-        framed_upload.get("if") == "always()",
-        "framed-session evidence must upload on failure",
-    )
-    require(
-        framed_upload.get("with")
-        == {
-            "name": "sorotte-framed-session-fuzz",
-            "path": FRAMED_SESSION_OUTPUT_PATH,
-            "if-no-files-found": "error",
-            "retention-days": "14",
-            "overwrite": "true",
-        },
-        "framed-session evidence retention contract changed",
-    )
-
-    mpv_job = workflow["jobs"]["mpv-framed-transcript-fuzz"]
-    require(
-        mpv_job.get("runs-on") == "ubuntu-latest",
-        "mpv framed-transcript testing must run on Linux",
-    )
-    require(
-        mpv_job.get("timeout-minutes") == "25",
-        "mpv framed-transcript job timeout must remain bounded",
-    )
-    require(
-        mpv_job.get("env") == {"FUZZ_SECONDS": FUZZ_SECONDS_EXPRESSION},
-        "mpv framed-transcript event-specific duration changed",
-    )
-    require(
-        [step.get("name") for step in mpv_job.get("steps", [])]
-        == EXPECTED_MPV_FRAMED_TRANSCRIPT_STEP_NAMES,
-        "mpv framed-transcript step order changed",
-    )
-    for step_name in (
-        "Checkout",
-        "Setup pinned nightly Rust",
-        "Setup Python",
-    ):
-        require(
-            named_step(mpv_job, step_name).get("uses")
-            == PINNED_USES[step_name],
-            f"mpv framed-transcript {step_name} action pin changed",
-        )
-    mpv_upload = named_step(
-        mpv_job,
-        "Upload mpv framed-transcript fuzz evidence",
-    )
-    require(
-        mpv_upload.get("uses") == PINNED_USES["Upload protocol fuzz evidence"],
-        "mpv framed-transcript upload action pin changed",
-    )
-    require(
-        named_step(mpv_job, "Checkout").get("with")
-        == {"persist-credentials": "false"},
-        "mpv framed-transcript checkout credentials must not persist",
-    )
-    require(
-        named_step(mpv_job, "Setup pinned nightly Rust").get("with")
-        == {"toolchain": FUZZ_TOOLCHAIN, "components": "rust-src"},
-        "mpv framed-transcript nightly toolchain contract changed",
-    )
-    require(
-        named_step(mpv_job, "Setup Python").get("with")
-        == {"python-version": "3.11"},
-        "mpv framed-transcript Python pin changed",
-    )
-    assert_cargo_fuzz_installer(
-        named_step(mpv_job, "Install pinned cargo-fuzz"),
-        "mpv framed-transcript fuzz",
-    )
-    require(
-        command_tokens(named_step(mpv_job, "Install CI policy prerequisites"))
-        == [
-            "python",
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "-r",
-            "requirements/ci-policy.txt",
-        ],
-        "mpv framed-transcript policy prerequisite command changed",
-    )
-    mpv_verify = named_step(mpv_job, "Verify exact fuzz toolchain").get("run", "")
-    require(
-        'test "$(cargo fuzz --version)" = "cargo-fuzz 0.13.2"' in mpv_verify,
-        "mpv framed-transcript cargo-fuzz runtime check missing",
-    )
-    require(
-        f"rustc +{FUZZ_TOOLCHAIN} -vV" in mpv_verify,
-        "mpv framed-transcript nightly runtime identity check missing",
-    )
-    require(
-        command_tokens(named_step(mpv_job, "Validate protocol fuzz policy"))
-        == [
-            "python",
-            "-m",
-            "unittest",
-            "scripts.tests.test_protocol_fuzz_policy",
-            "-v",
-        ],
-        "mpv framed-transcript policy check changed",
-    )
-    require(
-        command_tokens(
-            named_step(mpv_job, "Build mpv framed-transcript fuzz target")
-        )
-        == [
-            "cargo",
-            f"+{FUZZ_TOOLCHAIN}",
-            "fuzz",
-            "build",
-            "--fuzz-dir",
-            "fuzz",
-            "--sanitizer",
-            "address",
-            MPV_FRAMED_TRANSCRIPT_TARGET,
-        ],
-        "mpv framed-transcript build contract changed",
-    )
-    require(
-        command_tokens(
-            named_step(mpv_job, "Run bounded mpv framed-transcript fuzz target")
-        )
-        == [
-            "python",
-            "fuzz/run_protocol_fuzz.py",
-            "--target",
-            MPV_FRAMED_TRANSCRIPT_TARGET,
-            "--toolchain",
-            FUZZ_TOOLCHAIN,
-            "--source-sha",
-            "${{ github.sha }}",
-            "--seconds",
-            "${FUZZ_SECONDS}",
-            "--seed-corpus",
-            MPV_FRAMED_TRANSCRIPT_CORPUS_PATH,
-            "--expected-seed-count",
-            str(MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT),
-            "--output-root",
-            MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH,
-        ],
-        "bounded mpv framed-transcript runner command changed",
-    )
-    require(
-        mpv_upload.get("if") == "always()",
-        "mpv framed-transcript evidence must upload on failure",
-    )
-    require(
-        mpv_upload.get("with")
-        == {
-            "name": "sorotte-mpv-framed-transcript-fuzz",
-            "path": MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH,
-            "if-no-files-found": "error",
-            "retention-days": "14",
-            "overwrite": "true",
-        },
-        "mpv framed-transcript evidence retention contract changed",
-    )
-    require("continue-on-error" not in text, "fuzz failures must never be tolerated")
-    require("|| true" not in text, "workflow must not mask a failing command")
+    gate = jobs["fuzz-required"]
+    require(gate.get("name") == "fuzz-required" and gate.get("if") == "always()" and
+            set(gate.get("needs", [])) == {"selection", *PRODUCERS}, "stable gate must observe every producer and selection")
+    authority = command_step(gate, ["test"])
+    require(command_tokens(authority) == ["test", "$SELECTION_RESULT", "=", "success"] and
+            authority.get("env") == {"SELECTION_RESULT": "${{ needs.selection.result }}"}, "failed selection cannot become no-op")
+    require(action_step(gate, "actions/download-artifact").get("with") ==
+            {"name": "fuzz-plan" + ATTEMPT_SUFFIX, "path": "target/verification"}, "gate must use current-attempt plan")
+    finalize = command_step(gate, ["python", "scripts/verify.py", "gate"])
+    expected = ["python", "scripts/verify.py", "gate", "--lane", "fuzz", "--selected", "$SELECTED", "--plan",
+                "target/verification/plan.json", "--base-sha", "$EXPECTED_BASE", "--source-sha", "$VERIFICATION_SHA"]
+    expected_env = {"SELECTED": "${{ needs.selection.outputs.selected }}", "EXPECTED_BASE": BASE_EXPRESSION}
+    for index, job_id in enumerate(PRODUCERS):
+        expected += ["--expected-job", job_id, "--job-result", f"{job_id}=$RESULT_{index}"]
+        expected_env[f"RESULT_{index}"] = "${{ needs['" + job_id + "'].result }}"
+    expected += ["--output", "target/verification/fuzz-required.json"]
+    require(command_tokens(finalize) == expected and finalize.get("env") == expected_env,
+            "gate must validate source, applicability and every independent producer outcome")
+    require(action_step(gate, "actions/upload-artifact").get("if") == "always()", "gate failure receipt must be retained")
+    require("continue-on-error" not in text and "|| true" not in text, "workflow must not mask failure")
 
 
 def load_runner() -> types.ModuleType:
@@ -672,10 +318,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
                 "actions/checkout@v4",
             ),
-            original.replace("--sanitizer address", "--sanitizer none"),
-            original.replace('--source-sha "${{ github.sha }}"', "--source-sha bad"),
-            original.replace("--expected-seed-count 16", "--expected-seed-count 1"),
-            original.replace("--expected-seed-count 18", "--expected-seed-count 1"),
+            original.replace('--source-sha "${{ env.VERIFICATION_SHA }}"', "--source-sha bad"),
+            original.replace("--corpus-manifest coverage/fuzz-corpora.json", "--corpus-manifest malicious.json"),
+            original.replace("pull_request:", "pull_request:\n    paths: [docs/**]"),
             original.replace("--target framed_session", "--target protocol_line"),
             original.replace(
                 "target/fuzz-ci/framed-session",
@@ -686,15 +331,25 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "--target framed_session",
             ),
             original.replace(
-                "--expected-seed-count 12",
-                "--expected-seed-count 11",
+                "--expected-job mpv-framed-transcript-fuzz",
+                "--expected-job protocol-fuzz",
             ),
             original.replace(
                 "target/fuzz-ci/mpv-framed-transcript",
                 "target/fuzz-ci/framed-session",
             ),
         ]
+        mutations += [
+            original.replace("--base-sha \"$EXPECTED_BASE\"", "--base-sha HEAD"),
+            original.replace("ref: ${{ env.VERIFICATION_SHA }}", "ref: main"),
+            original.replace("-${{ github.run_attempt }}", ""),
+            original.replace("--output target/fuzz-tool-canary", "--output target/fake-canary"),
+            original.replace("scripts/fuzz_regressions.py replay", "scripts/fuzz_regressions.py validate"),
+            original.replace("test \"$SELECTION_RESULT\" = success", "test true = true"),
+            original.replace("--source-sha \"$VERIFICATION_SHA\"", "--source-sha HEAD"),
+        ]
         for mutation in mutations:
+            self.assertNotEqual(mutation, original, "adversarial workflow mutation must actually change source")
             with self.subTest(mutation=mutation):
                 with self.assertRaises(AssertionError):
                     assert_workflow_contract(mutation)
@@ -1062,10 +717,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         manifest = runner.bound_source_manifest(REPO_ROOT)
         actual_paths = {entry["path"] for entry in manifest["files"]}
         expected_paths = set(runner.BOUND_FIXED_SOURCE_PATHS)
-        expected_paths.update(
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (REPO_ROOT / runner.PROTOCOL_SOURCE_DIRECTORY).rglob("*.rs")
-        )
+        expected_paths.update(path.relative_to(REPO_ROOT).as_posix()
+                              for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES
+                              for path in (REPO_ROOT / directory).rglob("*") if path.is_file())
 
         self.assertEqual(actual_paths, expected_paths)
         self.assertTrue(
@@ -1090,13 +744,9 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         )
         actual_paths = {entry["path"] for entry in manifest["files"]}
         expected_paths = set(runner.FRAMED_SESSION_BOUND_FIXED_SOURCE_PATHS)
-        expected_paths.update(
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (
-                REPO_ROOT / runner.FRAMED_SESSION_SOURCE_DIRECTORY
-            ).rglob("*")
-            if path.is_file()
-        )
+        expected_paths.update(path.relative_to(REPO_ROOT).as_posix()
+                              for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES
+                              for path in (REPO_ROOT / directory).rglob("*") if path.is_file())
 
         self.assertEqual(actual_paths, expected_paths)
         self.assertTrue(
@@ -1123,7 +773,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         expected_paths = set(
             runner.MPV_FRAMED_TRANSCRIPT_BOUND_FIXED_SOURCE_PATHS
         )
-        for source_directory in runner.MPV_FRAMED_TRANSCRIPT_SOURCE_DIRECTORIES:
+        for source_directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES:
             expected_paths.update(
                 path.relative_to(REPO_ROOT).as_posix()
                 for path in (REPO_ROOT / source_directory).rglob("*")
@@ -1156,6 +806,8 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             protocol_source = root / runner.PROTOCOL_SOURCE_DIRECTORY / "codec.rs"
             protocol_source.parent.mkdir(parents=True, exist_ok=True)
             protocol_source.write_text("pub fn decode() {}\n", encoding="utf-8")
+            (root / ".cargo").mkdir()
+            (root / ".cargo/config.toml").write_text("# fixture\n", encoding="utf-8")
 
             baseline = runner.bound_source_manifest(root)
             target = root / "fuzz" / "fuzz_targets" / "protocol_line.rs"
@@ -1243,7 +895,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         target_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=target_root) as temporary:
             output = pathlib.Path(temporary) / "setup-failure"
-            with mock.patch.object(
+            with mock.patch.object(runner, "require_committed_source"), mock.patch.object(
                 runner,
                 "tool_identities",
                 side_effect=ValueError("tool identity canary"),
@@ -1281,6 +933,372 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             FUZZ_GITIGNORE_PATH.read_text(encoding="utf-8").splitlines(),
             ["/target/", "__pycache__/", "*.py[cod]"],
         )
+
+
+class FuzzCorpusAuthorityTests(unittest.TestCase):
+    def fixture(self, root: pathlib.Path) -> dict:
+        manifest = copy.deepcopy(CORPUS_MANIFEST)
+        for target in manifest["targets"]:
+            shutil.copytree(REPO_ROOT / target["directory"], root / target["directory"])
+        (root / "coverage").mkdir()
+        self.write_manifest(root, manifest)
+        return manifest
+
+    def write_manifest(self, root: pathlib.Path, manifest: dict) -> None:
+        (root / "coverage/fuzz-corpora.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_manifest_binds_all_reviewed_original_bytes_and_retained_crashes(self) -> None:
+        from scripts import fuzz_regressions
+        manifest = fuzz_regressions.validate()
+        self.assertEqual(set(fuzz_regressions.TARGET_DIRECTORIES), set(load_runner().SUPPORTED_TARGETS))
+        self.assertEqual(manifest, CORPUS_MANIFEST)
+        attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        for target in manifest["targets"]:
+            self.assertIn(target["directory"] + "/** -text", attributes)
+
+    def test_malformed_or_weakened_manifest_is_rejected(self) -> None:
+        from scripts import fuzz_regressions
+        mutations = {
+            "unsupported-schema": lambda d: d.update(schema_version=2),
+            "boolean-schema": lambda d: d.update(schema_version=True),
+            "unknown-field": lambda d: d.update(ignored=True),
+            "empty-targets": lambda d: d.update(targets=[]),
+            "missing-target": lambda d: d["targets"].pop(),
+            "duplicate-target": lambda d: d["targets"].__setitem__(1, copy.deepcopy(d["targets"][0])),
+            "unknown-target": lambda d: d["targets"][0].update(id="unknown"),
+            "unreviewed-directory": lambda d: d["targets"][0].update(directory="target/corpus"),
+            "empty-corpus": lambda d: d["targets"][0].update(files=[]),
+            "duplicate-seed": lambda d: d["targets"][0]["files"].append(d["targets"][0]["files"][0]),
+            "unsorted-seeds": lambda d: d["targets"][0]["files"].reverse(),
+            "path-traversal": lambda d: d["targets"][0]["files"][0].update(name="../seed"),
+            "windows-traversal": lambda d: d["targets"][0]["files"][0].update(name="..\\seed"),
+            "false-byte-count": lambda d: d["targets"][0]["files"][0].update(bytes=True),
+            "invalid-digest": lambda d: d["targets"][0]["files"][0].update(sha256="bad"),
+            "empty-regressions": lambda d: d.update(regressions=[]),
+            "duplicate-regression": lambda d: d["regressions"].append(d["regressions"][0]),
+            "removed-required-id": lambda d: d["regressions"][0].update(id="other-regression"),
+            "wrong-required-test": lambda d: d["regressions"][0].update(test="tests::different"),
+            "filter-injection": lambda d: d["regressions"][0].update(test="tests::x) | all("),
+            "dangling-seed": lambda d: d["regressions"][0].update(seed="target/new-seed"),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            baseline = self.fixture(root)
+            for label, mutate in mutations.items():
+                with self.subTest(label=label):
+                    candidate = copy.deepcopy(baseline)
+                    mutate(candidate)
+                    self.write_manifest(root, candidate)
+                    with self.assertRaises((ValueError, OSError)):
+                        fuzz_regressions.validate(root=root)
+            duplicate_json = json.dumps(baseline).replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1')
+            (root / "coverage/fuzz-corpora.json").write_text(duplicate_json, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+                fuzz_regressions.validate(root=root)
+
+    def test_inventory_drift_and_rewritten_original_crash_fail_closed(self) -> None:
+        from scripts import fuzz_regressions
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            manifest = self.fixture(root)
+            corpus = root / manifest["targets"][0]["directory"]
+            extra = corpus / "unreviewed"
+            extra.write_bytes(b"seed")
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                fuzz_regressions.validate(root=root)
+            extra.unlink()
+            subdirectory = corpus / "nested"
+            subdirectory.mkdir()
+            with self.assertRaisesRegex(ValueError, "direct regular files"):
+                fuzz_regressions.validate(root=root)
+            subdirectory.rmdir()
+            regression = manifest["regressions"][0]
+            original = root / regression["seed"]
+            original.write_bytes(original.read_bytes() + b"rewritten")
+            for target in manifest["targets"]:
+                for entry in target["files"]:
+                    if target["directory"] + "/" + entry["name"] == regression["seed"]:
+                        entry.update(bytes=original.stat().st_size, sha256=hashlib.sha256(original.read_bytes()).hexdigest())
+            self.write_manifest(root, manifest)
+            with self.assertRaisesRegex(ValueError, "original crash bytes changed"):
+                fuzz_regressions.validate(root=root)
+
+    def test_runner_requires_shared_manifest_authority_before_outputs_or_tools(self) -> None:
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "fresh-checkout"
+            root.mkdir()
+            output = root / "target" / "campaign"
+            self.assertFalse((root / "target").exists())
+            with mock.patch.object(runner, "__file__", str(root / "fuzz/run_protocol_fuzz.py")), \
+                    mock.patch.object(runner, "validate_corpus_manifest", side_effect=ValueError("empty reviewed corpus")) as authority, \
+                    mock.patch.object(runner, "tool_identities") as tools:
+                with self.assertRaisesRegex(ValueError, "empty reviewed corpus"):
+                    runner.main(["--toolchain", FUZZ_TOOLCHAIN, "--source-sha", "0" * 40, "--seconds", "1",
+                                 "--seed-corpus", CORPUS_PATH, "--output-root", str(output)])
+                authority.assert_called_once_with(root=root, manifest=root / "coverage/fuzz-corpora.json")
+                tools.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertFalse((root / "target").exists())
+
+    def test_all_targets_bind_global_selector_tool_and_corpus_sources(self) -> None:
+        runner = load_runner()
+        shared = {".gitattributes", "coverage/fuzz-corpora.json", "coverage/verification-tools.toml",
+                  "coverage/verification-lanes.json", "scripts/fuzz_regressions.py", "scripts/fuzz_tool_canary.py",
+                  "scripts/verify.py", "scripts/verification_tools.py"}
+        for target in runner.SUPPORTED_TARGETS:
+            with self.subTest(target=target):
+                paths = {entry["path"] for entry in runner.bound_source_manifest(REPO_ROOT, target)["files"]}
+                self.assertTrue(shared.issubset(paths))
+
+    def test_replay_rejects_empty_test_selection_and_keeps_failure_receipt(self) -> None:
+        from scripts import fuzz_regressions
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "replay.json"
+            def no_selected_tests(command, **kwargs):
+                self.assertEqual(command[:4], ["cargo", "nextest", "run", "--locked"])
+                self.assertIn("--lib", command)
+                self.assertEqual(command[command.index("--no-tests") + 1], "fail")
+                self.assertEqual(command[command.index("-E") + 1], "test(=" + CORPUS_MANIFEST["regressions"][0]["test"] + ")")
+                self.assertTrue(kwargs["check"])
+                self.assertEqual(kwargs["timeout"], 300)
+                raise subprocess.CalledProcessError(4, command)
+            with mock.patch.object(fuzz_regressions, "identity", return_value={"source_sha": "0" * 40}), \
+                    mock.patch.object(fuzz_regressions.subprocess, "run", side_effect=no_selected_tests), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(fuzz_regressions.main(["replay", "--output", str(output)]), 1)
+            receipt = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "failed")
+            self.assertEqual(receipt["attempts"][0]["status"], "failed")
+            original = output.read_bytes()
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(fuzz_regressions.main(["validate", "--output", str(output)]), 1)
+            self.assertEqual(output.read_bytes(), original)
+
+
+class FuzzCommittedBuildTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def repository(self):
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary).resolve()
+            for relative in runner.BOUND_FIXED_SOURCE_PATHS:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture\n")
+            for directory in runner.SHARED_BOUND_SOURCE_DIRECTORIES:
+                path = root / directory / "fixture.txt"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture\n")
+            (root / "crates/seeds").mkdir()
+            (root / "crates/seeds/seed").write_bytes(b"{}\n")
+            (root / ".gitignore").write_bytes(b"target/\n*.ignored\n")
+            def git(*args):
+                return subprocess.run(["git", "-c", f"safe.directory={root.as_posix()}",
+                    "-c", "core.autocrlf=false", "-c", "commit.gpgSign=false",
+                    "-c", "user.name=Fuzz fixture", "-c", "user.email=fuzz@example.invalid", *args],
+                    cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+            git("init", "--quiet")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "Committed fuzz fixture")
+            yield runner, root, git("rev-parse", "HEAD"), git
+
+    def test_exact_git_blobs_reject_already_drifted_staged_and_untracked_inputs(self):
+        with self.repository() as (runner, root, sha, git):
+            def check():
+                runner.require_committed_source(root, sha, runner.bound_source_manifest(root))
+            check()
+            lock = root / "fuzz/Cargo.lock"
+            lock.write_bytes(b"already changed before fuzz runner\n")
+            with self.assertRaisesRegex(ValueError, "source bytes differ.*fuzz/Cargo.lock"):
+                check()
+            git("add", "fuzz/Cargo.lock")
+            with self.assertRaisesRegex(ValueError, "source bytes differ"):
+                check()
+            lock.write_bytes(b"fixture\n")
+            check()
+            extra = root / "crates/new-input.ignored"
+            extra.write_bytes(b"ignored by Git but consumed as a build input\n")
+            with self.assertRaisesRegex(ValueError, "source inventory differs"):
+                check()
+            extra.unlink()
+            (root / "crates/fixture.txt").unlink()
+            with self.assertRaisesRegex(ValueError, "at least one source file|source inventory differs"):
+                check()
+
+    def test_wrong_commit_is_rejected_even_for_unchanged_source_bytes(self):
+        with self.repository() as (runner, root, _, _):
+            with self.assertRaisesRegex(ValueError, "checked-out commit"):
+                runner.require_committed_source(root, "0" * 40, runner.bound_source_manifest(root))
+
+    def test_runner_rejects_preexisting_lock_drift_before_tools_or_prebuild(self):
+        with self.repository() as (runner, root, sha, _):
+            (root / "fuzz/Cargo.lock").write_bytes(b"changed before the runner started\n")
+            manifest = {"targets": [{"id": FUZZ_TARGET, "directory": "crates/seeds",
+                "files": [{"name": "seed", "bytes": 3, "sha256": hashlib.sha256(b"{}\n").hexdigest()}]}]}
+            output = root / "target/attempt"
+            with mock.patch.object(runner, "__file__", str(root / "fuzz/run_protocol_fuzz.py")), \
+                    mock.patch.object(runner, "validate_corpus_manifest", return_value=manifest), \
+                    mock.patch.object(runner, "tool_identities") as tools, \
+                    mock.patch.object(runner, "prepare_target") as build:
+                self.assertEqual(runner.main(["--toolchain", FUZZ_TOOLCHAIN, "--source-sha", sha,
+                    "--seconds", "1", "--seed-corpus", "crates/seeds", "--output-root", str(output)]), 2)
+                tools.assert_not_called()
+                build.assert_not_called()
+            report = json.loads((output / "run-report.json").read_text())
+            self.assertEqual(report["status"], "setup_failed")
+            self.assertIn("source bytes differ from the commit: fuzz/Cargo.lock", report["setup_error"])
+
+    def test_lock_resolution_failure_keeps_diagnostic_and_prevents_build(self):
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            record = {"preparation": {}}
+            def stale_lock(argv, **kwargs):
+                self.assertEqual(argv, ["cargo", "+" + FUZZ_TOOLCHAIN, "metadata", "--locked",
+                                        "--manifest-path", "fuzz/Cargo.toml", "--format-version", "1"])
+                kwargs["stderr"].write(b"error: the lock file needs to be updated but --locked was passed\n")
+                return subprocess.CompletedProcess(argv, 101)
+            with mock.patch.object(runner, "require_committed_source"), \
+                    mock.patch.object(runner.subprocess, "run", side_effect=stale_lock), \
+                    mock.patch.object(runner, "run_owned_process") as build:
+                with self.assertRaisesRegex(ValueError, "lock file needs to be updated"):
+                    runner.prepare_target(root, FUZZ_TOOLCHAIN, FUZZ_TARGET, "0" * 40,
+                                          {}, root, record, root / "report.json")
+                build.assert_not_called()
+            saved = json.loads((root / "report.json").read_text())
+            self.assertEqual(saved["preparation"]["metadata"]["exit_code"], 101)
+            self.assertEqual(saved["preparation"]["metadata"]["status"], "failed")
+            self.assertIn("metadata.stderr_sha256", saved["preparation"]["metadata"])
+
+    def test_metadata_and_prebuild_drift_stop_before_fuzzing(self):
+        for phase in ("metadata", "build"):
+            with self.subTest(phase=phase), self.repository() as (runner, root, sha, _):
+                before = runner.bound_source_manifest(root)
+                output = root / "target/attempt"
+                output.mkdir(parents=True)
+                record = {"preparation": {}, "source_bindings": {}}
+                real_run = subprocess.run
+                def metadata_or_git(argv, **kwargs):
+                    if argv[0] == "git":
+                        return real_run(argv, **kwargs)
+                    self.assertEqual(argv[2], "metadata")
+                    kwargs["stdout"].write(b"{}\n")
+                    if phase == "metadata":
+                        (root / "fuzz/Cargo.lock").write_bytes(b"unexpected metadata rewrite\n")
+                    return subprocess.CompletedProcess(argv, 0)
+                def mutate_during_build(argv, **kwargs):
+                    self.assertEqual(argv, runner.build_command(FUZZ_TOOLCHAIN, FUZZ_TARGET))
+                    (root / "fuzz/Cargo.lock").write_bytes(b"unexpected build rewrite\n")
+                    return subprocess.CompletedProcess(argv, 0)
+                with mock.patch.object(runner.subprocess, "run", side_effect=metadata_or_git), \
+                        mock.patch.object(runner, "run_owned_process", side_effect=mutate_during_build) as build:
+                    with self.assertRaisesRegex(ValueError, "source changed during"):
+                        runner.prepare_target(root, FUZZ_TOOLCHAIN, FUZZ_TARGET, sha,
+                                              before, output, record, output / "report.json")
+                    self.assertEqual(build.call_count, int(phase == "build"))
+
+    def test_workflow_rejects_prebuild_outside_committed_input_guard(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8").replace(
+            "      - name: Run bounded protocol fuzz target",
+            f"      - run: cargo +{FUZZ_TOOLCHAIN} fuzz build --fuzz-dir fuzz --sanitizer address protocol_line\n"
+            "      - name: Run bounded protocol fuzz target",
+        )
+        with self.assertRaisesRegex(AssertionError, "prebuild must remain"):
+            assert_workflow_contract(workflow)
+
+    def test_guarded_build_keeps_asan_for_every_target(self):
+        runner = load_runner()
+        for target in runner.SUPPORTED_TARGETS:
+            self.assertEqual(runner.build_command(FUZZ_TOOLCHAIN, target),
+                ["cargo", "+" + FUZZ_TOOLCHAIN, "fuzz", "build", "--fuzz-dir", "fuzz",
+                 "--sanitizer", "address", target])
+
+
+class FuzzToolCanaryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "Linux ASan process ownership contract")
+    def test_command_timeout_terminates_owned_descendants(self) -> None:
+        from scripts import fuzz_tool_canary as canary
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            code = ("import subprocess,sys,time; "
+                    "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+                    "print(child.pid,flush=True); time.sleep(30)")
+            log = root / "owned.log"
+            with log.open("wb") as stream, self.assertRaises(subprocess.TimeoutExpired):
+                canary.execute([sys.executable, "-c", code], root, stream, 1)
+            child = int(log.read_text().strip())
+            status = pathlib.Path(f"/proc/{child}/stat")
+            if status.exists():
+                self.assertEqual(status.read_text().split()[2], "Z", "owned descendant remained running")
+
+    def simulate(self, output: pathlib.Path, defect: str | None = None) -> dict:
+        from scripts import fuzz_tool_canary as canary
+        statistics = "\n".join(f"stat::{name}: {1 if name == 'number_of_executed_units' else 0}"
+                               for name in load_runner().REQUIRED_FINAL_STATISTICS)
+
+        def execute(argv, cwd, stream, timeout):
+            self.assertEqual(timeout, 180)
+            if defect == "timeout": raise subprocess.TimeoutExpired(argv, timeout)
+            if defect == "cancelled": raise KeyboardInterrupt("test cancellation")
+            if argv[3] == "build":
+                (cwd / "fuzz/Cargo.lock").write_text("test lock", encoding="utf-8")
+                return 0
+            if argv[3] == "tmin":
+                self.assertFalse(any(arg.startswith("-max_len=") for arg in argv))
+                path = pathlib.Path(next(arg.removeprefix("-exact_artifact_path=") for arg in argv
+                                         if arg.startswith("-exact_artifact_path=")))
+                payload = b"CANARY!"
+                if defect == "lost-defect": payload = b"safe"
+                if defect == "no-minimization": payload = (cwd / "original-crash").read_bytes()
+                path.write_bytes(payload)
+                if defect == "overwritten-original": (cwd / "original-crash").write_bytes(payload)
+                return 0
+            if "benign-input" in " ".join(argv):
+                stream.write(("missing stats" if defect == "missing-statistics" else statistics).encode())
+                return 0
+            if defect == "crash-not-reproduced": return 0
+            if defect == "unrelated-failure":
+                stream.write(b"failed to start libFuzzer")
+            elif defect != "bad-minimized-replay" or "original-crash" in " ".join(argv):
+                stream.write(b"intentional minimizer canary")
+            return 1
+
+        version = "cargo-fuzz bad" if defect == "wrong-pin" else "cargo-fuzz 0.13.2"
+        with mock.patch.object(canary, "identity", return_value={"source_sha": "0" * 40}), \
+                mock.patch.object(canary, "os", types.SimpleNamespace(name="posix")), \
+                mock.patch.object(canary.subprocess, "check_output", return_value=version), \
+                mock.patch.object(canary, "execute", side_effect=execute):
+            return canary.run(output)
+
+    def test_canary_uses_actual_runner_minimizer_and_validates_statistics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / "canary"
+            result = self.simulate(output)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(len(result["commands"]), 5)
+            self.assertEqual(result["benign_statistics"]["number_of_executed_units"], 1)
+            self.assertEqual((output / "minimized-crash").read_bytes(), b"CANARY!")
+            self.assertNotEqual(result["original_sha256"], result["minimized_sha256"])
+            with self.assertRaisesRegex(ValueError, "fresh"):
+                self.simulate(output)
+
+    def test_canary_rejects_false_success_and_preserves_failed_attempts(self) -> None:
+        for defect in ("wrong-pin", "missing-statistics", "crash-not-reproduced", "unrelated-failure",
+                       "lost-defect", "no-minimization", "overwritten-original", "bad-minimized-replay",
+                       "timeout", "cancelled"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                output = pathlib.Path(temporary) / "canary"
+                with self.assertRaises((ValueError, subprocess.TimeoutExpired, KeyboardInterrupt)):
+                    self.simulate(output, defect)
+                receipt = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+                expected = "timed_out" if defect == "timeout" else "cancelled" if defect == "cancelled" else "failed"
+                self.assertEqual(receipt["status"], expected)
+                self.assertIn("error", receipt)
+                self.assertIn("duration_seconds", receipt)
+                if defect in ("timeout", "cancelled"):
+                    self.assertEqual(receipt["commands"][0]["status"], expected)
+                    self.assertIn("log_sha256", receipt["commands"][0])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,34 @@
+schema_version = 1
+# Reviewed immutable inputs. Changing a pin selects all apparatus canaries.
+[tools]
+rust = "1.97.1"
+cargo-nextest = "0.9.137"
+cargo-mutants = "27.1.0"
+cargo-llvm-cov = "0.8.4"
+cargo-semver-checks = "0.50.0"
+cargo-fuzz = "0.13.2"
+fuzz-toolchain = "nightly-2026-07-29"
+python-min = "3.11"
+python-max-exclusive = "3.14"
+
+[references]
+legacy-url = "https://github.com/Syncplay/syncplay"
+legacy-sha = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
+mpv-minimum-sha = "41f6a645068483470267271e1d09966ca3b9f413"
+mpv-minimum-version = "0.41.0"
+mpv-newest-sha = "d12f2ce19c918875981e00ed276f153bdf40a2ac"
+
+[python]
+pip-audit = "2.10.1"
+PyYAML = "6.0.2"
+cryptography = "50.0.1"
+pyOpenSSL = "26.4.0"
+service_identity = "24.2.0"
+Twisted = "26.4.0"
+
+[python-resolution]
+constraints = "requirements/verification-constraints.txt"
+# Canonical UTF-8 text with LF newlines; physical source bytes remain in identity.
+constraints-lf-sha256 = "8dc5d0901d38f90c75d69e6377fe9e697d7bac5eb921d57ed71350e575f447c6"
+reviewed-platforms = ["linux-x86_64", "windows-x86_64"]
+reviewed-python = ["3.11", "3.12", "3.13"]

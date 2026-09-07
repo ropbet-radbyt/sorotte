@@ -46,20 +46,63 @@ pub fn create_private_directory(_path: &Path) -> io::Result<()> {
 pub fn load_sorotte_ini_stored_client_settings_mvp_from_path(
     path: &Path,
 ) -> anyhow::Result<Option<StoredClientSettingsMvp>> {
-    read_contents(path).map(|contents| {
+    read_sorotte_ini_contents_consistently_at_path(path).map(|contents| {
         contents.map(|contents| parse_sorotte_ini_stored_client_settings_mvp(&contents))
     })
 }
 
-fn read_contents(path: &Path) -> anyhow::Result<Option<String>> {
+pub(crate) fn read_sorotte_ini_contents_consistently_at_path(
+    path: &Path,
+) -> anyhow::Result<Option<String>> {
+    super::transaction::read_consistently(path, read_contents_under_transaction)
+}
+
+// Only used while holding a transaction, or by read_consistently for a
+// provisional no-sidecar read whose result is checked against sidecar creation.
+fn read_contents_under_transaction(path: &Path) -> anyhow::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(anyhow!(
-            "failed reading stored settings {}: {error}",
-            path.display()
-        )),
+        Err(error) => Err(anyhow::Error::new(error)
+            .context(format!("failed reading stored settings {}", path.display()))),
     }
+}
+
+/// Read the latest bytes and invoke the update exactly once under the writer's
+/// transaction. Callback failures leave the existing document unchanged.
+pub(crate) fn update_sorotte_ini_contents_at_path<F>(path: &Path, update: F) -> anyhow::Result<()>
+where
+    F: FnOnce(Option<&str>) -> anyhow::Result<String>,
+{
+    let transaction = SettingsTransaction::acquire(path)?;
+    let contents = read_contents_under_transaction(transaction.path())?;
+    let updated = update(contents.as_deref())?;
+    write_sorotte_ini_contents_atomically_with_pre_commit_hook(
+        transaction.path(),
+        updated.as_bytes(),
+        |_| Ok(()),
+    )
+}
+
+/// Preserve existing documents without requiring a writable directory or
+/// creating a sidecar. A missing document is rechecked under the writer's lock.
+pub(crate) fn ensure_sorotte_ini_contents_at_path(
+    path: &Path,
+    contents: &[u8],
+) -> anyhow::Result<bool> {
+    if read_sorotte_ini_contents_consistently_at_path(path)?.is_some() {
+        return Ok(false);
+    }
+    let transaction = SettingsTransaction::acquire(path)?;
+    if read_contents_under_transaction(transaction.path())?.is_some() {
+        return Ok(false);
+    }
+    write_sorotte_ini_contents_atomically_with_pre_commit_hook(
+        transaction.path(),
+        contents,
+        |_| Ok(()),
+    )?;
+    Ok(true)
 }
 
 /// Apply an explicit field patch: `Some` assigns a field; `None` leaves it alone.
@@ -94,7 +137,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_at_path_with_writer(
 ) -> anyhow::Result<()> {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
-    let existing_contents = read_contents(path)?.unwrap_or_default();
+    let existing_contents = read_contents_under_transaction(path)?.unwrap_or_default();
     let updated_contents = writer(&existing_contents, settings);
     write_sorotte_ini_contents_atomically_with_pre_commit_hook(
         path,
@@ -315,45 +358,21 @@ impl Drop for TemporaryFileGuard {
 
 #[cfg(windows)]
 fn replace_file_atomically(temporary_path: &Path, destination: &Path) -> io::Result<()> {
-    use std::{iter, os::windows::ffi::OsStrExt};
-
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let temporary_wide = temporary_path
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect::<Vec<_>>();
-    let destination_wide = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect::<Vec<_>>();
-
-    // SAFETY: Both NUL-terminated UTF-16 path buffers remain alive for the
-    // duration of this call. The source and destination share one directory,
-    // so Windows performs a rename rather than a copy/delete operation.
+    // The pinned Rust implementation handles replacement with an open reader.
+    // Cooperating settings readers take the persistent sidecar's shared lock;
+    // this namespace operation does not promise uninterrupted external opens.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
     loop {
-        // SAFETY: The buffers described above remain live for every attempt.
-        let moved = unsafe {
-            MoveFileExW(
-                temporary_wide.as_ptr(),
-                destination_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if moved != 0 {
+        let Err(error) = std::fs::rename(temporary_path, destination) else {
             return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        // Short-lived readers/scanners can prevent Windows replacement even
-        // though the destination is writable. Retry only the rename, never the
-        // FnOnce update or secret write, and retain a strict overall bound.
+        };
+        // Retry the rename/source-open operation, never the FnOnce update or
+        // secret write. A scanner may transiently deny delete sharing.
         if matches!(error.raw_os_error(), Some(5 | 32)) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(
+                std::time::Duration::from_millis(1)
+                    .min(deadline.saturating_duration_since(std::time::Instant::now())),
+            );
         } else {
             return Err(error);
         }
@@ -413,7 +432,7 @@ where
 {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
-    let contents = read_contents(path)?.unwrap_or_default();
+    let contents = read_contents_under_transaction(path)?.unwrap_or_default();
     let baseline = parse_sorotte_ini_stored_client_settings_mvp(&contents);
     let mut settings = baseline.clone();
     update(&mut settings);
@@ -431,7 +450,7 @@ pub fn merge_sorotte_ini_stored_client_settings_mvp_at_path(
 ) -> anyhow::Result<StoredClientSettingsMvp> {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
-    let contents = read_contents(path)?;
+    let contents = read_contents_under_transaction(path)?;
     let initial = StoredClientSettingsMvp::default();
     let baseline = if contents.is_none() && !transaction.was_cleared()? {
         &initial
@@ -485,9 +504,9 @@ where
         .iter()
         .map(|path| SettingsTransaction::acquire(path))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let previous = read_contents(&destination)?;
+    let previous = read_contents_under_transaction(&destination)?;
     let source_contents = match source.as_deref() {
-        Some(source) => read_contents(source)?,
+        Some(source) => read_contents_under_transaction(source)?,
         None => None,
     };
     let source_was_cleared = source

@@ -17,13 +17,15 @@ normalization contract. Repeating a save is idempotent.
 
 A persistent `.<filename>.lock` sidecar owns an OS file lock. The lock covers
 reading the latest document, invoking an update callback once, merging, flushing,
-and atomic replacement. Writers wait at most five seconds for a busy lock, then
+and atomic replacement. Cooperating readers take a shared lock on an existing
+sidecar. Readers and writers wait at most five seconds for a busy lock, then
 return an `io::ErrorKind::WouldBlock` cause with a retry message. Callbacks are
 never automatically retried. Process exit releases the kernel lock; no PID
 guessing or stale-file timeout is required. Do not delete lock sidecars while
 clients can access the configuration.
 
-Existing paths are canonicalized, including file symlinks. For first creation,
+Stable destination names are resolved, including file symlinks, before locking;
+validation of the changing destination happens while holding the lock. For writes,
 the parent is created and canonicalized before deriving the lock path. Relative
 paths, `..`, directory symlinks/junctions, and Windows case aliases therefore use
 the same lock. Hard links are separate names: replacing one name intentionally
@@ -52,9 +54,21 @@ GUI ordinary Save uses the baseline merge and adopts the committed result. GUI
 feature patches execute against current disk settings inside the transaction.
 Relocation keeps source freshness, target mutation, location publication, and
 rollback within the defined locking order. CLI settings are explicit patches
-or transactional callbacks, so they use the same locking contract. Readers see
-complete old or new documents; relocation publication does not promise a
-cross-file snapshot to readers that do not take the transaction lock.
+or transactional callbacks, so they use the same locking contract. Cooperating
+readers see complete old or new documents. Read-only access never creates a
+directory or sidecar: a read without an existing sidecar is provisional until a
+second check confirms that a first writer did not create one. If it appeared,
+the reader discards the provisional result and reads again under its shared
+lock. A lock or I/O error remains an error and cannot become missing settings.
+Relocation publication does not promise a cross-file snapshot.
+
+Raw filesystem reads outside this protocol have a narrower Windows guarantee.
+Concurrent opens on NTFS have returned `ERROR_FILE_NOT_FOUND` with legacy
+rename, POSIX rename and native hard-link replacement in retained experiments.
+The original strict raw-reader assertion remains an explicit, dated Windows
+quarantine; ordinary application-reader and held-handle regressions remain
+required. See [the publication evidence](../evidence/testing/windows-settings-publication-2026-09-06.md).
+The raw-reader test remains required on other platforms.
 
 ## Credential file permissions
 
@@ -67,9 +81,13 @@ and preserved, including deny rules. Descriptor inspection uses an open handle,
 and the new file is checked for DACL protection before writing bytes. Unsupported
 security application fails explicitly. Read-only destinations fail before
 creating a temporary file. The completed temporary file is synced, closed, and
-renamed within the same directory with `MoveFileExW` and write-through flags.
-Transient reader/scanner sharing failures retry only that rename for at most
-250 milliseconds, without repeating an update callback.
+renamed within the same directory using Rust's Windows rename implementation.
+The pinned Rust version tries POSIX replacement when a legacy rename is denied,
+allowing an existing reader that shares delete access to keep the complete old
+file. Cooperating new readers wait for publication. Transient scanner sharing
+failures retry source acquisition and rename for at most 250 milliseconds, without
+repeating an update callback. This contract does not establish durability through
+power loss or support for untested filesystems.
 Failures before replacement leave original bytes and ACL unchanged.
 
 On Unix, the temporary file is created with mode `0600`; its open handle is set

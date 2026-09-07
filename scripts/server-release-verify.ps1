@@ -1,5 +1,9 @@
 param(
     [switch]$NoWorkspace,
+    [ValidateSet("All", "Prepare", "Behavior")]
+    [string]$Stage = "All",
+    [string]$WorkspaceReceipt = "",
+    [string]$ReceiptRunId = $env:GITHUB_RUN_ID,
     [string]$ReportDir = "target/server-release-verify"
 )
 
@@ -11,6 +15,8 @@ Set-Location $RepoRoot
 
 $LegacyRepo = "https://github.com/Syncplay/syncplay.git"
 $LegacyRef = "v1.7.5"
+$LegacySha = (& python -c "import sys; sys.path.insert(0, 'scripts'); import verification_tools; print(verification_tools.pins()['references']['legacy-sha'])").Trim()
+if ($LASTEXITCODE -ne 0) { throw "Cannot load immutable legacy reference pin" }
 $StartedAtUtc = (Get-Date).ToUniversalTime()
 $Results = New-Object System.Collections.Generic.List[object]
 $Failure = $null
@@ -144,7 +150,10 @@ function Get-ToolOutput {
 function Test-LegacyOracleReady {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    return (Test-Path -LiteralPath (Join-Path $Path "syncplayServer.py") -PathType Leaf)
+    if (-not (Test-Path -LiteralPath (Join-Path $Path "syncplayServer.py") -PathType Leaf)) { return $false }
+    & python scripts/release_qualification.py verify-legacy --legacy-root $Path
+    if ($LASTEXITCODE -ne 0) { throw "Legacy oracle must be clean and pinned to $LegacySha" }
+    return $true
 }
 
 function Ensure-LegacyOracle {
@@ -221,6 +230,9 @@ function Write-ServerReleaseReports {
         repoRoot = $RepoRoot
         reportDir = $reportRoot
         noWorkspace = [bool]$NoWorkspace
+        stage = $Stage
+        workspaceReceipt = $WorkspaceReceipt
+        sourceSha = (Get-ToolOutput -FilePath "git" -Arguments @("rev-parse", "HEAD"))
         os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
         architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
         rustc = (Get-ToolOutput -FilePath "rustc" -Arguments @("-Vv"))
@@ -231,6 +243,7 @@ function Write-ServerReleaseReports {
         }
         legacyOracle = [pscustomobject]@{
             ref = $LegacyRef
+            sha = $LegacySha
             repository = $LegacyRepo
             path = $LegacyOraclePath
             source = $LegacyOracleSource
@@ -279,31 +292,43 @@ try {
     }
     Invoke-ServerReleaseCommand "python prerequisites" $pythonBin @("-c", "import twisted, OpenSSL, service_identity")
 
+    if ($Stage -eq "Prepare") { return }
+    if ($WorkspaceReceipt) {
+        $sourceSha = (& git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Cannot resolve receipt source" }
+        $platform = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { "windows-x86_64" } else { "linux-x86_64" }
+        Invoke-ServerReleaseCommand "verify prior default workspace receipt" $pythonBin @("scripts/release_qualification.py", "verify-workspace", "--receipt", $WorkspaceReceipt, "--candidate-sha", $sourceSha, "--platform", $platform, "--expected-run-id", $ReceiptRunId)
+    }
     Invoke-CargoStep "fmt" @("fmt", "--all", "--", "--check")
-    Invoke-CargoStep "sorotte-server tests" @("test", "-p", "sorotte-server")
-    Invoke-CargoStep "sorotte-compat tests" @("test", "-p", "sorotte-compat")
+    # Package-only resolution and workspace feature unification are distinct
+    # obligations even when some test symbols overlap.
+    Invoke-CargoStep "sorotte-server tests" @("test", "--locked", "-p", "sorotte-server")
+    Invoke-CargoStep "sorotte-compat tests" @("test", "--locked", "-p", "sorotte-compat")
+    if (-not $WorkspaceReceipt -and -not $NoWorkspace) {
+        Invoke-CargoStep "workspace tests" @("test", "--locked", "--workspace")
+    }
     Invoke-CargoStep `
         "strict live legacy compatibility" `
-        @("test", "-p", "sorotte-compat", "--all-features", "legacy_server_", "--", "--nocapture") `
+        @("test", "--locked", "-p", "sorotte-compat", "--all-features", "legacy_server_", "--", "--nocapture") `
         @{
             SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
             SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"
         }
 
-    if (-not $NoWorkspace) {
-        Invoke-CargoStep "workspace tests" @("test", "--workspace")
-    }
-
-    Invoke-CargoStep "clippy" @("clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
+    Invoke-CargoStep "clippy" @("clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings")
     Invoke-CargoStep `
         "strict server release matrix" `
-        @("test", "-p", "sorotte-server", "--test", "server_release_verify", "--", "--test-threads=1", "--nocapture") `
+        @("test", "--locked", "-p", "sorotte-server", "--test", "server_release_verify", "--", "--test-threads=1", "--nocapture") `
         @{
             SYNCPLAY_REQUIRE_SERVER_RELEASE_VERIFY = "1"
             SOROTTE_SERVER_RELEASE_VERIFY = "1"
             SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
             SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"
         }
+    Invoke-ServerReleaseCommand "verify final legacy reference" $pythonBin @("scripts/release_qualification.py", "verify-legacy", "--legacy-root", $LegacyOraclePath)
+    if ($WorkspaceReceipt) {
+        Invoke-ServerReleaseCommand "verify final immutable input closure" $pythonBin @("scripts/release_qualification.py", "verify-workspace", "--receipt", $WorkspaceReceipt, "--candidate-sha", $sourceSha, "--platform", $platform, "--expected-run-id", $ReceiptRunId)
+    }
 }
 catch {
     $Failure = $_

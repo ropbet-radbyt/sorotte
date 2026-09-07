@@ -2426,9 +2426,96 @@ def _command_digest(args: argparse.Namespace) -> None:
     print(report["digest"])
 
 
+def promote_approved_digest(
+    *, evidence_dir: Path, expected_digest: str, expected_source_sha: str,
+    expected_source_url: str, version_tag: str, output_dir: Path,
+) -> dict[str, Any]:
+    """Promote one explicitly authorized prior publication; never build an image."""
+    _validate_digest(expected_digest)
+    _validate_source_sha(expected_source_sha)
+    if not re.fullmatch(r"(?:server-)?v[0-9][A-Za-z0-9._-]*", version_tag):
+        raise VerificationError("promotion requires a stable version tag")
+    paths = {
+        "runtime_report_path": evidence_dir / "runtime/runtime-report.json",
+        "sbom_path": evidence_dir / "sbom.spdx.json",
+        "sbom_report_path": evidence_dir / "sbom-report.json",
+        "publish_report_path": evidence_dir / "publish-report.json",
+        "signature_path": evidence_dir / "signature-verification.json",
+        "attestation_path": evidence_dir / "attestation-verification.json",
+        "publication_report_path": evidence_dir / "publication-report.json",
+    }
+    original = enforce_final_gate(**paths)
+    publish = parse_publish_report(paths["publish_report_path"])
+    public = parse_publication_report(paths["publication_report_path"])
+    image_name = publish["image"]
+    _validate_publication_scope(image_name, expected_source_url)
+    if (original["registryManifestDigest"] != expected_digest
+        or original["sourceSha"] != expected_source_sha
+        or publish["source"] != expected_source_url
+        or not {f"{image_name}:{version_tag}", f"{image_name}:sha-{expected_source_sha}"} <= set(publish["tags"])):
+        raise VerificationError("prior publication does not approve the requested digest, source and version")
+    policy = public["verificationPolicy"]
+    # Fulcio's SAN identifies job_workflow_ref (the reusable signer), while the
+    # explicit Actions run receipt authenticates the top-level stable workflow.
+    expected_identity = f"{expected_source_url}/.github/workflows/publish-server-container.yml@refs/tags/{version_tag}"
+    if policy["certificateIdentity"] != expected_identity or policy["workflowSourceSha"] != expected_source_sha:
+        raise VerificationError("prior publication was not signed by the trusted exact-source stable workflow")
+    output_dir.mkdir(parents=True, exist_ok=False)
+    digest_ref = f"{image_name}@{expected_digest}"
+    common = ["--certificate-identity", expected_identity,
+        "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
+        "--certificate-github-workflow-repository", expected_source_url.removeprefix("https://github.com/"),
+        "--certificate-github-workflow-sha", expected_source_sha]
+    signature_path = output_dir / "signature-verification.json"
+    attestation_path = output_dir / "attestation-verification.json"
+    signature_path.write_text(_run(["cosign", "verify", *common,
+        "--annotations", f"sourceSha={expected_source_sha}", "--annotations", f"workflowSourceSha={expected_source_sha}",
+        "--output", "json", digest_ref]).stdout, encoding="utf-8")
+    attestation_path.write_text(_run(["cosign", "verify-attestation", "--type", "spdxjson", *common,
+        "--output", "json", digest_ref]).stdout, encoding="utf-8")
+    public_args = {
+        "publish_report_path": paths["publish_report_path"], "sbom_path": paths["sbom_path"],
+        "sbom_report_path": paths["sbom_report_path"], "signature_path": signature_path,
+        "attestation_path": attestation_path, "expected_workflow_identity": expected_identity,
+        "expected_workflow_sha": expected_source_sha,
+    }
+    # Fresh anonymous tag/config/layer and live Cosign checks precede mutation.
+    verify_publication(**public_args)
+    latest = f"{image_name}:latest"
+    _run(["docker", "buildx", "imagetools", "create", "--prefer-index=false", "--tag", latest, digest_ref])
+    promoted = dict(publish)
+    promoted["tags"] = sorted(set(publish["tags"]) | {latest})
+    promoted["pushes"] = [*publish["pushes"], *([] if latest in publish["tags"] else [{"tag": latest, "digest": expected_digest}])]
+    promoted_path = output_dir / "publish-report.json"
+    _write_json(promoted_path, promoted)
+    public_args["publish_report_path"] = promoted_path
+    verified = verify_publication(**public_args)
+    verified_path = output_dir / "publication-report.json"
+    _write_json(verified_path, verified)
+    paths.update(publish_report_path=promoted_path, signature_path=signature_path,
+        attestation_path=attestation_path, publication_report_path=verified_path)
+    return enforce_final_gate(**paths)
+
+
+def _command_promote(args: argparse.Namespace) -> dict[str, Any]:
+    return promote_approved_digest(evidence_dir=args.evidence_dir, expected_digest=args.expected_digest,
+        expected_source_sha=args.expected_source_sha, expected_source_url=args.expected_source_url,
+        version_tag=args.version_tag, output_dir=args.output_dir)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    promote = subparsers.add_parser("promote", help="promote an already verified registry digest to latest without rebuilding")
+    promote.add_argument("--evidence-dir", required=True, type=Path)
+    promote.add_argument("--expected-digest", required=True)
+    promote.add_argument("--expected-source-sha", required=True)
+    promote.add_argument("--expected-source-url", required=True)
+    promote.add_argument("--version-tag", required=True)
+    promote.add_argument("--output-dir", required=True, type=Path)
+    promote.add_argument("--report", required=True, type=Path)
+    promote.set_defaults(handler=_command_promote)
 
     smoke = subparsers.add_parser("smoke", help="consume the loaded image through Docker")
     smoke.add_argument("--image", required=True)

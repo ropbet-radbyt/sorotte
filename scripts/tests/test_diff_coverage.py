@@ -651,6 +651,92 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertTrue(set(range(1, 6)).isdisjoint(structural))
         self.assertNotIn(7, structural)
 
+    def test_multiline_let_else_delimiters_and_nested_patterns_are_structural(self) -> None:
+        lines = [
+            ") else {",
+            "}) else {",
+            "] else {",
+            "let Some(Record {",
+            "let Result::Ok(crate::domain::Record {",
+            "let crate::Event::Received(domain::Payload {",
+        ]
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                self.assertEqual(
+                    coverage.lexical_non_coverable_lines(newline.join(lines).splitlines()),
+                    set(range(1, len(lines) + 1)),
+                )
+
+    def test_let_else_structure_does_not_hide_initializers_guards_or_statements(self) -> None:
+        lines = [
+            ") else { return fallback();",
+            ") else if ready() {",
+            "let Some(Record { value }) = read_record() else {",
+            "let selected = Some(Record {",
+            "if let Some(Record { value }) = read_record() && permitted(value) {",
+            "}) = read_record()",
+            "}) = candidate",
+            "return fallback();",
+        ]
+        self.assertEqual(coverage.lexical_non_coverable_lines(lines), set())
+
+    def let_else_report_fixture(self, *, tuple_pattern: bool) -> tuple[str, list[str], dict[int, int], int, int]:
+        if tuple_pattern:
+            lines = [
+                "pub fn sum(left: Option<usize>, right: Option<usize>) -> usize {",
+                "    let (Some(a), Some(b)) = (",
+                "        calculate(left),",
+                "        calculate(right),",
+                "    ) else {",
+                "        return 0;",
+                "    };",
+                "    a + b",
+                "}",
+            ]
+            mapped, structural, executable = {1: 1, 2: 1, 3: 1, 4: 1, 6: 1, 8: 1}, 5, 3
+        else:
+            lines = [
+                "pub fn convert(candidate: Option<Record>) -> usize {",
+                "    let Some(Record {",
+                "        value,",
+                "    }) = candidate",
+                "    else {",
+                "        return 0;",
+                "    };",
+                "    value + 1",
+                "}",
+            ]
+            mapped, structural, executable = {1: 1, 3: 1, 4: 1, 6: 1, 8: 1}, 2, 4
+        path = "crates/critical/src/let_else.rs"
+        (self.repo / path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path, lines, mapped, structural, executable
+
+    def test_let_else_report_requires_the_executable_initializer_mapping(self) -> None:
+        for tuple_pattern in (True, False):
+            with self.subTest(tuple_pattern=tuple_pattern):
+                path, lines, mapped, structural, executable = self.let_else_report_fixture(tuple_pattern=tuple_pattern)
+                diff = self.new_file_patch(path, lines)
+                passed = self.build(self.lcov(mapped, source=path), diff)
+                self.assertEqual(passed["status"], "passed")
+                self.assertEqual(passed["summary"]["unmapped_lines"], 0)
+                self.assertEqual(passed["files"][0]["lines"][structural - 1]["status"], "non-coverable")
+
+                del mapped[executable]
+                failed = self.build(self.lcov(mapped, source=path), diff)
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["summary"]["unmapped_lines"], 1)
+                self.assertEqual(failed["files"][0]["lines"][executable - 1]["status"], "unmapped")
+
+    def test_let_else_lexical_structure_cannot_override_a_recorded_zero_count(self) -> None:
+        for tuple_pattern in (True, False):
+            with self.subTest(tuple_pattern=tuple_pattern):
+                path, lines, mapped, structural, _ = self.let_else_report_fixture(tuple_pattern=tuple_pattern)
+                mapped[structural] = 0
+                report = self.build(self.lcov(mapped, source=path), self.new_file_patch(path, lines))
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["summary"]["uncovered_lines"], 1)
+                self.assertEqual(report["files"][0]["lines"][structural - 1]["status"], "uncovered")
+
     def test_impl_where_clause_preserves_executable_method_bodies(self) -> None:
         lines = [
             "impl<P, C> Runtime<P, C>",

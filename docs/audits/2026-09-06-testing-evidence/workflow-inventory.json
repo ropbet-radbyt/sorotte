@@ -1,0 +1,1085 @@
+[
+  {
+    "path": ".github/workflows/dependency-policy.yml",
+    "events": {
+      "pull_request": {
+        "paths": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "crates/**/Cargo.toml",
+          ".cargo/**",
+          "deny.toml",
+          "requirements/**",
+          "coverage/dependency-policy.toml",
+          "coverage/native-components.toml",
+          "scripts/dependency_policy.py",
+          "scripts/artifact_input.py",
+          "scripts/tests/test_dependency_policy.py",
+          ".github/workflows/dependency-policy.yml",
+          ".github/dependabot.yml"
+        ]
+      },
+      "schedule": [
+        {
+          "cron": "40 3 * * 1"
+        }
+      ],
+      "workflow_dispatch": ""
+    },
+    "concurrency": {
+      "group": "dependencies-${{ github.ref }}",
+      "cancel-in-progress": "true"
+    },
+    "jobs": {
+      "rust": {
+        "name": "Rust locked advisory and source policy",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "30",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Install pinned cargo-deny",
+          "Check locked graph and record database identity",
+          "Preserve dependency evidence including failed or unavailable scans"
+        ]
+      },
+      "python": {
+        "name": "Python verification dependency advisories",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "20",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Python",
+          "Install pinned verification scanner",
+          "Audit resolved verification requirements",
+          "Preserve Python database responses and resolved versions"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/gui-native-interactive.yml",
+    "events": {
+      "workflow_dispatch": {
+        "inputs": {
+          "source_sha": {
+            "description": "Full trusted Sorotte commit SHA to validate",
+            "required": "true",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "concurrency": {
+      "group": "sorotte-native-interactive",
+      "cancel-in-progress": "false"
+    },
+    "jobs": {
+      "native_interactive": {
+        "name": "Strict native GUI inventory (ephemeral interactive Windows)",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": [
+          "self-hosted",
+          "Windows",
+          "X64",
+          "sorotte-native-interactive",
+          "sorotte-ephemeral"
+        ],
+        "timeout-minutes": "45",
+        "strategy": null,
+        "steps": [
+          "Attest ephemeral interactive runner before checkout",
+          "Checkout exact trusted source",
+          "Bind checkout to requested source",
+          "Setup pinned Rust",
+          "Setup pinned Python",
+          "Install pinned native interop prerequisites",
+          "Run exact strict native GUI inventory",
+          "Validate and bind native evidence inventory",
+          "Write native lane outcome evidence",
+          "Upload all native interactive evidence",
+          "Enforce complete native interactive lane"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/playback-lifecycle-release-gate.yml",
+    "events": {
+      "workflow_call": {
+        "inputs": {
+          "candidate_sha": {
+            "description": "Full Sorotte commit SHA whose release candidates must be verified",
+            "required": "true",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "concurrency": null,
+    "jobs": {
+      "linux-candidate": {
+        "name": "Linux immutable candidate lifecycle",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": "55",
+        "strategy": null,
+        "steps": [
+          "Checkout exact Sorotte candidate",
+          "Bind Linux checkout to release candidate",
+          "Setup Rust",
+          "Setup Python",
+          "Install supported mpv build dependencies",
+          "Checkout pinned official mpv source",
+          "Verify supported mpv source revision",
+          "Build pinned supported mpv",
+          "Verify supported mpv version",
+          "Validate closed lifecycle declarations and deterministic model",
+          "Build exact Linux release candidates",
+          "Seal immutable Linux candidate bundle",
+          "Run ordinary and terminal exact-candidate lifecycle",
+          "Run loop-boundary exact-candidate lifecycle",
+          "Run generated every-phase start-gate lifecycle",
+          "Validate and stage privacy-safe release evidence",
+          "Require every declared lifecycle gap to be closed",
+          "Upload privacy-safe lifecycle release evidence",
+          "Enforce exact-candidate lifecycle release gate",
+          "Attest exact Linux suite and candidate digests",
+          "Upload Linux platform lifecycle attestation"
+        ]
+      },
+      "windows-candidate": {
+        "name": "Windows exact GUI and status candidate lifecycle",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": [
+          "self-hosted",
+          "Windows",
+          "X64",
+          "sorotte-native-interactive",
+          "sorotte-ephemeral"
+        ],
+        "timeout-minutes": "70",
+        "strategy": null,
+        "steps": [
+          "Attest ephemeral interactive Windows runner",
+          "Checkout exact Sorotte candidate",
+          "Bind Windows checkout to release candidate",
+          "Setup Rust",
+          "Setup Python",
+          "Download and verify pinned supported Windows media tools",
+          "Validate closed lifecycle declarations and harness contracts",
+          "Build exact Windows release candidates and native driver",
+          "Seal immutable Windows candidate bundle",
+          "Run exact GUI baseline and terminal fault modes",
+          "Run exact second-client native participant status composition",
+          "Attest exact Windows suite and candidate digests",
+          "Upload Windows platform lifecycle attestation"
+        ]
+      },
+      "complete-candidate": {
+        "name": "Complete cross-platform lifecycle attestation",
+        "if": null,
+        "needs": [
+          "linux-candidate",
+          "windows-candidate"
+        ],
+        "uses": null,
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": "10",
+        "strategy": null,
+        "steps": [
+          "Checkout exact Sorotte candidate",
+          "Setup Python",
+          "Download Linux platform lifecycle attestation",
+          "Download Windows platform lifecycle attestation",
+          "Prove complete model transition coverage",
+          "Upload complete lifecycle attestation"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/publish-server-container.yml",
+    "events": {
+      "workflow_dispatch": {
+        "inputs": {
+          "push_latest": {
+            "description": "Also promote this exact tested digest to latest",
+            "required": "true",
+            "default": "false",
+            "type": "choice",
+            "options": [
+              "true",
+              "false"
+            ]
+          }
+        }
+      },
+      "push": {
+        "tags": [
+          "server-v*",
+          "v*"
+        ]
+      }
+    },
+    "concurrency": {
+      "group": "server-container-publication",
+      "cancel-in-progress": "false"
+    },
+    "jobs": {
+      "playback-lifecycle-release-gate": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": "./.github/workflows/playback-lifecycle-release-gate.yml",
+        "runs-on": null,
+        "timeout-minutes": null,
+        "strategy": null,
+        "steps": []
+      },
+      "publish": {
+        "name": null,
+        "if": null,
+        "needs": "playback-lifecycle-release-gate",
+        "uses": null,
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": "45",
+        "strategy": null,
+        "steps": [
+          "Checkout exact source",
+          "Setup pinned Docker Buildx",
+          "Capture immutable build metadata",
+          "Define publication tags and OCI labels",
+          "Record closed publication tag inventory",
+          "Build once and load the candidate image",
+          "Consume the loaded image through real server boundaries",
+          "Generate SPDX SBOM from the tested local image",
+          "Bind SBOM bytes to the tested local image ID",
+          "Login only after local consumption passes",
+          "Push only tags of the already-tested daemon image",
+          "Read the validated registry manifest digest",
+          "Install pinned Cosign",
+          "Keylessly sign and attest the exact tested digest",
+          "Verify keyless identity and workflow claims",
+          "Remove registry credentials before public comparison",
+          "Compare every public tag, digest, config, SBOM, and signature subject",
+          "Enforce every container publication phase",
+          "Retain all container verification evidence"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/rust-ci.yml",
+    "events": {
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "tags": [
+          "v*",
+          "server-v*"
+        ]
+      },
+      "pull_request": "",
+      "workflow_dispatch": {
+        "inputs": {
+          "coverage_base_sha": {
+            "description": "Full commit SHA used as the explicit changed-line coverage base",
+            "required": "true",
+            "type": "string"
+          }
+        }
+      },
+      "schedule": [
+        {
+          "cron": "0 5 * * *"
+        }
+      ]
+    },
+    "concurrency": {
+      "group": "sorotte-ci-${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}"
+    },
+    "jobs": {
+      "checks": {
+        "name": "Rust all-feature contract (Linux)",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "35",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Checkout pinned legacy reference for Linux tests",
+          "Setup Rust",
+          "Install pinned cargo-nextest",
+          "Install pinned cargo-semver-checks",
+          "Setup Python",
+          "Install Linux test prerequisites",
+          "Setup actionlint toolchain",
+          "Validate GitHub Actions workflows",
+          "Validate critical responsibility coverage",
+          "Validate current architecture references",
+          "Behavior evidence self-tests",
+          "Validate behavior catalog",
+          "Validate playback lifecycle model",
+          "Execute playback lifecycle oracle",
+          "Replay playback lifecycle seeds",
+          "Required state-aware playback lifecycle exploration",
+          "Upload minimized lifecycle model failures",
+          "Enforce state-aware playback lifecycle exploration",
+          "Validate ignored test policy",
+          "Validate known-defect characterizations",
+          "Execute subprocess-fixture parent contracts",
+          "Enforce public Rust API compatibility",
+          "Cargo fmt",
+          "Cargo clippy",
+          "Nextest fail-on-flaky workspace tests",
+          "Cargo doctests",
+          "Upload Linux nextest attempt evidence",
+          "Enforce complete Linux test gate",
+          "Cache-pause acknowledged-stream regression"
+        ]
+      },
+      "lifecycle_contract": {
+        "name": "lifecycle-contract",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Reducer and acceptance lifecycle inventory",
+          "GUI lifecycle projection inventory",
+          "GUI ordered-delivery inventory",
+          "Run exact behavior proofs",
+          "Upload lifecycle evidence",
+          "Enforce complete lifecycle lane"
+        ]
+      },
+      "gui_semantic": {
+        "name": "gui-semantic",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "30",
+        "strategy": null,
+        "steps": [
+          "Checkout prospective merge revision",
+          "Checkout pinned legacy reference",
+          "Setup Rust",
+          "Setup Python",
+          "Install live semantic prerequisites",
+          "Run complete semantic inventory on prospective merge",
+          "Checkout exact evidence revision",
+          "Reconcile exact evidence prerequisites",
+          "Run complete semantic inventory",
+          "Upload semantic evidence",
+          "Enforce complete semantic lane"
+        ]
+      },
+      "rust_windows_tests": {
+        "name": "Windows all-feature tests",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout Sorotte",
+          "Checkout pinned legacy reference",
+          "Setup Rust",
+          "Install pinned cargo-nextest",
+          "Setup Python",
+          "Validate Windows semver wrapper",
+          "Install live compatibility prerequisites",
+          "Nextest fail-on-flaky workspace tests",
+          "Cargo doctests",
+          "Upload Windows nextest attempt evidence",
+          "Enforce complete Windows test gate"
+        ]
+      },
+      "rust_windows_release": {
+        "name": "Windows release and packaging checks",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": "20",
+        "strategy": null,
+        "steps": [
+          "Checkout Sorotte",
+          "Setup Rust",
+          "Locked release-profile GUI and updater build",
+          "Package path boundary regressions",
+          "Release publication policy regressions",
+          "Enforce complete Windows release gate"
+        ]
+      },
+      "rust_windows_coverage": {
+        "name": "Windows process coverage producer",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": "20",
+        "strategy": null,
+        "steps": [
+          "Checkout exact Windows coverage revision",
+          "Setup Rust coverage toolchain",
+          "Setup Python",
+          "Install pinned cargo-llvm-cov for Windows process coverage",
+          "Generate exact Windows process coverage profiles",
+          "Export Windows LLVM JSON",
+          "Export Windows native LLVM source view",
+          "Build Windows source-bound physical line map",
+          "Upload Windows process coverage evidence",
+          "Enforce complete Windows coverage gate"
+        ]
+      },
+      "rust_windows": {
+        "name": "Rust all-feature behavior (Windows)",
+        "if": "${{ always() && github.event_name != 'schedule' }}",
+        "needs": [
+          "rust_windows_tests",
+          "rust_windows_release",
+          "rust_windows_coverage"
+        ],
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "5",
+        "strategy": null,
+        "steps": [
+          "Enforce complete parallel Windows behavior gate"
+        ]
+      },
+      "coverage_linux": {
+        "name": "Linux merged coverage producer",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "20",
+        "strategy": null,
+        "steps": [
+          "Checkout exact coverage revision",
+          "Checkout pinned legacy reference for merged coverage",
+          "Setup Rust coverage toolchain",
+          "Setup Python",
+          "Install merged coverage prerequisites",
+          "Install pinned cargo-llvm-cov",
+          "Generate merged behavioral coverage profiles",
+          "Export pinned LLVM JSON",
+          "Export native LLVM source view",
+          "Build source-bound physical line map",
+          "Upload Linux merged coverage evidence",
+          "Enforce complete Linux coverage producer"
+        ]
+      },
+      "coverage_diff": {
+        "name": "coverage-diff",
+        "if": "github.event_name != 'schedule'",
+        "needs": [
+          "rust_windows_coverage",
+          "coverage_linux"
+        ],
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "10",
+        "strategy": null,
+        "steps": [
+          "Checkout exact coverage revision",
+          "Download exact Windows process coverage evidence",
+          "Download exact Linux merged coverage evidence",
+          "Setup Python",
+          "Resolve changed-line coverage base",
+          "Enforce production changed-line coverage",
+          "Enforce complete changed-line coverage evidence",
+          "Upload changed-line coverage evidence"
+        ]
+      },
+      "compat-live-tls": {
+        "name": "Complete live Python compatibility",
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "20",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Checkout pinned legacy reference",
+          "Setup Rust",
+          "Setup Python",
+          "Install pinned live Python prerequisites",
+          "Strict complete live Python compatibility",
+          "Validate live compatibility evidence schema",
+          "Upload live compatibility evidence"
+        ]
+      },
+      "media-match-generated-media": {
+        "name": null,
+        "if": "github.event_name != 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": "15",
+        "strategy": null,
+        "steps": [
+          "Checkout Sorotte",
+          "Setup Rust",
+          "Install generated-media tools",
+          "Verify generated-media tools",
+          "Required generated-media Media Match V3 diagnostic"
+        ]
+      },
+      "mpv-pr-semantics": {
+        "name": "mpv semantics (${{ matrix.mpv_identity }})",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": "30",
+        "strategy": {
+          "fail-fast": "false",
+          "matrix": {
+            "mpv_identity": "${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[\"minimum\",\"newest\"]' || '[\"minimum\"]') }}"
+          }
+        },
+        "steps": [
+          "Checkout Sorotte",
+          "Setup Rust",
+          "Install supported mpv build dependencies",
+          "Checkout pinned official mpv source",
+          "Verify supported mpv source revision",
+          "Build pinned supported mpv",
+          "Verify supported mpv version",
+          "Verify Sorotte candidate revision",
+          "Build packaged playback lifecycle candidates",
+          "Required packaged multi-client real mpv lifecycle",
+          "Validate and stage privacy-safe lifecycle evidence",
+          "Upload privacy-safe packaged lifecycle evidence",
+          "Required real mpv pause, seek, resume, and bounded-fetch semantics",
+          "Required real mpv cache-cap drain and input-resume semantics",
+          "Required real mpv premature-disconnect recovery semantics",
+          "Full deterministic HTTP-stall and rebuffer harness",
+          "Enforce packaged lifecycle verification and safe evidence"
+        ]
+      },
+      "verification_required": {
+        "name": "verification-required",
+        "if": "${{ always() && github.event_name != 'schedule' }}",
+        "needs": [
+          "checks",
+          "lifecycle_contract",
+          "gui_semantic",
+          "rust_windows",
+          "coverage_diff",
+          "compat-live-tls",
+          "media-match-generated-media",
+          "mpv-pr-semantics"
+        ],
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "10",
+        "strategy": null,
+        "steps": [
+          "Checkout exact verification revision",
+          "Setup Python",
+          "Download lifecycle evidence",
+          "Download semantic evidence",
+          "Aggregate required behavior evidence",
+          "Upload aggregate evidence"
+        ]
+      },
+      "nightly-deep": {
+        "name": null,
+        "if": "github.event_name == 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "${{ matrix.runner }}",
+        "timeout-minutes": null,
+        "strategy": {
+          "fail-fast": "false",
+          "matrix": {
+            "runner": [
+              "ubuntu-latest",
+              "ubuntu-22.04"
+            ]
+          }
+        },
+        "steps": [
+          "Checkout",
+          "Checkout pinned legacy reference",
+          "Setup Rust",
+          "Setup Python",
+          "Install pinned live Python prerequisites",
+          "Cargo clippy",
+          "Cargo test",
+          "Nightly state-aware playback lifecycle exploration",
+          "Upload nightly minimized lifecycle model failures",
+          "Cache-pause acknowledged-stream regression",
+          "Strict complete live Python compatibility",
+          "Validate nightly live compatibility evidence schema",
+          "Upload nightly live compatibility evidence"
+        ]
+      },
+      "server-release-verify": {
+        "name": null,
+        "if": "github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'",
+        "needs": null,
+        "uses": null,
+        "runs-on": "${{ matrix.runner }}",
+        "timeout-minutes": null,
+        "strategy": {
+          "fail-fast": "false",
+          "matrix": {
+            "runner": [
+              "ubuntu-latest",
+              "windows-latest"
+            ]
+          }
+        },
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Install server release prerequisites",
+          "Strict server release verification"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/rust-coverage.yml",
+    "events": {
+      "workflow_dispatch": "",
+      "schedule": [
+        {
+          "cron": "30 5 * * *"
+        }
+      ]
+    },
+    "concurrency": {
+      "group": "sorotte-coverage-${{ github.ref }}",
+      "cancel-in-progress": "true"
+    },
+    "jobs": {
+      "coverage": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Checkout pinned legacy reference for merged coverage",
+          "Setup Rust",
+          "Setup Python",
+          "Install merged coverage prerequisites",
+          "Install pinned cargo-llvm-cov",
+          "Generate merged behavioral coverage profiles",
+          "Export pinned LLVM JSON",
+          "Export native LLVM source view",
+          "Build source-bound physical line map",
+          "Upload coverage artifact"
+        ]
+      },
+      "windows-process-coverage": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Install pinned cargo-llvm-cov",
+          "Generate Windows process coverage profiles",
+          "Export Windows LLVM JSON",
+          "Export Windows LLVM source view",
+          "Build Windows source-bound physical line map",
+          "Upload Windows process coverage artifact"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/rust-fuzz.yml",
+    "events": {
+      "pull_request": {
+        "paths": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "coverage/behaviors.toml",
+          "coverage/known-defects.toml",
+          "crates/**",
+          "fuzz/**",
+          ".github/workflows/rust-fuzz.yml",
+          "requirements/ci-policy.txt",
+          "scripts/known_defect_policy.py",
+          "scripts/tests/test_known_defect_policy.py",
+          "scripts/tests/test_protocol_fuzz_policy.py"
+        ]
+      },
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "paths": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          "coverage/behaviors.toml",
+          "coverage/known-defects.toml",
+          "crates/**",
+          "fuzz/**",
+          ".github/workflows/rust-fuzz.yml",
+          "requirements/ci-policy.txt",
+          "scripts/known_defect_policy.py",
+          "scripts/tests/test_known_defect_policy.py",
+          "scripts/tests/test_protocol_fuzz_policy.py"
+        ]
+      },
+      "workflow_dispatch": "",
+      "schedule": [
+        {
+          "cron": "45 3 * * 3"
+        }
+      ]
+    },
+    "concurrency": {
+      "group": "sorotte-protocol-fuzz-${{ github.ref }}",
+      "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}"
+    },
+    "jobs": {
+      "protocol-fuzz": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup pinned nightly Rust",
+          "Setup Python",
+          "Install CI policy prerequisites",
+          "Install pinned cargo-fuzz",
+          "Verify exact fuzz toolchain",
+          "Validate protocol fuzz policy",
+          "Build protocol fuzz target",
+          "Run bounded protocol fuzz target",
+          "Upload protocol fuzz evidence"
+        ]
+      },
+      "framed-session-fuzz": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup pinned nightly Rust",
+          "Setup Python",
+          "Install CI policy prerequisites",
+          "Install pinned cargo-fuzz",
+          "Verify exact fuzz toolchain",
+          "Validate protocol fuzz policy",
+          "Build framed-session fuzz target",
+          "Run bounded framed-session fuzz target",
+          "Upload framed-session fuzz evidence"
+        ]
+      },
+      "mpv-framed-transcript-fuzz": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "25",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup pinned nightly Rust",
+          "Setup Python",
+          "Install CI policy prerequisites",
+          "Install pinned cargo-fuzz",
+          "Verify exact fuzz toolchain",
+          "Validate protocol fuzz policy",
+          "Build mpv framed-transcript fuzz target",
+          "Run bounded mpv framed-transcript fuzz target",
+          "Upload mpv framed-transcript fuzz evidence"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/rust-mutation.yml",
+    "events": {
+      "workflow_dispatch": "",
+      "pull_request": {
+        "paths": [
+          ".github/workflows/rust-mutation.yml",
+          "coverage/mutation-policy.toml",
+          "coverage/mutation-report-set.json",
+          "scripts/mutation_ci.py",
+          "scripts/mutation_selection.py",
+          "scripts/artifact_input.py",
+          "coverage/mutation-selection.toml",
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".cargo/**",
+          "crates/**",
+          "fixtures/**",
+          "crates/sorotte-protocol/src/lib.rs",
+          "crates/sorotte-protocol/src/state.rs",
+          "crates/sorotte-protocol/src/participant_status.rs",
+          "crates/sorotte-player-api/src/lib.rs",
+          "crates/sorotte-player-mpv/src/adapter.rs",
+          "crates/sorotte-player-mpv/src/adapter/reconnection.rs",
+          "crates/sorotte-player-mpv/src/adapter/state.rs",
+          "crates/sorotte-player-mpv/src/adapter/player_adapter.rs",
+          "crates/sorotte-client-core/src/**",
+          "crates/sorotte-client-app/src/**",
+          "crates/sorotte-cli/src/**",
+          "crates/sorotte-server/src/**",
+          "crates/sorotte-gui/src/**",
+          "!crates/**/*.md",
+          "!fixtures/**/*.md"
+        ]
+      },
+      "schedule": [
+        {
+          "cron": "15 4 * * 0"
+        }
+      ]
+    },
+    "concurrency": {
+      "group": "sorotte-mutation-${{ github.ref }}",
+      "cancel-in-progress": "true"
+    },
+    "jobs": {
+      "selection": {
+        "name": "Select mutation responsibilities",
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "5",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Python",
+          "Compute immutable base and head shard union",
+          "Retain immutable selection inputs"
+        ]
+      },
+      "mutation": {
+        "name": "Mutation (${{ matrix.shard }})",
+        "if": "${{ needs.selection.outputs.shards != '[]' }}",
+        "needs": "selection",
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "120",
+        "strategy": {
+          "fail-fast": "false",
+          "matrix": {
+            "shard": "${{ fromJSON(needs.selection.outputs.shards) }}"
+          }
+        },
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Install pinned cargo-mutants",
+          "Validate mutation policy",
+          "Run source-bound mutation shard",
+          "Verify mutation evidence matches current source",
+          "Upload mutation evidence"
+        ]
+      },
+      "participant-status-evidence-set": {
+        "name": "Participant-status mutation evidence set",
+        "if": "${{ always() && (needs.selection.result != 'success' || needs.selection.outputs.shards != '[]') }}",
+        "needs": [
+          "selection",
+          "mutation"
+        ],
+        "uses": null,
+        "runs-on": "ubuntu-latest",
+        "timeout-minutes": "30",
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Download mutation reports",
+          "Download separately named selected reports",
+          "Verify every immutable selected shard exactly once",
+          "Verify the uniquely selected participant-status report set"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/sorotte-gui-release.yml",
+    "events": {
+      "workflow_dispatch": "",
+      "pull_request": "",
+      "push": {
+        "branches": [
+          "main"
+        ],
+        "tags": [
+          "v*"
+        ]
+      }
+    },
+    "concurrency": {
+      "group": "sorotte-gui-release-${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"
+    },
+    "jobs": {
+      "gui-release": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": null,
+        "strategy": null,
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Check formatting",
+          "Run GUI updater tests",
+          "Build GUI release binaries",
+          "Package GUI release",
+          "Verify exact GUI release artifact",
+          "Upload GUI artifact verification report",
+          "Upload GUI package artifact"
+        ]
+      },
+      "playback-lifecycle-release-gate": {
+        "name": null,
+        "if": "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')",
+        "needs": null,
+        "uses": "./.github/workflows/playback-lifecycle-release-gate.yml",
+        "runs-on": null,
+        "timeout-minutes": null,
+        "strategy": null,
+        "steps": []
+      },
+      "publish-release": {
+        "name": null,
+        "if": "startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')",
+        "needs": [
+          "gui-release",
+          "playback-lifecycle-release-gate"
+        ],
+        "uses": null,
+        "runs-on": "windows-latest",
+        "timeout-minutes": null,
+        "strategy": null,
+        "steps": [
+          "Checkout trusted publication revision",
+          "Setup Python",
+          "Download GUI package artifact",
+          "Reverify downloaded GUI release artifact",
+          "Upload publication verification report",
+          "Attach package to GitHub Release",
+          "Publish dev package to GitHub Release"
+        ]
+      }
+    }
+  },
+  {
+    "path": ".github/workflows/sorotte-server-release.yml",
+    "events": {
+      "workflow_dispatch": "",
+      "push": {
+        "tags": [
+          "server-v*",
+          "v*"
+        ]
+      }
+    },
+    "concurrency": null,
+    "jobs": {
+      "playback-lifecycle-release-gate": {
+        "name": null,
+        "if": null,
+        "needs": null,
+        "uses": "./.github/workflows/playback-lifecycle-release-gate.yml",
+        "runs-on": null,
+        "timeout-minutes": null,
+        "strategy": null,
+        "steps": []
+      },
+      "server-release": {
+        "name": null,
+        "if": null,
+        "needs": "playback-lifecycle-release-gate",
+        "uses": null,
+        "runs-on": "${{ matrix.runner }}",
+        "timeout-minutes": "35",
+        "strategy": {
+          "fail-fast": "false",
+          "matrix": {
+            "runner": [
+              "ubuntu-latest",
+              "windows-latest"
+            ]
+          }
+        },
+        "steps": [
+          "Checkout",
+          "Setup Rust",
+          "Setup Python",
+          "Install server release prerequisites",
+          "Strict server release verification",
+          "Package server release",
+          "Verify packaged server release",
+          "Upload verification report",
+          "Upload server package"
+        ]
+      }
+    }
+  }
+]
