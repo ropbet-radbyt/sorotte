@@ -50,12 +50,91 @@ class MutationProcessTests(unittest.TestCase):
             finally:
                 kernel.CloseHandle(handle)
         else:
-            stat = pathlib.Path(f"/proc/{pid}/stat")
-            if stat.exists():
-                self.assertEqual(stat.read_text().split(")", 1)[1].split()[0], "Z")
-            else:
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(pid, 0)
+            self.assert_posix_dead(pid)
+
+    def assert_posix_dead(self, pid):
+        stat = pathlib.Path(f"/proc/{pid}/stat")
+        try:
+            state = stat.read_text().split(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            # Reaping may remove procfs before or during the read; confirm PID absence.
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            return
+        self.assertEqual(state, "Z")
+
+    def test_posix_observation_accepts_absent_or_reaped_pid(self):
+        for exists, error in ((False, FileNotFoundError(2, "gone")),
+                              (True, FileNotFoundError(2, "gone during read")),
+                              (True, ProcessLookupError(3, "reaped during read"))):
+            with self.subTest(existed_before_read=exists, error=type(error).__name__):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = exists
+                stat.read_text.side_effect = error
+                with mock.patch.object(pathlib, "Path", return_value=stat) as path, mock.patch.object(os, "kill", side_effect=ProcessLookupError(3, "gone")) as kill:
+                    self.assert_posix_dead(123)
+                path.assert_called_once_with("/proc/123/stat")
+                kill.assert_called_once_with(123, 0)
+
+    def test_posix_observation_accepts_only_zombie_state(self):
+        for state in ("Z", "R", "S", "D", "T"):
+            with self.subTest(state=state):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = True
+                stat.read_text.return_value = f"123 (fixture child) {state} 1"
+                with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill") as kill:
+                    if state == "Z":
+                        self.assert_posix_dead(123)
+                    else:
+                        with self.assertRaises(AssertionError):
+                            self.assert_posix_dead(123)
+                kill.assert_not_called()
+
+    def test_posix_observation_rejects_surviving_pid_after_missing_proc(self):
+        for exists, error in ((False, FileNotFoundError(2, "gone")),
+                              (True, FileNotFoundError(2, "gone during read")),
+                              (True, ProcessLookupError(3, "reaped during read"))):
+            with self.subTest(existed_before_read=exists, error=type(error).__name__):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = exists
+                stat.read_text.side_effect = error
+                with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill", return_value=None) as kill:
+                    with self.assertRaisesRegex(AssertionError, "ProcessLookupError not raised"):
+                        self.assert_posix_dead(123)
+                kill.assert_called_once_with(123, 0)
+
+    def test_posix_observation_preserves_unexpected_errors(self):
+        for error in (PermissionError(13, "denied"), OSError(5, "I/O error")):
+            with self.subTest(operation="read", error=type(error).__name__):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = True
+                stat.read_text.side_effect = error
+                with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill") as kill:
+                    with self.assertRaises(type(error)) as raised:
+                        self.assert_posix_dead(123)
+                self.assertIs(raised.exception, error)
+                kill.assert_not_called()
+        for error in (PermissionError(13, "denied"), OSError(5, "I/O error"), FileNotFoundError(2, "not PID absence")):
+            with self.subTest(operation="kill", error=type(error).__name__):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = False
+                stat.read_text.side_effect = FileNotFoundError(2, "gone")
+                with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill", side_effect=error) as kill:
+                    with self.assertRaises(type(error)) as raised:
+                        self.assert_posix_dead(123)
+                self.assertIs(raised.exception, error)
+                kill.assert_called_once_with(123, 0)
+
+    def test_posix_observation_rejects_malformed_proc_stat(self):
+        for raw in ("", "123 no closing delimiter", "123 (fixture child) "):
+            with self.subTest(raw=raw):
+                stat = mock.Mock(spec=pathlib.Path)
+                stat.exists.return_value = True
+                stat.read_text.return_value = raw
+                with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill") as kill:
+                    with self.assertRaises(IndexError):
+                        self.assert_posix_dead(123)
+                kill.assert_not_called()
 
     def test_slow_process_streams_output_and_phase_heartbeats_before_completion(self):
         observed = io.StringIO()

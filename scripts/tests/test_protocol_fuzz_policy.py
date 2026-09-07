@@ -1218,6 +1218,43 @@ class FuzzCommittedBuildTests(unittest.TestCase):
 
 
 class FuzzToolCanaryTests(unittest.TestCase):
+    def assert_descendant_stopped(self, status: pathlib.Path) -> None:
+        try:
+            state = status.read_text().split()[2]
+        except (FileNotFoundError, ProcessLookupError):
+            # The kernel may reap the killed child before or during the procfs read.
+            return
+        self.assertEqual(state, "Z", "owned descendant remained running")
+
+    def test_descendant_observation_accepts_process_disappearance(self) -> None:
+        for error in (FileNotFoundError(2, "No such file"), ProcessLookupError(3, "No such process")):
+            with self.subTest(error=type(error).__name__):
+                status = mock.Mock(spec=pathlib.Path)
+                status.exists.return_value = True
+                status.read_text.side_effect = error
+                self.assert_descendant_stopped(status)
+
+    def test_descendant_observation_still_rejects_live_processes(self) -> None:
+        for state in ("Z", "R", "S", "D", "T"):
+            with self.subTest(state=state):
+                status = mock.Mock(spec=pathlib.Path)
+                status.exists.return_value = True
+                status.read_text.return_value = f"123 (python) {state} 1"
+                if state == "Z":
+                    self.assert_descendant_stopped(status)
+                else:
+                    with self.assertRaisesRegex(AssertionError, "owned descendant remained running"):
+                        self.assert_descendant_stopped(status)
+
+    def test_descendant_observation_preserves_other_read_errors(self) -> None:
+        for error in (PermissionError(13, "Permission denied"), OSError(5, "Input/output error")):
+            with self.subTest(error=type(error).__name__):
+                status = mock.Mock(spec=pathlib.Path)
+                status.exists.return_value = True
+                status.read_text.side_effect = error
+                with self.assertRaises(type(error)):
+                    self.assert_descendant_stopped(status)
+
     @unittest.skipUnless(sys.platform == "linux", "Linux ASan process ownership contract")
     def test_command_timeout_terminates_owned_descendants(self) -> None:
         from scripts import fuzz_tool_canary as canary
@@ -1231,8 +1268,7 @@ class FuzzToolCanaryTests(unittest.TestCase):
                 canary.execute([sys.executable, "-c", code], root, stream, 1)
             child = int(log.read_text().strip())
             status = pathlib.Path(f"/proc/{child}/stat")
-            if status.exists():
-                self.assertEqual(status.read_text().split()[2], "Z", "owned descendant remained running")
+            self.assert_descendant_stopped(status)
 
     def simulate(self, output: pathlib.Path, defect: str | None = None) -> dict:
         from scripts import fuzz_tool_canary as canary
