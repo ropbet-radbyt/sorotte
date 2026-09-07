@@ -35,7 +35,7 @@ pycparser==3.0
 pygments==2.21.0
 pyopenssl==26.4.0
 pyparsing==3.3.2
-pyyaml==6.0.2
+pyyaml==6.0.3
 requests==2.34.2
 rich==15.0.0
 service-identity==24.2.0
