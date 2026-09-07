@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use serde_json::{Value, json};
 use sorotte_protocol::{
@@ -148,6 +149,90 @@ pub fn temporary_directory_path(label: &str) -> PathBuf {
         .expect("system clock should be after epoch")
         .as_nanos();
     env::temp_dir().join(format!("sorotte-{label}-{}-{suffix}", std::process::id()))
+}
+
+pub fn wait_for_committed_playlist(
+    database: &Path,
+    room: &str,
+    expected_files: &[&str],
+    expected_index: i64,
+    budget: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + budget;
+    let context = format!(
+        "database={database:?} room={room:?} expected_files={expected_files:?} \
+         expected_index={expected_index}"
+    );
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("{context}: read-only open failed: {error}"))?;
+    // SQLite's own busy wait must not extend the shared observation deadline.
+    connection
+        .busy_timeout(Duration::ZERO)
+        .map_err(|error| format!("{context}: setting zero busy timeout failed: {error}"))?;
+    loop {
+        // Each SELECT ends its read transaction before the next observation. This
+        // neither flushes the server's queue nor commits/checkpoints its database.
+        let row = connection
+            .query_row(
+                "SELECT playlistJson, playlistIndex FROM persistent_rooms WHERE name = ?1",
+                [room],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                    ))
+                },
+            )
+            .optional();
+        let (matches, observation) = match row {
+            Ok(None) => (false, "committed room row is absent".to_owned()),
+            Ok(Some((playlist_json, index))) => {
+                let observation = format!(
+                    "committed playlistJson={:?} playlistIndex={index:?}",
+                    playlist_json
+                        .as_deref()
+                        .map(|value| value.chars().take(1024).collect::<String>())
+                );
+                let files = playlist_json
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<String>>)
+                    .transpose()
+                    .map_err(|error| {
+                        format!(
+                            "{context}: invalid committed playlist JSON: {error}; {observation}"
+                        )
+                    })?;
+                (
+                    files.as_ref().is_some_and(|files| {
+                        files
+                            .iter()
+                            .map(String::as_str)
+                            .eq(expected_files.iter().copied())
+                    }) && index == Some(expected_index),
+                    observation,
+                )
+            }
+            Err(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                (false, format!("committed row could not be read: {error}"))
+            }
+            Err(error) => return Err(format!("{context}: committed row query failed: {error}")),
+        };
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{context}: committed playlist was not observed within {budget:?}; {observation}"
+            ));
+        }
+        if matches {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10).min(deadline - now));
+    }
 }
 
 #[derive(Clone, Default)]
@@ -337,6 +422,26 @@ impl ServerProcess {
                 self.stderr.text()
             );
         }
+    }
+
+    pub fn wait_for_persisted_playlist(
+        &mut self,
+        database: &Path,
+        room: &str,
+        files: &[&str],
+        index: i64,
+    ) {
+        self.assert_running();
+        if let Err(detail) =
+            wait_for_committed_playlist(database, room, files, index, Duration::from_secs(5))
+        {
+            panic!(
+                "{detail}; {}",
+                self.diagnostics
+                    .record("persistence-not-committed", &detail)
+            );
+        }
+        self.assert_running();
     }
 
     pub fn wait_for_stderr_contains(&self, needle: &str) {

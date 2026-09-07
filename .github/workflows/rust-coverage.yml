@@ -108,6 +108,7 @@ jobs:
 
       - name: Upload coverage artifact
         id: ci_upload_coverage_artifact_060006a8
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sorotte-llvm-coverage
@@ -117,6 +118,7 @@ jobs:
             target/coverage-line-map.json
             target/verification/coverage-profile-lanes.json
             target/verification/coverage-profile-logs/
+            target/verification/server-fixture-failures/
           if-no-files-found: error
           retention-days: 14
           overwrite: true
