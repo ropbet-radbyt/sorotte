@@ -10,6 +10,10 @@ revisions, not a current promise.
 The [first coordinated stable-release attempt](audits/v0.2.10-release-attempt.md)
 records three additional apparatus failures, their reproductions and the narrow
 repairs in the corrected point-release candidate.
+It also records the subsequent Windows receipt-canary timeout, controlled
+reproduction, preserved assertions and bounded supervision repair.
+The later persistence-fixture follow-up distinguishes an unexplained native abort
+from a separately reproduced, unintended background HTTP dependency.
 
 ## Local command ladder
 

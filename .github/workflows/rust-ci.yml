@@ -32,7 +32,8 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-2025]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 8
+    # Allow bounded self-test cleanup and artifact upload after slower Windows I/O.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         id: ci_checkout_1066f6c2
@@ -67,7 +68,7 @@ jobs:
         run: python scripts/verify.py preflight --phase static --output target/verification/preflight.json
       - name: Run cross-platform apparatus self-tests
         id: ci_run_cross_platform_apparatus_self_test_5b6af0e1
-        run: python scripts/verify.py run --lane static --output target/verification/apparatus-selftests --deadline-seconds 300
+        run: python scripts/verify.py run --lane static --output target/verification/apparatus-selftests --deadline-seconds 420
       - name: Preserve preflight receipt
         id: ci_preserve_preflight_receipt_6e315338
         if: always()

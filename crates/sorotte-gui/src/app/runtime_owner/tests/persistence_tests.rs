@@ -986,6 +986,8 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
                 server_password: Some("original-secret".into()),
                 plex_plugin_enabled: Some(true),
                 plex_streaming_enabled: Some(false),
+                // Keep this persistence fixture independent of startup HTTP work.
+                public_servers: Some(Vec::new()),
                 ..StoredClientSettingsMvp::default()
             };
             upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
@@ -1055,6 +1057,15 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
                 GuiPendingCompletionRequest::SaveConfiguration(submitted),
             ));
             pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+
+            assert_eq!(
+                owner.startup_public_server_hydration.attempts_started, 0,
+                "{case}: settings persistence must not start public-server work",
+            );
+            assert!(
+                owner.startup_remote_actions_rx.is_none(),
+                "{case}: settings persistence must not retain a public-server worker",
+            );
 
             let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
                 .expect("secret baseline config should remain readable")

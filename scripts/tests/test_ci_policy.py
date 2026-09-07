@@ -860,7 +860,7 @@ class CiPolicyTests(unittest.TestCase):
             "preflight",
             "Run cross-platform apparatus self-tests",
             "python scripts/verify.py run --lane static "
-            "--output target/verification/apparatus-selftests --deadline-seconds 300",
+            "--output target/verification/apparatus-selftests --deadline-seconds 420",
         )
         preflight_receipt = named_step(self.jobs, "preflight", "Preserve preflight receipt")
         self.assertEqual(preflight_receipt.get("if"), "always()")
