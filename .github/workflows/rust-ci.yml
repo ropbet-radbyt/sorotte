@@ -146,7 +146,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Rust all-feature contract (Linux)
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}/.interop-cache/syncplay-legacy
     defaults:
@@ -213,6 +213,24 @@ jobs:
       - name: Install Linux test prerequisites
         id: ci_install_linux_test_prerequisites_873e54bb
         run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt -r requirements/legacy-python-interop.txt
+
+      - name: Default-feature Cargo workspace tests
+        id: workspace_default
+        continue-on-error: true
+        run: >-
+          python scripts/verify.py run --lane workspace-default
+          --output target/verification/workspace-default-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          --deadline-seconds 1200
+
+      - name: Preserve default-feature workspace evidence
+        id: workspace_default_evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-default-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/workspace-default-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Validate critical responsibility coverage
         id: ci_validate_critical_responsibility_cover_b9f74f9f
@@ -325,9 +343,11 @@ jobs:
         id: ci_enforce_complete_linux_test_gate_00ae2b22
         if: always()
         env:
+          DEFAULT_WORKSPACE_OUTCOME: ${{ steps.workspace_default.outcome }}
           NEXTEST_OUTCOME: ${{ steps.nextest.outcome }}
           DOCTEST_OUTCOME: ${{ steps.doctests.outcome }}
         run: |
+          test "$DEFAULT_WORKSPACE_OUTCOME" = success
           test "$NEXTEST_OUTCOME" = success
           test "$DOCTEST_OUTCOME" = success
 
@@ -527,7 +547,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Windows all-feature tests
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       SYNCPLAY_LEGACY_ROOT: ${{ github.workspace }}\.interop-cache\syncplay-legacy
     defaults:
@@ -592,6 +612,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements/legacy-python-interop.txt
 
+      - name: Default-feature Cargo workspace tests
+        id: workspace_default
+        continue-on-error: true
+        shell: pwsh
+        run: >-
+          python scripts/verify.py run --lane workspace-default
+          --output target/verification/workspace-default-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          --deadline-seconds 1200
+
+      - name: Preserve default-feature workspace evidence
+        id: workspace_default_evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-default-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/verification/workspace-default-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Check reviewed compile-dependent inventories
         id: ci_check_reviewed_compile_dependent_inven_57396f6a
         run: python scripts/test_inventory.py check --output target/verification/test-inventory.json
@@ -624,9 +663,11 @@ jobs:
         if: always()
         shell: pwsh
         env:
+          DEFAULT_WORKSPACE_OUTCOME: ${{ steps.workspace_default.outcome }}
           NEXTEST_OUTCOME: ${{ steps.nextest.outcome }}
           DOCTEST_OUTCOME: ${{ steps.doctests.outcome }}
         run: |
+          if ($env:DEFAULT_WORKSPACE_OUTCOME -ne "success") { throw "default-feature workspace tests did not pass" }
           if ($env:NEXTEST_OUTCOME -ne "success") { throw "nextest failed or found a flaky test" }
           if ($env:DOCTEST_OUTCOME -ne "success") { throw "doctests failed" }
 

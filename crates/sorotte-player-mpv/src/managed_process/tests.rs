@@ -10,13 +10,33 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "sorotte-owned-mpv-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        // Keep filesystem socket addresses short even under a long TMPDIR.
+        #[cfg(unix)]
+        let base = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let base = std::env::temp_dir();
+        loop {
+            let path = base.join(format!(
+                "sorotte-owned-mpv-{}-{}",
+                std::process::id(),
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            #[cfg(unix)]
+            let created = {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new().mode(0o700).create(&path)
+            };
+            #[cfg(windows)]
+            let created = std::fs::create_dir(&path);
+            match created {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!(
+                    "failed to create owned fixture root {}: {error}",
+                    path.display()
+                ),
+            }
+        }
     }
     fn marker(&self, name: &str) -> PathBuf {
         self.0.join(name)

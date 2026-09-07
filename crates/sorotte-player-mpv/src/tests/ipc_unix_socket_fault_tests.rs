@@ -3,7 +3,10 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::{
+        fs::DirBuilderExt,
+        net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -97,9 +100,10 @@ impl UnixSocketFixture {
     fn unique() -> Self {
         loop {
             let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
+            // The socket address must not inherit an arbitrarily long TMPDIR.
             let root =
-                std::env::temp_dir().join(format!("sorotte-mpv-uds-{}-{id}", std::process::id()));
-            match fs::create_dir(&root) {
+                PathBuf::from("/tmp").join(format!("sorotte-mpv-uds-{}-{id}", std::process::id()));
+            match fs::DirBuilder::new().mode(0o700).create(&root) {
                 Ok(()) => {
                     let socket_path = root.join("mpv.sock");
                     return Self { root, socket_path };

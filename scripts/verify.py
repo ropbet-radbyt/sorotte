@@ -400,6 +400,29 @@ def primary_failure(result: subprocess.CompletedProcess) -> str:
     return f"producer exit {result.returncode}"
 
 
+def workspace_default_platform() -> str:
+    system = {"Linux": "linux", "Windows": "windows"}.get(platform.system())
+    if system is None or platform.machine().lower() not in {"amd64", "x86_64"}:
+        raise ValueError("default workspace evidence requires Linux or Windows x86_64")
+    if os.environ.get("RUST_TEST_THREADS"):
+        raise ValueError("default workspace evidence forbids a RUST_TEST_THREADS override")
+    return f"{system}-x86_64"
+
+
+def validate_default_workspace_receipt(path: Path, source_sha: str, target_platform: str) -> None:
+    """Check this fresh child result; release reuse still requires its trusted consumer."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    expected = {"schema_version": 1, "kind": "sorotte-release-workspace-receipt",
+                "result": "passed", "candidate_sha": source_sha, "platform": target_platform,
+                "features": "default", "profile": "test", "instrumentation": "none",
+                "command": ["cargo", "test", "--locked", "--workspace"]}
+    if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
+            or any(value.get(key) != item for key, item in expected.items())):
+        raise ValueError("default workspace receipt does not match the executed source and mode")
+    if not isinstance(value.get("source_files"), dict) or not value["source_files"]:
+        raise ValueError("default workspace receipt is missing its source inventory")
+
+
 def run_lane(lane: str, output: Path, deadline: int) -> dict:
     from mutation_process import run as owned_run
     if output.exists():
@@ -410,13 +433,16 @@ def run_lane(lane: str, output: Path, deadline: int) -> dict:
         "regression": [sys.executable, "scripts/fuzz_regressions.py", "replay"],
         "inventory": [sys.executable, "scripts/test_inventory.py", "check", "--output", str(output / "inventory.json")],
         "coverage-canary": [sys.executable, "scripts/coverage_tool_canary.py", "--output", str(output / "canary")],
+        "workspace-default": [],  # Bound below to the actual checkout, including a PR merge.
     }
     command = commands[lane]
     output.mkdir(parents=True)
     record = {"schema_version": 1, "kind": "verification-attempt", "identity": identity(),
               "lane": lane, "status": "incomplete", "command": command, "created_at": now(),
               "disposition": "unclassified", "primary_failure": None, "operator_interventions": [],
-              "replay_command": [sys.executable, "scripts/verify.py", "run", "--lane", lane, "--output", "FRESH_ATTEMPT_DIRECTORY"]}
+              "deadline_seconds": deadline,
+              "replay_command": [sys.executable, "scripts/verify.py", "run", "--lane", lane,
+                                 "--output", "FRESH_ATTEMPT_DIRECTORY", "--deadline-seconds", str(deadline)]}
     receipt = output / "receipt.json"
     write(receipt, record)
     started = time.monotonic()
@@ -434,11 +460,22 @@ def run_lane(lane: str, output: Path, deadline: int) -> dict:
     environment[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
     environment[f"GIT_CONFIG_VALUE_{count}"] = ROOT.as_posix()
     try:
+        if lane == "workspace-default":
+            target_platform = workspace_default_platform()
+            workspace_receipt = output / "workspace.json"
+            command = [sys.executable, "scripts/release_qualification.py", "workspace",
+                       "--repo-root", str(ROOT), "--candidate-sha", record["identity"]["source_sha"],
+                       "--platform", target_platform, "--features", "default", "--output", str(workspace_receipt)]
+            record["command"] = command
+            write(receipt, record)
         result = owned_run(command, cwd=ROOT, env=environment, timeout_seconds=deadline,
                            log_root=output / "process", label=lane)
         record["status"] = "passed" if result.returncode == 0 else "failed"
         if result.returncode:
             record["primary_failure"] = primary_failure(result)
+        elif lane == "workspace-default":
+            validate_default_workspace_receipt(workspace_receipt, record["identity"]["source_sha"], target_platform)
+            record["workspace_receipt_sha256"] = digest(workspace_receipt)
         if record["identity"] != identity():
             record.update(status="failed", primary_failure="source or input drift during execution")
     except BaseException as error:
@@ -522,7 +559,7 @@ def main() -> int:
     index.add_argument("--receipt", type=Path, action="append", required=True)
     index.add_argument("--output", type=Path, required=True)
     execute = sub.add_parser("run", help="stream one supported lane and preserve every attempt")
-    execute.add_argument("--lane", choices=("static", "behavior", "regression", "inventory", "coverage-canary"), required=True)
+    execute.add_argument("--lane", choices=("static", "behavior", "regression", "inventory", "coverage-canary", "workspace-default"), required=True)
     execute.add_argument("--output", type=Path, required=True)
     execute.add_argument("--deadline-seconds", type=int, default=1800)
     args = parser.parse_args()

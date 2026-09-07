@@ -5,6 +5,7 @@ use sorotte_player_mpv::managed_process::{
 };
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::AtomicU64,
@@ -15,10 +16,25 @@ const ROLE: &str = "SOROTTE_GUI_BLOCKED_OWNER_FIXTURE_ROLE";
 const ROOT: &str = "SOROTTE_GUI_BLOCKED_OWNER_FIXTURE_ROOT";
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+fn fixture_diagnostic(root: &Path, name: &str) -> String {
+    let mut text = String::new();
+    match fs::File::open(root.join(name)).and_then(|file| file.take(4096).read_to_string(&mut text))
+    {
+        Ok(_) => text,
+        Err(error) => format!("unavailable: {error}"),
+    }
+}
 fn wait_marker(root: &Path, marker: &str) {
-    wait_until(Duration::from_secs(10), marker, || {
-        root.join(marker).exists()
-    });
+    let started = Instant::now();
+    while !root.join(marker).exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "timed out waiting for {marker}; parent stderr: {}; endpoint error: {}",
+            fixture_diagnostic(root, "parent.stderr"),
+            fixture_diagnostic(root, "endpoint-error.txt"),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 fn external(root: &Path, role: &str) -> Child {
     Command::new(std::env::current_exe().unwrap())
@@ -27,7 +43,7 @@ fn external(root: &Path, role: &str) -> Child {
         .env(ROOT, root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(fs::File::create(root.join(format!("{role}.stderr"))).unwrap())
         .spawn()
         .unwrap()
 }
@@ -81,7 +97,18 @@ fn endpoint(path: &Path) -> std::os::windows::io::OwnedHandle {
 }
 #[cfg(unix)]
 fn endpoint(path: &Path) -> std::os::unix::net::UnixListener {
-    std::os::unix::net::UnixListener::bind(path).unwrap()
+    std::os::unix::net::UnixListener::bind(path).unwrap_or_else(|error| {
+        // Managed children intentionally have disconnected streams. Retain their
+        // fixture-only bind error before the outer marker wait reports failure.
+        let retained = fs::write(
+            path.parent().unwrap().join("endpoint-error.txt"),
+            error.to_string(),
+        );
+        panic!(
+            "fixture endpoint {}: {error}; diagnostic: {retained:?}",
+            path.display()
+        );
+    })
 }
 
 struct BlockedOwner {
@@ -172,12 +199,34 @@ fn fixture_entrypoint() {
 
 #[test]
 fn gui_blocked_owner_parent_exit_terminates_owned_player_and_preserves_external_player() {
-    let root = std::env::temp_dir().join(format!(
-        "sorotte-gui-blocked-owner-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir(&root).unwrap();
+    // A pathname Unix socket has a small fixed address limit; ambient TMPDIR
+    // can be arbitrarily long. Only this private fixture uses a short base.
+    #[cfg(unix)]
+    let base = PathBuf::from("/tmp");
+    #[cfg(windows)]
+    let base = std::env::temp_dir();
+    let root = loop {
+        let root = base.join(format!(
+            "sorotte-gui-blocked-owner-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        #[cfg(unix)]
+        let created = {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new().mode(0o700).create(&root)
+        };
+        #[cfg(windows)]
+        let created = fs::create_dir(&root);
+        match created {
+            Ok(()) => break root,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!(
+                "failed to create owned fixture root {}: {error}",
+                root.display()
+            ),
+        }
+    };
     let mut external_player = external(&root, "external");
     let mut parent = external(&root, "parent");
     wait_marker(&root, "external");

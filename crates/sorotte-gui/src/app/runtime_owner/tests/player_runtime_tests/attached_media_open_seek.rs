@@ -219,7 +219,11 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         load_into_shared_playlist: false,
         playlist_insert_slot: None,
     });
-    GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
+    // This transport fixture declares absent helpers without depending on host PATH.
+    crate::app::stream_support::with_stream_helper_path_lookup_for_test(
+        |_| None,
+        || GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state),
+    );
     let open_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     let playlist_snapshots = open_actions
         .iter()
@@ -423,6 +427,12 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                     GuiShellAction::ApplyMainWindowRuntimeSnapshot(expected),
                 ) => panic!(
                     "open action {index} snapshot mismatch:\nactual: {actual:#?}\nexpected: {expected:#?}"
+                ),
+                (
+                    GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(actual),
+                    GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(expected),
+                ) => panic!(
+                    "open action {index} stream-helper snapshot mismatch:\nactual: {actual:#?}\nexpected: {expected:#?}"
                 ),
                 _ => panic!(
                     "open action {index} mismatch:\nactual: {actual:#?}\nexpected: {expected:#?}"

@@ -41,9 +41,10 @@ cargo fmt --all -- --check
 cargo test --locked -p sorotte-server --test server_release_verify fixture_timeout_preserves_primary_failure_and_next_case_runs_after_cleanup -- --exact
 python scripts/verify.py run --lane regression --output target/verification/regression-attempt-1
 
-# Full apparatus self-tests and ordinary all-feature behavior, with streamed logs,
+# Full apparatus self-tests and both workspace execution modes, with streamed logs,
 # source/input identity, primary failure and owned-process cleanup receipts.
 python scripts/verify.py run --lane static --output target/verification/static-attempt-1
+python scripts/verify.py run --lane workspace-default --output target/verification/workspace-default-attempt-1 --deadline-seconds 1200
 python scripts/verify.py run --lane behavior --output target/verification/behavior-attempt-1
 cargo test --locked --workspace --all-features --doc
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -54,6 +55,13 @@ directory for a retry. An unchanged retry is diagnostic evidence; it does not
 erase the original failure or establish that it was a flake. `verify run` adds
 Git trust only to its own process environment, detects source changes during the
 run, and keeps nextest's failed-then-passed and leaked-process policies intact.
+The `workspace-default` lane requires a clean checkout and executes
+`cargo test --locked --workspace` through the release workspace receipt writer.
+It uses Cargo's ordinary default-feature test harness, with no retry or
+`RUST_TEST_THREADS` override, and preserves the workspace receipt plus the outer
+attempt, process logs, elapsed time and owned cleanup. A timeout or missing
+workspace receipt cannot qualify the lane. Its source is the actual checkout
+commit, which can be the prospective PR merge rather than the event's PR head.
 Compile-dependent inventory preparation is a separate step:
 
 ```powershell
@@ -87,6 +95,23 @@ required main-push runs identify the actual merge commit. Equal trees do not mak
 these source subjects interchangeable. Coverage producers stay parallel; API
 compatibility has its own producer; formatting and static validation run before
 expensive behavior work.
+
+Both existing Linux and Windows Rust test workers require the default-feature
+Cargo workspace run as well as all-feature nextest and doctests. The ordinary
+Cargo harness runs tests concurrently within each binary; nextest uses a
+different process model, and all-features can change which code executes. A pass
+in one mode cannot substitute for the other. Default execution runs after the
+pinned live-interop prerequisites, and its failure is retained while nextest can
+still run. Each existing final test gate rejects a failed, missing or skipped
+default outcome. Attempt-specific uploads run even after failure; the public
+check names and aggregate dependency graph remain unchanged.
+
+The default phase has a 1,200-second execution ceiling followed by the owned
+supervisor's bounded cleanup reserve. The enclosing Linux and Windows workers
+allow 55 and 45 minutes respectively for setup and both modes. These limits are
+ceilings, not measurements of added runtime or a performance claim. The extra
+default-feature build and test execution add work; retained per-attempt durations
+show the actual cost for each candidate and runner.
 
 Required aggregates reject missing, cancelled, failed and unexpectedly skipped
 producers. A no-op must match independently supplied event base/head and a

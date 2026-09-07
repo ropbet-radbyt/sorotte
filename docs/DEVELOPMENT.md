@@ -47,6 +47,24 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-features
 ```
 
+For the ordinary default-feature CI obligation on a clean checkout, use the
+bounded evidence writer and a fresh output directory:
+
+```powershell
+python scripts/verify.py run --lane workspace-default --output target/verification/workspace-default-attempt-1 --deadline-seconds 1200
+```
+
+Both Linux and Windows PR/main test workers require this Cargo harness run,
+all-feature nextest, and all-feature doctests. Cargo's concurrent tests within a
+binary exercise a different execution mode from nextest's process isolation;
+default features also select different code. Keep both modes and do not add
+retries or a `RUST_TEST_THREADS` override to make the default obligation pass.
+The wrapper uses the actual checkout SHA (the prospective merge on PR workers),
+requires unchanged clean inputs, streams bounded diagnostics, and retains failed
+attempts and owned cleanup. Its 1,200-second phase limit and the 55/45-minute
+Linux/Windows job limits are ceilings; additional runtime must be measured from
+the resulting receipts rather than inferred from these budgets.
+
 For public Rust API changes, install the pinned compatibility checker and
 compare every affected public crate with the exact pull-request base commit:
 
@@ -68,7 +86,7 @@ not establish Rust source compatibility.
 
 Pull-request CI keeps the public `Rust all-feature behavior (Windows)` and
 `coverage-diff` checks stable, but their expensive work is deliberately
-parallel. Windows nextest/doctests, the release/package checks, and exact-head
+parallel. Windows default Cargo tests plus nextest/doctests, the release/package checks, and exact-head
 Windows process coverage run as three independent workers; the public Windows
 check succeeds only after all three do. Linux merged coverage starts
 immediately in a separate producer, and `coverage-diff` consumes the Linux and

@@ -745,6 +745,21 @@ where
 
 pub(super) fn rebuild_persisted_media_match_index_with_tool_root_and_cancel<F>(
     request: MediaMatchIndexRebuildRequest<'_>,
+    progress: F,
+) -> Result<MediaMatchIndexRebuildResult, String>
+where
+    F: FnMut(MediaMatchToolProgress),
+{
+    rebuild_persisted_media_match_index_with_tool_resolver(
+        request,
+        media_match_tool_paths_for_settings,
+        progress,
+    )
+}
+
+fn rebuild_persisted_media_match_index_with_tool_resolver<F>(
+    request: MediaMatchIndexRebuildRequest<'_>,
+    resolve_tools: impl FnOnce(&Path, &MediaExtractionSettings) -> Result<MediaMatchToolPaths, String>,
     mut progress: F,
 ) -> Result<MediaMatchIndexRebuildResult, String>
 where
@@ -772,7 +787,7 @@ where
     let candidates = discovery.candidates;
     if current_player_path.is_none() {
         inventory_media_match_candidates(root, &discovery.scanned_roots, &candidates, cancel_flag)?;
-        match media_match_tool_paths_for_settings(tool_root, extraction_settings) {
+        match resolve_tools(tool_root, extraction_settings) {
             Ok(tools) => {
                 return rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                     MediaMatchCandidateRebuildRequest {
@@ -808,7 +823,7 @@ where
             }
         }
     }
-    let tools = media_match_tool_paths_for_settings(tool_root, extraction_settings)?;
+    let tools = resolve_tools(tool_root, extraction_settings)?;
     rebuild_persisted_media_match_candidates_with_progress_and_cancel(
         MediaMatchCandidateRebuildRequest {
             root,
@@ -4724,13 +4739,23 @@ mod tests {
             fingerprinting_enabled: true,
             ..MediaMatchSettings::default()
         };
-        let result = rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
-            &root,
-            std::slice::from_ref(&media_dir),
-            None,
-            &settings,
-            &MediaExtractionSettings::sampled_fast_audio_index_v3(),
-            None,
+        let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        let result = rebuild_persisted_media_match_index_with_tool_resolver(
+            MediaMatchIndexRebuildRequest {
+                root: &root,
+                tool_root: &root,
+                search_roots: std::slice::from_ref(&media_dir),
+                current_player_path: None,
+                current_player_position_seconds: None,
+                settings: &settings,
+                extraction_settings: &extraction_settings,
+                cancel_flag: None,
+            },
+            |tool_root, requested_settings| {
+                assert_eq!(tool_root, root);
+                assert_eq!(requested_settings, &extraction_settings);
+                Err("fixture tools are unavailable".to_owned())
+            },
             |_| {},
         )
         .expect("inventory-only scan should not require media tools");
@@ -4741,8 +4766,13 @@ mod tests {
 
         assert_eq!(summary.inventory_count, 2);
         assert_eq!(summary.v3_fingerprint_row_count, 0);
-        assert!(result.message.contains("inventoried 2 discovered files"));
+        assert!(
+            result.message.contains("inventoried 2 discovered files"),
+            "{}",
+            result.message
+        );
         assert!(result.message.contains("No active local media path"));
+        assert!(result.message.contains("fixture tools are unavailable"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
