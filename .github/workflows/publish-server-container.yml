@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       version_tag:
-        description: Existing stable version tag whose exact digest will become latest
+        description: Latest stable release tag to promote using reviewed main tooling (dispatch on main)
         required: true
         type: string
 
@@ -327,7 +327,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Checkout exact promotion authority
+      - name: Checkout exact promotion tooling
         id: ci_checkout_exact_promotion_authority_dfc56e16
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -344,29 +344,25 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
-      - name: Require protected source and complete trusted checks
-        id: ci_require_protected_source_and_complete__a762e9a0
+      - name: Authorize current tooling and the exact published release
+        id: promotion-authority
         env:
           GH_TOKEN: ${{ github.token }}
           SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
-        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/promotion-authorization.json
-      - name: Authenticate the explicit prior publication producer
-        id: producer
-        env:
-          GH_TOKEN: ${{ github.token }}
           PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
           VERSION_TAG: ${{ inputs.version_tag }}
+          APPROVED_DIGEST: ${{ inputs.approved_digest }}
         run: >-
-          python scripts/release_qualification.py verify-producer-run --candidate-sha "$GITHUB_SHA"
-          --repository "$GITHUB_REPOSITORY" --run-id "$PUBLICATION_RUN_ID" --version-tag "$VERSION_TAG"
-          --evidence-dir target/container-producer-authority
+          python scripts/container_promotion.py prepare --tooling-sha "$GITHUB_SHA"
+          --publication-run-id "$PUBLICATION_RUN_ID" --version-tag "$VERSION_TAG"
+          --approved-digest "$APPROVED_DIGEST" --output-dir target/promotion-authority/initial
       - name: Download complete original publication evidence
         id: ci_download_complete_original_publication_2482054d
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.publication_run_id }}
-          artifact-ids: ${{ steps.producer.outputs.artifact_id }}
+          artifact-ids: ${{ steps.promotion-authority.outputs.artifact_id }}
           digest-mismatch: error
           path: target/approved-container-publication
       - name: Setup pinned manifest copy tool
@@ -387,14 +383,19 @@ jobs:
       - name: Reverify signatures and promote only the approved manifest digest
         id: ci_reverify_signatures_and_promote_only_t_f7adff45
         env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
           APPROVED_DIGEST: ${{ inputs.approved_digest }}
           VERSION_TAG: ${{ inputs.version_tag }}
         run: |
           set -euo pipefail
-          python scripts/verify_server_container.py promote \
-            --evidence-dir target/approved-container-publication --expected-digest "$APPROVED_DIGEST" \
-            --expected-source-sha "$GITHUB_SHA" --expected-source-url "https://github.com/$GITHUB_REPOSITORY" \
-            --version-tag "$VERSION_TAG" --output-dir target/container-promotion \
+          python scripts/container_promotion.py promote --tooling-sha "$GITHUB_SHA" \
+            --publication-run-id "$PUBLICATION_RUN_ID" --version-tag "$VERSION_TAG" \
+            --approved-digest "$APPROVED_DIGEST" \
+            --initial-authority target/promotion-authority/initial/authority.json \
+            --evidence-dir target/approved-container-publication --authority-dir target/promotion-authority \
+            --output-dir target/container-promotion \
             --report target/container-promotion/final-gate-report.json
       - name: Remove promotion registry credentials
         id: ci_remove_promotion_registry_credentials_cc7de03d
@@ -402,9 +403,9 @@ jobs:
         run: |
           status=0
           docker logout ghcr.io || status=$?
-          if [ -d target/container-producer-authority ]; then
+          if [ -d target/promotion-authority ]; then
             mkdir -p target/container-promotion || status=$?
-            cp -R target/container-producer-authority target/container-promotion/producer-authority || status=$?
+            cp -R target/promotion-authority target/container-promotion/authority || status=$?
           fi
           exit "$status"
       - name: Retain exact promotion and public verification evidence

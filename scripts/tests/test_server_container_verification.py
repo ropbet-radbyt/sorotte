@@ -40,6 +40,24 @@ def write_json(path: pathlib.Path, value: object) -> None:
     path.write_text(json.dumps(value) + "\n", encoding="utf-8")
 
 
+def actual_command_streams(respond):
+    """Route external commands to a bounded child without replacing pipe capture."""
+    run = subprocess.run
+
+    def child(command, **kwargs):
+        stdout, stderr, returncode = respond(list(command))
+        kwargs["timeout"] = min(kwargs["timeout"], 10)
+        return run(
+            [sys.executable, "-c",
+             "import sys; sys.stderr.write(sys.argv[2]); sys.stderr.flush(); "
+             "sys.stdout.write(sys.argv[1]); sys.stdout.flush(); sys.exit(int(sys.argv[3]))",
+             stdout, stderr, str(returncode)],
+            **kwargs,
+        )
+
+    return mock.patch.object(container.subprocess, "run", side_effect=child)
+
+
 def valid_local_inspection() -> list[dict[str, object]]:
     return [
         {
@@ -302,6 +320,41 @@ def valid_publication_report(*, sbom_digest: str = SBOM_DIGEST) -> dict[str, obj
     }
 
 
+class CommandStreamTests(unittest.TestCase):
+    def test_machine_output_is_separate_from_actual_child_diagnostics(self) -> None:
+        command = [sys.executable, "-c",
+                   "import sys; print('verified successfully', file=sys.stderr, flush=True); "
+                   "print('{\"verified\": true}')"]
+        result = container._run(command, timeout=10)
+        self.assertEqual(json.loads(result.stdout), {"verified": True})
+        self.assertEqual(result.stderr, "verified successfully\n")
+
+    def test_nonzero_child_preserves_both_streams_and_exit_status(self) -> None:
+        command = [sys.executable, "-c",
+                   "import sys; print('partial result'); "
+                   "print('certificate verification failed', file=sys.stderr); sys.exit(7)"]
+        with self.assertRaises(container.VerificationError) as failure:
+            container._run(command, timeout=10)
+        self.assertIn("command exited 7", str(failure.exception))
+        self.assertIn("stdout:\npartial result", str(failure.exception))
+        self.assertIn("stderr:\ncertificate verification failed", str(failure.exception))
+        result = container._run(command, timeout=10, check=False)
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, "partial result\n")
+        self.assertEqual(result.stderr, "certificate verification failed\n")
+
+    def test_docker_json_and_scalar_output_ignore_successful_stderr(self) -> None:
+        responses = {
+            ("docker", "image", "inspect", TEST_IMAGE): (json.dumps(valid_local_inspection()), "daemon notice\n", 0),
+            ("docker", "port", "owned-fixture", "8999/tcp"): ("127.0.0.1:43210\n", "daemon notice\n", 0),
+        }
+        with actual_command_streams(lambda command: responses[tuple(command)]):
+            self.assertEqual(container.inspect_local_image(
+                TEST_IMAGE, expected_source_sha=SOURCE_SHA, expected_source_url=SOURCE_URL,
+            )["id"], LOCAL_IMAGE_ID)
+            self.assertEqual(container._published_loopback_port("owned-fixture"), 43210)
+
+
 class JsonAndIdentityPolicyTests(unittest.TestCase):
     def test_duplicate_json_keys_fail_closed(self) -> None:
         with self.assertRaisesRegex(container.VerificationError, "duplicate JSON key"):
@@ -380,6 +433,43 @@ class JsonAndIdentityPolicyTests(unittest.TestCase):
 
 
 class LocalImageConsumerTests(unittest.TestCase):
+    def test_actual_container_stderr_is_retained_and_satisfies_log_markers(self) -> None:
+        for marker, require_shutdown in (
+            (container.CONTAINER_STARTUP_LOG_MARKER, False),
+            (container.CONTAINER_SHUTDOWN_LOG_MARKER, True),
+        ):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as temporary:
+                responses = {
+                    ("docker", "logs", "owned-fixture"): ("stdout diagnostic\n", marker + "\n", 0),
+                    ("docker", "rm", "--force", "owned-fixture"): ("", "", 0),
+                }
+                path = pathlib.Path(temporary) / "container.log"
+                with actual_command_streams(lambda command: responses[tuple(command)]):
+                    container._write_container_log_and_remove(
+                        "owned-fixture", path, require_shutdown_marker=require_shutdown,
+                    )
+                self.assertIn("stdout diagnostic\n", path.read_text())
+                self.assertIn(marker + "\n", path.read_text())
+
+    def test_actual_container_removal_failure_keeps_stderr_and_primary_error(self) -> None:
+        responses = {
+            ("docker", "logs", "owned-fixture"): (container.CONTAINER_STARTUP_LOG_MARKER, "", 0),
+            ("docker", "rm", "--force", "owned-fixture"): ("removal incomplete\n", "container still busy\n", 9),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with actual_command_streams(lambda command: responses[tuple(command)]):
+                with self.assertRaises(container.VerificationError) as failure:
+                    try:
+                        raise container.VerificationError("original protocol failure")
+                    finally:
+                        container._write_container_log_and_remove(
+                            "owned-fixture", pathlib.Path(temporary) / "container.log",
+                            require_shutdown_marker=False,
+                        )
+            for detail in ("original protocol failure", "docker rm exited 9",
+                           "removal incomplete", "container still busy"):
+                self.assertIn(detail, str(failure.exception))
+
     def test_starttls_negotiation_requires_exact_ack_and_clean_boundary(self) -> None:
         session = mock.Mock()
         session.buffered = b""
@@ -965,6 +1055,29 @@ class SbomPolicyTests(unittest.TestCase):
 
 
 class PublishPolicyTests(unittest.TestCase):
+    def test_actual_push_diagnostic_stream_retains_digest_and_rejects_divergence(self) -> None:
+        for conflicting_stdout in (False, True):
+            with self.subTest(conflicting_stdout=conflicting_stdout), tempfile.TemporaryDirectory() as temporary:
+                def respond(command):
+                    if command[:3] == ["docker", "image", "tag"]:
+                        return "", "", 0
+                    self.assertEqual(command[:3], ["docker", "image", "push"])
+                    stdout = f"digest: sha256:{'f' * 64}\n" if conflicting_stdout else "push progress\n"
+                    return stdout, f"digest: {MANIFEST_DIGEST}\n", 0
+
+                with mock.patch.object(container, "inspect_local_image", return_value={"id": LOCAL_IMAGE_ID}):
+                    with actual_command_streams(respond):
+                        arguments = dict(
+                            local_image=TEST_IMAGE, image_name=IMAGE_NAME,
+                            tags_path=self._tags(pathlib.Path(temporary)),
+                            expected_source_sha=SOURCE_SHA, expected_source_url=SOURCE_URL,
+                        )
+                        if conflicting_stdout:
+                            with self.assertRaisesRegex(container.VerificationError, "exactly one"):
+                                container.publish_tested_image(**arguments)
+                        else:
+                            self.assertEqual(container.publish_tested_image(**arguments)["digest"], MANIFEST_DIGEST)
+
     def _tags(self, root: pathlib.Path) -> pathlib.Path:
         path = root / "tags.txt"
         path.write_bytes(
@@ -1448,6 +1561,181 @@ class PublicationAndFinalGateTests(unittest.TestCase):
                 )
 
 
+class PromotionStreamTests(unittest.TestCase):
+    BANNER = "\nVerification for the requested digest --\nThe cosign claims were validated\n\n"
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = pathlib.Path(temporary.name)
+        (self.root / "runtime").mkdir()
+        self.output = self.root / "promotion"
+        self.signature = valid_signature_output(
+            docker_reference=f"{IMAGE_NAME}@{MANIFEST_DIGEST}",
+            signature_type="https://sigstore.dev/cosign/sign/v1",
+        )
+        self.signature[0]["optional"]["workflowSourceSha"] = SOURCE_SHA
+        write_json(self.root / "runtime/runtime-report.json", valid_runtime_report())
+        write_json(self.root / "sbom.spdx.json", valid_sbom())
+        sbom_digest = container._sha256_file(self.root / "sbom.spdx.json")
+        write_json(self.root / "sbom-report.json", valid_sbom_report(sbom_digest=sbom_digest))
+        published = valid_publish_report()
+        version = f"{IMAGE_NAME}:v0.2.3"
+        published["tags"].append(version)
+        published["pushes"].append({"tag": version, "digest": MANIFEST_DIGEST})
+        write_json(self.root / "publish-report.json", published)
+        public = valid_publication_report(sbom_digest=sbom_digest)
+        public["verificationPolicy"]["workflowSourceSha"] = SOURCE_SHA
+        public["publicReferences"].append({"reference": version, "digest": MANIFEST_DIGEST})
+        write_json(self.root / "publication-report.json", public)
+        write_json(self.root / "signature-verification.json", self.signature)
+        write_json(self.root / "attestation-verification.json", valid_attestation_output())
+
+    def promote(self, **kwargs):
+        return container.promote_approved_digest(
+            evidence_dir=self.root, expected_digest=MANIFEST_DIGEST,
+            expected_source_sha=SOURCE_SHA, expected_source_url=SOURCE_URL,
+            version_tag="v0.2.3", output_dir=self.output,
+            **kwargs,
+        )
+
+    def cosign_response(self, command):
+        self.assertEqual(command[0], "cosign")
+        self.assertIn(command[1], {"verify", "verify-attestation"})
+        self.assertEqual(command[-3:], ["--output", "json", f"{IMAGE_NAME}@{MANIFEST_DIGEST}"])
+        self.assertEqual(command[command.index("--certificate-identity") + 1], WORKFLOW_IDENTITY)
+        self.assertEqual(command[command.index("--certificate-github-workflow-sha") + 1], SOURCE_SHA)
+        payload = self.signature if command[1] == "verify" else valid_attestation_output()
+        return json.dumps(payload) + "\n", self.BANNER, 0
+
+    def promote_with_actual_streams(self, *, authorize=None):
+        # Exercise promotion and both final gates, replacing only external tools
+        # and registry reads. The real subprocess pipe options reach the child.
+        events = []
+
+        def respond(command):
+            events.append(tuple(command))
+            if command[0] == "cosign":
+                return self.cosign_response(command)
+            self.assertEqual(command, [
+                "docker", "buildx", "imagetools", "create", "--prefer-index=false",
+                "--tag", f"{IMAGE_NAME}:latest", f"{IMAGE_NAME}@{MANIFEST_DIGEST}",
+            ])
+            self.assertIn("public-read", events)
+            return "assigned approved digest\n", "registry diagnostic\n", 0
+
+        def fetch(*_args, **_kwargs):
+            events.append("public-read")
+            return {"schemaVersion": 2}, MANIFEST_DIGEST, b"same-manifest"
+
+        with (
+            actual_command_streams(respond),
+            mock.patch.object(container, "_anonymous_ghcr_token", return_value="anonymous"),
+            mock.patch.object(container, "_fetch_public_manifest", side_effect=fetch),
+            mock.patch.object(container, "_verify_public_config",
+                              return_value=valid_publication_report()["publicConfig"]),
+        ):
+            final = self.promote(**({} if authorize is None else {
+                "before_latest_assignment": lambda: authorize(events),
+            }))
+        return final, events
+
+    def test_promotion_parses_actual_stdout_with_success_banner_on_stderr(self) -> None:
+        final, events = self.promote_with_actual_streams()
+        self.assertEqual(final["status"], "passed")
+        self.assertEqual(final["registryManifestDigest"], MANIFEST_DIGEST)
+        self.assertEqual(json.loads((self.output / "signature-verification.json").read_text()), self.signature)
+        self.assertEqual(json.loads((self.output / "attestation-verification.json").read_text()), valid_attestation_output())
+        mutation = [index for index, event in enumerate(events) if isinstance(event, tuple) and event[0] == "docker"]
+        self.assertEqual(len(mutation), 1)
+        self.assertEqual(events[0][:2], ("cosign", "verify"))
+        self.assertEqual(events[1][:2], ("cosign", "verify-attestation"))
+        self.assertEqual(events[2:mutation[0]], ["public-read"] * 3)
+        self.assertEqual(events[mutation[0] + 1:], ["public-read"] * 4)
+        promoted = container.parse_publish_report(self.output / "publish-report.json")
+        self.assertEqual(promoted["tags"], [f"{IMAGE_NAME}:sha-{SOURCE_SHA}",
+                                            f"{IMAGE_NAME}:v0.2.3", f"{IMAGE_NAME}:latest"])
+
+    def test_already_present_latest_preserves_tag_and_push_order_without_duplicates(self) -> None:
+        published = json.loads((self.root / "publish-report.json").read_text())
+        latest = f"{IMAGE_NAME}:latest"
+        published["tags"].insert(1, latest)
+        published["pushes"].insert(1, {"tag": latest, "digest": MANIFEST_DIGEST})
+        write_json(self.root / "publish-report.json", published)
+        public = json.loads((self.root / "publication-report.json").read_text())
+        public["publicReferences"].append({"reference": latest, "digest": MANIFEST_DIGEST})
+        write_json(self.root / "publication-report.json", public)
+        final, _ = self.promote_with_actual_streams()
+        self.assertEqual(final["status"], "passed")
+        promoted = container.parse_publish_report(self.output / "publish-report.json")
+        self.assertEqual(promoted["tags"], published["tags"])
+        self.assertEqual(promoted["pushes"], published["pushes"])
+
+    def test_final_authorization_runs_after_public_reads_immediately_before_assignment(self) -> None:
+        final, events = self.promote_with_actual_streams(authorize=lambda events: events.append("authorize"))
+        self.assertEqual(final["status"], "passed")
+        assignment = next(index for index, event in enumerate(events)
+                          if isinstance(event, tuple) and event[0] == "docker")
+        self.assertEqual(events[2:assignment], ["public-read"] * 3 + ["authorize"])
+        self.assertEqual(events.count("authorize"), 1)
+
+    def test_final_authorization_failure_prevents_assignment(self) -> None:
+        observed = []
+
+        def reject(events):
+            observed.extend(events)
+            raise container.VerificationError("protected tooling main changed")
+
+        with self.assertRaisesRegex(container.VerificationError, "protected tooling main changed"):
+            self.promote_with_actual_streams(authorize=reject)
+        self.assertEqual(observed[2:], ["public-read"] * 3)
+        self.assertFalse(any(isinstance(event, tuple) and event[0] == "docker" for event in observed))
+        self.assertFalse((self.output / "publish-report.json").exists())
+
+    def test_nonzero_cosign_rejects_valid_stdout_before_registry_mutation(self) -> None:
+        for failing_command in ("verify", "verify-attestation"):
+            with self.subTest(command=failing_command):
+                self.output = self.root / failing_command
+
+                def respond(command):
+                    stdout, stderr, _ = self.cosign_response(command)
+                    return stdout, stderr + "certificate verification failed\n", 7 if command[1] == failing_command else 0
+
+                authorize = mock.Mock()
+                with actual_command_streams(respond) as run, mock.patch.object(container, "_anonymous_ghcr_token") as registry:
+                    with self.assertRaises(container.VerificationError) as failure:
+                        self.promote(before_latest_assignment=authorize)
+                self.assertIn("command exited 7", str(failure.exception))
+                self.assertIn("certificate verification failed", str(failure.exception))
+                self.assertIn("stdout:\n", str(failure.exception))
+                self.assertIn("stderr:\n", str(failure.exception))
+                self.assertTrue(all(call.args[0][0] == "cosign" for call in run.call_args_list))
+                self.assertEqual(run.call_count, 1 if failing_command == "verify" else 2)
+                registry.assert_not_called()
+                authorize.assert_not_called()
+                self.assertFalse((self.output / "publish-report.json").exists())
+
+    def test_successful_cosign_with_invalid_stdout_remains_rejected(self) -> None:
+        cases = [(phase, invalid) for phase in ("verify", "verify-attestation")
+                 for invalid in (self.BANNER + "{}", '{"payload":"a","payload":"b"}', "")]
+        for phase, invalid in cases:
+            with self.subTest(phase=phase, stdout=invalid), tempfile.TemporaryDirectory() as temporary:
+                self.output = pathlib.Path(temporary) / "promotion"
+
+                def respond(command):
+                    stdout, stderr, status = self.cosign_response(command)
+                    return (invalid if command[1] == phase else stdout), stderr, status
+
+                authorize = mock.Mock()
+                with actual_command_streams(respond) as run, mock.patch.object(container, "_anonymous_ghcr_token") as registry:
+                    with self.assertRaises(container.VerificationError):
+                        self.promote(before_latest_assignment=authorize)
+                self.assertTrue(all(call.args[0][0] == "cosign" for call in run.call_args_list))
+                registry.assert_not_called()
+                authorize.assert_not_called()
+                self.assertFalse((self.output / "publish-report.json").exists())
+
+
 class ImmutableBuildMetadataCommandTests(unittest.TestCase):
     def setUp(self) -> None:
         workflow = yaml.load(WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -1602,39 +1890,58 @@ class WorkflowPolicyTests(unittest.TestCase):
         promotion = workflow["jobs"]["promote-approved-digest"]
         self.assertEqual(promotion.get("if"), "inputs.publication_run_id != ''")
         commands = "\n".join(step.get("run", "") for step in promotion["steps"])
-        self.assertIn("verify-producer-run", commands)
-        self.assertIn("verify_server_container.py promote", commands)
-        self.assertIn("authorize-release", commands)
+        self.assertIn("container_promotion.py prepare", commands)
+        self.assertIn("container_promotion.py promote", commands)
+        self.assertNotIn("verify_server_container.py promote", commands)
         self.assertNotIn("docker build", commands)
         self.assertFalse(any("build-push-action" in step.get("uses", "") for step in promotion["steps"]))
-        authority = [index for index, step in enumerate(promotion["steps"]) if "authorize-release" in step.get("run", "")]
-        producer = [index for index, step in enumerate(promotion["steps"]) if "verify-producer-run" in step.get("run", "")]
-        assignment = [index for index, step in enumerate(promotion["steps"]) if "verify_server_container.py promote" in step.get("run", "")]
-        self.assertEqual([len(authority), len(producer), len(assignment)], [1, 1, 1])
-        self.assertLess(authority[0], producer[0])
-        self.assertLess(producer[0], assignment[0])
+        authority = [index for index, step in enumerate(promotion["steps"]) if "container_promotion.py prepare" in step.get("run", "")]
+        assignment = [index for index, step in enumerate(promotion["steps"]) if "container_promotion.py promote" in step.get("run", "")]
+        self.assertEqual([len(authority), len(assignment)], [1, 1])
+        prepare = promotion["steps"][authority[0]]
+        promote = promotion["steps"][assignment[0]]
+        self.assertEqual(prepare["id"], "promotion-authority")
+        self.assertLess(authority[0], assignment[0])
+        expected_environment = {
+            "GH_TOKEN": "${{ github.token }}",
+            "SOROTTE_PROTECTION_TOKEN": "${{ steps.protection-token.outputs.token }}",
+            "PUBLICATION_RUN_ID": "${{ inputs.publication_run_id }}",
+            "VERSION_TAG": "${{ inputs.version_tag }}",
+            "APPROVED_DIGEST": "${{ inputs.approved_digest }}",
+        }
+        for step in (prepare, promote):
+            self.assertEqual(step.get("env"), expected_environment)
+            for argument in ('--tooling-sha "$GITHUB_SHA"', '--publication-run-id "$PUBLICATION_RUN_ID"',
+                             '--version-tag "$VERSION_TAG"', '--approved-digest "$APPROVED_DIGEST"'):
+                self.assertIn(argument, step["run"])
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("if", step)
+        self.assertIn("--output-dir target/promotion-authority/initial", prepare["run"])
+        for argument in ("--initial-authority target/promotion-authority/initial/authority.json",
+                         "--evidence-dir target/approved-container-publication",
+                         "--authority-dir target/promotion-authority",
+                         "--output-dir target/container-promotion",
+                         "--report target/container-promotion/final-gate-report.json"):
+            self.assertIn(argument, promote["run"])
         downloads = [(index, step) for index, step in enumerate(promotion["steps"])
                      if step.get("uses", "").startswith("actions/download-artifact@")]
         self.assertEqual(len(downloads), 1)
         index, download = downloads[0]
-        self.assertLess(producer[0], index)
+        self.assertLess(authority[0], index)
         self.assertLess(index, assignment[0])
         self.assertEqual(download["with"], {
             "github-token": "${{ github.token }}", "run-id": "${{ inputs.publication_run_id }}",
-            "artifact-ids": "${{ steps.producer.outputs.artifact_id }}", "digest-mismatch": "error",
+            "artifact-ids": "${{ steps.promotion-authority.outputs.artifact_id }}", "digest-mismatch": "error",
             "path": "target/approved-container-publication"})
         self.assertNotIn("continue-on-error", download)
-        self.assertIn("--evidence-dir target/container-producer-authority", promotion["steps"][producer[0]]["run"])
         cleanup_index = next(index for index, step in enumerate(promotion["steps"])
                              if step.get("id") == "ci_remove_promotion_registry_credentials_cc7de03d")
         cleanup = promotion["steps"][cleanup_index]
         self.assertLess(assignment[0], cleanup_index)
         self.assertEqual(cleanup["if"], "always()")
         self.assertIn("docker logout ghcr.io || status=$?", cleanup["run"])
-        self.assertIn("cp -R target/container-producer-authority target/container-promotion/producer-authority || status=$?", cleanup["run"])
+        self.assertIn("cp -R target/promotion-authority target/container-promotion/authority || status=$?", cleanup["run"])
         self.assertIn('exit "$status"', cleanup["run"])
-        for index in (*authority, *producer, *assignment):
-            self.assertNotIn("continue-on-error", promotion["steps"][index])
 
     def test_latest_promotion_requires_explicit_verified_digest_without_rebuilding(self) -> None:
         self.assert_latest_promotion_contract(self.workflow)
@@ -1642,11 +1949,18 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_latest_promotion_policy_rejects_automatic_unverified_or_rebuilt_images(self) -> None:
         for defect in ("automatic-trigger", "optional-input", "default-input", "automatic-latest",
                        "metadata-latest", "unguarded-promotion", "rebuild", "missing-authority",
-                       "missing-producer", "tolerated-authority", "early-promotion", "guessed-final-attempt",
-                       "foreign-download-run", "digest-warning", "missing-producer-retention", "conditional-producer-retention"):
+                       "missing-promotion", "tolerated-authority", "tolerated-promotion", "early-promotion",
+                       "early-download", "guessed-final-attempt", "foreign-download-run", "foreign-artifact",
+                       "digest-warning", "missing-producer-retention", "conditional-producer-retention",
+                       "prepare-github-token", "promote-github-token", "prepare-protection-token", "promote-protection-token",
+                       "prepare-tooling", "promote-tooling", "prepare-producer", "promote-producer",
+                       "prepare-version", "promote-version", "prepare-digest", "promote-digest",
+                       "foreign-initial-authority", "missing-final-authority", "old-direct-promotion"):
             with self.subTest(defect=defect):
                 candidate = copy.deepcopy(self.workflow)
                 promotion = candidate["jobs"]["promote-approved-digest"]
+                prepare = next(step for step in promotion["steps"] if "container_promotion.py prepare" in step.get("run", ""))
+                promote = next(step for step in promotion["steps"] if "container_promotion.py promote" in step.get("run", ""))
                 metadata = next(step for step in candidate["jobs"]["publish"]["steps"] if step.get("uses", "").startswith("docker/metadata-action@"))["with"]
                 if defect == "automatic-trigger": candidate["on"]["push"] = {}
                 if defect == "optional-input": candidate["on"]["workflow_dispatch"]["inputs"]["approved_digest"]["required"] = "false"
@@ -1655,23 +1969,37 @@ class WorkflowPolicyTests(unittest.TestCase):
                 if defect == "metadata-latest": metadata["tags"] += "\ntype=raw,value=latest"
                 if defect == "unguarded-promotion": promotion["if"] = "true"
                 if defect == "rebuild": promotion["steps"].append({"uses": "docker/build-push-action@" + "a" * 40})
-                if defect == "missing-authority": promotion["steps"] = [step for step in promotion["steps"] if "authorize-release" not in step.get("run", "")]
-                if defect == "missing-producer": promotion["steps"] = [step for step in promotion["steps"] if "verify-producer-run" not in step.get("run", "")]
-                if defect == "tolerated-authority": next(step for step in promotion["steps"] if "authorize-release" in step.get("run", ""))["continue-on-error"] = "true"
+                if defect == "missing-authority": promotion["steps"].remove(prepare)
+                if defect == "missing-promotion": promotion["steps"].remove(promote)
+                if defect == "tolerated-authority": prepare["continue-on-error"] = "true"
+                if defect == "tolerated-promotion": promote["continue-on-error"] = "true"
                 if defect == "early-promotion":
-                    index = next(index for index, step in enumerate(promotion["steps"]) if "verify_server_container.py promote" in step.get("run", ""))
+                    promotion["steps"].remove(promote)
+                    promotion["steps"].insert(0, promote)
+                if defect == "early-download":
+                    index = next(index for index, step in enumerate(promotion["steps"]) if step.get("uses", "").startswith("actions/download-artifact@"))
                     promotion["steps"].insert(0, promotion["steps"].pop(index))
-                if defect in {"guessed-final-attempt", "foreign-download-run", "digest-warning"}:
+                if defect in {"guessed-final-attempt", "foreign-download-run", "foreign-artifact", "digest-warning"}:
                     download = next(step for step in promotion["steps"] if step.get("uses", "").startswith("actions/download-artifact@"))["with"]
                     if defect == "guessed-final-attempt":
                         del download["artifact-ids"]
                         download["name"] = "server-container-verification-${{ inputs.publication_run_id }}-${{ steps.producer.outputs.attempt }}"
                     if defect == "foreign-download-run": download["run-id"] = "123"
+                    if defect == "foreign-artifact": download["artifact-ids"] = "${{ steps.producer.outputs.artifact_id }}"
                     if defect == "digest-warning": download["digest-mismatch"] = "warn"
                 if defect in {"missing-producer-retention", "conditional-producer-retention"}:
                     cleanup = next(step for step in promotion["steps"] if step.get("id") == "ci_remove_promotion_registry_credentials_cc7de03d")
                     if defect == "missing-producer-retention": cleanup["run"] = "docker logout ghcr.io"
                     if defect == "conditional-producer-retention": cleanup["if"] = "success()"
+                for phase, step in (("prepare", prepare), ("promote", promote)):
+                    if defect == f"{phase}-github-token": step["env"]["GH_TOKEN"] = "${{ steps.protection-token.outputs.token }}"
+                    if defect == f"{phase}-protection-token": del step["env"]["SOROTTE_PROTECTION_TOKEN"]
+                    for label, argument in (("tooling", "--tooling-sha"), ("producer", "--publication-run-id"),
+                                            ("version", "--version-tag"), ("digest", "--approved-digest")):
+                        if defect == f"{phase}-{label}": step["run"] = step["run"].replace(argument, "--unbound-input")
+                if defect == "foreign-initial-authority": promote["run"] = promote["run"].replace("target/promotion-authority/initial/authority.json", "target/foreign/authority.json")
+                if defect == "missing-final-authority": promote["run"] = promote["run"].replace("--authority-dir", "--unbound-authority")
+                if defect == "old-direct-promotion": promote["run"] = promote["run"].replace("container_promotion.py promote", "verify_server_container.py promote")
                 with self.assertRaises(AssertionError):
                     self.assert_latest_promotion_contract(candidate)
 

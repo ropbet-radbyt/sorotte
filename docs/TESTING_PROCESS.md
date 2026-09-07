@@ -138,6 +138,13 @@ for the one-job Sandbox controller, trusted candidate dispatch and diagnostic ex
 and [release qualification](RELEASE_QUALIFICATION.md) for shared tested binaries,
 archive consumption and approved-container digest promotion.
 
+Promotion regressions run the complete verifier path with actual subprocesses
+that produce independent data and diagnostic streams. They check valid and
+invalid signature output, failed tools, tag/push ordering and authorization
+failure immediately before manifest assignment. This catches command-wrapper
+and bookkeeping defects before merge. Local executable fixtures do not replace
+the live signature, registry and public-byte checks required for publication.
+
 Native qualification requires a maintainer-authorized candidate and the isolated
 interactive guest. The ordinary PR workflow runs only on hosted workers; it cannot
 dispatch arbitrary PR code to the native runner. Missing desktop capability stays

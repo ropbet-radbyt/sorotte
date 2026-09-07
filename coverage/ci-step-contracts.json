@@ -809,7 +809,7 @@
       "workflow": ".github/workflows/publish-server-container.yml",
       "job_id": "promote-approved-digest",
       "step_id": "ci_checkout_exact_promotion_authority_dfc56e16",
-      "display_name": "Checkout exact promotion authority"
+      "display_name": "Checkout exact promotion tooling"
     },
     {
       "workflow": ".github/workflows/publish-server-container.yml",
@@ -820,14 +820,8 @@
     {
       "workflow": ".github/workflows/publish-server-container.yml",
       "job_id": "promote-approved-digest",
-      "step_id": "ci_require_protected_source_and_complete__a762e9a0",
-      "display_name": "Require protected source and complete trusted checks"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "promote-approved-digest",
-      "step_id": "producer",
-      "display_name": "Authenticate the explicit prior publication producer"
+      "step_id": "promotion-authority",
+      "display_name": "Authorize current tooling and the exact published release"
     },
     {
       "workflow": ".github/workflows/publish-server-container.yml",

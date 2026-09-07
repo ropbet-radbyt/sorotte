@@ -164,11 +164,27 @@ The [Fulcio identity contract](https://github.com/sigstore/fulcio/blob/main/docs
 distinguishes the reusable signer from the calling workflow.
 
 The `publish sorotte-server container` manual dispatch now only promotes an
-existing publication. Select the approved release tag and supply:
+existing publication. Select qualified `main` as the workflow ref and supply:
 
 - `publication_run_id`: the explicit successful `coordinated stable release` run;
 - `approved_digest`: the registry manifest digest from its final gate;
-- `version_tag`: the existing version tag from that run.
+- `version_tag`: the current latest stable release tag from that run.
+
+`container_promotion.py` authenticates the tool revision as the exact current
+protected `main`, including its complete trusted checks. It separately resolves
+the published source from the explicit original producer, requires an annotated
+tag naming that source, and verifies its historical trusted main checks. The
+published source must be an ancestor of the tool revision and its tag must still
+be GitHub's latest stable release. This permits a reviewed promotion-tool repair
+without changing the published binaries, tag or original signing identity.
+
+The initial authorization selects the exact artifact before download. After
+fresh signature and registry checks, a callback repeats the authority checks
+immediately before assigning `latest` and rejects changes to the release, tag,
+source, operator or producer identity. Both authorizations and their original
+API evidence are retained. These are fresh observations; a saved receipt alone
+cannot authorize the mutation. The original release/source certificate remains
+separate from the recorded promotion workflow/source revision.
 
 The consumer verifies repository, source, workflow, event, tag and conclusion
 through the Actions API, then enumerates every job execution in that explicit
@@ -185,6 +201,13 @@ tags must all retain the approved registry digest. The manifest copy disables
 automatic index conversion with Docker's
 [`--prefer-index=false`](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/)
 and independently checks the resulting digest.
+
+Subprocess regressions exercise separate stdout and stderr through actual
+processes, including Cosign-style diagnostic banners, malformed output and
+nonzero exits. The strict parsers consume stdout only; diagnostics remain
+available separately. The promotion path also verifies tag/push ordering and
+rejects a failed final authorization before any manifest assignment. These
+checks run in PR validation; they use local tool fixtures and do not publish.
 
 ## Evidence limits
 
