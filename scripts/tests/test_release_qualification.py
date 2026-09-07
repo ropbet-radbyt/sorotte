@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -115,6 +117,209 @@ class QualificationReceiptTests(unittest.TestCase):
                 qualification.validate_producer_run({**value, key: wrong}, SHA, "owner/repo", "12", "v0.2.9")
 
 
+class ContainerProducerTests(unittest.TestCase):
+    def fixture(self, attempt: int = 2):
+        api = "https://api.github.com/repos/owner/repo"
+        run = {"id": 12, "head_sha": SHA, "repository": {"full_name": "owner/repo"},
+            "head_repository": {"full_name": "owner/repo"}, "event": "push", "head_branch": "v0.2.10",
+            "path": ".github/workflows/stable-release.yml", "status": "completed", "conclusion": "success", "run_attempt": attempt}
+        job = {"id": 101, "run_id": 12, "run_attempt": 1, "head_sha": SHA, "head_branch": "v0.2.10",
+            "run_url": f"{api}/actions/runs/12", "url": f"{api}/actions/jobs/101",
+            "name": "container / publish", "status": "completed", "conclusion": "success",
+            "started_at": "2026-09-06T01:00:00Z", "completed_at": "2026-09-06T01:30:00Z",
+            "steps": [{"name": name, "number": index, "status": "completed", "conclusion": "success"}
+                for index, name in enumerate(qualification.CONTAINER_PUBLICATION_STEPS, 10)]}
+        artifact = {"id": 901, "name": "server-container-verification-12-1", "expired": False,
+            "workflow_run": {"id": 12, "head_sha": SHA}, "url": f"{api}/actions/artifacts/901",
+            "digest": "sha256:" + "a" * 64, "created_at": "2026-09-06T01:29:59Z"}
+        return run, [job], [artifact]
+
+    def select(self, run, jobs, artifacts):
+        return qualification.select_container_producer(run, jobs, artifacts, SHA, "owner/repo", "12", "v0.2.10")
+
+    def later_job(self, job, conclusion="success"):
+        return {**copy.deepcopy(job), "id": 102, "run_attempt": 2, "conclusion": conclusion,
+            "url": "https://api.github.com/repos/owner/repo/actions/jobs/102"}
+
+    def test_attachment_only_retry_selects_original_container_artifact_and_attempt(self):
+        run, jobs, artifacts = self.fixture()
+        jobs.append({"id": 201, "name": "retain-release-qualification", "run_attempt": 2,
+            "status": "completed", "conclusion": "success"})
+        selected = self.select(run, jobs, artifacts)
+        self.assertEqual((selected["publication_final_attempt"], selected["container_attempt"],
+                          selected["container_job_id"], selected["artifact_id"]), (2, 1, 101, 901))
+        self.assertEqual(selected["artifact_name"], "server-container-verification-12-1")
+
+    def test_later_successful_container_selects_its_own_artifact(self):
+        run, jobs, artifacts = self.fixture()
+        jobs.append(self.later_job(jobs[0]))
+        artifacts.append({**artifacts[0], "id": 902, "name": "server-container-verification-12-2",
+            "url": "https://api.github.com/repos/owner/repo/actions/artifacts/902"})
+        selected = self.select(run, list(reversed(jobs)), artifacts)
+        self.assertEqual((selected["container_attempt"], selected["container_job_id"], selected["artifact_id"]), (2, 102, 902))
+
+    def test_newer_failed_skipped_cancelled_or_running_container_never_falls_back(self):
+        for status, conclusion in (("completed", "failure"), ("completed", "skipped"),
+                                   ("completed", "cancelled"), ("in_progress", None)):
+            with self.subTest(status=status, conclusion=conclusion):
+                run, jobs, artifacts = self.fixture()
+                jobs.append({**self.later_job(jobs[0], conclusion), "status": status})
+                with self.assertRaisesRegex(qualification.QualificationError, "latest actual"):
+                    self.select(run, jobs, artifacts)
+
+    def test_foreign_or_malformed_newer_container_is_rejected_before_selection(self):
+        for key, wrong in (("run_id", 13), ("head_sha", "f" * 40), ("head_branch", "main"),
+                           ("url", "https://api.github.com/repos/foreign/repo/actions/jobs/102"),
+                           ("run_url", "https://api.github.com/repos/foreign/repo/actions/runs/12"),
+                           ("run_attempt", 0), ("run_attempt", 3), ("run_attempt", True), ("run_attempt", None), ("id", True)):
+            with self.subTest(key=key, wrong=wrong):
+                run, jobs, artifacts = self.fixture()
+                jobs.append({**self.later_job(jobs[0]), key: wrong})
+                with self.assertRaisesRegex(qualification.QualificationError, "foreign, malformed or ambiguous"):
+                    self.select(run, jobs, artifacts)
+
+    def test_missing_duplicate_or_same_attempt_container_is_not_authority(self):
+        for variant in ("missing", "same-id", "same-attempt"):
+            with self.subTest(variant=variant):
+                run, jobs, artifacts = self.fixture()
+                if variant == "missing":
+                    jobs[0]["name"] = "unrelated / publish"
+                else:
+                    jobs.append(copy.deepcopy(jobs[0]) if variant == "same-id" else {**self.later_job(jobs[0]), "run_attempt": 1})
+                with self.assertRaises(qualification.QualificationError):
+                    self.select(run, jobs, artifacts)
+
+    def test_each_required_container_phase_must_have_executed_successfully_once(self):
+        for name in qualification.CONTAINER_PUBLICATION_STEPS:
+            for defect in ("missing", "failed", "skipped", "duplicate"):
+                with self.subTest(name=name, defect=defect):
+                    run, jobs, artifacts = self.fixture()
+                    steps = jobs[0]["steps"]
+                    step = next(item for item in steps if item["name"] == name)
+                    if defect == "missing": steps.remove(step)
+                    elif defect == "duplicate": steps.append(copy.deepcopy(step))
+                    else: step["conclusion"] = defect
+                    with self.assertRaisesRegex(qualification.QualificationError, "publication step"):
+                        self.select(run, jobs, artifacts)
+
+    def test_artifact_must_belong_to_exact_successful_job_window_and_source(self):
+        for defect in ("missing", "duplicate", "expired", "source", "run", "repository", "digest", "attempt-name", "early", "late", "naive-time"):
+            with self.subTest(defect=defect):
+                run, jobs, artifacts = self.fixture()
+                artifact = artifacts[0]
+                if defect == "missing": artifacts.clear()
+                if defect == "duplicate": artifacts.append(copy.deepcopy(artifact))
+                if defect == "expired": artifact["expired"] = True
+                if defect == "source": artifact["workflow_run"]["head_sha"] = "f" * 40
+                if defect == "run": artifact["workflow_run"]["id"] = 13
+                if defect == "repository": artifact["url"] = "https://api.github.com/repos/foreign/repo/actions/artifacts/901"
+                if defect == "digest": artifact["digest"] = "absent"
+                if defect == "attempt-name": artifact["name"] = "server-container-verification-12-2"
+                if defect == "early": artifact["created_at"] = "2026-09-06T00:59:59Z"
+                if defect == "late": artifact["created_at"] = "2026-09-06T01:30:01Z"
+                if defect == "naive-time": artifact["created_at"] = "2026-09-06T01:20:00"
+                with self.assertRaises(qualification.QualificationError):
+                    self.select(run, jobs, artifacts)
+
+    def test_parent_run_authority_cannot_be_replaced_by_matching_job_metadata(self):
+        for key, wrong in (("repository", {"full_name": "foreign/repo"}), ("head_sha", "f" * 40),
+                           ("head_repository", {"full_name": "foreign/repo"}), ("event", "workflow_dispatch"),
+                           ("path", ".github/workflows/other.yml"), ("head_branch", "main"), ("conclusion", "failure")):
+            with self.subTest(key=key):
+                run, jobs, artifacts = self.fixture()
+                run[key] = wrong
+                with self.assertRaisesRegex(qualification.QualificationError, "trusted tag run"):
+                    self.select(run, jobs, artifacts)
+
+    def test_paginated_job_history_includes_newer_failure_on_second_page(self):
+        run, jobs, artifacts = self.fixture()
+        first = jobs + [{"id": index, "name": "other"} for index in range(200, 299)]
+        second = [self.later_job(jobs[0], "failure")]
+        get = mock.Mock(side_effect=[{"total_count": 101, "jobs": first}, {"total_count": 101, "jobs": second}])
+        history = qualification.producer_collection(get, "actions/runs/12/jobs?filter=all", "jobs")
+        self.assertEqual(get.call_args_list, [mock.call("actions/runs/12/jobs?filter=all&per_page=100&page=1"),
+            mock.call("actions/runs/12/jobs?filter=all&per_page=100&page=2")])
+        self.assertEqual(len(history), 101)
+        with self.assertRaisesRegex(qualification.QualificationError, "latest actual"):
+            self.select(run, history, artifacts)
+
+    def test_pagination_rejects_truncation_duplicate_ids_and_changing_totals(self):
+        first = [{"id": index} for index in range(1, 101)]
+        for payloads in ([{"total_count": 101, "jobs": first[:1]}],
+                         [{"total_count": 101, "jobs": first}, {"total_count": 101, "jobs": [{"id": 1}]}],
+                         [{"total_count": 101, "jobs": first}, {"total_count": 102, "jobs": [{"id": 101}]}],
+                         [{"total_count": 2001, "jobs": first}]):
+            with self.subTest(payloads=len(payloads)), self.assertRaises(qualification.QualificationError):
+                qualification.producer_collection(mock.Mock(side_effect=payloads), "jobs?filter=all", "jobs")
+
+    def fake_api(self, run, jobs, artifacts, *, changed_after=False, changed_job=False, changed_artifact=False):
+        responses = [run, {"total_count": len(jobs), "jobs": jobs}, {"total_count": len(artifacts), "artifacts": artifacts},
+                     jobs[0], artifacts[0], {**run, "run_attempt": 3} if changed_after else run]
+        responses = copy.deepcopy(responses)
+        if changed_job: responses[3]["head_sha"] = "f" * 40
+        if changed_artifact: responses[4]["expired"] = True
+        endpoints = ["actions/runs/12", "actions/runs/12/jobs?filter=all&per_page=100&page=1",
+            "actions/runs/12/artifacts?per_page=100&page=1", "actions/jobs/101", "actions/artifacts/901", "actions/runs/12"]
+        def execute(command, **kwargs):
+            self.assertEqual(command[:6], ["gh", "api", "--hostname", "github.com", "--method", "GET"])
+            self.assertEqual(command[6], "repos/owner/repo/" + endpoints.pop(0))
+            self.assertGreater(kwargs["timeout"], 0)
+            self.assertLessEqual(kwargs["timeout"], 30)
+            kwargs["stdout"].write(json.dumps(responses.pop(0)).encode())
+            return subprocess.CompletedProcess(command, 0)
+        return execute
+
+    def test_cli_resolves_and_retains_two_attempt_original_authority(self):
+        run, jobs, artifacts = self.fixture()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(qualification.subprocess, "run", side_effect=self.fake_api(run, jobs, artifacts)), \
+                 mock.patch.dict(os.environ, GITHUB_OUTPUT=str(root / "outputs")), redirect_stdout(io.StringIO()):
+                result = qualification.main(["verify-producer-run", "--candidate-sha", SHA, "--repository", "owner/repo",
+                    "--run-id", "12", "--version-tag", "v0.2.10", "--evidence-dir", str(root / "authority")])
+            self.assertEqual(result, 0)
+            self.assertEqual(dict(line.split("=", 1) for line in (root / "outputs").read_text().splitlines()), {
+                "publication_final_attempt": "2", "container_attempt": "1", "container_job_id": "101", "artifact_id": "901"})
+            receipt = qualification.read(root / "authority/producer.json")
+            self.assertEqual(len(receipt["inputs"]), 6)
+            for item in receipt["inputs"]:
+                self.assertEqual(item["sha256"], qualification.artifact_input.sha256_file(root / "authority" / item["path"]))
+                self.assertEqual(item["request_sha256"], qualification.artifact_input.sha256_file(root / "authority" / item["request_path"]))
+
+    def test_cli_concurrent_rerun_cannot_emit_download_authority(self):
+        run, jobs, artifacts = self.fixture()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(qualification.subprocess, "run", side_effect=self.fake_api(run, jobs, artifacts, changed_after=True)), \
+                 mock.patch.dict(os.environ, GITHUB_OUTPUT=str(root / "outputs")), redirect_stderr(io.StringIO()):
+                result = qualification.main(["verify-producer-run", "--candidate-sha", SHA, "--repository", "owner/repo",
+                    "--run-id", "12", "--version-tag", "v0.2.10", "--evidence-dir", str(root / "authority")])
+            self.assertEqual(result, 1)
+            self.assertFalse((root / "outputs").exists())
+            self.assertFalse((root / "authority/producer.json").exists())
+            self.assertEqual(len(list((root / "authority").glob("response-*.json"))), 6)
+
+    def test_cli_changed_direct_job_or_artifact_cannot_emit_authority(self):
+        for defect in ("changed_job", "changed_artifact"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                run, jobs, artifacts = self.fixture()
+                with mock.patch.object(qualification.subprocess, "run", side_effect=self.fake_api(run, jobs, artifacts, **{defect: True})), \
+                     mock.patch.dict(os.environ, GITHUB_OUTPUT=str(root / "outputs")), redirect_stderr(io.StringIO()):
+                    result = qualification.main(["verify-producer-run", "--candidate-sha", SHA, "--repository", "owner/repo",
+                        "--run-id", "12", "--version-tag", "v0.2.10", "--evidence-dir", str(root / "authority")])
+                self.assertEqual(result, 1)
+                self.assertFalse((root / "outputs").exists())
+                self.assertFalse((root / "authority/producer.json").exists())
+
+    def test_global_lookup_deadline_stops_before_another_api_call(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(qualification.time, "monotonic", side_effect=[0, 301]), \
+             mock.patch.object(qualification.subprocess, "run") as runner:
+            with self.assertRaisesRegex(qualification.QualificationError, "five-minute deadline"):
+                qualification.resolve_container_producer(SHA, "owner/repo", "12", "v0.2.10", Path(temporary) / "authority")
+            runner.assert_not_called()
+
+
 class PublicAssetTests(unittest.TestCase):
     def test_anonymous_public_comparison_fails_changed_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -164,6 +369,20 @@ class PublicAssetTests(unittest.TestCase):
 
 
 class PackageWorkflowTests(unittest.TestCase):
+    def test_container_producer_names_match_actual_reusable_workflow(self) -> None:
+        import yaml
+
+        root = Path(__file__).resolve().parents[2] / ".github/workflows"
+        parent = yaml.load((root / "stable-release.yml").read_text(), Loader=yaml.BaseLoader)
+        child = yaml.load((root / "publish-server-container.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(parent["jobs"]["container"]["uses"], "./.github/workflows/publish-server-container.yml")
+        self.assertNotIn("name", parent["jobs"]["container"])
+        self.assertNotIn("name", child["jobs"]["publish"])
+        self.assertEqual(qualification.CONTAINER_PRODUCER_JOB, "container / publish")
+        names = [step.get("name") for step in child["jobs"]["publish"]["steps"]]
+        indices = [names.index(name) for name in qualification.CONTAINER_PUBLICATION_STEPS]
+        self.assertEqual(indices, sorted(set(indices)))
+
     def test_protection_reader_is_scoped_to_authority_steps_and_not_candidate_jobs(self) -> None:
         import yaml
 

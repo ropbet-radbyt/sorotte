@@ -146,8 +146,14 @@ existing publication. Select the approved release tag and supply:
 - `approved_digest`: the registry manifest digest from its final gate;
 - `version_tag`: the existing version tag from that run.
 
-The consumer verifies repository, source, workflow, event, tag, conclusion and
-attempt through the Actions API before downloading evidence. It reruns live
+The consumer verifies repository, source, workflow, event, tag and conclusion
+through the Actions API, then enumerates every job execution in that explicit
+run. It selects the latest actual container job and its exact artifact ID; the
+container's producing attempt can precede the workflow's final attempt when only
+a later attachment job was retried. A newer failed container execution, ambiguous
+producer or missing artifact is an error, never permission to use an older green
+execution. Promotion evidence retains the original API responses and
+both attempt identities. It reruns live
 Cosign and anonymous tag/config/layer/SBOM verification, copies only that digest
 to `latest`, and then repeats the complete public comparison. It neither rebuilds
 the image nor reruns lifecycle qualification. The version, full-SHA and latest

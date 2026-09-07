@@ -1531,6 +1531,26 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual([len(authority), len(producer), len(assignment)], [1, 1, 1])
         self.assertLess(authority[0], producer[0])
         self.assertLess(producer[0], assignment[0])
+        downloads = [(index, step) for index, step in enumerate(promotion["steps"])
+                     if step.get("uses", "").startswith("actions/download-artifact@")]
+        self.assertEqual(len(downloads), 1)
+        index, download = downloads[0]
+        self.assertLess(producer[0], index)
+        self.assertLess(index, assignment[0])
+        self.assertEqual(download["with"], {
+            "github-token": "${{ github.token }}", "run-id": "${{ inputs.publication_run_id }}",
+            "artifact-ids": "${{ steps.producer.outputs.artifact_id }}", "digest-mismatch": "error",
+            "path": "target/approved-container-publication"})
+        self.assertNotIn("continue-on-error", download)
+        self.assertIn("--evidence-dir target/container-producer-authority", promotion["steps"][producer[0]]["run"])
+        cleanup_index = next(index for index, step in enumerate(promotion["steps"])
+                             if step.get("id") == "ci_remove_promotion_registry_credentials_cc7de03d")
+        cleanup = promotion["steps"][cleanup_index]
+        self.assertLess(assignment[0], cleanup_index)
+        self.assertEqual(cleanup["if"], "always()")
+        self.assertIn("docker logout ghcr.io || status=$?", cleanup["run"])
+        self.assertIn("cp -R target/container-producer-authority target/container-promotion/producer-authority || status=$?", cleanup["run"])
+        self.assertIn('exit "$status"', cleanup["run"])
         for index in (*authority, *producer, *assignment):
             self.assertNotIn("continue-on-error", promotion["steps"][index])
 
@@ -1540,7 +1560,8 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_latest_promotion_policy_rejects_automatic_unverified_or_rebuilt_images(self) -> None:
         for defect in ("automatic-trigger", "optional-input", "default-input", "automatic-latest",
                        "metadata-latest", "unguarded-promotion", "rebuild", "missing-authority",
-                       "missing-producer", "tolerated-authority", "early-promotion"):
+                       "missing-producer", "tolerated-authority", "early-promotion", "guessed-final-attempt",
+                       "foreign-download-run", "digest-warning", "missing-producer-retention", "conditional-producer-retention"):
             with self.subTest(defect=defect):
                 candidate = copy.deepcopy(self.workflow)
                 promotion = candidate["jobs"]["promote-approved-digest"]
@@ -1558,6 +1579,17 @@ class WorkflowPolicyTests(unittest.TestCase):
                 if defect == "early-promotion":
                     index = next(index for index, step in enumerate(promotion["steps"]) if "verify_server_container.py promote" in step.get("run", ""))
                     promotion["steps"].insert(0, promotion["steps"].pop(index))
+                if defect in {"guessed-final-attempt", "foreign-download-run", "digest-warning"}:
+                    download = next(step for step in promotion["steps"] if step.get("uses", "").startswith("actions/download-artifact@"))["with"]
+                    if defect == "guessed-final-attempt":
+                        del download["artifact-ids"]
+                        download["name"] = "server-container-verification-${{ inputs.publication_run_id }}-${{ steps.producer.outputs.attempt }}"
+                    if defect == "foreign-download-run": download["run-id"] = "123"
+                    if defect == "digest-warning": download["digest-mismatch"] = "warn"
+                if defect in {"missing-producer-retention", "conditional-producer-retention"}:
+                    cleanup = next(step for step in promotion["steps"] if step.get("id") == "ci_remove_promotion_registry_credentials_cc7de03d")
+                    if defect == "missing-producer-retention": cleanup["run"] = "docker logout ghcr.io"
+                    if defect == "conditional-producer-retention": cleanup["if"] = "success()"
                 with self.assertRaises(AssertionError):
                     self.assert_latest_promotion_contract(candidate)
 

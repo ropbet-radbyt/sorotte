@@ -8,6 +8,7 @@ supported. Publication authorization is independently rechecked by merge_gate.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
 import importlib.metadata
 import json
@@ -17,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -27,6 +29,18 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 PLATFORMS = {"linux-x86_64": "x86_64-unknown-linux-gnu", "windows-x86_64": "x86_64-pc-windows-msvc"}
 LEGACY_SHA = verification_tools.pins()["references"]["legacy-sha"]
+CONTAINER_PRODUCER_JOB = "container / publish"
+CONTAINER_PUBLICATION_STEPS = (
+    "Consume the loaded image through real server boundaries",
+    "Generate SPDX SBOM from the tested local image",
+    "Bind SBOM bytes to the tested local image ID",
+    "Push only tags of the already-tested daemon image",
+    "Keylessly sign and attest the exact tested digest",
+    "Verify keyless identity and workflow claims",
+    "Compare every public tag, digest, config, SBOM, and signature subject",
+    "Enforce every container publication phase",
+    "Retain all container verification evidence",
+)
 
 
 class QualificationError(ValueError):
@@ -243,7 +257,7 @@ def validate_package(report: dict, manifest: dict) -> None:
 
 
 def validate_producer_run(value: dict, sha: str, repository: str, run_id: str, version_tag: str) -> int:
-    if not re.fullmatch(r"(?:server-)?v[0-9][A-Za-z0-9._-]*", version_tag):
+    if not SHA.fullmatch(sha) or not re.fullmatch(r"(?:server-)?v[0-9][A-Za-z0-9._-]*", version_tag):
         raise QualificationError("promotion requires an exact stable version tag")
     if (str(value.get("id")) != run_id or value.get("head_sha") != sha
         or value.get("repository", {}).get("full_name") != repository
@@ -254,6 +268,137 @@ def validate_producer_run(value: dict, sha: str, repository: str, run_id: str, v
         or type(value.get("run_attempt")) is not int or value["run_attempt"] < 1):
         raise QualificationError("publication evidence producer is not the explicit successful trusted tag run")
     return value["run_attempt"]
+
+
+def select_container_producer(value: dict, jobs: list[dict], artifacts: list[dict],
+                              sha: str, repository: str, run_id: str, version_tag: str) -> dict:
+    """Bind retained evidence to the latest actual container execution in one run."""
+    final_attempt = validate_producer_run(value, sha, repository, run_id, version_tag)
+    matches = []
+    identities = set()
+    attempts = set()
+    api = f"https://api.github.com/repos/{repository}"
+    for job in jobs:
+        if job.get("name") != CONTAINER_PRODUCER_JOB:
+            continue
+        job_id, attempt = job.get("id"), job.get("run_attempt")
+        # Reject foreign/malformed newer records before selection; filtering them
+        # out could incorrectly authorize an earlier successful execution.
+        if (type(job_id) is not int or job_id < 1 or job_id in identities
+            or type(attempt) is not int or not 1 <= attempt <= final_attempt or attempt in attempts
+            or job.get("run_id") != int(run_id) or job.get("head_sha") != sha
+            or job.get("head_branch") != version_tag
+            or job.get("run_url") != f"{api}/actions/runs/{run_id}"
+            or job.get("url") != f"{api}/actions/jobs/{job_id}"):
+            raise QualificationError("container producer history is foreign, malformed or ambiguous")
+        identities.add(job_id)
+        attempts.add(attempt)
+        matches.append(job)
+    if not matches:
+        raise QualificationError("explicit publication run has no container producer")
+    job = max(matches, key=lambda item: item["run_attempt"])
+    if job.get("status") != "completed" or job.get("conclusion") != "success":
+        raise QualificationError("latest actual container producer did not pass; older success cannot replace it")
+    steps = job.get("steps")
+    if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+        raise QualificationError("container producer has no publication steps")
+    numbers = []
+    for name in CONTAINER_PUBLICATION_STEPS:
+        selected = [step for step in steps if step.get("name") == name]
+        if (len(selected) != 1 or selected[0].get("status") != "completed"
+            or selected[0].get("conclusion") != "success"
+            or type(selected[0].get("number")) is not int):
+            raise QualificationError(f"container publication step did not pass: {name}")
+        numbers.append(selected[0]["number"])
+    if numbers != sorted(set(numbers)) or numbers[0] < 1:
+        raise QualificationError("container publication steps are out of order")
+    name = f"server-container-verification-{run_id}-{job['run_attempt']}"
+    selected = [artifact for artifact in artifacts if artifact.get("name") == name]
+    if len(selected) != 1:
+        raise QualificationError("actual container producer artifact is missing or ambiguous")
+    artifact = selected[0]
+    artifact_id = artifact.get("id")
+    if (type(artifact_id) is not int or artifact_id < 1 or artifact.get("expired") is not False
+        or artifact.get("workflow_run", {}).get("id") != int(run_id)
+        or artifact.get("workflow_run", {}).get("head_sha") != sha
+        or artifact.get("url") != f"{api}/actions/artifacts/{artifact_id}"
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(artifact.get("digest"))) is None):
+        raise QualificationError("container artifact authority is foreign, expired or malformed")
+    try:
+        started, created, completed = (datetime.fromisoformat(item) for item in (
+            job["started_at"], artifact["created_at"], job["completed_at"]))
+        if any(item.tzinfo is None for item in (started, created, completed)) or not started <= created <= completed:
+            raise ValueError("outside producer execution")
+    except (KeyError, TypeError, ValueError) as error:
+        raise QualificationError("container artifact was not created within its producer execution") from error
+    return {"schema_version": 1, "kind": "sorotte-container-producer-authority", "result": "passed",
+            "candidate_sha": sha, "repository": repository, "publication_run_id": int(run_id),
+            "publication_final_attempt": final_attempt, "version_tag": version_tag,
+            "container_job_id": job["id"], "container_attempt": job["run_attempt"],
+            "artifact_id": artifact_id, "artifact_name": name, "artifact_digest": artifact["digest"]}
+
+
+def producer_collection(get, endpoint: str, key: str) -> list[dict]:
+    """Read every page, with a bounded inventory and no duplicate/truncated rows."""
+    rows = []
+    total = None
+    for page in range(1, 21):
+        separator = "&" if "?" in endpoint else "?"
+        value = get(f"{endpoint}{separator}per_page=100&page={page}")
+        count, items = value.get("total_count"), value.get(key)
+        if (type(count) is not int or not 0 <= count <= 2000 or not isinstance(items, list)
+            or len(items) > 100 or (total is not None and count != total)):
+            raise QualificationError("producer API inventory is malformed, changing or too large")
+        total = count
+        rows.extend(items)
+        ids = [item.get("id") for item in rows if isinstance(item, dict)]
+        if len(ids) != len(rows) or any(type(item) is not int or item < 1 for item in ids) or len(ids) != len(set(ids)):
+            raise QualificationError("producer API inventory has malformed or duplicate identities")
+        if len(rows) == total:
+            return rows
+        if len(rows) > total or len(items) != 100:
+            raise QualificationError("producer API inventory is truncated or inconsistent")
+    raise QualificationError("producer API inventory exceeds the bounded page limit")
+
+
+def resolve_container_producer(sha: str, repository: str, run_id: str, version_tag: str, evidence_dir: Path) -> dict:
+    evidence_dir.mkdir(parents=True, exist_ok=False)
+    inputs = []
+    deadline = time.monotonic() + 300
+
+    def get(endpoint: str) -> dict:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise QualificationError("container producer lookup exceeded its five-minute deadline")
+        path = evidence_dir / f"response-{len(inputs) + 1:03}.json"
+        request = evidence_dir / f"request-{len(inputs) + 1:03}.json"
+        write(request, {"method": "GET", "url": f"https://api.github.com/repos/{repository}/{endpoint}"})
+        inputs.append({"endpoint": endpoint, "path": path.name, "request_path": request.name,
+                       "request_sha256": artifact_input.sha256_file(request)})
+        with path.open("xb") as output, path.with_suffix(".stderr.log").open("xb") as error:
+            result = subprocess.run(["gh", "api", "--hostname", "github.com", "--method", "GET",
+                f"repos/{repository}/{endpoint}"], stdout=output, stderr=error, timeout=min(30, remaining))
+        if result.returncode:
+            raise QualificationError(f"container producer lookup failed; original response retained at {path}")
+        inputs[-1]["sha256"] = artifact_input.sha256_file(path)
+        return read(path)
+
+    value = get(f"actions/runs/{run_id}")
+    validate_producer_run(value, sha, repository, run_id, version_tag)
+    jobs = producer_collection(get, f"actions/runs/{run_id}/jobs?filter=all", "jobs")
+    artifacts = producer_collection(get, f"actions/runs/{run_id}/artifacts", "artifacts")
+    selected = select_container_producer(value, jobs, artifacts, sha, repository, run_id, version_tag)
+    job = get(f"actions/jobs/{selected['container_job_id']}")
+    artifact = get(f"actions/artifacts/{selected['artifact_id']}")
+    if (job != next(item for item in jobs if item["id"] == selected["container_job_id"])
+        or artifact != next(item for item in artifacts if item["id"] == selected["artifact_id"])):
+        raise QualificationError("selected container job or artifact changed during lookup")
+    after = get(f"actions/runs/{run_id}")
+    if validate_producer_run(after, sha, repository, run_id, version_tag) != selected["publication_final_attempt"]:
+        raise QualificationError("publication run attempt changed during container lookup")
+    selected["inputs"] = inputs
+    write(evidence_dir / "producer.json", selected)
+    return selected
 
 
 def archive_evidence(root: Path, output: Path, sha: str) -> None:
@@ -316,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     provenance.add_argument("--run-id", required=True)
     provenance.add_argument("--version-tag", required=True)
     provenance.add_argument("--repository", required=True)
+    provenance.add_argument("--evidence-dir", type=Path, default=Path("target/container-producer-authority"))
     archive = sub.add_parser("archive-evidence")
     archive.add_argument("--candidate-sha", required=True)
     archive.add_argument("--evidence-dir", required=True, type=Path)
@@ -351,12 +497,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify-producer-run":
             if not re.fullmatch(r"[0-9]+", args.run_id) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
                 raise QualificationError("invalid explicit producer identity")
-            value = json.loads(run(["gh", "api", f"repos/{args.repository}/actions/runs/{args.run_id}"]))
-            attempt = validate_producer_run(value, args.candidate_sha, args.repository, args.run_id, args.version_tag)
+            value = resolve_container_producer(args.candidate_sha, args.repository, args.run_id, args.version_tag, args.evidence_dir)
             if os.environ.get("GITHUB_OUTPUT"):
                 with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-                    output.write(f"attempt={attempt}\n")
-            print(f"authorized producer {args.run_id} attempt {attempt}")
+                    for key in ("publication_final_attempt", "container_attempt", "container_job_id", "artifact_id"):
+                        output.write(f"{key}={value[key]}\n")
+            print(f"authorized container job {value['container_job_id']} attempt {value['container_attempt']} "
+                  f"from publication run {args.run_id} final attempt {value['publication_final_attempt']}; artifact {value['artifact_id']}")
         elif args.command == "archive-evidence":
             archive_evidence(args.evidence_dir, args.output_dir, args.candidate_sha)
         elif args.command == "inputs":
