@@ -8,7 +8,7 @@ entrypoints. Historical audits and release ledgers describe their recorded
 snapshots; they do not replace the current source or attest later candidates.
 The [0.2.9 implementation ledger](audits/v0.2.9-implementation.md) records that
 release's audit closure. Use the [testing process](TESTING_PROCESS.md) for the
-supported preflight, command ladder, required checks, inventory updates and
+supported preflight, command ladder, required checks, test execution accounting and
 evidence reuse. Its [implementation ledger](audits/testing-process-implementation-2026-09-06.md)
 separates executed validation from pending hosted or native acceptance.
 
@@ -285,6 +285,13 @@ Useful Python reference files:
 - `../syncplay/syncplay/server.py`
 
 ## Test Placement
+
+GUI filesystem fixtures can use `app::testing::support::test_temp_dir(label)`.
+Keep its `TempDir` owner alive until files and workers are closed; it allocates a
+separate directory for each call and removes it on drop, including assertion
+unwinding. Put fixture files underneath `root.path()`. Avoid timestamp-derived
+paths or deleting a candidate path before allocation. Existing `test_temp_root`
+callers retain their explicit cleanup responsibility.
 
 Every ignored Rust test is registered in `coverage/ignored-tests.toml`.
 Subprocess helpers use the `subprocess-fixture` tier, which binds a nonignored

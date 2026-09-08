@@ -14,6 +14,10 @@ import unittest
 import zipfile
 from unittest import mock
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_assets as assets
 import release_qualification as qualification
@@ -579,7 +583,7 @@ class PackageWorkflowTests(unittest.TestCase):
         import yaml
 
         root = Path(__file__).resolve().parents[2]
-        action = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+        action = f"actions/create-github-app-token@{VERIFICATION_PINS['actions']['actions/create-github-app-token']['sha']}"
         files = ("stable-release.yml", "sorotte-server-release.yml", "sorotte-gui-release.yml", "publish-server-container.yml")
         authorizations = 0
         for name in files:

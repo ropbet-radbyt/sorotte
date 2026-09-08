@@ -196,6 +196,18 @@ def validate_pin_projections(root: Path = ROOT) -> dict:
     for environment, selected in environments.items():
         path = f"requirements/{environment}.txt"
         equal(package_pins(read(path), path, directive=True), {name: central_python[name] for name in selected}, path)
+    try:
+        from verification_pin_sync import plan as pin_plan
+    except ModuleNotFoundError:
+        from scripts.verification_pin_sync import plan as pin_plan
+    # Selection preflight runs before third-party Python packages are installed.
+    # The static policy lane and `verify.py pins --check` also check workflow
+    # projections using the already-required PyYAML dependency.
+    changes, projection_files = pin_plan(root, workflows=False)
+    checked.update(projection_files)
+    if changes:
+        raise ValueError("tool pin projections differ: " + ", ".join(change.path for change in changes)
+                         + "; preview with python scripts/verify.py pins, then apply --write")
     return {"status": "passed", "manifest_sha256": digest(root / "coverage/verification-tools.toml"),
             "checked_files": sorted(checked), "constraints_packages": len(constraints)}
 

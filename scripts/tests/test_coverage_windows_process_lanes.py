@@ -11,6 +11,10 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import coverage_profile_lanes as common  # noqa: E402
@@ -152,7 +156,8 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
             "profile_delta_count": len(deltas),
             "profile_deltas": deltas,
             "profile_removed_count": 0,
-            "oracle": lanes.expected_oracle(lane),
+            "oracle": (lanes.libtest_oracle(lane, self.libtest_output(lane), b"")
+                       if lane in lanes.PROFILE_LANES else {"kind": "llvm-profile-merge", "summary_detected": True}),
             "errors": [],
         }
 
@@ -216,14 +221,16 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         }
 
     @staticmethod
-    def libtest_output(lane: str) -> bytes:
-        tests = sorted(lanes.EXPECTED_TESTS[lane])
+    def libtest_output(lane: str, *, extra: tuple[str, ...] = (), filtered: int | None = None) -> bytes:
+        tests = sorted([*lanes.REQUIRED_TESTS[lane], *extra])
+        if filtered is None:
+            filtered = 0 if lane in lanes.FULL_SUITE_LANES else 99
         test_noun = "test" if len(tests) == 1 else "tests"
         lines = [f"running {len(tests)} {test_noun}"]
         lines.extend(f"test {test} ... ok" for test in tests)
         lines.append(
             f"test result: ok. {len(tests)} passed; 0 failed; 0 ignored; "
-            f"0 measured; {lanes.EXPECTED_FILTERED_OUT[lane]} filtered out; "
+            f"0 measured; {filtered} filtered out; "
             "finished in 0.10s"
         )
         return ("\n".join(lines) + "\n").encode("utf-8")
@@ -231,7 +238,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
     def test_rustc_identity_is_exactly_pinned(self) -> None:
         output = b"\n".join(
             [
-                b"rustc 1.98.1 (48a229cea 2026-09-01)",
+                f"rustc {VERIFICATION_PINS['tools']['rust']} ({VERIFICATION_PINS['rust-windows']['commit'][:9]} 2026-09-01)".encode(),
                 b"binary: rustc",
                 f"commit-hash: {lanes.PINNED_RUST_COMMIT}".encode(),
                 b"commit-date: 2026-09-01",
@@ -245,12 +252,15 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         self.assertEqual(identity["host"], lanes.PINNED_RUST_HOST)
         self.assertEqual(identity["commit_hash"], lanes.PINNED_RUST_COMMIT)
 
-        stale = output.replace(b"release: 1.98.1", b"release: 1.97.0")
-        with self.assertRaisesRegex(
-            common.CoverageProfileLaneError,
-            "release must be 1.98.1",
+        # These corruptions remain independent of the approved pin values.
+        for before, after in (
+            (f"release: {lanes.PINNED_RUST_RELEASE}", "release: 0.0.0"),
+            (f"commit-hash: {lanes.PINNED_RUST_COMMIT}", "commit-hash: " + "0" * 40),
+            (f"host: {lanes.PINNED_RUST_HOST}", "host: x86_64-unknown-linux-gnu"),
+            (f"LLVM version: {lanes.PINNED_LLVM_VERSION}", "LLVM version: 0.0.0"),
         ):
-            lanes.parse_rustc_identity(command_result(stale))
+            with self.subTest(field=before), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.parse_rustc_identity(command_result(output.replace(before.encode(), after.encode())))
 
     def test_untracked_source_status_rejects_links_and_windows_reparse_points(
         self,
@@ -347,12 +357,11 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                 self.assertGreater(oracle["passed"], 0)
                 self.assertEqual(
                     oracle["tests"],
-                    sorted(lanes.EXPECTED_TESTS[lane]),
+                    sorted(lanes.REQUIRED_TESTS[lane]),
                 )
 
-    def test_complete_updater_lane_uses_reviewed_inventory_and_rejects_partial_or_ignored_runs(self) -> None:
+    def test_complete_updater_lane_requires_regressions_and_rejects_partial_or_ignored_runs(self) -> None:
         lane = "updater-transaction-process"
-        self.assertEqual(lanes.EXPECTED_TESTS[lane], tuple(lanes.reviewed_tests("updater-bin")))
         complete = self.libtest_output(lane)
         fixture_test = b"tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open"
         for faulty in (
@@ -363,34 +372,32 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
             with self.subTest(output=faulty), self.assertRaises(common.CoverageProfileLaneError):
                 lanes.libtest_oracle(lane, faulty, b"")
 
-    def test_mpv_lane_filtered_counts_share_reviewed_inventory_size(self) -> None:
-        for lane in (
-            "mpv-named-pipe", "mpv-external-process",
-            "mpv-owned-process", "mpv-bridge-resources",
-        ):
+    def test_new_selected_tests_run_without_updating_required_regressions(self) -> None:
+        cases = {
+            "updater-transaction-process": "tests::new_updater_regression",
+            "updater-installed-self-replacement": "new_installed_regression",
+            "media-tool-process": "app::media_match_support::process_fault_tests::new_media_regression",
+            "shared-settings-reader": "sorotte_ini::read_transaction_tests::new_reader_regression",
+        }
+        for lane, added in cases.items():
             with self.subTest(lane=lane):
-                self.assertEqual(
-                    len(lanes.EXPECTED_TESTS[lane])
-                    + lanes.EXPECTED_FILTERED_OUT[lane],
-                    lanes.MPV_LIBTEST_INVENTORY_SIZE,
-                )
-        self.assertEqual(lanes.MPV_LIBTEST_INVENTORY_SIZE, 459)
+                output = self.libtest_output(lane, extra=(added,))
+                oracle = lanes.libtest_oracle(lane, output, b"")
+                self.assertIn(added, oracle["tests"])
+                report = self.valid_report()
+                report["lanes"][lane]["oracle"] = oracle
+                lanes.validate_report_document(report)
 
     def test_shared_settings_reader_lane_preserves_acl_coverage_and_exact_registered_parents(self) -> None:
         lane = "shared-settings-reader"
-        expected = tuple(name for name in lanes.reviewed_tests("client-app-lib")
-                         if name.startswith(lanes.SETTINGS_READER_PREFIX)
-                         and name != lanes.SETTINGS_READER_FIXTURE)
-        self.assertEqual(lanes.EXPECTED_TESTS[lane], expected)
-        self.assertEqual(len(expected), 13)
+        expected = lanes.REQUIRED_TESTS[lane]
         self.assertIn(lanes.SETTINGS_READER_PREFIX + "windows_case_aliases_share_the_read_lock_and_relocation_identity", expected)
         for parent in ("cross_process_reader_waits_through_a_writer_owned_missing_name",
                        "cross_process_reader_observes_clear_only_after_the_writer_unlocks"):
             self.assertIn(lanes.SETTINGS_READER_PREFIX + parent, expected)
         self.assertEqual(lanes.LANE_COMMANDS[lane][-2:], ("--skip", lanes.SETTINGS_READER_FIXTURE))
-        self.assertEqual(len(lanes.EXPECTED_TESTS["private-settings"]), 4)
+        self.assertEqual(len(lanes.REQUIRED_TESTS["private-settings"]), 4)
         self.assertIn("sorotte_ini::windows_tests::", lanes.LANE_COMMANDS["private-settings"])
-        self.assertEqual(len(expected) + lanes.EXPECTED_FILTERED_OUT[lane], len(lanes.reviewed_tests("client-app-lib")))
 
     def test_shared_settings_reader_rejects_missing_extra_ignored_or_standalone_helper_results(self) -> None:
         lane = "shared-settings-reader"
@@ -426,19 +433,19 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         complete = self.libtest_output(lane)
         with self.assertRaisesRegex(
             common.CoverageProfileLaneError,
-            "exact test inventory drifted",
+            "required test selection|running count",
         ):
             lanes.libtest_oracle(
                 lane,
                 complete.replace(
-                    lanes.EXPECTED_TESTS[lane][0].encode(),
+                    lanes.REQUIRED_TESTS[lane][0].encode(),
                     b"tests::missing",
                 ),
                 b"",
             )
         with self.assertRaisesRegex(
             common.CoverageProfileLaneError,
-            "exact test inventory drifted",
+            "required test selection|running count",
         ):
             lanes.libtest_oracle(
                 lane,
@@ -463,22 +470,64 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
                 b"assertion skipped due to missing dependency",
             )
 
-    def test_libtest_oracle_rejects_filtered_count_drift(self) -> None:
+    def test_unrelated_filtered_counts_are_observations_in_producer_and_report(self) -> None:
         lane = "media-tool-process"
-        output = self.libtest_output(lane)
-        filtered = lanes.EXPECTED_FILTERED_OUT[lane]
-        with self.assertRaisesRegex(
-            common.CoverageProfileLaneError,
-            "summary or filtered count drifted",
-        ):
-            lanes.libtest_oracle(
-                lane,
-                output.replace(
-                    f"{filtered} filtered out".encode(),
-                    f"{filtered + 1} filtered out".encode(),
-                ),
-                b"",
-            )
+        for filtered in (0, 1188, 1189, 1200):
+            with self.subTest(filtered=filtered):
+                oracle = lanes.libtest_oracle(lane, self.libtest_output(lane, filtered=filtered), b"")
+                self.assertEqual(oracle["filtered_out"], filtered)
+                report = self.valid_report()
+                report["lanes"][lane]["oracle"] = oracle
+                lanes.validate_report_document(report)
+
+    def test_required_execution_rejects_missing_names_even_with_consistent_totals(self) -> None:
+        lane = "media-tool-process"
+        original = self.libtest_output(lane)
+        required = lanes.REQUIRED_TESTS[lane][0]
+        # A same-count substitution cannot hide removal of a required behavior.
+        replaced = original.replace(required.encode(), b"app::media_match_support::process_fault_tests::replacement")
+        with self.assertRaisesRegex(common.CoverageProfileLaneError, "missing="):
+            lanes.libtest_oracle(lane, replaced, b"")
+
+    def test_complete_suite_must_not_filter_and_focused_suite_must_not_run_helper(self) -> None:
+        for lane in lanes.FULL_SUITE_LANES:
+            with self.subTest(lane=lane), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, self.libtest_output(lane, filtered=1), b"")
+        lane = "shared-settings-reader"
+        for extra in (lanes.SETTINGS_READER_FIXTURE, "unrelated::reader"):
+            with self.subTest(extra=extra), self.assertRaisesRegex(common.CoverageProfileLaneError, "outside="):
+                lanes.libtest_oracle(lane, self.libtest_output(lane, extra=(extra,)), b"")
+
+    def test_result_accounting_rejects_duplicates_failures_ignores_and_malformed_summaries(self) -> None:
+        lane = "media-tool-process"
+        good = self.libtest_output(lane)
+        first = f"test {lanes.REQUIRED_TESTS[lane][0]} ... ok\n".encode()
+        cases = {
+            "duplicate-result": good + first,
+            "failed-result": good.replace(first, first.replace(b" ... ok", b" ... FAILED")),
+            "ignored-result": good.replace(first, first.replace(b" ... ok", b" ... ignored")),
+            "failed-summary": good.replace(b"0 failed", b"1 failed"),
+            "ignored-summary": good.replace(b"0 ignored", b"1 ignored"),
+            "measured-summary": good.replace(b"0 measured", b"1 measured"),
+            "negative-filtered": good.replace(b"99 filtered", b"-1 filtered"),
+            "duplicate-header": good + b"running 1 test\n",
+            "duplicate-summary": good + good.splitlines()[-1] + b"\n",
+            "invalid-encoding": good + b"\xff",
+        }
+        for name, output in cases.items():
+            with self.subTest(name=name), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.libtest_oracle(lane, output, b"")
+
+    def test_persisted_result_rejects_inconsistent_counts_types_and_missing_required_tests(self) -> None:
+        lane = "media-tool-process"
+        for field, value in (("passed", 9), ("passed", True), ("failed", False),
+                             ("ignored", 1), ("filtered_out", -1), ("filtered_out", False),
+                             ("skip_markers", ["missing tool"]), ("tests", ["replacement"])):
+            with self.subTest(field=field, value=value):
+                report = self.valid_report()
+                report["lanes"][lane]["oracle"][field] = value
+                with self.assertRaises(common.CoverageProfileLaneError):
+                    lanes.validate_report_document(report)
 
     def test_complete_report_validates_without_mutation(self) -> None:
         report = self.valid_report()
@@ -544,7 +593,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         report["lanes"]["mpv-external-process"]["oracle"]["passed"] = 0
         with self.assertRaisesRegex(
             common.CoverageProfileLaneError,
-            "exact required result",
+            "passed must be an integer",
         ):
             lanes.validate_report_document(report)
 

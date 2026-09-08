@@ -106,6 +106,7 @@ fn download_with_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::testing::support::test_temp_dir;
     use std::{
         net::TcpListener,
         sync::{Arc, atomic::Ordering},
@@ -139,27 +140,44 @@ mod tests {
         }
     }
 
-    fn destination() -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        destination_at(nonce)
-    }
-
-    fn destination_at(nonce: u128) -> PathBuf {
-        static NEXT_DESTINATION: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let sequence = NEXT_DESTINATION.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "sorotte-download-{}-{nonce}-{sequence}.tmp",
-            std::process::id()
-        ))
-    }
-
     #[test]
-    fn download_destinations_are_unique_when_timestamp_repeats() {
-        assert_ne!(destination_at(42), destination_at(42));
+    fn concurrent_downloads_keep_payloads_and_cleanup_separate() {
+        let mut downloads = thread::scope(|scope| {
+            let workers: Vec<_> = (0..4u8)
+                .map(|index| {
+                    scope.spawn(move || {
+                        let root = test_temp_dir("download");
+                        let path = root.path().join("package.tmp");
+                        let payload = vec![b'a' + index; 4];
+                        let body = payload.clone();
+                        let (url, worker) = server(move |mut stream| {
+                            stream
+                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")
+                                .unwrap();
+                            stream.write_all(&body).unwrap();
+                        });
+                        let result = download_with_policy(
+                            &url, &path, &AtomicBool::new(false), test_policy(), None,
+                        );
+                        worker.join().unwrap();
+                        assert_eq!(result.unwrap(), lowercase_hex(Sha256::digest(&payload)));
+                        (root, payload)
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let (finished, _) = downloads.pop().unwrap();
+        let finished_path = finished.path().to_path_buf();
+        drop(finished);
+        assert!(!finished_path.exists());
+        for (root, payload) in downloads {
+            assert_eq!(fs::read(root.path().join("package.tmp")).unwrap(), payload);
+            root.close().unwrap();
+        }
     }
 
     #[test]
@@ -177,7 +195,8 @@ mod tests {
             }
             let _ = stream.write_all(b"0\r\n\r\n");
         });
-        let path = destination();
+        let root = test_temp_dir("download");
+        let path = root.path().join("package.tmp");
         let start = Instant::now();
         let digest =
             download_with_policy(&url, &path, &AtomicBool::new(false), test_policy(), None)
@@ -185,8 +204,8 @@ mod tests {
         assert!(start.elapsed() > test_policy().idle);
         assert_eq!(digest, lowercase_hex(Sha256::digest(b"aaaa")));
         assert_eq!(fs::read(&path).unwrap(), b"aaaa");
-        fs::remove_file(path).unwrap();
         worker.join().unwrap();
+        root.close().unwrap();
     }
 
     #[test]
@@ -199,14 +218,15 @@ mod tests {
             let (url, worker) = server(move |mut stream| {
                 let _ = stream.write_all(response.as_bytes());
             });
-            let path = destination();
+            let root = test_temp_dir("download");
+            let path = root.path().join("package.tmp");
             let error =
                 download_with_policy(&url, &path, &AtomicBool::new(false), test_policy(), None)
                     .unwrap_err();
             assert!(error.contains("byte budget"));
             assert!(fs::metadata(&path).map_or(true, |metadata| metadata.len() <= 8));
-            let _ = fs::remove_file(path);
             worker.join().unwrap();
+            root.close().unwrap();
         }
     }
 
@@ -221,15 +241,16 @@ mod tests {
             server_cancelled.store(true, Ordering::Release);
             thread::sleep(Duration::from_millis(300));
         });
-        let path = destination();
+        let root = test_temp_dir("download");
+        let path = root.path().join("package.tmp");
         let mut policy = test_policy();
         policy.idle = Duration::from_secs(10);
         let start = Instant::now();
         let error = download_with_policy(&url, &path, &cancelled, policy, None).unwrap_err();
         assert!(error.contains("cancelled"));
         assert!(start.elapsed() < Duration::from_secs(2));
-        let _ = fs::remove_file(path);
         worker.join().unwrap();
+        root.close().unwrap();
     }
 
     #[test]
@@ -239,15 +260,16 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n");
             thread::sleep(Duration::from_millis(500));
         });
-        let path = destination();
+        let root = test_temp_dir("download");
+        let path = root.path().join("package.tmp");
         let start = Instant::now();
         assert!(
             download_with_policy(&url, &path, &AtomicBool::new(false), test_policy(), None)
                 .is_err()
         );
         assert!(start.elapsed() < Duration::from_secs(2));
-        let _ = fs::remove_file(path);
         worker.join().unwrap();
+        root.close().unwrap();
 
         let (url, worker) = server(|mut stream| {
             let _ = stream.write_all(
@@ -260,13 +282,14 @@ mod tests {
                 }
             }
         });
-        let path = destination();
+        let root = test_temp_dir("download");
+        let path = root.path().join("package.tmp");
         let mut policy = test_policy();
         policy.bytes = 100;
         policy.overall = Duration::from_millis(160);
         assert!(download_with_policy(&url, &path, &AtomicBool::new(false), policy, None).is_err());
         assert!(fs::metadata(&path).is_ok_and(|metadata| metadata.len() < 20));
-        let _ = fs::remove_file(path);
         worker.join().unwrap();
+        root.close().unwrap();
     }
 }

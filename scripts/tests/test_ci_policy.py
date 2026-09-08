@@ -9,12 +9,16 @@ import unittest
 from typing import Any
 
 import yaml
+
+from scripts.verification_tools import pins as verification_pins
+
 try:
     from ci_invariants import by_contract, canonicalize_labels, command_step, required_graph
 except ModuleNotFoundError:
     from scripts.ci_invariants import by_contract, canonicalize_labels, command_step, required_graph
 
 
+VERIFICATION_PINS = verification_pins()
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GIT_ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -43,38 +47,12 @@ MPV_SOURCE_EXPRESSION = (
 )
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
-    "actions/cache": (
-        "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
-        "v6.1.0",
-    ),
-    "actions/checkout": (
-        "3d3c42e5aac5ba805825da76410c181273ba90b1",
-        "v7.0.1",
-    ),
-    "dtolnay/rust-toolchain": (
-        "6bed0761d98439e5a578e2877258200ad565ba87",
-        "stable resolved 2026-09-08",
-    ),
-    "actions/setup-python": (
-        "5fda3b95a4ea91299a34e894583c3862153e4b97",
-        "v7.0.0",
-    ),
-    "actions/setup-go": (
-        "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
-        "v7.0.0",
-    ),
-    "actions/upload-artifact": (
-        "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-        "v7.0.1",
-    ),
-    "actions/download-artifact": (
-        "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-        "v8.0.1",
-    ),
-    "taiki-e/install-action": (
-        "d438492cf8a250514fa2d34b30bc3c0dc37c65ff",
-        "v2.87.8",
-    ),
+    name: (VERIFICATION_PINS["actions"][name]["sha"],
+           VERIFICATION_PINS["actions"][name]["reference"])
+    for name in (
+        "actions/cache", "actions/checkout", "dtolnay/rust-toolchain", "actions/setup-python",
+        "actions/setup-go", "actions/upload-artifact", "actions/download-artifact", "taiki-e/install-action",
+    )
 }
 PINNED_USES = {
     action: f"{action}@{sha}" for action, (sha, _comment) in ACTION_PINS.items()
@@ -749,7 +727,7 @@ class CiPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     step.get("with"),
                     {
-                        "toolchain": "1.98.1",
+                        "toolchain": VERIFICATION_PINS["tools"]["rust"],
                         "components": components,
                     },
                 )
@@ -1017,7 +995,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             linux_nextest_installer.get("with"),
             {
-                "tool": "cargo-nextest@0.9.143",
+                "tool": f"cargo-nextest@{VERIFICATION_PINS['tools']['cargo-nextest']}",
                 "fallback": "none",
             },
         )
@@ -1187,7 +1165,7 @@ done""",
         )
         self.assertEqual(
             coverage_installer.get("with"),
-            {"tool": "cargo-llvm-cov@0.9.1"},
+            {"tool": f"cargo-llvm-cov@{VERIFICATION_PINS['tools']['cargo-llvm-cov']}"},
         )
         profiles = self.assert_exact_run(
             self.jobs,
@@ -1524,7 +1502,7 @@ done""",
         self.assertEqual(
             windows_nextest_installer.get("with"),
             {
-                "tool": "cargo-nextest@0.9.143",
+                "tool": f"cargo-nextest@{VERIFICATION_PINS['tools']['cargo-nextest']}",
                 "fallback": "none",
             },
         )
@@ -1645,7 +1623,7 @@ done""",
         )
         self.assertEqual(
             windows_coverage_installer.get("with"),
-            {"tool": "cargo-llvm-cov@0.9.1"},
+            {"tool": f"cargo-llvm-cov@{VERIFICATION_PINS['tools']['cargo-llvm-cov']}"},
         )
         windows_coverage_checkout = named_step(
             self.jobs,
@@ -2422,7 +2400,7 @@ done""",
         self.assertEqual(
             coverage_rust.get("with"),
             {
-                "toolchain": "1.98.1",
+                "toolchain": VERIFICATION_PINS["tools"]["rust"],
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -2438,7 +2416,7 @@ done""",
         self.assertEqual(
             windows_rust.get("with"),
             {
-                "toolchain": "1.98.1",
+                "toolchain": VERIFICATION_PINS["tools"]["rust"],
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -2468,7 +2446,7 @@ done""",
             installer.get("uses"),
             PINNED_USES["taiki-e/install-action"],
         )
-        self.assertEqual(installer.get("with"), {"tool": "cargo-llvm-cov@0.9.1"})
+        self.assertEqual(installer.get("with"), {"tool": f"cargo-llvm-cov@{VERIFICATION_PINS['tools']['cargo-llvm-cov']}"})
         self.assert_exact_run(
             coverage_jobs,
             "coverage",

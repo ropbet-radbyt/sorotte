@@ -11,6 +11,10 @@ import yaml
 
 from scripts import gui_native_smoke_contract
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = (
@@ -19,16 +23,16 @@ WORKFLOW_PATH = (
 ACTIONLINT_CONFIG_PATH = REPO_ROOT / ".github" / "actionlint.yaml"
 
 CHECKOUT_ACTION = (
-    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+    f"actions/checkout@{VERIFICATION_PINS['actions']['actions/checkout']['sha']}"
 )
 RUST_ACTION = (
-    "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87"
+    f"dtolnay/rust-toolchain@{VERIFICATION_PINS['actions']['dtolnay/rust-toolchain']['sha']}"
 )
 PYTHON_ACTION = (
-    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
+    f"actions/setup-python@{VERIFICATION_PINS['actions']['actions/setup-python']['sha']}"
 )
 UPLOAD_ACTION = (
-    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    f"actions/upload-artifact@{VERIFICATION_PINS['actions']['actions/upload-artifact']['sha']}"
 )
 
 RUNNER_LABELS = [
@@ -290,7 +294,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         "id": "rust",
         "if": "steps.source_binding.outcome == 'success'",
         "uses": RUST_ACTION,
-        "with": {"toolchain": "1.98.1"},
+        "with": {"toolchain": VERIFICATION_PINS["tools"]["rust"]},
     }:
         raise AssertionError("pinned Rust setup contract drifted")
 

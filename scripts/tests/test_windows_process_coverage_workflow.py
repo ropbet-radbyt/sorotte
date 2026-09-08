@@ -6,14 +6,18 @@ import unittest
 
 import yaml
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
-CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-RUST = "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87"
-PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
-INSTALL = "taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff"
-UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+CHECKOUT = f"actions/checkout@{VERIFICATION_PINS['actions']['actions/checkout']['sha']}"
+RUST = f"dtolnay/rust-toolchain@{VERIFICATION_PINS['actions']['dtolnay/rust-toolchain']['sha']}"
+PYTHON = f"actions/setup-python@{VERIFICATION_PINS['actions']['actions/setup-python']['sha']}"
+INSTALL = f"taiki-e/install-action@{VERIFICATION_PINS['actions']['taiki-e/install-action']['sha']}"
+UPLOAD = f"actions/upload-artifact@{VERIFICATION_PINS['actions']['actions/upload-artifact']['sha']}"
 
 
 def normalized(value: object) -> str:
@@ -74,7 +78,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(
             rust.get("with"),
             {
-                "toolchain": "1.98.1",
+                "toolchain": VERIFICATION_PINS["tools"]["rust"],
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -87,7 +91,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(install["uses"], INSTALL)
         self.assertEqual(
             install.get("with"),
-            {"tool": "cargo-llvm-cov@0.9.1"},
+            {"tool": f"cargo-llvm-cov@{VERIFICATION_PINS['tools']['cargo-llvm-cov']}"},
         )
 
     def test_producer_and_exports_are_exact_and_fail_closed(self) -> None:

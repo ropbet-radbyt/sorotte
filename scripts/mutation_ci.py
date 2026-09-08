@@ -757,14 +757,12 @@ def verification_input_files(
         "scripts/mutation_tool_canary.py",
         "scripts/verify.py",
         "scripts/verification_tools.py",
-        "scripts/test_inventory.py",
         "scripts/artifact_input.py",
         "coverage/mutation-selection.toml",
         "coverage/mutation-execution.toml",
         "coverage/mutation-report-set.json",
         "coverage/verification-tools.toml",
         "coverage/verification-lanes.json",
-        "coverage/test-inventories.json",
         ".github/workflows/rust-mutation.yml",
     ):
         candidate = repo_root / relative

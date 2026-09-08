@@ -5,6 +5,10 @@ import unittest
 
 import yaml
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -14,11 +18,11 @@ SERVER_RELEASE_PATH = WORKFLOWS / "sorotte-server-release.yml"
 CONTAINER_RELEASE_PATH = WORKFLOWS / "publish-server-container.yml"
 
 ACTION_USES = {
-    "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-    "actions/download-artifact": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "actions/upload-artifact": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "dtolnay/rust-toolchain": "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87",
+    "actions/checkout": f"actions/checkout@{VERIFICATION_PINS['actions']['actions/checkout']['sha']}",
+    "actions/setup-python": f"actions/setup-python@{VERIFICATION_PINS['actions']['actions/setup-python']['sha']}",
+    "actions/download-artifact": f"actions/download-artifact@{VERIFICATION_PINS['actions']['actions/download-artifact']['sha']}",
+    "actions/upload-artifact": f"actions/upload-artifact@{VERIFICATION_PINS['actions']['actions/upload-artifact']['sha']}",
+    "dtolnay/rust-toolchain": f"dtolnay/rust-toolchain@{VERIFICATION_PINS['actions']['dtolnay/rust-toolchain']['sha']}",
 }
 
 

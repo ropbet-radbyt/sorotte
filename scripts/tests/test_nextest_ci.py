@@ -6,6 +6,10 @@ import tempfile
 import textwrap
 import unittest
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -195,7 +199,7 @@ class NextestConfigPolicyTests(unittest.TestCase):
                 nextest_ci.validate_config(junit_field)
 
     def test_command_line_reasserts_policy_over_environment_and_overrides(self) -> None:
-        self.assertEqual(nextest_ci.PINNED_NEXTEST_VERSION, "0.9.143")
+        self.assertEqual(nextest_ci.PINNED_NEXTEST_VERSION, VERIFICATION_PINS["tools"]["cargo-nextest"])
         retry_index = nextest_ci.NEXTEST_COMMAND.index("--retries")
         self.assertEqual(nextest_ci.NEXTEST_COMMAND[retry_index + 1], "1")
         status_index = nextest_ci.NEXTEST_COMMAND.index("--status-level")

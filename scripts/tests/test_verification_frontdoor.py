@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import verify
 import merge_gate
 import coverage_tool_canary
-import test_inventory
 import verification_tools
 
 
@@ -141,16 +140,7 @@ class ReleaseAuthorityTests(unittest.TestCase):
             with self.subTest(variant=variant), self.assertRaises(merge_gate.GateError): self.authorize(api)
 
 
-class InventoryAndCoverageTests(unittest.TestCase):
-    def test_proposed_removals_are_visible_without_rewriting_authority(self):
-        self.assertEqual(test_inventory.difference(["required", "old"], ["required", "new"]),
-                         {"added": ["new"], "removed": ["old"]})
-
-    def test_ambiguous_binary_inventory_fails(self):
-        with self.assertRaises(ValueError):
-            test_inventory.flatten({"rust-suites": {"a": {"status": "listed", "testcases": {"same": {}}},
-                                                    "b": {"status": "listed", "testcases": {"same": {}}}}})
-
+class CoverageTests(unittest.TestCase):
     def test_unregistered_worker_or_covered_negative_line_fails(self):
         sources = {"lib.rs": coverage_tool_canary.LIB, "worker.rs": coverage_tool_canary.WORKER}
         files = []

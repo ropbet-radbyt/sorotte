@@ -67,23 +67,30 @@ It uses Cargo's ordinary default-feature test harness, with no retry or
 attempt, process logs, elapsed time and owned cleanup. A timeout or missing
 workspace receipt cannot qualify the lane. Its source is the actual checkout
 commit, which can be the prospective PR merge rather than the event's PR head.
-Compile-dependent inventory preparation is a separate step:
 
-```powershell
-python scripts/test_inventory.py propose --output target/verification/proposed-inventory.json
-python scripts/test_inventory.py diff --proposed target/verification/proposed-inventory.json
-python scripts/test_inventory.py check --output target/verification/checked-inventory.json
-python scripts/verify.py run --lane coverage-canary --output target/verification/coverage-attempt-1
-```
+Ordinary Cargo and nextest runs discover the current tests themselves. Adding a
+test requires no global inventory file, refresh command or unrelated count edit.
+The required jobs continue to run the default-feature Cargo suite, all-feature
+nextest and doctests in their existing execution modes.
 
-Review inventory additions, removals and ignore changes before updating
-`coverage/test-inventories.json`. Discovery cannot overwrite that authority.
-Complete inventories supply totals; exact named selections still define required
-responsibilities. Empty selections, missing required tests and unexpected skips
-remain failures.
-The complete Windows updater transaction lane consumes the reviewed `updater-bin`
-scope directly. Adding, removing or ignoring an updater test therefore produces
-one explicit central inventory diff before it can qualify instrumented coverage.
+Focused coverage jobs declare required regression tests for their behavior.
+Every required name must pass, and every additional test selected by that job
+must also pass. Headers, individual results and summaries must agree; duplicates,
+unexpected skips, omitted required tests and tests outside the command's selector
+are failures. Filtered-out totals are recorded as observations. Full updater
+jobs additionally require zero filtered tests. A rename or removal of a required
+regression needs a corresponding review of that job's behavior requirement.
+
+Complete live compatibility keeps runtime discovery because its custom consumer
+accounts for every discovered test as executed, explicitly ignored or skipped.
+Required mode forbids optional skip paths; independent live sentinels and the
+explicit fixture-generator ignore policy remain mandatory. New ordinary tests
+are automatically included in that same execution accounting.
+
+Mutation retains its independent per-scope discovery and source binding. Test
+changes select their package and declared transitive responsibilities without a
+global test-list update forcing an unrelated full campaign. Changes to mutation
+policy, shared tooling, compiler inputs and lockfiles still require full work.
 
 ## Required checks and source subjects
 
@@ -152,6 +159,44 @@ an unavailable required proof. The pinned minimum/newest real-mpv tests and the
 independent lifecycle oracle remain separate from fake-server readiness canaries.
 
 ## Inputs and evidence
+
+### Updating verification tooling
+
+For Rust, cargo-nextest, cargo-llvm-cov, Syft, Cosign and GitHub Actions, edit
+the approved values in `coverage/verification-tools.toml`. A Rust update also
+requires its reviewed `rust-windows` commit/host/LLVM identity from `rustc -vV`.
+Action entries retain both the immutable commit SHA and the upstream review label.
+Then use the existing verification entrypoint:
+
+```powershell
+python -m pip install -r requirements/ci-policy.txt
+python scripts/verify.py pins
+python scripts/verify.py pins --write
+python scripts/verify.py pins --check
+python scripts/verify.py preflight --phase static --output target/verification/pin-update-preflight.json
+```
+
+After installing the existing policy prerequisites, `pins` previews the exact
+patch; `--write` applies it; `--check` reports drift. The static policy tests
+require all projections to match. Selection preflight checks non-workflow
+projections using only the Python standard library, before packages are installed.
+Planning validates all locations before writing. It never downloads tools or
+changes approval data, lockfiles, test inventories, historical evidence, Docker
+image digests or native download hashes. Those inputs keep their existing
+explicit review procedures.
+Python dependency resolution, compatibility baselines and the nightly fuzz
+toolchain likewise retain their separate procedures. This command does not
+claim to resolve or qualify newer versions.
+
+The updater changes declared scalar pin projections in wrappers, workflows,
+workspace/native compiler settings and the container compiler installation.
+Policy tests consume approved versions as data and independently exercise bad
+versions, source identities, missing work and altered workflow authority. A
+routine pin update therefore does not require replacing literals in those tests.
+After projection checks, exercise the actual affected tools and existing required
+lanes; agreeing declarations alone cannot qualify new tool behavior.
+
+### Retaining qualification evidence
 
 `coverage/verification-tools.toml` is the reviewed input manifest. Rust resolution
 uses `--locked`; legacy Python interop verifies the exact clean upstream commit.

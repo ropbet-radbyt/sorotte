@@ -34,7 +34,9 @@ def command_result(
 
 
 def complete_test_inventory() -> list[str]:
-    return interop.reviewed_tests("compat")
+    # A small discovered suite, independent of the repository's current total.
+    return sorted({*interop.REQUIRED_LIVE_SENTINELS, *interop.EXPECTED_IGNORED_TESTS,
+                   "tests::ordinary_regression", "tests::z_other_regression"})
 
 
 def inventory_document(tests: list[str] | None = None) -> dict[str, object]:
@@ -314,7 +316,6 @@ class InventoryAndAccountingTests(unittest.TestCase):
             ),
             interop.REQUIRED_LIVE_SENTINELS,
         )
-        self.assertEqual(interop.EXPECTED_DISCOVERED_TESTS, 152)
 
     def test_complete_and_ignored_inventories_are_exact(self) -> None:
         tests = complete_test_inventory()
@@ -332,28 +333,48 @@ class InventoryAndAccountingTests(unittest.TestCase):
             sorted(interop.EXPECTED_IGNORED_TESTS),
         )
 
-    def test_complete_inventory_rejects_count_drift_in_either_direction(
-        self,
-    ) -> None:
+    def test_discovery_and_execution_adapt_to_new_tests_without_changing_expectations(self) -> None:
+        original = complete_test_inventory()
+        ignored_output = "".join(f"{name}: test\n" for name in sorted(interop.EXPECTED_IGNORED_TESTS)).encode()
+        for tests in (original, sorted([*original, "tests::new_regression"]),
+                      [name for name in original if name != "tests::ordinary_regression"]):
+            with self.subTest(tests=tests):
+                listed = "".join(f"{name}: test\n" for name in tests).encode()
+                inventory = interop.verify_inventory(command_result(interop.LIST_COMMAND, listed),
+                                                    command_result(interop.IGNORED_LIST_COMMAND, ignored_output))
+                result = command_result(interop.TEST_COMMAND, result_output(tests))
+                accounting = interop.account_execution(inventory, result)
+                self.assertEqual(accounting["passed_count"], len(tests) - len(interop.EXPECTED_IGNORED_TESTS))
+                report = valid_report()
+                report["inventory"], report["accounting"] = inventory, accounting
+                interop.validate_report_document(report)
+                incomplete = result_output([name for name in tests if name != "tests::z_other_regression"])
+                with self.assertRaisesRegex(interop.InteropContractError, "missing="):
+                    interop.account_execution(inventory, command_result(interop.TEST_COMMAND, incomplete))
+
+    def test_discovery_rejects_missing_required_sentinel(self) -> None:
+        tests = sorted(set(complete_test_inventory()) - {sorted(interop.REQUIRED_LIVE_SENTINELS)[0]})
+        with self.assertRaisesRegex(interop.InteropContractError, "omits live sentinels"):
+            interop.verify_inventory(
+                command_result(interop.LIST_COMMAND, "".join(f"{name}: test\n" for name in tests).encode()),
+                command_result(interop.IGNORED_LIST_COMMAND, "".join(f"{name}: test\n" for name in sorted(interop.EXPECTED_IGNORED_TESTS)).encode()),
+            )
+
+    def test_discovery_and_execution_reject_filtered_commands_and_missing_ignored_helpers(self) -> None:
         tests = complete_test_inventory()
-        ignored_output = "".join(
-            f"{name}: test\n" for name in sorted(interop.EXPECTED_IGNORED_TESTS)
-        ).encode()
-        for drifted in (tests[:-1], [*tests, "tests::unexpected_extra_test"]):
-            all_output = "".join(
-                f"{name}: test\n" for name in sorted(drifted)
-            ).encode()
-            with self.subTest(discovered=len(drifted)), self.assertRaisesRegex(
-                interop.InteropContractError,
-                "differs from the source-bound expectation",
-            ):
-                interop.verify_inventory(
-                    command_result(interop.LIST_COMMAND, all_output),
-                    command_result(
-                        interop.IGNORED_LIST_COMMAND,
-                        ignored_output,
-                    ),
-                )
+        listed = "".join(f"{name}: test\n" for name in tests).encode()
+        ignored = "".join(f"{name}: test\n" for name in sorted(interop.EXPECTED_IGNORED_TESTS)).encode()
+        for command in (interop.LIST_COMMAND + ("selected_test",), ("cargo", "test", "--list")):
+            with self.subTest(command=command), self.assertRaisesRegex(interop.InteropContractError, "selector-free"):
+                interop.verify_inventory(command_result(command, listed), command_result(interop.IGNORED_LIST_COMMAND, ignored))
+        omitted = sorted(interop.EXPECTED_IGNORED_TESTS)[0]
+        with self.assertRaisesRegex(interop.InteropContractError, "belong to the complete listing"):
+            interop.verify_inventory(
+                command_result(interop.LIST_COMMAND, listed.replace(f"{omitted}: test\n".encode(), b"")),
+                command_result(interop.IGNORED_LIST_COMMAND, ignored),
+            )
+        with self.assertRaisesRegex(interop.InteropContractError, "selector-free"):
+            interop.account_execution(inventory_document(), command_result(interop.TEST_COMMAND + ("filter",), result_output(tests)))
 
     def test_partial_or_unexpected_ignored_inventory_is_rejected(self) -> None:
         tests = complete_test_inventory()
@@ -531,16 +552,10 @@ class ClosedSchemaTests(unittest.TestCase):
         self,
     ) -> None:
         truncated = valid_report()
-        removed = truncated["inventory"]["listed_tests"].pop()
-        truncated["inventory"]["listed_count"] -= 1
-        if removed in truncated["accounting"]["executed_tests"]:
-            truncated["accounting"]["executed_tests"].remove(removed)
-            truncated["accounting"]["executed_count"] -= 1
-            truncated["accounting"]["passed_count"] -= 1
-        with self.assertRaisesRegex(
-            interop.InteropContractError,
-            "source-bound expectation",
-        ):
+        truncated["accounting"]["executed_tests"].remove("tests::z_other_regression")
+        truncated["accounting"]["executed_count"] -= 1
+        truncated["accounting"]["passed_count"] -= 1
+        with self.assertRaisesRegex(interop.InteropContractError, "not exhaustive"):
             interop.validate_report_document(truncated)
 
         missing_sentinel = valid_report()

@@ -12,6 +12,10 @@ import sys
 import unittest
 from unittest import mock
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import mutation_campaign as campaign
 import mutation_ci as ci
@@ -83,7 +87,7 @@ reference_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     def fake_run(self, argv, *, cwd, **kwargs):
         if argv[:2] == ["rustc", "--version"]:
-            return subprocess.CompletedProcess(argv, 0, "rustc 1.98.1\n", "")
+            return subprocess.CompletedProcess(argv, 0, f"rustc {VERIFICATION_PINS['tools']['rust']}\n", "")
         if argv[:2] == ["cargo", "test"]:
             return subprocess.CompletedProcess(argv, 0, "demo::tests::case: test\n", "")
         index, count = map(int, argv[argv.index("--shard") + 1].split("/"))

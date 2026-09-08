@@ -7,8 +7,8 @@ recovery, installed-updater self replacement, named-pipe faults, external mpv
 process faults, owned child processes, private resource/settings permissions,
 media-tool child-process faults, transaction-consistent settings readers, and
 server platform-signal registration.
-Every lane has an exact libtest inventory, must add a fresh raw
-LLVM profile, and must remain merge compatible with the other profiles from
+Every lane must execute its required tests, account for the run, add a fresh raw
+LLVM profile, and remain merge compatible with the other profiles from
 this Windows/MSVC producer.
 
 Interactive GUI/UI Automation smoke remains a separate test signal. It is not
@@ -212,7 +212,7 @@ AUDIT_LANE_COMMANDS = {
     ),
 }
 
-AUDIT_EXPECTED_TESTS = {
+AUDIT_REQUIRED_TESTS = {
     "mpv-owned-process": (
         "managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits",
         "managed_process::tests::owned_child_survives_transfer_from_a_short_lived_launcher_thread",
@@ -257,25 +257,25 @@ AUDIT_EXPECTED_TESTS = {
     ),
 }
 
-from test_inventory import reviewed as reviewed_tests
-
+# These are required regression behaviors, not a snapshot of every test in a crate.
+# Additional tests selected by a lane run automatically and must also pass.
 SETTINGS_READER_PREFIX = "sorotte_ini::read_transaction_tests::"
 SETTINGS_READER_FIXTURE = SETTINGS_READER_PREFIX + "settings_reader_process_fixture"
-AUDIT_EXPECTED_TESTS["shared-settings-reader"] = tuple(
-    name for name in reviewed_tests("client-app-lib")
-    if name.startswith(SETTINGS_READER_PREFIX) and name != SETTINGS_READER_FIXTURE
+AUDIT_REQUIRED_TESTS["shared-settings-reader"] = (
+    "sorotte_ini::read_transaction_tests::busy_reader_errors_before_reading_instead_of_returning_missing_settings",
+    "sorotte_ini::read_transaction_tests::byte_update_failure_preserves_contents_and_releases_the_transaction",
+    "sorotte_ini::read_transaction_tests::cross_process_reader_observes_clear_only_after_the_writer_unlocks",
+    "sorotte_ini::read_transaction_tests::cross_process_reader_waits_through_a_writer_owned_missing_name",
+    "sorotte_ini::read_transaction_tests::empty_document_is_present_and_clear_is_absent_without_removing_the_lock",
+    "sorotte_ini::read_transaction_tests::first_sidecar_creation_discards_a_provisional_missing_read",
+    "sorotte_ini::read_transaction_tests::legacy_readonly_document_and_ensure_leave_the_directory_unchanged",
+    "sorotte_ini::read_transaction_tests::malformed_document_and_invalid_sidecar_are_errors_not_absence",
+    "sorotte_ini::read_transaction_tests::missing_reads_do_not_create_parent_directories_or_sidecars",
+    "sorotte_ini::read_transaction_tests::non_ascii_settings_names_keep_the_same_sidecar_identity",
+    "sorotte_ini::read_transaction_tests::readonly_existing_sidecar_supports_shared_reads_without_mutation",
+    "sorotte_ini::read_transaction_tests::shared_readers_overlap_while_excluding_a_writer",
+    "sorotte_ini::read_transaction_tests::windows_case_aliases_share_the_read_lock_and_relocation_identity",
 )
-
-AUDIT_FILTERED_OUT = {
-    lane: len(reviewed_tests(scope)) - len(AUDIT_EXPECTED_TESTS[lane])
-    for lane, scope in {
-        "mpv-owned-process": "mpv-lib",
-        "mpv-bridge-resources": "mpv-lib",
-        "media-owned-process": "media-lib",
-        "private-settings": "client-app-lib",
-        "shared-settings-reader": "client-app-lib",
-    }.items()
-}
 
 LANE_ORDER = (
     "updater-transaction-process",
@@ -318,8 +318,52 @@ LANE_ENVIRONMENT_OVERRIDES = {
     "merge-check": ("CARGO_TARGET_DIR",),
 }
 
-EXPECTED_TESTS = {
-    "updater-transaction-process": tuple(reviewed_tests("updater-bin")),
+REQUIRED_TESTS = {
+    "updater-transaction-process": (
+        "tests::authenticated_prepared_replacements_are_disposable_or_cleanable_by_mode",
+        "tests::committed_cleanup_validates_targets_before_deleting_journal",
+        "tests::committed_plan_removes_obsolete_files",
+        "tests::deterministic_updater_storage_fault_matrix_recovers_complete_old_or_new_installs",
+        "tests::elevated_execution_is_rejected_before_all_updater_modes",
+        "tests::every_before_and_after_replacement_failure_boundary_rolls_back_the_matrix",
+        "tests::extracted_manifest_revalidates_every_payload_digest_and_exact_file_set",
+        "tests::failure_on_nth_replacement_rolls_back_every_prior_file",
+        "tests::interrupted_atomic_replacement_keeps_executables_invokable_and_recovers",
+        "tests::interrupted_prefix_recovery_is_idempotent_at_every_replacement_boundary",
+        "tests::legacy_old_gui_invocation_bootstraps_v2_source_transactionally",
+        "tests::locked_target_failure_rolls_back_prior_replacements",
+        "tests::missing_backup_with_replacement_target_is_ambiguous_and_retains_journal",
+        "tests::missing_original_target_and_backup_retains_recovery_journal",
+        "tests::parse_args_accepts_exact_legacy_source_and_backup_pair",
+        "tests::parse_args_accepts_package_digest_and_restart",
+        "tests::parse_args_accepts_recovery_only_reentry",
+        "tests::parse_args_requires_authenticated_package",
+        "tests::preparation_failure_simulating_disk_exhaustion_leaves_install_unchanged",
+        "tests::process_interruption_tests::real_process_termination_recovers_every_durable_transaction_boundary",
+        "tests::process_interruption_tests::updater_process_fixture_entrypoint",
+        "tests::recovery_rejects_links_for_every_artifact_in_both_journal_modes",
+        "tests::relative_path_rejects_parent_and_absolute_components",
+        "tests::reparse_or_symlink_package_paths_are_rejected",
+        "tests::replacement_journal_artifact_fault_matrix_matches_the_reference_model",
+        "tests::stale_bootstrap_cleanup_removes_only_owned_inactive_directories",
+        "tests::tampered_later_replacement_does_not_block_rollback_of_prior_file",
+        "tests::tampered_prepared_replacement_is_discarded_during_safe_rollback",
+        "tests::target_update_lock_serializes_live_updaters_for_the_same_install",
+        "tests::tc_updater_002_parent_directory_sync_failure_retains_authenticated_recovery",
+        "tests::uncommitted_rollback_processes_entries_in_reverse_order",
+        "tests::verified_package_snapshot_rejects_substitution_and_is_used_immutably",
+        "tests::windows_junction_fixture_reports_an_occupied_path_without_replacing_it",
+        "tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open",
+        "tests::windows_parent_directory_sync_reports_reversible_share_denial",
+        "update_limits::tests::actual_extraction_bytes_cannot_cross_entry_or_shared_nested_budgets",
+        "update_limits::tests::ambiguous_windows_output_aliases_are_rejected",
+        "update_limits::tests::archive_admission_preserves_payload_bytes_and_supports_a_bounded_zip64_index",
+        "update_limits::tests::bounded_reads_accept_exact_limit_and_reject_the_next_byte",
+        "update_limits::tests::central_directory_quota_is_checked_before_zip_inventory_allocation",
+        "update_limits::tests::extraction_cancellation_stops_before_output",
+        "update_limits::tests::malformed_final_directory_cannot_fall_back_to_an_earlier_payload_inventory",
+        "update_limits::tests::zip64_inventory_cannot_override_small_ordinary_end_record",
+    ),
     "updater-installed-self-replacement": (
         "running_installed_updater_can_replace_its_own_installed_path",
         "running_installed_updater_recovers_interrupted_replacement_and_restarts",
@@ -355,21 +399,24 @@ EXPECTED_TESTS = {
         "tests::platform_signal_selection_accepts_ctrl_c_and_ctrl_break_paths",
     ),
 }
-EXPECTED_TESTS.update(AUDIT_EXPECTED_TESTS)
-MPV_LIBTEST_INVENTORY_SIZE = len(reviewed_tests("mpv-lib"))
-EXPECTED_FILTERED_OUT = {
-    "updater-transaction-process": 0,
-    "updater-installed-self-replacement": 0,
-    "mpv-named-pipe": (
-        MPV_LIBTEST_INVENTORY_SIZE - len(EXPECTED_TESTS["mpv-named-pipe"])
-    ),
-    "mpv-external-process": (
-        MPV_LIBTEST_INVENTORY_SIZE - len(EXPECTED_TESTS["mpv-external-process"])
-    ),
-    "media-tool-process": len(reviewed_tests("gui-lib")) - len(EXPECTED_TESTS["media-tool-process"]),
-    "server-platform-signal": len(reviewed_tests("server-bin")) - len(EXPECTED_TESTS["server-platform-signal"]),
-    **AUDIT_FILTERED_OUT,
+REQUIRED_TESTS.update(AUDIT_REQUIRED_TESTS)
+FULL_SUITE_LANES = frozenset({"updater-transaction-process", "updater-installed-self-replacement"})
+# Focused commands put the libtest name filter immediately before `--`.
+TEST_FILTERS = {
+    lane: command[command.index("--") - 1]
+    for lane, command in LANE_COMMANDS.items()
+    if lane in PROFILE_LANES and lane not in FULL_SUITE_LANES
 }
+
+
+def selected_test(lane: str, name: str) -> bool:
+    command = LANE_COMMANDS[lane]
+    skipped = [command[index + 1] for index, arg in enumerate(command) if arg == "--skip"]
+    return (lane in FULL_SUITE_LANES or TEST_FILTERS[lane] in name) and not any(
+        skip in name for skip in skipped
+    )
+
+
 REQUIRED_INSTRUMENTED_CRATES = frozenset(
     {
         "sorotte_gui_tests",
@@ -387,7 +434,6 @@ SKIP_MARKERS = (
     "skipped due to missing",
     "prerequisite unavailable",
 )
-TEST_LINE = re.compile(r"(?m)^test ([^\r\n]+) \.\.\. ok\r?$")
 
 
 def capture(
@@ -744,68 +790,12 @@ def parse_show_env(
     return environment, summary, profile_root
 
 
-def libtest_oracle(
-    lane: str,
-    stdout: bytes,
-    stderr: bytes,
-) -> dict[str, Any]:
-    try:
-        text = (stdout + b"\n" + stderr).decode("utf-8", errors="strict")
-    except UnicodeError as error:
-        raise common.CoverageProfileLaneError(
-            f"{lane} output is not valid UTF-8: {error}"
-        ) from error
-    found_markers = [marker for marker in SKIP_MARKERS if marker in text.lower()]
-    if found_markers:
-        raise common.CoverageProfileLaneError(
-            f"{lane} output contains skipped-oracle markers {found_markers}"
-        )
-    if re.search(r"(?m)^running 0 tests\r?$", text):
-        raise common.CoverageProfileLaneError(
-            f"{lane} selector executed zero tests"
-        )
-    expected = tuple(sorted(EXPECTED_TESTS[lane]))
-    observed = TEST_LINE.findall(text)
-    if len(observed) != len(set(observed)):
-        raise common.CoverageProfileLaneError(
-            f"{lane} output contains duplicate passing test records"
-        )
-    if tuple(sorted(observed)) != expected:
-        missing = sorted(set(expected) - set(observed))
-        extra = sorted(set(observed) - set(expected))
-        raise common.CoverageProfileLaneError(
-            f"{lane} exact test inventory drifted; "
-            f"missing={missing}, extra={extra}"
-        )
-    count = len(expected)
-    test_noun = "test" if count == 1 else "tests"
-    running = re.findall(
-        rf"(?m)^running {count} {test_noun}\r?$",
-        text,
+def libtest_oracle(lane: str, stdout: bytes, stderr: bytes) -> dict[str, Any]:
+    return common.required_libtest_oracle(
+        stdout, stderr, label=lane, kind="libtest-required-windows-process",
+        required=REQUIRED_TESTS[lane], accepts=lambda name: selected_test(lane, name),
+        skip_markers=SKIP_MARKERS, unfiltered=lane in FULL_SUITE_LANES,
     )
-    if len(running) != 1:
-        raise common.CoverageProfileLaneError(
-            f"{lane} did not report exactly one non-zero running count"
-        )
-    filtered = EXPECTED_FILTERED_OUT[lane]
-    summary = re.findall(
-        rf"test result: ok\. {count} passed; 0 failed; 0 ignored; "
-        rf"0 measured; {filtered} filtered out",
-        text,
-    )
-    if len(summary) != 1:
-        raise common.CoverageProfileLaneError(
-            f"{lane} libtest summary or filtered count drifted"
-        )
-    return {
-        "kind": "libtest-exact-windows-process",
-        "passed": count,
-        "failed": 0,
-        "ignored": 0,
-        "filtered_out": filtered,
-        "tests": list(expected),
-        "skip_markers": [],
-    }
 
 
 def merge_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
@@ -1065,19 +1055,15 @@ def validate_instrumentation(value: Any) -> None:
         )
 
 
-def expected_oracle(lane: str) -> dict[str, Any]:
+def validate_oracle(lane: str, value: Any) -> None:
     if lane == "merge-check":
-        return {"kind": "llvm-profile-merge", "summary_detected": True}
-    tests = sorted(EXPECTED_TESTS[lane])
-    return {
-        "kind": "libtest-exact-windows-process",
-        "passed": len(tests),
-        "failed": 0,
-        "ignored": 0,
-        "filtered_out": EXPECTED_FILTERED_OUT[lane],
-        "tests": tests,
-        "skip_markers": [],
-    }
+        common.validate_oracle(lane, value)
+        return
+    common.validate_required_libtest(
+        value, label=lane, kind="libtest-required-windows-process",
+        required=REQUIRED_TESTS[lane], accepts=lambda name: selected_test(lane, name),
+        unfiltered=lane in FULL_SUITE_LANES,
+    )
 
 
 def validate_report_document(document: Any) -> Mapping[str, Any]:
@@ -1329,10 +1315,7 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
             raise common.CoverageProfileLaneError(
                 f"passed {lane} lane must contain no errors"
             )
-        if entry.get("oracle") != expected_oracle(lane):
-            raise common.CoverageProfileLaneError(
-                f"{lane} oracle does not match the exact required result"
-            )
+        validate_oracle(lane, entry.get("oracle"))
         previous_count = after
     return report
 

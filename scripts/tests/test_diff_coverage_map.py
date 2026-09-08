@@ -6,6 +6,10 @@ import sys
 import tempfile
 import unittest
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import diff_coverage as coverage  # noqa: E402
@@ -184,7 +188,7 @@ class DiffCoverageMapTests(unittest.TestCase):
         )
         self.assertEqual(
             report["inputs"]["coverage_producer"]["cargo_llvm_cov_version"],
-            "0.9.1",
+            VERIFICATION_PINS["tools"]["cargo-llvm-cov"],
         )
 
     def test_platform_maps_union_physical_lines_without_double_counting(self) -> None:
