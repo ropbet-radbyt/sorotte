@@ -139,12 +139,13 @@ impl MpvAdapter {
         }));
         // Phase is inferred from the ordered property state, and must also be
         // available when the consumer has expired its pre-stall observation.
-        let phase = if self.observed_state.eof_reached == Some(true) {
-            PlayerTransportPhase::Ended
-        } else {
-            self.inferred_transport_phase()
-        };
-        self.queue_transport_telemetry_update(self.transport_update().with_phase(phase));
+        // EOF remains provisional until the lifecycle reducer confirms it.
+        // A sampled phase must neither publish Ended early nor erase that
+        // candidate with a phase inferred from pre-EOF transport fields.
+        if self.observed_state.eof_reached != Some(true) {
+            let phase = self.inferred_transport_phase();
+            self.queue_transport_telemetry_update(self.transport_update().with_phase(phase));
+        }
         self.current_ipc_event_observed_at = previous;
     }
 
@@ -307,5 +308,83 @@ mod tests {
             Duration::from_secs(1)
         );
         assert!(timestamp.delivery_reference_since_adapter_start() >= Duration::from_secs(21));
+    }
+
+    fn read_property(adapter: &mut MpvAdapter, property: &'static str, response: Option<Value>) {
+        let attempt = adapter.player_lifecycle.active_attempt().unwrap();
+        adapter.transport_readback.pending = Some(PendingTransportReadback {
+            command_id: 1,
+            attachment_epoch: adapter.lifecycle_epoch(),
+            media_generation: attempt.media_generation,
+            attempt_id: attempt.id,
+            property,
+        });
+        adapter.complete_transport_readback(1, response.map(|value| (value, Instant::now())));
+        assert!(adapter.transport_readback.pending.is_none());
+    }
+
+    #[test]
+    fn unsuccessful_property_reads_do_not_publish_fresh_transport_evidence() {
+        let mut adapter = adapter(false);
+        while let Some(batch) = adapter.player_lifecycle.peek_event_batch() {
+            adapter
+                .acknowledge_player_event_batch(batch.acknowledgement_token)
+                .unwrap();
+        }
+        for (property, response) in [
+            (MPV_PROPERTY_TIME_POS, None),
+            (MPV_PROPERTY_TIME_POS, Some(json!({}))),
+            (MPV_PROPERTY_PAUSE, Some(json!({"data":null}))),
+            (MPV_PROPERTY_PAUSE, Some(json!({"data":"false"}))),
+            (MPV_PROPERTY_TIME_POS, Some(json!({"data":"NaN"}))),
+            (MPV_PROPERTY_DEMUXER_CACHE_STATE, Some(json!({"data":[]}))),
+        ] {
+            read_property(&mut adapter, property, response);
+            assert!(adapter.player_lifecycle.peek_event_batch().is_none());
+            assert_eq!(adapter.observed_state.position_seconds, None);
+            assert_eq!(adapter.observed_state.logical_pause, None);
+        }
+    }
+
+    #[test]
+    fn eof_sampling_preserves_provisional_eof_without_publishing_a_terminal_phase() {
+        let mut adapter = adapter(false);
+        let attempt_id = adapter.player_lifecycle.active_attempt().unwrap().id;
+        adapter.active_load_attempt_id = Some(attempt_id);
+        adapter.active_playlist_entry_id = Some(70);
+        adapter.observed_state.position_seconds = Some(12.0);
+        read_property(
+            &mut adapter,
+            MPV_PROPERTY_EOF_REACHED,
+            Some(json!({"data":true})),
+        );
+        assert_eq!(
+            adapter.player_lifecycle.provisional_eof_attempt(),
+            Some(attempt_id)
+        );
+        read_property(&mut adapter, MPV_PROPERTY_SPEED, Some(json!({"data":1.0})));
+        assert_eq!(
+            adapter.player_lifecycle.provisional_eof_attempt(),
+            Some(attempt_id)
+        );
+        let batch = adapter.player_lifecycle.peek_event_batch().unwrap();
+        assert!(!batch.events.iter().any(|event| matches!(
+            &event.event,
+            PlayerEvent::TransportDelta(delta) if delta.phase == Some(PlayerTransportPhase::Ended)
+        )), "only confirmed lifecycle completion can publish a terminal phase");
+        adapter
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .unwrap();
+        read_property(
+            &mut adapter,
+            MPV_PROPERTY_EOF_REACHED,
+            Some(json!({"data":false})),
+        );
+        assert_eq!(adapter.player_lifecycle.provisional_eof_attempt(), None);
+        let resumed = adapter.player_lifecycle.peek_event_batch().unwrap();
+        assert!(resumed.events.iter().any(|event| matches!(
+            &event.event,
+            PlayerEvent::TransportDelta(delta) if delta.phase == Some(PlayerTransportPhase::Playing)
+        )));
     }
 }

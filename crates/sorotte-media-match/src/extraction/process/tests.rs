@@ -415,7 +415,9 @@ fn cancellation_after_audio_launch_is_not_a_degraded_fingerprint() {
         &MediaExtractionSettings::default(),
         &cancelled,
     );
-    let cancelled_at = controller.join().unwrap();
+    let cancelled_at = controller.join().unwrap_or_else(|_| {
+        panic!("audio fixture never reached cancellation; extraction result: {result:?}")
+    });
     assert!(
         matches!(
             result,

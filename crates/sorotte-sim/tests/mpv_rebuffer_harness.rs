@@ -848,8 +848,8 @@ fn verify_barrier_start_then_ordinary_pause_with_real_mpv(media: &TemporaryMedia
         .position(|command| matches!(command, CoordinatorPlayerCommand::SetPaused(true)))
         .expect("ordinary remote pause must pause the player");
     assert!(
-        seek_index < pause_index,
-        "ordinary remote pause must apply the room position before pausing: \
+        pause_index < seek_index,
+        "ordinary remote pause must stop playback before reconciling the room position: \
          {ordinary_pause_commands:?}"
     );
 }
