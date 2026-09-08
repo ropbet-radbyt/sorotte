@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -34,7 +35,7 @@ def nextest_listing(scope: str = "media-lib", tests: dict[str, bool] | None = No
 
 
 def reviewed_fixture() -> dict:
-    return {"schema_version": 2, "status": "passed", "identity": {"source_sha": "a" * 40},
+    return {"schema_version": 3, "kind": "reviewed-test-inventory",
             "scopes": {scope: {"cargo_scope": arguments, "tests": ["tests::kept", "tests::old"],
                                "ignored": ["tests::old"]} for scope, arguments in inventory.SCOPES.items()}}
 
@@ -113,6 +114,7 @@ class TestInventoryTests(unittest.TestCase):
                     inventory.listing(candidate, "media-lib")
 
     def test_reviewed_schema_requires_every_scope_and_explicit_ignored_subset(self):
+        inventory.validate(reviewed_fixture())
         mutations = [lambda d: d.update(schema_version=1), lambda d: d.update(status="incomplete"),
                      lambda d: d["scopes"].pop("compat"),
                      lambda d: d["scopes"]["compat"].pop("ignored"),
@@ -128,6 +130,19 @@ class TestInventoryTests(unittest.TestCase):
             path.write_text('{"scopes":{},"scopes":{}}', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 inventory.load(path)
+
+    def test_reviewed_document_excludes_all_observation_metadata(self):
+        discovery = {"schema_version": 2, "status": "passed", "scopes": copy.deepcopy(reviewed_fixture()["scopes"]),
+                     "identity": {"source_sha": "a" * 40}, "duration_seconds": 999, "attempts": [{"path": "host-specific"}]}
+        for entry in discovery["scopes"].values():
+            entry.update(command=["old command"], listing_sha256="b" * 64)
+        self.assertEqual(inventory.review_document(discovery), reviewed_fixture())
+        self.assertEqual(discovery["attempts"], [{"path": "host-specific"}])
+        for key, extra in (("status", "passed"), ("identity", {"source_sha": "a" * 40})):
+            with self.assertRaisesRegex(ValueError, "keep discovery receipts separately"):
+                inventory.validate({**reviewed_fixture(), key: extra})
+        with self.assertRaises(ValueError):
+            inventory.validate(discovery)
 
     def test_both_collecting_commands_reject_authority_and_hardlink_overwrite(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -153,18 +168,18 @@ class TestInventoryTests(unittest.TestCase):
             authority.write_text(json.dumps(baseline), encoding="utf-8")
             before = authority.read_bytes()
             for change in ("rename", "ignore", "unchanged"):
-                candidate = copy.deepcopy(baseline)
+                candidate = {"schema_version": 2, "status": "passed", "scopes": copy.deepcopy(baseline["scopes"])}
                 if change == "rename": candidate["scopes"]["compat"].update(tests=["tests::kept", "tests::renamed"], ignored=[])
                 if change == "ignore": candidate["scopes"]["compat"]["ignored"] = ["tests::kept", "tests::old"]
                 proposal.write_text(json.dumps(candidate), encoding="utf-8")
                 output = io.StringIO()
                 with mock.patch.object(inventory, "REVIEWED", authority), contextlib.redirect_stdout(output):
-                    self.assertEqual(inventory.main(["diff", "--proposed", str(proposal)]), int(change != "unchanged"))
+                    self.assertEqual(inventory.main(["diff", "--proposed", str(proposal), "--json"]), int(change != "unchanged"))
                 rows = [json.loads(row) for row in output.getvalue().splitlines()]
                 self.assertEqual(len(rows), len(inventory.SCOPES))
                 self.assertEqual(authority.read_bytes(), before)
 
-    def simulate_collection(self, output: Path, *, defect: str | None = None) -> dict:
+    def simulate_collection(self, output: Path, *, defect: str | None = None, tests_by_scope=None) -> dict:
         calls = []
         def run(command, **kwargs):
             scope = next(scope for scope, arguments in inventory.SCOPES.items() if command[7:-2] == arguments)
@@ -174,10 +189,13 @@ class TestInventoryTests(unittest.TestCase):
             self.assertTrue(kwargs["check"])
             self.assertEqual(kwargs["timeout"], 1800)
             calls.append(scope)
-            if defect == "failure" and len(calls) == 2: raise subprocess.CalledProcessError(9, command)
-            if defect == "timeout": raise subprocess.TimeoutExpired(command, 1800)
+            if defect == "failure" and len(calls) == 2:
+                raise subprocess.CalledProcessError(9, command, output=b"partial listing", stderr=b"compiler failed")
+            if defect == "timeout":
+                raise subprocess.TimeoutExpired(command, 1800, output=b"partial listing", stderr=b"compiler stalled")
             if defect == "cancelled": raise KeyboardInterrupt("inventory cancelled")
-            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(nextest_listing(scope)).encode())
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(nextest_listing(
+                scope, (tests_by_scope or {}).get(scope))).encode())
         identities = [{"source_sha": "a" * 40}, {"source_sha": ("b" if defect == "source-drift" else "a") * 40}]
         version = "cargo-nextest 0.9.1" if defect == "wrong-pin" else f"cargo-nextest {VERIFICATION_PINS['tools']['cargo-nextest']} (reviewed build)"
         with mock.patch.object(inventory, "identity", side_effect=identities), \
@@ -208,10 +226,137 @@ class TestInventoryTests(unittest.TestCase):
                 value = inventory.load(output)
                 expected = "timed_out" if defect == "timeout" else "cancelled" if defect == "cancelled" else "failed"
                 self.assertEqual(value["status"], expected)
-                with self.assertRaises(ValueError): inventory.validate(value)
+                with self.assertRaisesRegex(ValueError, "failed discovery"):
+                    inventory.validate_discovery(value)
+                if defect in ("failure", "timeout"):
+                    scope = value["attempts"][-1]["scope"]
+                    self.assertEqual((output.with_suffix(".listings") / f"{scope}.stdout.log").read_bytes(), b"partial listing")
+                    self.assertIn(b"compiler", (output.with_suffix(".listings") / f"{scope}.stderr.log").read_bytes())
                 if defect == "failure":
                     self.assertEqual(value["attempts"][0]["status"], "passed")
                     self.assertEqual(value["attempts"][1]["status"], "failed")
+
+    def test_refresh_changes_only_reviewed_names_and_keeps_discovery_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            authority, proposal = root / "reviewed.json", root / "proposed.json"
+            authority.write_text(json.dumps(reviewed_fixture(), indent=2) + "\n", encoding="utf-8")
+            with mock.patch.object(inventory, "REVIEWED", authority):
+                self.simulate_collection(proposal, tests_by_scope={"gui-lib": {
+                    "tests::kept": False, "tests::new_gui_case": False, "tests::old": True}})
+                observed = {p: p.read_bytes() for p in [proposal, *proposal.with_suffix(".listings").iterdir()]}
+                with mock.patch.object(inventory, "identity", return_value={"source_sha": "a" * 40}), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertTrue(inventory.refresh(proposal))
+                expected = reviewed_fixture()
+                expected["scopes"]["gui-lib"]["tests"].insert(1, "tests::new_gui_case")
+                self.assertEqual(inventory.load(authority), expected)
+                self.assertIn("added: tests::new_gui_case", output.getvalue())
+                self.assertEqual(observed, {p: p.read_bytes() for p in observed})
+                self.assertFalse(list(root.glob(".inventory-*.tmp")))
+
+    def test_no_change_refresh_is_byte_preserving_and_repeatable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            authority, proposal = root / "reviewed.json", root / "proposed.json"
+            original = json.dumps(reviewed_fixture()).encode()
+            authority.write_bytes(original)
+            with mock.patch.object(inventory, "REVIEWED", authority):
+                self.simulate_collection(proposal)
+                with mock.patch.object(inventory, "identity", return_value={"source_sha": "a" * 40}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertFalse(inventory.refresh(proposal))
+                    self.assertFalse(inventory.refresh(proposal))
+            self.assertEqual(authority.read_bytes(), original)
+
+    def test_refresh_rejects_stale_partial_wrong_mode_and_altered_discovery_before_writing(self):
+        defects = ("source", "after-source", "baseline", "incomplete", "scope", "command", "returncode", "boolean-exit",
+                   "tool", "missing-attempt", "duplicate-attempt", "names", "ignored", "raw-bytes", "listing-path")
+        for defect in defects:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                authority, proposal = root / "reviewed.json", root / "proposed.json"
+                before = json.dumps(reviewed_fixture()).encode()
+                authority.write_bytes(before)
+                with mock.patch.object(inventory, "REVIEWED", authority):
+                    value = self.simulate_collection(proposal)
+                    if defect == "source": value["identity"] = {"source_sha": "b" * 40}
+                    if defect == "after-source": value["identity_after"] = {"source_sha": "b" * 40}
+                    if defect == "baseline": value["reviewed_inventory_sha256"] = "b" * 64
+                    if defect == "incomplete": value["status"] = "failed"
+                    if defect == "scope": value["scopes"].pop("gui-lib")
+                    if defect == "command": value["attempts"][0]["command"].remove("--ignore-default-filter")
+                    if defect == "returncode": value["attempts"][0]["returncode"] = 1
+                    if defect == "boolean-exit": value["attempts"][0]["returncode"] = False
+                    if defect == "tool": value["cargo_nextest_version"] = "cargo-nextest 0.0.0"
+                    if defect == "missing-attempt": value["attempts"].pop()
+                    if defect == "duplicate-attempt": value["attempts"][-1] = value["attempts"][0]
+                    if defect == "names": value["scopes"]["compat"]["tests"] = ["tests::new", "tests::old"]
+                    if defect == "ignored": value["scopes"]["compat"]["ignored"] = []
+                    if defect == "raw-bytes": (proposal.with_suffix(".listings") / "compat.json").write_bytes(b"{}")
+                    if defect == "listing-path": value["attempts"][0]["listing_path"] = str(root / "other.json")
+                    proposal.write_text(json.dumps(value), encoding="utf-8")
+                    with mock.patch.object(inventory, "identity", return_value={"source_sha": "a" * 40}):
+                        with self.assertRaises(ValueError):
+                            inventory.refresh(proposal)
+                self.assertEqual(authority.read_bytes(), before)
+                self.assertFalse(list(root.glob(".inventory-*.tmp")))
+
+    def test_refresh_detects_source_changes_during_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            authority, proposal = root / "reviewed.json", root / "proposed.json"
+            before = json.dumps(reviewed_fixture()).encode()
+            authority.write_bytes(before)
+            with mock.patch.object(inventory, "REVIEWED", authority):
+                self.simulate_collection(proposal)
+                with mock.patch.object(inventory, "identity", side_effect=[{"source_sha": "a" * 40}, {"source_sha": "b" * 40}]):
+                    with self.assertRaisesRegex(ValueError, "source changed"):
+                        inventory.refresh(proposal)
+            self.assertEqual(authority.read_bytes(), before)
+
+    def test_unrelated_gui_addition_needs_only_inventory_refresh_to_match_process_oracle(self):
+        baseline = inventory.load(inventory.REVIEWED)
+        actual = {scope: {name: name in entry["ignored"] for name in entry["tests"]}
+                  for scope, entry in baseline["scopes"].items()}
+        actual["gui-lib"]["tests::unrelated_gui_inventory_regression"] = False
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            authority, proposal = root / "reviewed.json", root / "proposed.json"
+            authority.write_text(json.dumps(baseline), encoding="utf-8")
+            code = """
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+import test_inventory
+test_inventory.REVIEWED = Path(sys.argv[2])
+import coverage_windows_process_lanes as lanes
+names = lanes.EXPECTED_TESTS['media-tool-process']
+filtered = int(sys.argv[3]) - len(names)
+output = f'running {len(names)} tests\\n'
+output += ''.join(f'test {name} ... ok\\n' for name in names)
+output += f'test result: ok. {len(names)} passed; 0 failed; 0 ignored; 0 measured; {filtered} filtered out\\n'
+lanes.libtest_oracle('media-tool-process', output.encode(), b'')
+"""
+            command = [sys.executable, "-c", code, str(ROOT / "scripts"), str(authority), str(len(actual["gui-lib"]))]
+            before = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(before.returncode, 0)
+            self.assertIn("filtered count drifted", before.stderr)
+            self.assertIn("inventory check", before.stderr)
+            with mock.patch.object(inventory, "REVIEWED", authority):
+                self.simulate_collection(proposal, tests_by_scope=actual)
+                with mock.patch.object(inventory, "identity", return_value={"source_sha": "a" * 40}), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    inventory.refresh(proposal)
+            after = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            self.assertEqual(after.returncode, 0, after.stderr)
+            # The same oracle still refuses a missing required passing record.
+            weakened = code.replace("for name in names)", "for name in names[1:])")
+            self.assertNotEqual(weakened, code)
+            missing = subprocess.run([sys.executable, "-c", weakened, *command[3:]],
+                                     capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("exact test inventory drifted", missing.stderr)
 
 
 class CargoInputCacheTests(unittest.TestCase):

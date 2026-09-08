@@ -795,7 +795,9 @@ def libtest_oracle(
     )
     if len(summary) != 1:
         raise common.CoverageProfileLaneError(
-            f"{lane} libtest summary or filtered count drifted"
+            f"{lane} libtest summary or filtered count drifted; expected {count} passed and {filtered} filtered out. "
+            "Run python scripts/verify.py inventory check --output FRESH_DISCOVERY.json; "
+            "review any additions, removals or ignored-status changes before refreshing the inventory."
         )
     return {
         "kind": "libtest-exact-windows-process",

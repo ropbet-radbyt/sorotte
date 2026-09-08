@@ -70,14 +70,32 @@ commit, which can be the prospective PR merge rather than the event's PR head.
 Compile-dependent inventory preparation is a separate step:
 
 ```powershell
-python scripts/test_inventory.py propose --output target/verification/proposed-inventory.json
-python scripts/test_inventory.py diff --proposed target/verification/proposed-inventory.json
-python scripts/test_inventory.py check --output target/verification/checked-inventory.json
+python scripts/verify.py inventory propose --output target/verification/proposed-inventory.json
+python scripts/verify.py inventory diff --proposed target/verification/proposed-inventory.json
+python scripts/verify.py inventory refresh --proposed target/verification/proposed-inventory.json
+python scripts/verify.py inventory check --output target/verification/checked-inventory.json
 python scripts/verify.py run --lane coverage-canary --output target/verification/coverage-attempt-1
 ```
 
-Review inventory additions, removals and ignore changes before updating
-`coverage/test-inventories.json`. Discovery cannot overwrite that authority.
+`propose` lists all seven complete scopes with the pinned nextest runtime and
+locked dependencies. It preserves the source identity, commands and raw listings
+under the chosen output path. `diff` shows only additions, removals and changes
+to ignored status; `--json` retains the machine-readable row-per-scope format.
+`diff` and `check` return 1 when expectations differ, including same-count renames.
+The standalone `scripts/test_inventory.py` commands remain available.
+
+After reviewing the diff, `refresh` verifies that the source and original reviewed
+inventory are unchanged, every scope completed in the expected execution mode,
+and the raw listing hashes and names agree. It then atomically updates
+`coverage/test-inventories.json`. A no-change refresh leaves that file byte-for-byte
+unchanged. Commit its reviewed changes with the source change; recollect after
+editing source or committing, since discovery is bound to its original inputs.
+
+The schema 3 reviewed file contains only scopes, test names and ignored status.
+Run timestamps, machine paths, commands and source hashes stay in separate
+discovery receipts. Existing schema 2 discovery remains readable for comparison;
+refresh requires a fresh complete receipt from the current collector. Discovery
+alone cannot overwrite the reviewed file or certify test behavior.
 Complete inventories supply totals; exact named selections still define required
 responsibilities. Empty selections, missing required tests and unexpected skips
 remain failures.

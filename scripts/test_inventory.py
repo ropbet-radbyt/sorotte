@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Propose/diff reviewed libtest names and ignored status without accepting drift."""
+"""Discover, review and refresh stable test inventories from retained listings."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -50,11 +51,7 @@ def names(value: object, label: str, *, allow_empty: bool = False) -> list[str]:
     return value
 
 
-def validate(value: object, *, require_passed: bool = True) -> dict:
-    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 2:
-        raise ValueError("inventory schema 2 with explicit ignored status is required")
-    if require_passed and value.get("status") != "passed":
-        raise ValueError("incomplete or failed inventory cannot be used as authority")
+def validate_scopes(value: dict) -> dict:
     if not isinstance(value.get("scopes"), dict) or set(value["scopes"]) != set(SCOPES):
         raise ValueError("inventory must contain every reviewed scope exactly once")
     for scope, arguments in SCOPES.items():
@@ -66,6 +63,34 @@ def validate(value: object, *, require_passed: bool = True) -> dict:
         if not set(ignored) <= set(tests):
             raise ValueError(f"ignored identities outside the reviewed tests: {scope}")
     return value
+
+
+def validate(value: object) -> dict:
+    """The reviewed file declares expectations; it never claims a test run passed."""
+    if (not isinstance(value, dict) or set(value) != {"schema_version", "kind", "scopes"}
+            or type(value.get("schema_version")) is not int or value["schema_version"] != 3
+            or value["kind"] != "reviewed-test-inventory"):
+        raise ValueError("reviewed inventory schema 3 must contain only kind and scopes; keep discovery receipts separately")
+    validate_scopes(value)
+    for scope, entry in value["scopes"].items():
+        if set(entry) != {"cargo_scope", "tests", "ignored"}:
+            raise ValueError(f"reviewed scope {scope} must contain only cargo_scope, tests and ignored")
+    return value
+
+
+def validate_discovery(value: object) -> dict:
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 2:
+        raise ValueError("discovery receipt schema 2 with explicit ignored status is required")
+    if value.get("status") != "passed":
+        raise ValueError("incomplete or failed discovery cannot update reviewed expectations")
+    return validate_scopes(value)
+
+
+def review_document(discovery: dict) -> dict:
+    validate_discovery(discovery)
+    return validate({"schema_version": 3, "kind": "reviewed-test-inventory", "scopes": {
+        scope: {key: discovery["scopes"][scope][key] for key in ("cargo_scope", "tests", "ignored")}
+        for scope in SCOPES}})
 
 
 def reviewed(scope: str) -> list[str]:
@@ -122,6 +147,18 @@ def scope_difference(before: dict, after: dict) -> dict:
             "no_longer_ignored": sorted((set(before["ignored"]) - set(after["ignored"])) & retained)}
 
 
+def discovery_command(scope: str) -> list[str]:
+    return ["cargo", "nextest", "list", "--locked", "--run-ignored", "all", "--ignore-default-filter",
+            *SCOPES[scope], "--message-format", "json"]
+
+
+def verify_version(version: str):
+    expected = pins()["tools"]["cargo-nextest"]
+    if not isinstance(version, str) or not re.match(r"^cargo-nextest " + re.escape(expected) + r"(?:[ (]|$)", version):
+        raise ValueError(f"inventory requires cargo-nextest {expected}; observed {version!r}. "
+                         f"Install with: cargo install cargo-nextest --version {expected} --locked")
+
+
 def collect(output: Path) -> dict:
     output = output.absolute()
     if output.resolve() == REVIEWED.resolve() or (output.exists() and REVIEWED.exists() and output.samefile(REVIEWED)):
@@ -138,24 +175,31 @@ def collect(output: Path) -> dict:
     def save(): output.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     try:
         value["identity"] = identity()
+        value["reviewed_inventory_sha256"] = hashlib.sha256(REVIEWED.read_bytes()).hexdigest()
         version = subprocess.check_output(["cargo", "nextest", "--version"], cwd=ROOT, text=True, timeout=30).strip()
-        expected = pins()["tools"]["cargo-nextest"]
-        if not re.match(r"^cargo-nextest " + re.escape(expected) + r"(?:[ (]|$)", version):
-            raise ValueError("nextest inventory runtime does not match the reviewed pin")
+        verify_version(version)
         value["cargo_nextest_version"] = version
         for name, scope in SCOPES.items():
-            command = ["cargo", "nextest", "list", "--locked", "--run-ignored", "all", "--ignore-default-filter",
-                       *scope, "--message-format", "json"]
+            command = discovery_command(name)
             attempt = {"scope": name, "command": command, "status": "running"}
             value["attempts"].append(attempt)
             save()
             print(f"Listing reviewed scope {name}", flush=True)
-            result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, check=True, timeout=1800)
+            try:
+                result = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        check=True, timeout=1800)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                (listings / f"{name}.stdout.log").write_bytes(error.stdout or b"")
+                (listings / f"{name}.stderr.log").write_bytes(error.stderr or b"")
+                attempt["diagnostic_directory"] = str(listings)
+                raise
             raw = result.stdout
             raw_path = listings / f"{name}.json"
             raw_path.write_bytes(raw)
             attempt["listing_path"] = str(raw_path)
             attempt["listing_sha256"] = hashlib.sha256(raw).hexdigest()
+            (listings / f"{name}.stderr.log").write_bytes(result.stderr or b"")
+            attempt["returncode"] = result.returncode
             collected = listing(json.loads(raw, object_pairs_hook=unique_object), name)
             value["scopes"][name] = {"cargo_scope": scope, **collected, "command": command,
                                       "listing_sha256": attempt["listing_sha256"]}
@@ -165,7 +209,7 @@ def collect(output: Path) -> dict:
         if value["identity"] != value["identity_after"]:
             raise ValueError("input identity changed during inventory collection")
         value["status"] = "passed"
-        validate(value)
+        validate_discovery(value)
         return value
     except BaseException as error:
         value.update(status="timed_out" if isinstance(error, subprocess.TimeoutExpired)
@@ -178,33 +222,126 @@ def collect(output: Path) -> dict:
         save()
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+def differences(before: dict, after: dict, *, as_json: bool = False) -> bool:
+    changed = False
+    for scope in SCOPES:
+        delta = scope_difference(before["scopes"][scope], after["scopes"][scope])
+        changed |= any(delta.values())
+        if as_json:
+            print(json.dumps({"scope": scope, **delta}))
+        elif any(delta.values()):
+            print(f"{scope}:")
+            for key, names in delta.items():
+                for name in names:
+                    print(f"  {key}: {name}")
+    if not as_json and not changed:
+        print("Inventory unchanged.")
+    return changed
+
+
+def verify_proposal(path: Path, value: dict, reviewed_bytes: bytes):
+    """Verify fresh discovery inputs, commands and actual raw listings before apply."""
+    validate_discovery(value)
+    current = identity()
+    if (value.get("identity") != current or value.get("identity_after") != current
+            or value.get("reviewed_inventory_sha256") != hashlib.sha256(reviewed_bytes).hexdigest()):
+        raise ValueError("discovery source or reviewed inventory changed; collect a fresh proposal before refresh")
+    verify_version(value.get("cargo_nextest_version"))
+    attempts = value.get("attempts")
+    if not isinstance(attempts, list) or len(attempts) != len(SCOPES):
+        raise ValueError("discovery must retain exactly one completed attempt for every scope")
+    directory = path.with_suffix(".listings")
+    if directory.is_symlink() or directory.resolve() != directory:
+        raise ValueError("discovery listings must use direct paths")
+    for scope, attempt in zip(SCOPES, attempts):
+        entry = value["scopes"][scope]
+        command = discovery_command(scope)
+        if (not isinstance(attempt, dict) or attempt.get("scope") != scope or attempt.get("status") != "passed"
+                or type(attempt.get("returncode")) is not int or attempt["returncode"] != 0
+                or attempt.get("command") != command or entry.get("command") != command):
+            raise ValueError(f"{scope}: discovery execution mode or completion differs")
+        raw_path = directory / f"{scope}.json"
+        if raw_path.is_symlink() or raw_path.resolve() != raw_path or attempt.get("listing_path") != str(raw_path):
+            raise ValueError(f"{scope}: discovery listing path differs or is indirect")
+        raw = raw_path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if attempt.get("listing_sha256") != digest or entry.get("listing_sha256") != digest:
+            raise ValueError(f"{scope}: discovery listing bytes changed")
+        actual = listing(json.loads(raw, object_pairs_hook=unique_object), scope)
+        if actual != {key: entry[key] for key in ("tests", "ignored")}:
+            raise ValueError(f"{scope}: proposal names or ignored status differ from the raw listing")
+    if identity() != current:
+        raise ValueError("source changed while validating discovery; collect a fresh proposal")
+
+
+def refresh(path: Path) -> bool:
+    path = path.absolute()
+    if path.is_symlink() or path.resolve() != path or REVIEWED.is_symlink() or REVIEWED.resolve() != REVIEWED.absolute():
+        raise ValueError("inventory refresh requires direct paths")
+    before = REVIEWED.read_bytes()
+    baseline = validate(json.loads(before, object_pairs_hook=unique_object))
+    proposal = load(path)
+    verify_proposal(path, proposal, before)
+    document = review_document(proposal)
+    if not differences(baseline, document):
+        return False
+    after = (json.dumps(document, indent=2) + "\n").encode("utf-8")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=REVIEWED.parent, prefix=".inventory-", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(after)
+        if REVIEWED.read_bytes() != before:
+            raise ValueError("reviewed inventory changed during refresh; review a fresh proposal")
+        temporary.replace(REVIEWED)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    print("Updated coverage/test-inventories.json; discovery receipts remain unchanged.")
+    return True
+
+
+def configure_parser(parser: argparse.ArgumentParser):
+    sub = parser.add_subparsers(dest="inventory_command", required=True)
     propose = sub.add_parser("propose")
     propose.add_argument("--output", type=Path, required=True)
     diff = sub.add_parser("diff")
     diff.add_argument("--proposed", type=Path, required=True)
+    diff.add_argument("--json", action="store_true", help="emit one machine-readable row per scope")
     check = sub.add_parser("check")
     check.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
+    check.add_argument("--json", action="store_true")
+    apply = sub.add_parser("refresh", help="verify current-source discovery and update reviewed expectations")
+    apply.add_argument("--proposed", type=Path, required=True)
+
+
+def execute(args: argparse.Namespace) -> int:
     try:
-        if args.command == "propose":
+        if args.inventory_command == "propose":
             collect(args.output)
+            print(f"Review: python scripts/verify.py inventory diff --proposed \"{args.output}\"")
+            return 0
+        if args.inventory_command == "refresh":
+            refresh(args.proposed)
             return 0
         before = validate(load(REVIEWED))
-        actual = collect(args.output) if args.command == "check" else validate(load(args.proposed))
-        changed = False
-        for name in SCOPES:
-            delta = scope_difference(before["scopes"][name], actual["scopes"][name])
-            print(json.dumps({"scope": name, **delta}))
-            changed |= any(delta.values())
+        actual = collect(args.output) if args.inventory_command == "check" else validate_discovery(load(args.proposed))
+        changed = differences(before, actual, as_json=args.json)
+        if changed:
+            proposed = args.output if args.inventory_command == "check" else args.proposed
+            print(f"After reviewing the changes: python scripts/verify.py inventory refresh --proposed \"{proposed}\"", file=sys.stderr)
         return int(changed)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(error, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    configure_parser(parser)
+    return execute(parser.parse_args(argv))
 
 
 if __name__ == "__main__":
