@@ -778,6 +778,7 @@ impl GuiSemanticStep {
                     };
                 Self::ApplyMainWindowRoomPlaybackIntent(MainWindowRoomPlaybackIntent {
                     position_seconds,
+                    position_sampled_at: None,
                     paused,
                     set_by,
                     authority,

@@ -53,14 +53,35 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_chat_message(
 
 #[cfg(test)]
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_file_name(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut SorotteGuiShellAppState,
     harness: &mut LegacyServerPythonPeerHarness,
     username: &str,
     file_name: &str,
     timeout: Duration,
 ) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
-    harness
-        .wait_for_peer_observed_user_file_name(username, file_name, timeout)
-        .map_err(LivePythonPeerInteropError::from)
+    let deadline = Instant::now() + timeout;
+    loop {
+        // File-open completion and its protocol receipt can outlive the
+        // optimistic playlist projection. Keep their runtime owner alive.
+        pump_and_apply(owner, handle, state);
+        let snapshot = harness.peer_snapshot()?;
+        let observed = snapshot
+            .observed_user_file_names
+            .get(username)
+            .and_then(Option::as_deref);
+        if observed == Some(file_name) {
+            return Ok(snapshot);
+        }
+        if Instant::now() >= deadline {
+            return Err(LivePythonPeerInteropError::Gui(format!(
+                "timed out waiting for live Python peer file observation; expected={file_name:?}, observed={observed:?}, room={:?}",
+                snapshot.room
+            )));
+        }
+        thread::sleep(LIVE_PYTHON_INTEROP_POLL_INTERVAL);
+    }
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist(

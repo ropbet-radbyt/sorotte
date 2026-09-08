@@ -354,6 +354,23 @@ fn assert_projection_compatible(
     }
 }
 
+fn without_delivery_clock(mut batch: PlayerEventBatch) -> PlayerEventBatch {
+    let observation_only = |timestamp: PlayerObservationTimestamp| {
+        PlayerObservationTimestamp::from_adapter_start(timestamp.elapsed_since_adapter_start())
+    };
+    if let Some(snapshot) = batch.authoritative_snapshot.as_mut()
+        && let SnapshotField::Known(timestamp) = &mut snapshot.transport.observed_at
+    {
+        *timestamp = observation_only(*timestamp);
+    }
+    for event in &mut batch.events {
+        if let PlayerEvent::TransportDelta(delta) = &mut event.event {
+            delta.observed_at = delta.observed_at.map(observation_only);
+        }
+    }
+    batch
+}
+
 fn apply_replay_and_acknowledge_batch(
     stage: &str,
     harness: &mut MpvLifecycleVerificationHarness,
@@ -363,10 +380,13 @@ fn apply_replay_and_acknowledge_batch(
     let batch = harness
         .take_event_batch()
         .unwrap_or_else(|| panic!("{stage}: expected player event batch"));
+    let replay = harness
+        .take_event_batch()
+        .expect("unacknowledged batch must replay");
     assert_eq!(
-        harness.take_event_batch(),
-        Some(batch.clone()),
-        "{stage}: unacknowledged adapter batch must replay byte-for-byte"
+        without_delivery_clock(replay),
+        without_delivery_clock(batch.clone()),
+        "{stage}: replay must preserve event identity, observations and semantic results; only delivery age may advance"
     );
 
     let producer_projection = harness.projection();

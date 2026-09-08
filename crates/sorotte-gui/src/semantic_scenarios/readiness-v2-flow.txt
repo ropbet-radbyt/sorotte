@@ -99,6 +99,15 @@ apply-main-window-participant-status	eve	report	unavailable	unknown	none	none	no
 assert-value	main-window:user:4:participant-status	Player unavailable · fresh
 assert-value	main-window:user:4:member-player	unavailable
 assert-tone	main-window:user:4:participant-status	warning
+
+# Fresh observations after player recovery replace the unavailable presentation.
+apply-main-window-participant-status	eve	report	connected	playing	755.03	false	1.0	14.3	none	0	7	19	exact	0	0	0.18	false	started	vod
+assert-value	main-window:user:4:member-player	connected
+assert-value	main-window:user:4:member-position	12:35.0
+assert-value	main-window:user:4:member-logical-pause	no
+assert-value	main-window:user:4:member-rate	1.00×
+assert-tone	main-window:user:4:participant-status	success
+
 apply-main-window-participant-status	frank	report	connected	seeking	750	true	1.0	1.0	none	-5	7	19	exact	0	0	12	false	degraded	vod
 assert-value	main-window:user:5:participant-status	Status stale · last update 12.0 s ago
 assert-tone	main-window:user:5:participant-status	danger

@@ -1,5 +1,43 @@
 use std::collections::BTreeMap;
 
+#[test]
+fn room_clock_advances_between_sparse_snapshots_and_stops_at_pause_or_stale_owner() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut intent = super::main_window::MainWindowRoomPlaybackIntent {
+        position_seconds: Some(10.0),
+        position_sampled_at: Some(now),
+        paused: Some(false),
+        ..Default::default()
+    };
+    for millis in [0, 100, 500, 1500, 3000] {
+        assert_eq!(
+            intent.position_at(now + Duration::from_millis(millis)),
+            Some(10.0 + millis as f64 / 1000.0)
+        );
+    }
+    assert_eq!(intent.position_at(now - Duration::from_secs(1)), Some(10.0));
+    assert_eq!(
+        intent.position_at(now + Duration::from_secs(60)),
+        Some(15.0)
+    );
+    intent.paused = Some(true);
+    assert_eq!(intent.position_at(now + Duration::from_secs(2)), Some(10.0));
+    intent.paused = None;
+    assert_eq!(intent.position_at(now + Duration::from_secs(2)), Some(10.0));
+    intent.paused = Some(false);
+    intent.position_seconds = Some(40.0);
+    intent.position_sampled_at = Some(now + Duration::from_secs(3));
+    assert_eq!(
+        intent.position_at(now + Duration::from_millis(3500)),
+        Some(40.5)
+    );
+    intent.position_sampled_at = None;
+    assert_eq!(intent.position_at(now + Duration::from_secs(4)), Some(40.0));
+    intent.position_seconds = Some(f64::NAN);
+    assert_eq!(intent.position_at(now), None);
+}
+
 use super::{
     FirstRunConfigurationDialogState, GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
     GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,

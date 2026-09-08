@@ -11618,13 +11618,23 @@ fn buffering_status_supersedes_earlier_self_pause_echo_with_authoritative_alignm
 
     let aligned =
         coordination.observe_transport(transport(1, 1.2, PlayerTransportPhase::Playing, 10.0), 1.2);
-    assert!(aligned.iter().any(|action| matches!(
+    assert!(authoritative.iter().any(|action| matches!(
         action,
         PlaybackCoordinatorAction::Execute {
             command: CoordinatorPlayerCommand::SetPaused(true),
             ..
         }
     )));
+    assert!(
+        !aligned.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )),
+        "the pause already dispatched before alignment remains single-flight"
+    );
 }
 
 #[test]

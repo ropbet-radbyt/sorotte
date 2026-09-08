@@ -427,6 +427,7 @@ pub(in crate::app) struct MainWindowRoomRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(in crate::app) struct MainWindowRoomPlaybackIntent {
     pub(in crate::app) position_seconds: Option<f64>,
+    pub(in crate::app) position_sampled_at: Option<std::time::Instant>,
     pub(in crate::app) paused: Option<bool>,
     pub(in crate::app) set_by: Option<String>,
     pub(in crate::app) authority: Option<String>,
@@ -437,6 +438,22 @@ pub(in crate::app) struct MainWindowRoomPlaybackIntent {
 }
 
 impl MainWindowRoomPlaybackIntent {
+    pub(in crate::app) fn position_at(&self, now: std::time::Instant) -> Option<f64> {
+        let position = self
+            .position_seconds
+            .filter(|position| position.is_finite())?;
+        let elapsed = if self.paused == Some(false) {
+            self.position_sampled_at.map_or(0.0, |sampled_at| {
+                now.saturating_duration_since(sampled_at)
+                    .as_secs_f64()
+                    .min(5.0)
+            })
+        } else {
+            0.0
+        };
+        Some(position + elapsed)
+    }
+
     pub(in crate::app) fn status_label(&self) -> String {
         let mut label = match self.paused {
             Some(paused) => {
@@ -450,7 +467,7 @@ impl MainWindowRoomPlaybackIntent {
             label.push_str(" by ");
             label.push_str(set_by);
         }
-        if let Some(position) = self.position_seconds {
+        if let Some(position) = self.position_at(std::time::Instant::now()) {
             label.push_str(" · ");
             label.push_str(&format_participant_status_timestamp(position));
         }
@@ -481,7 +498,7 @@ impl MainWindowRoomPlaybackIntent {
             Some(false) => "Authoritative room intent: playing".to_owned(),
             None => "Authoritative room intent: unavailable".to_owned(),
         }];
-        if let Some(position) = self.position_seconds {
+        if let Some(position) = self.position_at(std::time::Instant::now()) {
             details.push(format!(
                 "Room position: {}",
                 format_participant_status_timestamp(position)

@@ -21,6 +21,7 @@ impl MpvAdapter {
         self.pending_ipc_event_fence_command_id = None;
         self.last_ipc_event_fence_at = Some(Instant::now());
         self.invalidate_cache_pause_readback_scope();
+        self.transport_readback = transport_readback::TransportReadbackState::default();
         self.invalidate_network_media_options_hook_delivery();
         self.legacy_syncplayintf_pending_heartbeat_command_id = None;
     }
@@ -228,6 +229,7 @@ impl MpvAdapter {
                             command_id,
                             token: CACHE_PAUSE_READBACK_COMMAND_TOKEN,
                             response,
+                            ..
                         } if self
                             .pending_cache_pause_readback
                             .is_some_and(|pending| pending.ipc_command_id == Some(command_id)) =>
@@ -241,6 +243,13 @@ impl MpvAdapter {
                                 self.pending_cache_pause_readback = None;
                             }
                         }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                            command_id,
+                            token,
+                            response,
+                            received_at,
+                        } if token == transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN => self
+                            .complete_transport_readback(command_id, Some((response, received_at))),
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { .. } => {}
                         crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
                             ..
@@ -295,6 +304,13 @@ impl MpvAdapter {
                             .is_some_and(|pending| pending.ipc_command_id == Some(command_id)) =>
                         {
                             self.pending_cache_pause_readback = None;
+                        }
+                        crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
+                            command_id,
+                            token,
+                            ..
+                        } if token == transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN => {
+                            self.complete_transport_readback(command_id, None)
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed { .. } => {}
                     }
@@ -1501,10 +1517,30 @@ impl PlayerAdapter for MpvAdapter {
 
     fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.maintain_runtime_integrations();
-        // Acknowledged-batch consumers bypass the legacy telemetry getters,
-        // so this production path must also perform the paused liveness poll.
-        self.poll_paused_position_telemetry_if_attached();
-        self.player_lifecycle.peek_event_batch()
+        self.ensure_transport_observers_registered_if_attached();
+        self.maintain_transport_readback_nonblocking();
+        let mut batch = self.player_lifecycle.peek_event_batch()?;
+        // Observation time belongs to IPC ingress; delivery time belongs to this
+        // boundary. A delayed owner must see queue residence, including on an
+        // unacknowledged redelivery. Never retime the observation itself.
+        let delivered_at = self.observation_clock_origin.elapsed();
+        let retag = |timestamp: PlayerObservationTimestamp| {
+            PlayerObservationTimestamp::from_adapter_observation(
+                timestamp.elapsed_since_adapter_start(),
+                delivered_at,
+            )
+        };
+        if let Some(snapshot) = batch.authoritative_snapshot.as_mut()
+            && let SnapshotField::Known(timestamp) = &mut snapshot.transport.observed_at
+        {
+            *timestamp = retag(*timestamp);
+        }
+        for event in &mut batch.events {
+            if let sorotte_player_api::PlayerEvent::TransportDelta(delta) = &mut event.event {
+                delta.observed_at = delta.observed_at.map(retag);
+            }
+        }
+        Some(batch)
     }
 
     fn player_event_delivery_mode(&self) -> sorotte_player_api::PlayerEventDeliveryMode {
@@ -1759,7 +1795,104 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
+    fn acknowledged_player_batch_preserves_observation_age_after_a_consumer_stall() {
+        let mut adapter = MpvAdapter::simulated();
+        adapter.observation_clock_origin = Instant::now() - Duration::from_secs(30);
+        let (_, generation) = prepare_active_cache_readback(&mut adapter);
+        adapter.queue_transport_telemetry_update(
+            PlayerTransportTelemetryUpdate::new(
+                generation,
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+            )
+            .with_position_seconds(12.0),
+        );
+        let batch = adapter
+            .take_player_event_batch()
+            .expect("queued player events");
+        let timestamp = batch
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                sorotte_player_api::PlayerEvent::TransportDelta(delta)
+                    if delta.position_seconds == Some(12.0) =>
+                {
+                    delta.observed_at
+                }
+                _ => None,
+            })
+            .expect("position observation");
+        assert_eq!(
+            timestamp.elapsed_since_adapter_start(),
+            Duration::from_secs(1)
+        );
+        assert!(
+            timestamp.delivery_reference_since_adapter_start() >= Duration::from_secs(30),
+            "delivery must retain the 29 second queue residence instead of reporting a fresh sample"
+        );
+    }
+
+    #[test]
+    fn acknowledged_player_pump_registers_transport_observers_without_a_user_command() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            SuccessfulPausedPositionTransport {
+                responses: VecDeque::new(),
+                position_seconds: 12.0,
+            },
+            Duration::from_secs(1),
+        );
+        adapter.observers_registered = false;
+        adapter.transport_observers_registered = false;
+        let _ = adapter.take_player_event_batch();
+        assert!(adapter.observers_registered);
+        assert!(
+            adapter.transport_observers_registered,
+            "the production event consumer needs seeking, core-idle, cache and EOF observers before any gesture"
+        );
+    }
+
+    #[test]
+    fn acknowledged_player_pump_remains_responsive_while_a_property_read_is_delayed() {
+        let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
+            DelayedSuccessTransport {
+                responses: VecDeque::new(),
+                first_response_delay: Some(Duration::from_millis(400)),
+            },
+            Duration::from_secs(1),
+        );
+        prepare_active_cache_readback(&mut adapter);
+        adapter.paused = true;
+        adapter.observers_registered = true;
+        adapter.transport_observers_registered = true;
+        adapter.last_ipc_event_fence_at = Some(Instant::now());
+        let started = Instant::now();
+        for _ in 0..10 {
+            if let Some(batch) = adapter.take_player_event_batch() {
+                adapter
+                    .acknowledge_player_event_batch(batch.acknowledgement_token)
+                    .unwrap();
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "paused status sampling must not block the room runtime on mpv"
+        );
+    }
+
+    #[test]
     fn unchanged_paused_position_read_emits_bounded_transport_liveness() {
+        fn await_batch(adapter: &mut MpvAdapter) -> sorotte_player_api::PlayerEventBatch {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(batch) = adapter.take_player_event_batch() {
+                    return batch;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "asynchronous liveness read should complete"
+                );
+                std::thread::yield_now();
+            }
+        }
         let transport = SuccessfulPausedPositionTransport {
             responses: VecDeque::new(),
             position_seconds: 12.0,
@@ -1779,8 +1912,7 @@ mod nonblocking_maintenance_tests {
             .expect("setup lifecycle events should acknowledge");
         }
 
-        let first_batch = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
-            .expect("the first successful unchanged read must prove transport liveness");
+        let first_batch = await_batch(&mut adapter);
         let first = first_batch
             .events
             .iter()
@@ -1799,19 +1931,13 @@ mod nonblocking_maintenance_tests {
 
         adapter.pending_ordered_player_events.clear();
         adapter.pending_transport_telemetry_updates.clear();
-        adapter.last_paused_position_poll_at =
-            Instant::now().checked_sub(PAUSED_POSITION_POLL_INTERVAL);
         assert!(
             <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter).is_none(),
-            "the 100 ms seek poll must not become a 10 Hz ordered heartbeat"
+            "a completed read must not trigger an unbounded tight polling loop"
         );
 
-        let now = Instant::now();
-        adapter.last_paused_position_poll_at = now.checked_sub(PAUSED_POSITION_POLL_INTERVAL);
-        adapter.last_paused_position_telemetry_at =
-            now.checked_sub(PAUSED_POSITION_TELEMETRY_HEARTBEAT_INTERVAL);
-        let heartbeat = <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter)
-            .expect("an aged successful read should publish a new liveness batch");
+        adapter.force_transport_readback_due_for_test();
+        let heartbeat = await_batch(&mut adapter);
         assert!(heartbeat.events.iter().any(|event| {
             matches!(
                 &event.event,

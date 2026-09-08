@@ -388,7 +388,16 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
 
-        let selected_path = paths[0].clone();
+        // Resolution keys may be case-folded on Windows. Recover the actual
+        // filesystem spelling at the physical-load boundary so every resolver
+        // supplies the same filename to mpv, local metadata and the window title.
+        let selected_path = if browser_is_url(&paths[0]) {
+            paths[0].clone()
+        } else {
+            Self::display_path_for_existing_media_file(std::path::Path::new(&paths[0]))
+                .to_string_lossy()
+                .into_owned()
+        };
         self.pending_logical_media_override = None;
         self.pending_local_attached_pause_override = None;
         let _ = self.interrupt_attached_playback_recovery_impl("media change");

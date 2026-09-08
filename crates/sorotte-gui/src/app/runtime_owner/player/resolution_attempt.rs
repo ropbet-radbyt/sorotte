@@ -1489,6 +1489,62 @@ mod tests {
             .expect("Media Matching candidate")
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn local_candidate_aliases_bind_the_physical_load_and_keep_failure_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("Library");
+        std::fs::create_dir(&library).unwrap();
+        let actual = library.join("MixedCaseEpisode.MKV");
+        std::fs::write(&actual, b"media fixture").unwrap();
+        let alias = library
+            .join("..")
+            .join("Library")
+            .join("mixedcaseepisode.mkv");
+        let factories: [fn(&str) -> media_resolution::GuiMediaResolutionCandidate; 3] = [
+            local_candidate,
+            media_search_candidate,
+            media_match_candidate,
+        ];
+
+        for make_candidate in factories {
+            let candidate = make_candidate(alias.to_str().unwrap());
+            let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+            owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+            owner.ensure_playlist_resolution_attempt(
+                GuiPlaylistEntryId::next(),
+                owner.playlist_resolution.generation,
+                "MixedCaseEpisode.MKV",
+                GuiPlaylistSourcePolicy::Automatic,
+            );
+            assert_eq!(
+                owner.open_media_resolution_candidate(
+                    &shell_state(),
+                    "MixedCaseEpisode.MKV",
+                    candidate.clone(),
+                    false,
+                ),
+                SelectedPlaylistMediaSyncOutcome::StartedLoading
+            );
+            owner.refresh_player_state_impl();
+            assert_eq!(
+                owner.playlist_resolution_attempt.as_ref().unwrap().state,
+                PlaylistResolutionAttemptState::Active,
+                "the actual player path must confirm the aliased candidate"
+            );
+            assert_eq!(
+                owner.player_local_file.as_ref().unwrap().name,
+                "MixedCaseEpisode.MKV"
+            );
+            assert!(owner.player_local_file_identity_confirmed_for_shared_sync());
+            assert_eq!(
+                candidate,
+                make_candidate(actual.to_str().unwrap()),
+                "a failed candidate must stay excluded when rediscovered with another spelling"
+            );
+        }
+    }
+
     fn plex_candidate() -> media_resolution::GuiMediaResolutionCandidate {
         let playlist_uri = sorotte_plex::PlexPlaylistUri {
             machine_identifier: "machine".to_owned(),

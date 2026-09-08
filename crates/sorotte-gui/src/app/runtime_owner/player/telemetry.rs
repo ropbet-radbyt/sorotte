@@ -2767,6 +2767,20 @@ impl GuiPersistedConfigRuntimeOwner {
         if prepared_consumer.applied_unacknowledged_token == Some(batch.acknowledgement_token) {
             return Ok(());
         }
+        if self
+            .ordered_player_events
+            .attachment_epoch
+            .is_some_and(|previous| previous != batch.attachment_epoch)
+        {
+            // mpv may reconnect its IPC inside the same adapter object. That
+            // replacement must retire old commands, clocks and classifiers in
+            // client-core too; otherwise Disconnected remains a permanent fence.
+            self.clear_session_attached_player_sync_state();
+            if let Some(session) = self.session.as_mut() {
+                session.reset_playback_transport_adapter_epoch(system_time_seconds());
+            }
+            self.report_current_external_player_availability();
+        }
         self.ordered_player_events = prepared_consumer;
 
         if let Some(snapshot) = batch.authoritative_snapshot.as_ref()
@@ -3839,6 +3853,12 @@ mod ordered_delivery_tests {
     }
 
     impl PlayerAdapter for OrderedBatchPlayer {
+        fn capabilities(&self) -> sorotte_player_api::PlayerCapabilities {
+            sorotte_player_api::PlayerCapabilities::from_capabilities([
+                sorotte_player_api::PlayerCapability::Telemetry,
+            ])
+        }
+
         fn name(&self) -> &'static str {
             "ordered-batch-test"
         }
@@ -3936,11 +3956,27 @@ mod ordered_delivery_tests {
         }
     }
 
+    #[derive(Default)]
     struct CountingSession {
         transport_updates: Arc<AtomicUsize>,
+        attachment_resets: Arc<AtomicUsize>,
+        availability: Arc<Mutex<Vec<ExternalPlayerAvailability>>>,
     }
 
     impl GuiSessionRuntimeAdapter for CountingSession {
+        fn reset_playback_transport_adapter_epoch(&mut self, _now_seconds: f64) {
+            self.attachment_resets.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn set_external_player_availability(
+            &mut self,
+            availability: ExternalPlayerAvailability,
+            _now_seconds: f64,
+        ) -> Result<bool, String> {
+            self.availability.lock().unwrap().push(availability);
+            Ok(true)
+        }
+
         fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
             Ok(())
         }
@@ -4121,8 +4157,68 @@ mod ordered_delivery_tests {
             acknowledgement_calls,
             legacy_drain_calls,
         })));
-        owner.session = Some(Box::new(CountingSession { transport_updates }));
+        owner.session = Some(Box::new(CountingSession {
+            transport_updates,
+            ..Default::default()
+        }));
         owner
+    }
+
+    #[test]
+    fn ipc_attachment_replacement_reopens_reporting_and_retires_old_motion_state() {
+        let next_epoch = epoch().next();
+        let mut snapshot = active_snapshot(
+            0,
+            LoadAttemptId::new(1),
+            PlayerMediaGeneration::new(1),
+            42.0,
+        );
+        snapshot.attachment_epoch = next_epoch;
+        snapshot.sequence_boundary = PlayerSequenceBoundary::new(next_epoch, 0);
+        let mut replacement = batch(0, 1, Some(snapshot), Vec::new());
+        replacement.attachment_epoch = next_epoch;
+        replacement.sequence_boundary = PlayerSequenceBoundary::new(next_epoch, 0);
+        replacement.acknowledgement_token = PlayerEventAcknowledgementToken::new(next_epoch, 1);
+        let updates = Arc::new(AtomicUsize::new(0));
+        let resets = Arc::new(AtomicUsize::new(0));
+        let availability = Arc::new(Mutex::new(Vec::new()));
+        let mut owner = owner_with_batches(
+            vec![replacement],
+            false,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            updates.clone(),
+        );
+        owner.session = Some(Box::new(CountingSession {
+            transport_updates: updates.clone(),
+            attachment_resets: resets.clone(),
+            availability: availability.clone(),
+        }));
+        owner.ordered_player_events.attachment_epoch = Some(epoch());
+        owner.attached_native_seek_tracker.media_generation = Some(99);
+        owner.attached_native_seek_tracker.last_observed_at_seconds = Some(100.0);
+        owner.report_external_player_availability(ExternalPlayerAvailability::Disconnected);
+        owner.refresh_player_state_impl();
+        assert_eq!(resets.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *availability.lock().unwrap(),
+            vec![
+                ExternalPlayerAvailability::Disconnected,
+                ExternalPlayerAvailability::Connecting
+            ]
+        );
+        assert_eq!(
+            updates.load(Ordering::SeqCst),
+            1,
+            "replacement snapshot must reach client-core"
+        );
+        assert_eq!(owner.player_position_seconds, Some(42.0));
+        owner.refresh_player_state_impl();
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            1,
+            "an idle attached player must not repeatedly reset reporting"
+        );
     }
 
     fn reduce_lifecycle(state: &mut PlayerLifecycleState, input: PlayerLifecycleInput) {
@@ -4695,6 +4791,7 @@ mod ordered_delivery_tests {
         })));
         owner.session = Some(Box::new(CountingSession {
             transport_updates: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         }));
 
         owner.refresh_player_state_impl();
@@ -4956,6 +5053,7 @@ mod ordered_delivery_tests {
         })));
         owner.session = Some(Box::new(CountingSession {
             transport_updates: Arc::new(AtomicUsize::new(0)),
+            ..Default::default()
         }));
 
         owner.refresh_player_state_impl();

@@ -153,9 +153,9 @@ fn apply_new_batch(
     let client_once = client.lifecycle_verification_projection();
     let gui_once = gui_lifecycle_verification_projection(gui);
     assert_eq!(
-        harness.take_event_batch(),
-        Some(batch.clone()),
-        "{stage}: producer must replay the unacknowledged batch byte-for-byte"
+        harness.take_event_batch().map(without_delivery_clock),
+        Some(without_delivery_clock(batch.clone())),
+        "{stage}: producer must retain all observations and semantic results on redelivery"
     );
     apply_batch_once(&format!("{stage} replay"), batch, client, gui);
     assert_eq!(
@@ -178,9 +178,9 @@ fn replay_applied_batch(
     gui: &mut GuiPersistedConfigRuntimeOwner,
 ) {
     assert_eq!(
-        harness.take_event_batch(),
-        Some(batch.clone()),
-        "{stage}: delayed acknowledgement must retain the exact batch"
+        harness.take_event_batch().map(without_delivery_clock),
+        Some(without_delivery_clock(batch.clone())),
+        "{stage}: delayed acknowledgement must retain observations and semantic results"
     );
     let client_once = client.lifecycle_verification_projection();
     let gui_once = gui_lifecycle_verification_projection(gui);

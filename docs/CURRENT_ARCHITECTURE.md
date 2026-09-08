@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.11; landed base `4000eca69b52003b66e81b6998d15c555e7eb6d1`; fixing commit **pending**; hosted evidence **pending**. The landed v0.2.9 release is the base for v0.2.11. The v0.2.10 tag remained an unsuccessful release attempt; its original failures and passing boundary evidence are retained separately. Boundary-local evidence and remaining-work notes below retain their historical v0.2.9 implementation context; they do not qualify this release candidate. The fixing commit and hosted qualification for v0.2.11 remain pending.
+Release 0.2.12; landed base `ddb8bd8880352a1513ec39363e13518d27e2f58f`; fixing commit **pending**; hosted evidence **pending**. The v0.2.12 candidate builds on main after PR #53. It repairs player telemetry delivery and reconnection, authoritative pause enforcement, room-clock presentation, participant alignment and local filename casing. Boundary-local evidence below retains its historical context and does not qualify this candidate; fresh hosted and native qualification is required.
 
 ## Authority flow
 

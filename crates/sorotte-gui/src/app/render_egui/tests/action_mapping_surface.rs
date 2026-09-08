@@ -722,6 +722,101 @@ fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wi
 }
 
 #[test]
+fn room_clock_repaints_between_snapshots_and_stops_when_paused_or_stale() {
+    use std::time::{Duration, Instant};
+
+    for (paused, sample_age, animating) in [
+        (false, Some(Duration::ZERO), true),
+        (true, Some(Duration::ZERO), false),
+        (false, Some(Duration::from_secs(6)), false),
+        (false, None, false),
+    ] {
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        state.main_window.room_playback_intent.paused = Some(paused);
+        state.main_window.room_playback_intent.position_seconds = Some(12.0);
+        state.main_window.room_playback_intent.position_sampled_at =
+            sample_age.map(|age| Instant::now() - age);
+        let tree = state.main_window_widget_tree();
+        let panel = tree.find("main-window:connection").expect("room panel");
+        let context = egui::Context::default();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        let mut repaint_delay = Duration::ZERO;
+        // Settle the initial layout repaint before measuring an otherwise idle
+        // frame. No new runtime snapshot or user input arrives between frames.
+        for frame in 0..4 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(f64::from(frame)),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| renderer.render_combined_room_panel(ui, panel, &state),
+            );
+            repaint_delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            output.textures_delta.clear();
+        }
+        if animating {
+            assert!(
+                repaint_delay <= Duration::from_millis(100),
+                "{repaint_delay:?}"
+            );
+        } else {
+            assert!(repaint_delay > Duration::from_secs(1), "{repaint_delay:?}");
+        }
+    }
+}
+
+#[test]
+fn short_participant_names_align_with_their_status_and_file_text() {
+    for is_controller in [false, true] {
+        for width in [360.0, 800.0] {
+            let mut state =
+                SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                    username: Some("Alice".to_owned()),
+                    room: Some("room1".to_owned()),
+                    ..StoredClientSettingsMvp::default()
+                });
+            state.main_window.users[0].is_controller = is_controller;
+            let tree = state.main_window_widget_tree();
+            let panel = tree.find("main-window:connection").expect("room panel");
+            let context = egui::Context::default();
+            let mut renderer = GuiWidgetEguiRenderer::default();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| renderer.render_combined_room_panel(ui, panel, &state),
+            );
+            output.textures_delta.clear();
+            let text_x = |expected: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == expected => {
+                            Some(text.pos.x)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing rendered text {expected:?}"))
+            };
+            assert!(
+                (text_x("Alice") - text_x("No file")).abs() <= 1.0,
+                "name and file must share a left edge at width {width}, controller={is_controller}"
+            );
+        }
+    }
+}
+
+#[test]
 fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
     let name = "viewer-000 multilingual participant with a deliberately long display name";
     for is_controller in [false, true] {

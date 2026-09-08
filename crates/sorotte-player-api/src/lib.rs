@@ -1743,8 +1743,10 @@ pub trait PlayerAdapter: Send + Sync {
 
     /// Returns the next ordered batch without consuming it.
     ///
-    /// Repeated calls before acknowledgement may return the same batch. The
-    /// default keeps adapters that expose only the legacy getters compatible.
+    /// Repeated calls before acknowledgement may return the same batch.
+    /// Event identities, observation times and semantic outcomes remain stable;
+    /// observation delivery references may advance to include redelivery delay.
+    /// The default keeps adapters that expose only the legacy getters compatible.
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         None
     }
