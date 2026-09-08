@@ -332,7 +332,7 @@ application behaves correctly. Once a defect is fixed, its characterizations
 must become positive regressions and the corresponding registry entry must be
 removed.
 
-Required workspace execution uses pinned cargo-nextest 0.9.137 through
+Required workspace execution uses pinned cargo-nextest 0.9.143 through
 `scripts/nextest_ci.py`. The checked profile allows one diagnostic retry but
 fails the gate when a failed or leaked first attempt later passes. An inherited
 subprocess handle still open after 500 ms is a failed result. The wrapper
@@ -358,7 +358,7 @@ head, then exports two native views from the same profiles:
 - `llvm-cov show` text supplies the exact execution state of each physical
   source line.
 
-`scripts/llvm_cov_line_map.py` accepts only cargo-llvm-cov 0.8.4 and LLVM
+`scripts/llvm_cov_line_map.py` accepts only cargo-llvm-cov 0.9.1 and LLVM
 coverage JSON 3.1.0, requires the workspace manifest, rejects unknown fields
 and text rows, and compares every displayed source row with the checkout. Its
 canonical artifact hashes both producer views and every represented source
@@ -478,7 +478,7 @@ from:
   regression;
 - a final cargo-llvm-cov merge check.
 
-The wrapper accepts only cargo-llvm-cov 0.8.4, applies its `show-env` contract
+The wrapper accepts only cargo-llvm-cov 0.9.1, applies its `show-env` contract
 to external Cargo processes, isolates those builds in
 `target/llvm-cov-target`, removes and attests stale generated raw/merged
 profiles before execution, recursively hashes current profiles, requires the
@@ -983,7 +983,7 @@ checkout:
 
 ```text
 rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov --version 0.8.4 --locked
+cargo install cargo-llvm-cov --version 0.9.1 --locked
 python -m pip install -r requirements/legacy-python-interop.txt
 git clone https://github.com/Syncplay/syncplay.git \
   .interop-cache/syncplay-legacy

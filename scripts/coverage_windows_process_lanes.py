@@ -39,11 +39,11 @@ import artifact_input
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-windows-process-coverage-lanes"
-PINNED_CARGO_LLVM_COV_VERSION = "0.8.4"
-PINNED_RUST_RELEASE = "1.97.1"
-PINNED_RUST_COMMIT = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+PINNED_CARGO_LLVM_COV_VERSION = "0.9.1"
+PINNED_RUST_RELEASE = "1.98.1"
+PINNED_RUST_COMMIT = "48a229ceaefd4985c50990b14116b6d856af0985"
 PINNED_RUST_HOST = "x86_64-pc-windows-msvc"
-PINNED_LLVM_VERSION = "22.1.6"
+PINNED_LLVM_VERSION = "22.1.8"
 TARGET_DIR = "target/llvm-cov-windows-process/llvm-cov-target"
 COMPATIBILITY_DOMAIN = "windows-x86_64-msvc"
 NATIVE_EXCLUSION_REASON = (
@@ -430,7 +430,7 @@ def parse_rustc_identity(result: common.CommandResult) -> dict[str, Any]:
             f"rustc identity is not UTF-8: {error}"
         ) from error
     lines = text.splitlines()
-    if not lines or not re.fullmatch(r"rustc 1\.97\.1 \([^)]+\)", lines[0]):
+    if not lines or not re.fullmatch(rf"rustc {re.escape(PINNED_RUST_RELEASE)} \([^)]+\)", lines[0]):
         raise common.CoverageProfileLaneError("rustc version header drifted")
     values: dict[str, str] = {}
     for line in lines[1:]:

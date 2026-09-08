@@ -89,11 +89,13 @@ fn narrow_playlist_rows_paint_a_readable_title_beside_compact_actions() {
     for width in [207.0, 220.0] {
         let context = egui::Context::default();
         let mut renderer = GuiWidgetEguiRenderer::default();
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(width);
             ui.set_max_width(width);
             renderer.render_playlist_list(ui, &playlist, &state);
         });
+        // Layout is inspected without an integration painter in this test.
+        output.textures_delta.clear();
         assert!(
             output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text)
@@ -140,9 +142,10 @@ fn playlist_keyboard_owner_tracks_selected_row_in_the_accessibility_tree() {
         for (index, row) in playlist.children.iter_mut().enumerate() {
             row.selected = selection == Some(index);
         }
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             renderer.render_playlist_list(ui, &playlist, &state);
         });
+        output.textures_delta.clear();
         let update = output.platform_output.accesskit_update.unwrap();
         let owner = update
             .nodes

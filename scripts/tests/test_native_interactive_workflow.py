@@ -22,7 +22,7 @@ CHECKOUT_ACTION = (
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 )
 RUST_ACTION = (
-    "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
+    "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87"
 )
 PYTHON_ACTION = (
     "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
@@ -290,7 +290,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         "id": "rust",
         "if": "steps.source_binding.outcome == 'success'",
         "uses": RUST_ACTION,
-        "with": {"toolchain": "1.97.1"},
+        "with": {"toolchain": "1.98.1"},
     }:
         raise AssertionError("pinned Rust setup contract drifted")
 

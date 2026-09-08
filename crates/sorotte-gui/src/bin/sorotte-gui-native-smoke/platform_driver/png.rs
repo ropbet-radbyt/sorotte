@@ -37,7 +37,7 @@ pub(super) fn write_bgrx_png(
     );
     for row in bgrx_pixels.chunks_exact(width as usize * 4) {
         filtered.push(0);
-        for pixel in row.chunks_exact(4) {
+        for pixel in row.as_chunks::<4>().0 {
             filtered.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
         }
     }

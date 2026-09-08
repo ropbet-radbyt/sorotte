@@ -10,9 +10,9 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-coverage.yml"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
-RUST = "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4"
+RUST = "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87"
 PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
-INSTALL = "taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60"
+INSTALL = "taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 
 
@@ -74,7 +74,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(
             rust.get("with"),
             {
-                "toolchain": "1.97.1",
+                "toolchain": "1.98.1",
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -87,7 +87,7 @@ class WindowsProcessCoverageWorkflowTests(unittest.TestCase):
         self.assertEqual(install["uses"], INSTALL)
         self.assertEqual(
             install.get("with"),
-            {"tool": "cargo-llvm-cov@0.8.4"},
+            {"tool": "cargo-llvm-cov@0.9.1"},
         )
 
     def test_producer_and_exports_are_exact_and_fail_closed(self) -> None:

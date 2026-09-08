@@ -83,7 +83,7 @@ reference_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     def fake_run(self, argv, *, cwd, **kwargs):
         if argv[:2] == ["rustc", "--version"]:
-            return subprocess.CompletedProcess(argv, 0, "rustc 1.97.1\n", "")
+            return subprocess.CompletedProcess(argv, 0, "rustc 1.98.1\n", "")
         if argv[:2] == ["cargo", "test"]:
             return subprocess.CompletedProcess(argv, 0, "demo::tests::case: test\n", "")
         index, count = map(int, argv[argv.index("--shard") + 1].split("/"))

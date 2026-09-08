@@ -56,7 +56,7 @@ impl GuiWidgetEguiRenderer {
         playlist_drop_target_rect: Option<egui::Rect>,
         playlist_drop_target_slot: Option<usize>,
         pointer_hover_pos: Option<egui::Pos2>,
-        dropped_files: Vec<egui::DroppedFile>,
+        dropped_files: Vec<egui::DroppedFileHandle>,
     ) -> Option<GuiDroppedFilesRequest> {
         let paths = dropped_files
             .iter()
@@ -100,11 +100,9 @@ impl GuiWidgetEguiRenderer {
         })
     }
 
-    fn dropped_file_path(file: &egui::DroppedFile) -> Option<String> {
-        if let Some(path) = file.path.as_ref() {
-            return Some(path.to_string_lossy().into_owned());
-        }
-        normalized_editable_text(&file.name)
+    fn dropped_file_path(file: &egui::DroppedFileHandle) -> Option<String> {
+        let path = file.path();
+        (!path.as_os_str().is_empty()).then(|| path.to_string_lossy().into_owned())
     }
 
     pub(super) fn pick_media_files(state: &SorotteGuiShellAppState) -> Option<Vec<String>> {

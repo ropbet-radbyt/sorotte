@@ -130,7 +130,7 @@ class NativeRunnerBundleTests(unittest.TestCase):
         self.assertEqual(contract["python_version"], self.profile["python_version"])
         self.assertEqual(contract["requirements"]["pip"], contract["constraints"]["pip"])
         self.assertEqual(set(contract["requirements"]), {"pip", "pyyaml", "twisted", "pyopenssl", "cryptography", "service-identity"})
-        self.assertEqual(contract["requirements"]["pyyaml"], "6.0.2")
+        self.assertEqual(contract["requirements"]["pyyaml"], "6.0.3")
         self.assertEqual(contract["policy_requirements_sha256"], bundle.digest(bundle.PYTHON_POLICY_REQUIREMENTS))
         self.assertEqual(contract["canary_inventory_sha256"], bundle.digest(canary.INVENTORY))
         self.assertTrue({"unittest", "yaml", "twisted.internet.reactor", "OpenSSL.SSL", "service_identity.pyopenssl", "zope.interface", "_cffi_backend"}.issubset(contract["imports"]))

@@ -193,14 +193,14 @@ class RequirementPolicyTests(unittest.TestCase):
             b"# compatibility comment\n"
             b"cryptography==50.0.1\n"
             b"pyopenssl==26.4.0\n"
-            b"service_identity==24.2.0\n"
+            b"service_identity==26.1.0\n"
         )
         self.assertEqual(parsed, interop.PINNED_PACKAGES)
 
     def test_ranges_duplicates_and_inventory_drift_are_rejected(self) -> None:
         mutations = (
-            b"twisted>=26.4.0\npyopenssl==26.4.0\nservice_identity==24.2.0\n",
-            b"twisted==26.4.0\nTwisted==26.4.0\npyopenssl==26.4.0\nservice_identity==24.2.0\n",
+            b"twisted>=26.4.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
+            b"twisted==26.4.0\nTwisted==26.4.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
             b"twisted==26.4.0\npyopenssl==26.4.0\n",
         )
         for mutation in mutations:
@@ -220,7 +220,7 @@ class RequirementPolicyTests(unittest.TestCase):
                 "cryptography==50.0.1\n"
                 "twisted==26.4.0\n"
                 "pyopenssl==26.4.0\n"
-                "service_identity==24.2.0\n",
+                "service_identity==26.1.0\n",
                 encoding="utf-8",
             )
             identity = {
@@ -229,7 +229,7 @@ class RequirementPolicyTests(unittest.TestCase):
                 "packages": {
                     "pyopenssl": "26.4.0",
                     "cryptography": "50.0.1",
-                    "service-identity": "24.2.0",
+                    "service-identity": "26.1.0",
                     "twisted": "26.4.0",
                 },
                 "version": "3.13.5",
@@ -249,7 +249,7 @@ class RequirementPolicyTests(unittest.TestCase):
             self.assertEqual(python["version"], "3.13.5")
             self.assertEqual(
                 [package["observed_version"] for package in python["packages"]],
-                ["50.0.1", "26.4.0", "24.2.0", "26.4.0"],
+                ["50.0.1", "26.4.0", "26.1.0", "26.4.0"],
             )
             self.assertRegex(pinned["sha256"], r"^[0-9a-f]{64}$")
 

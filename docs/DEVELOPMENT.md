@@ -312,7 +312,7 @@ causally delivered player effect.
 
 ## Coding Rules
 
-- Use Rust `1.97.1` and edition `2024`.
+- Use Rust `1.98.1` and edition `2024`.
 - Keep public API surfaces narrow. Add shared CLI/GUI behavior to `sorotte-client-app::app_boundary` where a cross-crate API is needed.
 - Prefer small, test-backed vertical slices over broad refactors.
 - Do not add non-`mpv` player backend work unless product scope is explicitly changed.
@@ -324,7 +324,7 @@ Install once:
 
 ```powershell
 rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov --version 0.8.4 --locked
+cargo install cargo-llvm-cov --version 0.9.1 --locked
 python -m pip install -r requirements/legacy-python-interop.txt
 git clone https://github.com/Syncplay/syncplay.git `
   .interop-cache/syncplay-legacy

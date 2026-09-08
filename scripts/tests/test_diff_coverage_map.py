@@ -184,7 +184,7 @@ class DiffCoverageMapTests(unittest.TestCase):
         )
         self.assertEqual(
             report["inputs"]["coverage_producer"]["cargo_llvm_cov_version"],
-            "0.8.4",
+            "0.9.1",
         )
 
     def test_platform_maps_union_physical_lines_without_double_counting(self) -> None:

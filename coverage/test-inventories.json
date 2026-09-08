@@ -2,14 +2,14 @@
   "schema_version": 2,
   "status": "passed",
   "identity": {
-    "source_sha": "791dcdfea5790cac90241d9ce9d60423f65877f7",
-    "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
+    "source_sha": "667744c57ffed8ba15077a6af2bcf65f8fee5f8c",
+    "tool_manifest_sha256": "02d2f2bf57dd840d8cd314b938419040e4368da93ea7095877b433afcbf50d50",
     "working_source_dirty": true,
-    "working_source_sha256": "845462f28c00e71d3480ed9de45569f08c1de8a4abeddb8d49b3b9403ccc6ae0",
-    "cargo_lock_sha256": "4b4228d1f0fc382698d18ced0278a62ac478336090f71705fd693a0794c75b6a",
+    "working_source_sha256": "9347ff3a2d3807b4ca0223a49e999fa52bd7207dd983b45f09627fd5b9d245c4",
+    "cargo_lock_sha256": "b76028f9452199b8c58ef7332069d36c8db3f22557798707501820c39c5f05b6",
     "platform": "Windows",
     "machine": "AMD64",
-    "python": "3.12.10",
+    "python": "3.13.5",
     "runner_image": null,
     "runner_image_version": null,
     "run_id": null,
@@ -199,7 +199,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "c176c5899d372c527af723196b5e8d0e768f7826f94a7e70322b7d00146a3090"
+      "listing_sha256": "1e61aac6be5c83d82ee897be1786e67ae7a422d6e8664fcc856ddbc7d54aebf8"
     },
     "mpv-lib": {
       "cargo_scope": [
@@ -690,7 +690,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "df4b620bbca3851d152681c411651526d0fa1af54bd3230261f29cef6e2d2f7b"
+      "listing_sha256": "b82ed5a5f98d4e39935a438446b4d7139db1ab545e18f74d982d99634a8d2fb5"
     },
     "gui-lib": {
       "cargo_scope": [
@@ -829,6 +829,7 @@
         "app::native_host::tests::gui_text_preview_host_uses_summary_and_widget_tree_output",
         "app::native_host::tests::repro_retryable_streaming_hook_warning_does_not_interrupt_playback_with_setup_modal",
         "app::remote_services::download::tests::cancellation_interrupts_an_idle_body_without_waiting_for_idle_timeout",
+        "app::remote_services::download::tests::download_destinations_are_unique_when_timestamp_repeats",
         "app::remote_services::download::tests::oversized_declared_chunked_and_lengthless_packages_never_exceed_disk_budget",
         "app::remote_services::download::tests::separate_idle_and_overall_deadlines_stop_stalled_or_endless_transfers",
         "app::remote_services::download::tests::steadily_progressing_transfer_can_outlive_its_idle_deadline",
@@ -896,6 +897,7 @@
         "app::render_egui::tests::drop_targets_and_playlist_labels::gui_widget_egui_renderer_defaults_playlist_drops_to_append_slot_when_hover_slot_is_missing",
         "app::render_egui::tests::drop_targets_and_playlist_labels::gui_widget_egui_renderer_defaults_shared_playlist_drops_to_playlist_target",
         "app::render_egui::tests::drop_targets_and_playlist_labels::gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_drops",
+        "app::render_egui::tests::drop_targets_and_playlist_labels::gui_widget_egui_renderer_routes_drop_handles_without_reading_media",
         "app::render_egui::tests::edit_actions::gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions",
         "app::render_egui::tests::playlist_interactions::gui_widget_egui_renderer_ignores_playlist_row_shortcuts_for_unselected_rows",
         "app::render_egui::tests::playlist_interactions::gui_widget_egui_renderer_ignores_playlist_row_shortcuts_without_focus_or_delete_permission",
@@ -1914,7 +1916,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "9ebb362b55ad035d51e509109486f52228bc72ffb09db74fec3f49c044a234d5"
+      "listing_sha256": "41230bb9b43c93a5f1c4a1a1f6db143668dfa4e6415a1d2a25693b52f80ea0df"
     },
     "server-bin": {
       "cargo_scope": [
@@ -1958,7 +1960,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "efb6a3a535a4d470cc52dfedd2010b2692018d0ca31ce0a171a2eec01608c562"
+      "listing_sha256": "99d5f265a8c21f4871db7e638b4bbdcc7149ef82a836e07b142f579ff8f84bca"
     },
     "media-lib": {
       "cargo_scope": [
@@ -1975,6 +1977,8 @@
         "audio_v3::tests::audio_region_reservoir_reports_acceptance_and_rejection",
         "audio_v3::tests::delayed_pair_selection_prefers_later_stronger_targets",
         "audio_v3::tests::long_audio_selection_reserves_body_landmarks",
+        "audio_v3::tests::pcm_stream_preserves_little_endian_samples_across_every_byte_split",
+        "audio_v3::tests::pcm_stream_rejects_an_incomplete_trailing_sample",
         "diagnostic_harness::tests::manifest_validation_rejects_blank_candidate_id",
         "diagnostic_harness::tests::production_sampled_fast_index_mode_is_fixed",
         "diagnostic_harness::tests::source_counts_aggregate_unique_fingerprint_metrics",
@@ -2079,7 +2083,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "9301b95f384951a2164422547f0ae785d84e17b173c8f222bef8a5ac346d6036"
+      "listing_sha256": "6f342131565fa35381f35f13e235192eeb46417117ae0a770002252a6a4bec15"
     },
     "client-app-lib": {
       "cargo_scope": [
@@ -2373,7 +2377,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "738f35e879790c754d49b8bcb9ad1a056c6a7b6601b5a1aa26eeb166c865ea53"
+      "listing_sha256": "0b998d7e414b19453e18cea30b7755b42bff5443f1c2d386ed0f10a1c61cfee3"
     },
     "updater-bin": {
       "cargo_scope": [
@@ -2445,7 +2449,7 @@
         "--message-format",
         "json"
       ],
-      "listing_sha256": "7a0b6a064a681f2d765084376ecb2dd062d5b067a223aa6bbe8f1390842415c5"
+      "listing_sha256": "37257437d2489b96fa733916c7d99a7a5b58638141bf784d5bc11b7ecbd58313"
     }
   },
   "attempts": [
@@ -2466,8 +2470,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\compat.json",
-      "listing_sha256": "c176c5899d372c527af723196b5e8d0e768f7826f94a7e70322b7d00146a3090"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\compat.json",
+      "listing_sha256": "1e61aac6be5c83d82ee897be1786e67ae7a422d6e8664fcc856ddbc7d54aebf8"
     },
     {
       "scope": "mpv-lib",
@@ -2487,8 +2491,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\mpv-lib.json",
-      "listing_sha256": "df4b620bbca3851d152681c411651526d0fa1af54bd3230261f29cef6e2d2f7b"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\mpv-lib.json",
+      "listing_sha256": "b82ed5a5f98d4e39935a438446b4d7139db1ab545e18f74d982d99634a8d2fb5"
     },
     {
       "scope": "gui-lib",
@@ -2508,8 +2512,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\gui-lib.json",
-      "listing_sha256": "9ebb362b55ad035d51e509109486f52228bc72ffb09db74fec3f49c044a234d5"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\gui-lib.json",
+      "listing_sha256": "41230bb9b43c93a5f1c4a1a1f6db143668dfa4e6415a1d2a25693b52f80ea0df"
     },
     {
       "scope": "server-bin",
@@ -2530,8 +2534,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\server-bin.json",
-      "listing_sha256": "efb6a3a535a4d470cc52dfedd2010b2692018d0ca31ce0a171a2eec01608c562"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\server-bin.json",
+      "listing_sha256": "99d5f265a8c21f4871db7e638b4bbdcc7149ef82a836e07b142f579ff8f84bca"
     },
     {
       "scope": "media-lib",
@@ -2551,8 +2555,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\media-lib.json",
-      "listing_sha256": "9301b95f384951a2164422547f0ae785d84e17b173c8f222bef8a5ac346d6036"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\media-lib.json",
+      "listing_sha256": "6f342131565fa35381f35f13e235192eeb46417117ae0a770002252a6a4bec15"
     },
     {
       "scope": "client-app-lib",
@@ -2572,8 +2576,8 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\client-app-lib.json",
-      "listing_sha256": "738f35e879790c754d49b8bcb9ad1a056c6a7b6601b5a1aa26eeb166c865ea53"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\client-app-lib.json",
+      "listing_sha256": "0b998d7e414b19453e18cea30b7755b42bff5443f1c2d386ed0f10a1c61cfee3"
     },
     {
       "scope": "updater-bin",
@@ -2594,24 +2598,24 @@
         "json"
       ],
       "status": "passed",
-      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\testing-process-hardening\\target\\verification\\release-v0.2.11\\gui-fixture-repair\\inventory-proposal-1\\proposed-inventory.listings\\updater-bin.json",
-      "listing_sha256": "7a0b6a064a681f2d765084376ecb2dd062d5b067a223aa6bbe8f1390842415c5"
+      "listing_path": "C:\\Users\\shaun\\Documents\\workspace\\sorotte\\tmp\\deps-stable-20260908\\target\\dependency-update\\inventory-audio-regression.listings\\updater-bin.json",
+      "listing_sha256": "37257437d2489b96fa733916c7d99a7a5b58638141bf784d5bc11b7ecbd58313"
     }
   ],
-  "cargo_nextest_version": "cargo-nextest 0.9.137 (75ddba7e9 2026-05-26)\nrelease: 0.9.137\ncommit-hash: 75ddba7e911b44c5c0700dac0415d824403de9bd\ncommit-date: 2026-05-26\nhost: x86_64-pc-windows-msvc",
+  "cargo_nextest_version": "cargo-nextest 0.9.143 (60fa45f63 2026-08-04)\nrelease: 0.9.143\ncommit-hash: 60fa45f638ffc3f35e74afa65737f45fcd32db2a\ncommit-date: 2026-08-04\nhost: x86_64-pc-windows-msvc",
   "identity_after": {
-    "source_sha": "791dcdfea5790cac90241d9ce9d60423f65877f7",
-    "tool_manifest_sha256": "18c63faa7edc2883a4f22ca9723a7b9f862a62ec034a81d67631429e62148020",
+    "source_sha": "667744c57ffed8ba15077a6af2bcf65f8fee5f8c",
+    "tool_manifest_sha256": "02d2f2bf57dd840d8cd314b938419040e4368da93ea7095877b433afcbf50d50",
     "working_source_dirty": true,
-    "working_source_sha256": "845462f28c00e71d3480ed9de45569f08c1de8a4abeddb8d49b3b9403ccc6ae0",
-    "cargo_lock_sha256": "4b4228d1f0fc382698d18ced0278a62ac478336090f71705fd693a0794c75b6a",
+    "working_source_sha256": "9347ff3a2d3807b4ca0223a49e999fa52bd7207dd983b45f09627fd5b9d245c4",
+    "cargo_lock_sha256": "b76028f9452199b8c58ef7332069d36c8db3f22557798707501820c39c5f05b6",
     "platform": "Windows",
     "machine": "AMD64",
-    "python": "3.12.10",
+    "python": "3.13.5",
     "runner_image": null,
     "runner_image_version": null,
     "run_id": null,
     "run_attempt": null
   },
-  "duration_seconds": 103.578
+  "duration_seconds": 43.428
 }

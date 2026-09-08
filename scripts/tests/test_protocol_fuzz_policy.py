@@ -85,11 +85,11 @@ MPV_FRAMED_TRANSCRIPT_TARGET = "mpv_framed_transcript"
 
 PINNED_ACTIONS = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "dtolnay/rust-toolchain": "4cda84d5c5c54efe2404f9d843567869ab1699d4",
+    "dtolnay/rust-toolchain": "6bed0761d98439e5a578e2877258200ad565ba87",
     "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "taiki-e/install-action": "67729d5c413db75907f0ad1e39bb04b9c868ff60",
+    "taiki-e/install-action": "d438492cf8a250514fa2d34b30bc3c0dc37c65ff",
 }
 PRODUCERS = {
     "protocol-fuzz": (FUZZ_TARGET, CORPUS_PATH, FUZZ_OUTPUT_PATH, "sorotte-protocol-fuzz"),
@@ -260,7 +260,7 @@ def assert_workflow_contract(text: str) -> None:
     require(command_tokens(replay) == ["python", "scripts/fuzz_regressions.py", "replay", "--output", "target/fuzz-regressions.json"],
             "retained product regression replay required")
     require(action_step(protocol, "taiki-e/install-action").get("with") ==
-            {"tool": "cargo-nextest@0.9.137", "fallback": "none"}, "replay needs the pinned deterministic test runner")
+            {"tool": "cargo-nextest@0.9.143", "fallback": "none"}, "replay needs the pinned deterministic test runner")
     build = command_step(protocol, ["python", "fuzz/run_protocol_fuzz.py"])
     require(protocol["steps"].index(canary) < protocol["steps"].index(replay) < protocol["steps"].index(build),
             "tool/replay canaries must precede the product campaign")

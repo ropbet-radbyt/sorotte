@@ -353,7 +353,9 @@ fn bgrx_has_color_variation(pixels: &[u8]) -> bool {
         return false;
     };
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .skip(1)
         .any(|pixel| &pixel[..3] != first)
 }

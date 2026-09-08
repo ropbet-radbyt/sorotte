@@ -53,7 +53,7 @@ KNOWN_OUTCOMES = {"success", "failure", "skipped", "cancelled"}
 PINNED_LINE_MAP_PRODUCER = {
     "llvm_export_type": "llvm.coverage.json.export",
     "llvm_export_version": "3.1.0",
-    "cargo_llvm_cov_version": "0.8.4",
+    "cargo_llvm_cov_version": "0.9.1",
     "manifest_path": "Cargo.toml",
 }
 

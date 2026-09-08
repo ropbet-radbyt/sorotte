@@ -95,10 +95,9 @@ impl AudioConstellationV3PcmStream {
                 return Ok(());
             }
         }
-        let chunks = bytes[cursor..].chunks_exact(2);
-        let remainder = chunks.remainder();
+        let (chunks, remainder) = bytes[cursor..].as_chunks::<2>();
         for chunk in chunks {
-            samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+            samples.push(i16::from_le_bytes(*chunk));
         }
         if let Some(byte) = remainder.first().copied() {
             self.pending_byte = Some(byte);
@@ -1038,6 +1037,46 @@ fn audio_selection_edge_region_ms(duration_ms: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_stream_preserves_little_endian_samples_across_every_byte_split() {
+        let bytes = [
+            0x00, 0x80, 0x39, 0x30, 0xff, 0xff, 0x00, 0x00, 0x34, 0x12, 0xff, 0x7f,
+        ];
+        let expected = [i16::MIN, 12345, -1, 0, 0x1234, i16::MAX];
+        for split in 0..=bytes.len() {
+            let mut stream = AudioConstellationV3PcmStream::with_config(
+                AudioConstellationV3Config::default_config(),
+                64,
+            );
+            stream.push_bytes(&bytes[..split]).unwrap();
+            stream.push_bytes(&[]).unwrap();
+            stream.push_bytes(&bytes[split..]).unwrap();
+
+            assert_eq!(stream.builder.rolling_samples, expected, "split={split}");
+            let (landmarks, metrics) = stream.finish(None).unwrap();
+            assert!(landmarks.is_empty());
+            assert_eq!(metrics.streamed_bytes, bytes.len());
+            assert_eq!(metrics.streamed_samples, expected.len());
+        }
+    }
+
+    #[test]
+    fn pcm_stream_rejects_an_incomplete_trailing_sample() {
+        let mut stream = AudioConstellationV3PcmStream::with_config(
+            AudioConstellationV3Config::default_config(),
+            64,
+        );
+        stream.push_bytes(&[0x34, 0x12]).unwrap();
+        stream.push_bytes(&[0xab]).unwrap();
+        stream.push_bytes(&[]).unwrap();
+
+        assert!(matches!(
+            stream.finish(None),
+            Err(MediaFingerprintError::InvalidToolOutput { tool: "ffmpeg", reason })
+                if reason == "decoded PCM had a partial trailing sample"
+        ));
+    }
 
     #[test]
     fn delayed_pair_selection_prefers_later_stronger_targets() {

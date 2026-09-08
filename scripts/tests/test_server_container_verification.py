@@ -203,7 +203,7 @@ def valid_sbom() -> dict[str, object]:
         "SPDXID": "SPDXRef-DOCUMENT",
         "creationInfo": {
             "created": "2026-07-31T00:00:00Z",
-            "creators": ["Tool: syft-1.44.0"],
+            "creators": ["Tool: syft-1.51.1"],
         },
         "dataLicense": "CC0-1.0",
         "documentNamespace": "https://example.invalid/sbom",
@@ -1841,11 +1841,11 @@ class WorkflowPolicyTests(unittest.TestCase):
             reference = value.split("@", 1)[1]
             self.assertRegex(reference, r"^[0-9a-f]{40}$", value)
         self.assertIn(
-            "docker/build-push-action@ee4ca427a2f43b6a16632044ca514c076267da23",
+            "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
             uses,
         )
         self.assertIn(
-            "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610",
+            "anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26",
             uses,
         )
         self.assertIn(
@@ -2049,10 +2049,14 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_syft_and_cosign_versions_are_explicit_and_keyless_identity_is_exact(self) -> None:
         sbom = self.by_name["Generate SPDX SBOM from the tested local image"]["with"]
         self.assertEqual(sbom["image"], "${{ env.TEST_IMAGE }}")
-        self.assertEqual(sbom["syft-version"], "v1.44.0")
+        self.assertEqual(sbom["syft-version"], "v1.51.1")
+        self.assertIn(
+            f"Tool: syft-{sbom['syft-version'].removeprefix('v')}",
+            valid_sbom()["creationInfo"]["creators"],
+        )
         self.assertEqual(sbom["upload-artifact"], "false")
         cosign = self.by_name["Install pinned Cosign"]["with"]
-        self.assertEqual(cosign["cosign-release"], "v3.0.6")
+        self.assertEqual(cosign["cosign-release"], "v3.1.3")
         sign = self.by_name["Keylessly sign and attest the exact tested digest"][
             "run"
         ]

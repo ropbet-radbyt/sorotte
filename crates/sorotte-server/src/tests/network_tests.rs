@@ -1,5 +1,29 @@
 use super::*;
 
+#[tokio::test]
+async fn test_line_reader_preserves_coalesced_frames() {
+    let mut stream = &b"first\nsecond\r\n"[..];
+    assert_eq!(
+        super::read_network_line_from_stream(&mut stream)
+            .await
+            .unwrap(),
+        Some("first".to_owned())
+    );
+    assert_eq!(stream, b"second\r\n");
+    assert_eq!(
+        super::read_network_line_from_stream(&mut stream)
+            .await
+            .unwrap(),
+        Some("second".to_owned())
+    );
+    assert_eq!(
+        super::read_network_line_from_stream(&mut stream)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 #[derive(Debug)]
 struct FragmentedAsyncReader {
     bytes: Vec<u8>,

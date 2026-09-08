@@ -44,24 +44,24 @@ MPV_SOURCE_EXPRESSION = (
 HEAD_REF = "${{ env.VERIFICATION_SHA }}"
 ACTION_PINS = {
     "actions/cache": (
-        "caa296126883cff596d87d8935842f9db880ef25",
-        "v5 resolved 2026-09-06",
+        "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        "v6.1.0",
     ),
     "actions/checkout": (
         "3d3c42e5aac5ba805825da76410c181273ba90b1",
         "v7.0.1",
     ),
     "dtolnay/rust-toolchain": (
-        "4cda84d5c5c54efe2404f9d843567869ab1699d4",
-        "stable resolved 2026-07-28",
+        "6bed0761d98439e5a578e2877258200ad565ba87",
+        "stable resolved 2026-09-08",
     ),
     "actions/setup-python": (
         "5fda3b95a4ea91299a34e894583c3862153e4b97",
         "v7.0.0",
     ),
     "actions/setup-go": (
-        "924ae3a1cded613372ab5595356fb5720e22ba16",
-        "v6.5.0",
+        "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+        "v7.0.0",
     ),
     "actions/upload-artifact": (
         "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -72,8 +72,8 @@ ACTION_PINS = {
         "v8.0.1",
     ),
     "taiki-e/install-action": (
-        "67729d5c413db75907f0ad1e39bb04b9c868ff60",
-        "v2.85.7",
+        "d438492cf8a250514fa2d34b30bc3c0dc37c65ff",
+        "v2.87.8",
     ),
 }
 PINNED_USES = {
@@ -749,7 +749,7 @@ class CiPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     step.get("with"),
                     {
-                        "toolchain": "1.97.1",
+                        "toolchain": "1.98.1",
                         "components": components,
                     },
                 )
@@ -882,7 +882,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             actionlint_setup.get("with"),
-            {"go-version": "1.26.x", "cache": "false"},
+            {"go-version": "1.27.1", "cache": "false"},
         )
         self.assert_exact_run(
             self.jobs,
@@ -1017,7 +1017,7 @@ class CiPolicyTests(unittest.TestCase):
         self.assertEqual(
             linux_nextest_installer.get("with"),
             {
-                "tool": "cargo-nextest@0.9.137",
+                "tool": "cargo-nextest@0.9.143",
                 "fallback": "none",
             },
         )
@@ -1187,7 +1187,7 @@ done""",
         )
         self.assertEqual(
             coverage_installer.get("with"),
-            {"tool": "cargo-llvm-cov@0.8.4"},
+            {"tool": "cargo-llvm-cov@0.9.1"},
         )
         profiles = self.assert_exact_run(
             self.jobs,
@@ -1524,7 +1524,7 @@ done""",
         self.assertEqual(
             windows_nextest_installer.get("with"),
             {
-                "tool": "cargo-nextest@0.9.137",
+                "tool": "cargo-nextest@0.9.143",
                 "fallback": "none",
             },
         )
@@ -1645,7 +1645,7 @@ done""",
         )
         self.assertEqual(
             windows_coverage_installer.get("with"),
-            {"tool": "cargo-llvm-cov@0.8.4"},
+            {"tool": "cargo-llvm-cov@0.9.1"},
         )
         windows_coverage_checkout = named_step(
             self.jobs,
@@ -2363,7 +2363,7 @@ done""",
         )
         self.assertEqual(
             requirement_lines(CI_REQUIREMENTS),
-            ["-c verification-constraints.txt", "PyYAML==6.0.2", "cryptography==50.0.1"],
+            ["-c verification-constraints.txt", "PyYAML==6.0.3", "cryptography==50.0.1"],
         )
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),
@@ -2372,7 +2372,7 @@ done""",
                 "twisted==26.4.0",
                 "pyopenssl==26.4.0",
                 "cryptography==50.0.1",
-                "service_identity==24.2.0",
+                "service_identity==26.1.0",
             ],
         )
 
@@ -2422,7 +2422,7 @@ done""",
         self.assertEqual(
             coverage_rust.get("with"),
             {
-                "toolchain": "1.97.1",
+                "toolchain": "1.98.1",
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -2438,7 +2438,7 @@ done""",
         self.assertEqual(
             windows_rust.get("with"),
             {
-                "toolchain": "1.97.1",
+                "toolchain": "1.98.1",
                 "components": "rustfmt, clippy, llvm-tools-preview",
             },
         )
@@ -2468,7 +2468,7 @@ done""",
             installer.get("uses"),
             PINNED_USES["taiki-e/install-action"],
         )
-        self.assertEqual(installer.get("with"), {"tool": "cargo-llvm-cov@0.8.4"})
+        self.assertEqual(installer.get("with"), {"tool": "cargo-llvm-cov@0.9.1"})
         self.assert_exact_run(
             coverage_jobs,
             "coverage",

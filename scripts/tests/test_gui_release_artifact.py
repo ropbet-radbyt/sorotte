@@ -807,7 +807,7 @@ class WorkflowContractTests(unittest.TestCase):
             "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-            "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4",
+            "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87",
         ):
             self.assertIn(revision, workflow)
 
