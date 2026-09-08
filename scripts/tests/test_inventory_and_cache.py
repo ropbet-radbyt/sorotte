@@ -15,6 +15,10 @@ from unittest import mock
 from scripts import cargo_input_cache as cache
 from scripts import test_inventory as inventory
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -175,7 +179,7 @@ class TestInventoryTests(unittest.TestCase):
             if defect == "cancelled": raise KeyboardInterrupt("inventory cancelled")
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(nextest_listing(scope)).encode())
         identities = [{"source_sha": "a" * 40}, {"source_sha": ("b" if defect == "source-drift" else "a") * 40}]
-        version = "cargo-nextest 0.9.1" if defect == "wrong-pin" else "cargo-nextest 0.9.143 (reviewed build)"
+        version = "cargo-nextest 0.9.1" if defect == "wrong-pin" else f"cargo-nextest {VERIFICATION_PINS['tools']['cargo-nextest']} (reviewed build)"
         with mock.patch.object(inventory, "identity", side_effect=identities), \
                 mock.patch.object(inventory.subprocess, "check_output", return_value=version), \
                 mock.patch.object(inventory.subprocess, "run", side_effect=run), contextlib.redirect_stdout(io.StringIO()):

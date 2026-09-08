@@ -11,6 +11,10 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import coverage_profile_lanes as common  # noqa: E402
@@ -231,7 +235,7 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
     def test_rustc_identity_is_exactly_pinned(self) -> None:
         output = b"\n".join(
             [
-                b"rustc 1.98.1 (48a229cea 2026-09-01)",
+                f"rustc {VERIFICATION_PINS['tools']['rust']} ({VERIFICATION_PINS['rust-windows']['commit'][:9]} 2026-09-01)".encode(),
                 b"binary: rustc",
                 f"commit-hash: {lanes.PINNED_RUST_COMMIT}".encode(),
                 b"commit-date: 2026-09-01",
@@ -245,12 +249,15 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         self.assertEqual(identity["host"], lanes.PINNED_RUST_HOST)
         self.assertEqual(identity["commit_hash"], lanes.PINNED_RUST_COMMIT)
 
-        stale = output.replace(b"release: 1.98.1", b"release: 1.97.0")
-        with self.assertRaisesRegex(
-            common.CoverageProfileLaneError,
-            "release must be 1.98.1",
+        # These corruptions remain independent of the approved pin values.
+        for before, after in (
+            (f"release: {lanes.PINNED_RUST_RELEASE}", "release: 0.0.0"),
+            (f"commit-hash: {lanes.PINNED_RUST_COMMIT}", "commit-hash: " + "0" * 40),
+            (f"host: {lanes.PINNED_RUST_HOST}", "host: x86_64-unknown-linux-gnu"),
+            (f"LLVM version: {lanes.PINNED_LLVM_VERSION}", "LLVM version: 0.0.0"),
         ):
-            lanes.parse_rustc_identity(command_result(stale))
+            with self.subTest(field=before), self.assertRaises(common.CoverageProfileLaneError):
+                lanes.parse_rustc_identity(command_result(output.replace(before.encode(), after.encode())))
 
     def test_untracked_source_status_rejects_links_and_windows_reparse_points(
         self,

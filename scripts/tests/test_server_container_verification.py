@@ -18,6 +18,10 @@ import yaml
 
 from scripts import verify_server_container as container
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-server-container.yml"
@@ -203,7 +207,7 @@ def valid_sbom() -> dict[str, object]:
         "SPDXID": "SPDXRef-DOCUMENT",
         "creationInfo": {
             "created": "2026-07-31T00:00:00Z",
-            "creators": ["Tool: syft-1.51.1"],
+            "creators": [f"Tool: syft-{VERIFICATION_PINS['tools']['syft']}"],
         },
         "dataLicense": "CC0-1.0",
         "documentNamespace": "https://example.invalid/sbom",
@@ -1841,15 +1845,15 @@ class WorkflowPolicyTests(unittest.TestCase):
             reference = value.split("@", 1)[1]
             self.assertRegex(reference, r"^[0-9a-f]{40}$", value)
         self.assertIn(
-            "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+            f"docker/build-push-action@{VERIFICATION_PINS['actions']['docker/build-push-action']['sha']}",
             uses,
         )
         self.assertIn(
-            "anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26",
+            f"anchore/sbom-action@{VERIFICATION_PINS['actions']['anchore/sbom-action']['sha']}",
             uses,
         )
         self.assertIn(
-            "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6",
+            f"sigstore/cosign-installer@{VERIFICATION_PINS['actions']['sigstore/cosign-installer']['sha']}",
             uses,
         )
 
@@ -2049,14 +2053,14 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_syft_and_cosign_versions_are_explicit_and_keyless_identity_is_exact(self) -> None:
         sbom = self.by_name["Generate SPDX SBOM from the tested local image"]["with"]
         self.assertEqual(sbom["image"], "${{ env.TEST_IMAGE }}")
-        self.assertEqual(sbom["syft-version"], "v1.51.1")
+        self.assertEqual(sbom["syft-version"], f"v{VERIFICATION_PINS['tools']['syft']}")
         self.assertIn(
             f"Tool: syft-{sbom['syft-version'].removeprefix('v')}",
             valid_sbom()["creationInfo"]["creators"],
         )
         self.assertEqual(sbom["upload-artifact"], "false")
         cosign = self.by_name["Install pinned Cosign"]["with"]
-        self.assertEqual(cosign["cosign-release"], "v3.1.3")
+        self.assertEqual(cosign["cosign-release"], f"v{VERIFICATION_PINS['tools']['cosign']}")
         sign = self.by_name["Keylessly sign and attest the exact tested digest"][
             "run"
         ]

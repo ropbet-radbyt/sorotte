@@ -10,6 +10,10 @@ from unittest import mock
 from scripts import compat_live_interop as interop
 from scripts import verification_tools as tools
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,6 +27,7 @@ class PinProjectionTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.coverage_pin = f'CARGO_LLVM_COV_VERSION = "{VERIFICATION_PINS["tools"]["cargo-llvm-cov"]}"'
         for relative in self.checked_files:
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -51,20 +56,19 @@ class PinProjectionTests(unittest.TestCase):
             tools.validate_pin_projections(self.root)
 
     def test_tool_version_drift_is_rejected(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
+        self.replace("scripts/diff_coverage.py", self.coverage_pin,
                      'CARGO_LLVM_COV_VERSION = "0.8.3"')
         with self.assertRaisesRegex(ValueError, "CARGO_LLVM_COV_VERSION"):
             tools.validate_pin_projections(self.root)
 
     def test_dynamic_pin_is_rejected_without_evaluation(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
+        self.replace("scripts/diff_coverage.py", self.coverage_pin,
                      'CARGO_LLVM_COV_VERSION = dangerous_function()')
         with self.assertRaisesRegex(ValueError, "static literal"):
             tools.validate_pin_projections(self.root)
 
     def test_duplicate_pin_is_rejected(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
-                     'CARGO_LLVM_COV_VERSION = "0.9.1"\nCARGO_LLVM_COV_VERSION = "0.9.1"')
+        self.replace("scripts/diff_coverage.py", self.coverage_pin, self.coverage_pin + "\n" + self.coverage_pin)
         with self.assertRaisesRegex(ValueError, "one literal assignment"):
             tools.validate_pin_projections(self.root)
 
@@ -74,7 +78,7 @@ class PinProjectionTests(unittest.TestCase):
             tools.validate_pin_projections(self.root)
 
     def test_manifest_change_requires_wrapper_projection(self) -> None:
-        self.replace("coverage/verification-tools.toml", 'cargo-nextest = "0.9.143"',
+        self.replace("coverage/verification-tools.toml", f'cargo-nextest = "{VERIFICATION_PINS["tools"]["cargo-nextest"]}"',
                      'cargo-nextest = "0.9.138"')
         with self.assertRaisesRegex(ValueError, "PINNED_NEXTEST_VERSION"):
             tools.validate_pin_projections(self.root)

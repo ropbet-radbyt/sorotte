@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 
+PINNED_SYFT_VERSION = "1.51.1"
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_NAME_RE = re.compile(
@@ -1248,8 +1249,8 @@ def verify_sbom(
     if not isinstance(creation, dict):
         raise VerificationError("SPDX SBOM must contain creationInfo")
     creators = creation.get("creators")
-    if not isinstance(creators, list) or "Tool: syft-1.51.1" not in creators:
-        raise VerificationError("SPDX SBOM must identify exactly Syft 1.51.1")
+    if not isinstance(creators, list) or f"Tool: syft-{PINNED_SYFT_VERSION}" not in creators:
+        raise VerificationError(f"SPDX SBOM must identify exactly Syft {PINNED_SYFT_VERSION}")
     runtime = parse_runtime_report(runtime_report_path)
     reinspected = inspect_local_image(
         runtime["image"],

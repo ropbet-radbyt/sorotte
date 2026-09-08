@@ -21,6 +21,10 @@ from typing import Any
 
 import yaml
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "rust-fuzz.yml"
@@ -84,12 +88,12 @@ MPV_FRAMED_TRANSCRIPT_OUTPUT_PATH = "target/fuzz-ci/mpv-framed-transcript"
 MPV_FRAMED_TRANSCRIPT_TARGET = "mpv_framed_transcript"
 
 PINNED_ACTIONS = {
-    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "dtolnay/rust-toolchain": "6bed0761d98439e5a578e2877258200ad565ba87",
-    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
-    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "taiki-e/install-action": "d438492cf8a250514fa2d34b30bc3c0dc37c65ff",
+    "actions/checkout": VERIFICATION_PINS["actions"]['actions/checkout']["sha"],
+    "dtolnay/rust-toolchain": VERIFICATION_PINS["actions"]['dtolnay/rust-toolchain']["sha"],
+    "actions/setup-python": VERIFICATION_PINS["actions"]['actions/setup-python']["sha"],
+    "actions/upload-artifact": VERIFICATION_PINS["actions"]['actions/upload-artifact']["sha"],
+    "actions/download-artifact": VERIFICATION_PINS["actions"]['actions/download-artifact']["sha"],
+    "taiki-e/install-action": VERIFICATION_PINS["actions"]['taiki-e/install-action']["sha"],
 }
 PRODUCERS = {
     "protocol-fuzz": (FUZZ_TARGET, CORPUS_PATH, FUZZ_OUTPUT_PATH, "sorotte-protocol-fuzz"),
@@ -260,7 +264,7 @@ def assert_workflow_contract(text: str) -> None:
     require(command_tokens(replay) == ["python", "scripts/fuzz_regressions.py", "replay", "--output", "target/fuzz-regressions.json"],
             "retained product regression replay required")
     require(action_step(protocol, "taiki-e/install-action").get("with") ==
-            {"tool": "cargo-nextest@0.9.143", "fallback": "none"}, "replay needs the pinned deterministic test runner")
+            {"tool": f"cargo-nextest@{VERIFICATION_PINS['tools']['cargo-nextest']}", "fallback": "none"}, "replay needs the pinned deterministic test runner")
     build = command_step(protocol, ["python", "fuzz/run_protocol_fuzz.py"])
     require(protocol["steps"].index(canary) < protocol["steps"].index(replay) < protocol["steps"].index(build),
             "tool/replay canaries must precede the product campaign")
@@ -317,7 +321,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
             original.replace("if: always()", "if: success()"),
             original.replace("if-no-files-found: error", "if-no-files-found: ignore"),
             original.replace(
-                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                f"actions/checkout@{VERIFICATION_PINS['actions']['actions/checkout']['sha']}",
                 "actions/checkout@v4",
             ),
             original.replace('--source-sha "${{ env.VERIFICATION_SHA }}"', "--source-sha bad"),

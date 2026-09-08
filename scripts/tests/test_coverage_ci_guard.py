@@ -9,6 +9,10 @@ import sys
 import tempfile
 import unittest
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import coverage_ci_guard as guard  # noqa: E402
@@ -417,7 +421,7 @@ class CoverageFinalizerTests(unittest.TestCase):
                     "producer": {
                         "llvm_export_type": "llvm.coverage.json.export",
                         "llvm_export_version": "3.1.0",
-                        "cargo_llvm_cov_version": "0.9.1",
+                        "cargo_llvm_cov_version": VERIFICATION_PINS["tools"]["cargo-llvm-cov"],
                         "manifest_path": "Cargo.toml",
                     },
                     "summary": {"covered_lines": covered_lines},

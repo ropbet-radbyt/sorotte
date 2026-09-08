@@ -153,6 +153,44 @@ independent lifecycle oracle remain separate from fake-server readiness canaries
 
 ## Inputs and evidence
 
+### Updating verification tooling
+
+For Rust, cargo-nextest, cargo-llvm-cov, Syft, Cosign and GitHub Actions, edit
+the approved values in `coverage/verification-tools.toml`. A Rust update also
+requires its reviewed `rust-windows` commit/host/LLVM identity from `rustc -vV`.
+Action entries retain both the immutable commit SHA and the upstream review label.
+Then use the existing verification entrypoint:
+
+```powershell
+python -m pip install -r requirements/ci-policy.txt
+python scripts/verify.py pins
+python scripts/verify.py pins --write
+python scripts/verify.py pins --check
+python scripts/verify.py preflight --phase static --output target/verification/pin-update-preflight.json
+```
+
+After installing the existing policy prerequisites, `pins` previews the exact
+patch; `--write` applies it; `--check` reports drift. The static policy tests
+require all projections to match. Selection preflight checks non-workflow
+projections using only the Python standard library, before packages are installed.
+Planning validates all locations before writing. It never downloads tools or
+changes approval data, lockfiles, test inventories, historical evidence, Docker
+image digests or native download hashes. Those inputs keep their existing
+explicit review procedures.
+Python dependency resolution, compatibility baselines and the nightly fuzz
+toolchain likewise retain their separate procedures. This command does not
+claim to resolve or qualify newer versions.
+
+The updater changes declared scalar pin projections in wrappers, workflows,
+workspace/native compiler settings and the container compiler installation.
+Policy tests consume approved versions as data and independently exercise bad
+versions, source identities, missing work and altered workflow authority. A
+routine pin update therefore does not require replacing literals in those tests.
+After projection checks, exercise the actual affected tools and existing required
+lanes; agreeing declarations alone cannot qualify new tool behavior.
+
+### Retaining qualification evidence
+
 `coverage/verification-tools.toml` is the reviewed input manifest. Rust resolution
 uses `--locked`; legacy Python interop verifies the exact clean upstream commit.
 Dependency download caches contain checksum-verified Cargo registry archives.

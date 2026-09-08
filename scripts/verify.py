@@ -531,6 +531,10 @@ def gate_attempt(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    pin_updates = sub.add_parser("pins", help="preview, check or write reviewed tooling projections")
+    pin_mode = pin_updates.add_mutually_exclusive_group()
+    pin_mode.add_argument("--check", action="store_true")
+    pin_mode.add_argument("--write", action="store_true")
     pre = sub.add_parser("preflight", help="cheap syntax, schema and environment checks; no Rust compilation")
     pre.add_argument("--phase", choices=("static", "tools"), default="static")
     pre.add_argument("--tool", action="append", default=[])
@@ -564,6 +568,9 @@ def main() -> int:
     execute.add_argument("--deadline-seconds", type=int, default=1800)
     args = parser.parse_args()
     try:
+        if args.command == "pins":
+            from verification_pin_sync import main as sync_pins
+            return sync_pins(["--write"] if args.write else ["--check"] if args.check else [])
         if args.command == "gate":
             return int(gate_attempt(args)["status"] != "passed")
         if args.command == "run":

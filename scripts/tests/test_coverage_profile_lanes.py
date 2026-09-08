@@ -9,6 +9,10 @@ import sys
 import tempfile
 import unittest
 
+from scripts.verification_tools import pins as verification_pins
+
+VERIFICATION_PINS = verification_pins()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import coverage_profile_lanes as lanes  # noqa: E402
@@ -253,13 +257,13 @@ class CoverageProfileLaneTests(unittest.TestCase):
         }
 
     def test_pinned_producer_version_is_exact(self) -> None:
-        result = command_result(b"cargo-llvm-cov 0.9.1\n")
-        self.assertEqual(lanes.parse_producer_version(result), "0.9.1")
+        result = command_result(f"cargo-llvm-cov {VERIFICATION_PINS['tools']['cargo-llvm-cov']}\n".encode())
+        self.assertEqual(lanes.parse_producer_version(result), VERIFICATION_PINS["tools"]["cargo-llvm-cov"])
 
         stale = command_result(b"cargo-llvm-cov 0.8.3\n")
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "must be 0.9.1",
+            f"must be {VERIFICATION_PINS['tools']['cargo-llvm-cov']}",
         ):
             lanes.parse_producer_version(stale)
 
