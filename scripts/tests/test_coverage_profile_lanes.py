@@ -167,12 +167,12 @@ class CoverageProfileLaneTests(unittest.TestCase):
             }
         elif lane == "compat-live-tls":
             oracle = {
-                "kind": "libtest-exact-live-reference",
-                "passed": len(lanes.EXPECTED_COMPAT_TESTS),
+                "kind": "libtest-required-live-reference",
+                "passed": len(lanes.REQUIRED_COMPAT_TESTS),
                 "failed": 0,
                 "ignored": 0,
-                "filtered_out": lanes.EXPECTED_COMPAT_FILTERED_OUT,
-                "tests": list(lanes.EXPECTED_COMPAT_TESTS),
+                "filtered_out": 131,
+                "tests": sorted(lanes.REQUIRED_COMPAT_TESTS),
                 "skip_markers": [],
             }
         else:
@@ -616,19 +616,13 @@ class CoverageProfileLaneTests(unittest.TestCase):
             lanes.semantic_oracle(raw.encode("utf-8"))
 
     def test_compatibility_oracle_requires_complete_live_inventory(self) -> None:
-        expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
-        self.assertEqual(lanes.EXPECTED_COMPAT_TOTAL_TESTS, 152)
-        self.assertEqual(lanes.EXPECTED_COMPAT_FILTERED_OUT, 131)
-        self.assertEqual(
-            expected_count + lanes.EXPECTED_COMPAT_FILTERED_OUT,
-            lanes.EXPECTED_COMPAT_TOTAL_TESTS,
-        )
+        expected_count = len(lanes.REQUIRED_COMPAT_TESTS)
         output = f"running {expected_count} tests\n"
-        for test_name in lanes.EXPECTED_COMPAT_TESTS:
+        for test_name in lanes.REQUIRED_COMPAT_TESTS:
             output += f"test {test_name} ... ok\n"
         output += (
             f"test result: ok. {expected_count} passed; 0 failed; 0 ignored; "
-            f"0 measured; {lanes.EXPECTED_COMPAT_FILTERED_OUT} filtered out; "
+            f"0 measured; 131 filtered out; "
             "finished in 1.00s\n"
         )
         oracle = lanes.compatibility_oracle(output.encode("utf-8"), b"")
@@ -636,17 +630,17 @@ class CoverageProfileLaneTests(unittest.TestCase):
         self.assertEqual(oracle["ignored"], 0)
         self.assertEqual(
             oracle["tests"],
-            list(lanes.EXPECTED_COMPAT_TESTS),
+            sorted(lanes.REQUIRED_COMPAT_TESTS),
         )
 
     def test_compatibility_oracle_rejects_skip_and_count_drift(self) -> None:
-        expected_count = len(lanes.EXPECTED_COMPAT_TESTS)
+        expected_count = len(lanes.REQUIRED_COMPAT_TESTS)
         good_summary = f"running {expected_count} tests\n"
-        for test_name in lanes.EXPECTED_COMPAT_TESTS:
+        for test_name in lanes.REQUIRED_COMPAT_TESTS:
             good_summary += f"test {test_name} ... ok\n"
         good_summary += (
             f"test result: ok. {expected_count} passed; 0 failed; 0 ignored; "
-            f"0 measured; {lanes.EXPECTED_COMPAT_FILTERED_OUT} filtered out\n"
+            f"0 measured; 131 filtered out\n"
         )
         good_summary_bytes = good_summary.encode("utf-8")
         with self.assertRaisesRegex(
@@ -660,11 +654,11 @@ class CoverageProfileLaneTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "strict live reference test",
+            "required test selection",
         ):
             lanes.compatibility_oracle(
                 good_summary_bytes.replace(
-                    lanes.EXPECTED_COMPAT_TESTS[0].encode("utf-8"),
+                    lanes.REQUIRED_COMPAT_TESTS[0].encode("utf-8"),
                     b"missing-test",
                 ),
                 b"",
@@ -686,7 +680,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         spoofed_summary = good_summary_bytes + (
             f"test result: ok. {expected_count + 1} passed; 0 failed; "
             f"0 ignored; 0 measured; "
-            f"{lanes.EXPECTED_COMPAT_FILTERED_OUT} filtered out\n"
+            f"131 filtered out\n"
         ).encode("utf-8")
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
@@ -701,7 +695,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "source-bound run header",
+            "running count",
         ):
             lanes.compatibility_oracle(wrong_header, b"")
 
@@ -712,9 +706,22 @@ class CoverageProfileLaneTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "exact source-bound selection",
+            "running count|outside=",
         ):
             lanes.compatibility_oracle(unexpected_test, b"")
+
+    def test_compatibility_accepts_unrelated_counts_and_new_selected_regressions(self) -> None:
+        tests = sorted([*lanes.REQUIRED_COMPAT_TESTS, "tests::legacy_server_new_regression"])
+        for filtered in (0, 131, 132, 140):
+            output = f"running {len(tests)} tests\n"
+            output += "".join(f"test {name} ... ok\n" for name in tests)
+            output += f"test result: ok. {len(tests)} passed; 0 failed; 0 ignored; 0 measured; {filtered} filtered out\n"
+            oracle = lanes.compatibility_oracle(output.encode(), b"")
+            self.assertEqual(oracle["tests"], tests)
+            self.assertEqual(oracle["filtered_out"], filtered)
+            report = self.valid_report()
+            report["lanes"]["compat-live-tls"]["oracle"] = oracle
+            lanes.validate_report_document(report)
 
     def test_merge_oracle_requires_llvm_total_summary(self) -> None:
         oracle = lanes.merge_oracle(

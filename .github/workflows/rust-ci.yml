@@ -631,10 +631,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Check reviewed compile-dependent inventories
-        id: ci_check_reviewed_compile_dependent_inven_57396f6a
-        run: python scripts/test_inventory.py check --output target/verification/test-inventory.json
-
       - name: Nextest fail-on-flaky workspace tests
         id: nextest
         continue-on-error: true

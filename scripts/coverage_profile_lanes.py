@@ -130,7 +130,7 @@ EXPECTED_SEMANTIC_SCENARIOS = (
     "seek-preparation-flow",
     "readiness-v2-flow",
 )
-EXPECTED_COMPAT_TESTS = (
+REQUIRED_COMPAT_TESTS = (
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
     "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
@@ -152,12 +152,6 @@ EXPECTED_COMPAT_TESTS = (
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario",
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_latency_metrics_matches_runtime_core_behavior",
     "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_propagation_matches_runtime_core_behavior",
-)
-from test_inventory import reviewed as reviewed_tests
-
-EXPECTED_COMPAT_TOTAL_TESTS = len(reviewed_tests("compat"))
-EXPECTED_COMPAT_FILTERED_OUT = (
-    EXPECTED_COMPAT_TOTAL_TESTS - len(EXPECTED_COMPAT_TESTS)
 )
 COMPAT_SKIP_MARKERS = (
     "assertion skipped",
@@ -715,76 +709,113 @@ def semantic_oracle(stdout: bytes) -> dict[str, Any]:
     }
 
 
-def compatibility_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
-    combined = stdout + b"\n" + stderr
-    try:
-        text = combined.decode("utf-8", errors="strict")
-    except UnicodeError as error:
-        raise CoverageProfileLaneError(
-            f"compatibility output is not valid UTF-8: {error}"
-        ) from error
-    lowered = text.lower()
-    found_markers = [marker for marker in COMPAT_SKIP_MARKERS if marker in lowered]
-    if found_markers:
-        raise CoverageProfileLaneError(
-            f"compatibility output contains skipped-oracle markers {found_markers}"
-        )
-    lines = text.splitlines()
-    expected_running = f"running {len(EXPECTED_COMPAT_TESTS)} tests"
-    running_lines = [
-        line for line in lines if re.fullmatch(r"running \d+ tests?", line)
-    ]
-    if running_lines != [expected_running]:
-        raise CoverageProfileLaneError(
-            "compatibility suite did not report exactly one source-bound "
-            f"run header {expected_running!r}"
-        )
-    test_result = re.compile(
-        r"^test (?P<name>.+) \.\.\. "
-        r"(?P<status>ok|FAILED|ignored)(?:, [^\r\n]+)?$"
+def validate_required_libtest(
+    value: Any,
+    *,
+    label: str,
+    kind: str,
+    required: Sequence[str],
+    accepts: Callable[[str], bool],
+    unfiltered: bool = False,
+) -> None:
+    """Check required behaviors and account for every result in this invocation."""
+    oracle = require_mapping(value, label=f"{label} oracle")
+    require_exact_keys(
+        oracle,
+        {"kind", "passed", "failed", "ignored", "filtered_out", "tests", "skip_markers"},
+        label=f"{label} oracle",
     )
-    observed_results = [
-        (match.group("name"), match.group("status"))
-        for line in lines
-        if (match := test_result.fullmatch(line)) is not None
-    ]
-    observed_tests = [name for name, _ in observed_results]
+    tests = require_list(oracle.get("tests"), label=f"{label} tests")
+    for name in tests:
+        require_string(name, label=f"{label} test name")
+        if any(char.isspace() or ord(char) < 32 for char in name):
+            raise CoverageProfileLaneError(f"{label} contains an invalid test name")
+    if not tests or tests != sorted(set(tests)):
+        raise CoverageProfileLaneError(f"{label} tests must be nonempty, unique and sorted")
+    missing = sorted(set(required) - set(tests))
+    outside = [name for name in tests if not accepts(name)]
+    if missing or outside:
+        raise CoverageProfileLaneError(
+            f"{label} required test selection differs: missing={missing}, outside={outside}"
+        )
+    passed = require_int(oracle.get("passed"), label=f"{label} passed", minimum=1)
+    failed = require_int(oracle.get("failed"), label=f"{label} failed")
+    ignored = require_int(oracle.get("ignored"), label=f"{label} ignored")
+    filtered = require_int(oracle.get("filtered_out"), label=f"{label} filtered out")
     if (
-        len(observed_results) != len(EXPECTED_COMPAT_TESTS)
-        or any(status != "ok" for _, status in observed_results)
-        or sorted(observed_tests) != sorted(EXPECTED_COMPAT_TESTS)
+        oracle.get("kind") != kind
+        or passed != len(tests)
+        or failed != 0
+        or ignored != 0
+        or oracle.get("skip_markers") != []
+        or (unfiltered and filtered != 0)
     ):
-        raise CoverageProfileLaneError(
-            "strict live reference test results differ from the exact "
-            "source-bound selection"
-        )
-    summary_lines = [
-        line for line in lines if line.startswith("test result:")
+        raise CoverageProfileLaneError(f"{label} oracle does not account for a complete successful run")
+
+
+def required_libtest_oracle(
+    stdout: bytes,
+    stderr: bytes,
+    *,
+    label: str,
+    kind: str,
+    required: Sequence[str],
+    accepts: Callable[[str], bool],
+    skip_markers: Sequence[str],
+    unfiltered: bool = False,
+) -> dict[str, Any]:
+    try:
+        text = (stdout + b"\n" + stderr).decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise CoverageProfileLaneError(f"{label} output is not valid UTF-8: {error}") from error
+    found_markers = [marker for marker in skip_markers if marker in text.lower()]
+    if found_markers:
+        raise CoverageProfileLaneError(f"{label} output contains skipped-oracle markers {found_markers}")
+    lines = text.splitlines()
+    headers = [line for line in lines if re.fullmatch(r"running \d+ tests?", line)]
+    result_line = re.compile(r"test (.+) \.\.\. (ok|FAILED|ignored)(?:, [^\r\n]+)?")
+    records = [
+        match.groups() for line in lines
+        if (match := result_line.fullmatch(line)) is not None
     ]
-    if len(summary_lines) != 1:
+    tests = [name for name, _ in records]
+    if not tests:
+        raise CoverageProfileLaneError(f"{label} selector executed zero tests")
+    if len(tests) != len(set(tests)) or any(status != "ok" for _, status in records):
+        raise CoverageProfileLaneError(f"{label} contains duplicate, failed or ignored test results")
+    count = len(tests)
+    noun = "test" if count == 1 else "tests"
+    if headers != [f"running {count} {noun}"]:
         raise CoverageProfileLaneError(
-            "compatibility suite did not emit exactly one libtest summary"
+            f"{label} did not report exactly one non-zero running count matching its results"
         )
-    summary = re.compile(
-        rf"test result: ok\. {len(EXPECTED_COMPAT_TESTS)} passed; "
-        rf"0 failed; 0 ignored; 0 measured; "
-        rf"{EXPECTED_COMPAT_FILTERED_OUT} filtered out"
-        rf"(?:; finished in [^\r\n]+)?"
+    summaries = [line for line in lines if line.startswith("test result:")]
+    if len(summaries) != 1:
+        raise CoverageProfileLaneError(f"{label} did not emit exactly one libtest summary")
+    summary = re.fullmatch(
+        rf"test result: ok\. {count} passed; 0 failed; 0 ignored; 0 measured; (\d+) filtered out"
+        r"(?:; finished in [^\r\n]+)?",
+        summaries[0],
     )
-    if summary.fullmatch(summary_lines[0]) is None:
-        raise CoverageProfileLaneError(
-            "compatibility suite did not report exactly "
-            f"{len(EXPECTED_COMPAT_TESTS)} strict live reference tests"
-        )
-    return {
-        "kind": "libtest-exact-live-reference",
-        "passed": len(EXPECTED_COMPAT_TESTS),
-        "failed": 0,
-        "ignored": 0,
-        "filtered_out": EXPECTED_COMPAT_FILTERED_OUT,
-        "tests": list(EXPECTED_COMPAT_TESTS),
-        "skip_markers": [],
+    if summary is None:
+        raise CoverageProfileLaneError(f"{label} libtest summary differs from its successful test results")
+    oracle = {
+        "kind": kind, "passed": count, "failed": 0, "ignored": 0,
+        "filtered_out": int(summary.group(1)), "tests": sorted(tests), "skip_markers": [],
     }
+    validate_required_libtest(
+        oracle, label=label, kind=kind, required=required,
+        accepts=accepts, unfiltered=unfiltered,
+    )
+    return oracle
+
+
+def compatibility_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
+    return required_libtest_oracle(
+        stdout, stderr, label="compatibility", kind="libtest-required-live-reference",
+        required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "legacy_server_" in name,
+        skip_markers=COMPAT_SKIP_MARKERS,
+    )
 
 
 def merge_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
@@ -1031,28 +1062,11 @@ def validate_oracle(lane: str, value: Any) -> None:
             "scenarios": list(EXPECTED_SEMANTIC_SCENARIOS),
         }
     elif lane == "compat-live-tls":
-        require_exact_keys(
-            oracle,
-            {
-                "kind",
-                "passed",
-                "failed",
-                "ignored",
-                "filtered_out",
-                "tests",
-                "skip_markers",
-            },
-            label=f"{lane} oracle",
+        validate_required_libtest(
+            oracle, label=lane, kind="libtest-required-live-reference",
+            required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "legacy_server_" in name,
         )
-        expected = {
-            "kind": "libtest-exact-live-reference",
-            "passed": len(EXPECTED_COMPAT_TESTS),
-            "failed": 0,
-            "ignored": 0,
-            "filtered_out": EXPECTED_COMPAT_FILTERED_OUT,
-            "tests": list(EXPECTED_COMPAT_TESTS),
-            "skip_markers": [],
-        }
+        return
     else:
         require_exact_keys(
             oracle,

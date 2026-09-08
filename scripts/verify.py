@@ -431,7 +431,6 @@ def run_lane(lane: str, output: Path, deadline: int) -> dict:
         "static": [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"],
         "behavior": [sys.executable, "scripts/nextest_ci.py", "run", "--repo-root", "."],
         "regression": [sys.executable, "scripts/fuzz_regressions.py", "replay"],
-        "inventory": [sys.executable, "scripts/test_inventory.py", "check", "--output", str(output / "inventory.json")],
         "coverage-canary": [sys.executable, "scripts/coverage_tool_canary.py", "--output", str(output / "canary")],
         "workspace-default": [],  # Bound below to the actual checkout, including a PR merge.
     }
@@ -531,8 +530,6 @@ def gate_attempt(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    import test_inventory
-    test_inventory.configure_parser(sub.add_parser("inventory", help="discover, compare or refresh reviewed test names"))
     pin_updates = sub.add_parser("pins", help="preview, check or write reviewed tooling projections")
     pin_mode = pin_updates.add_mutually_exclusive_group()
     pin_mode.add_argument("--check", action="store_true")
@@ -565,13 +562,11 @@ def main() -> int:
     index.add_argument("--receipt", type=Path, action="append", required=True)
     index.add_argument("--output", type=Path, required=True)
     execute = sub.add_parser("run", help="stream one supported lane and preserve every attempt")
-    execute.add_argument("--lane", choices=("static", "behavior", "regression", "inventory", "coverage-canary", "workspace-default"), required=True)
+    execute.add_argument("--lane", choices=("static", "behavior", "regression", "coverage-canary", "workspace-default"), required=True)
     execute.add_argument("--output", type=Path, required=True)
     execute.add_argument("--deadline-seconds", type=int, default=1800)
     args = parser.parse_args()
     try:
-        if args.command == "inventory":
-            return test_inventory.execute(args)
         if args.command == "pins":
             from verification_pin_sync import main as sync_pins
             return sync_pins(["--write"] if args.write else ["--check"] if args.check else [])

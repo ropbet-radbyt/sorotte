@@ -34,8 +34,8 @@ def require_immutable_source(root: pathlib.Path, head: str) -> None:
     # insufficient when an uncommitted deletion removes a test or fixture.
     scopes = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates", "fixtures", "resources",
               "scripts/mutation*.py", "scripts/artifact_input.py", "coverage/mutation-*",
-              "scripts/verify.py", "scripts/verification_tools.py", "scripts/test_inventory.py",
-              "coverage/verification-tools.toml", "coverage/verification-lanes.json", "coverage/test-inventories.json",
+              "scripts/verify.py", "scripts/verification_tools.py",
+              "coverage/verification-tools.toml", "coverage/verification-lanes.json",
               ".github/workflows/rust-mutation.yml"]
     if selection.git(root, "status", "--porcelain=v1", "--untracked-files=all", "--", *scopes):
         raise ci.MutationCiError("mutation campaign requires committed source/test/policy inputs, including deleted or untracked inputs")

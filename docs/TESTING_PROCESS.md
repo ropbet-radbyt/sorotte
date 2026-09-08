@@ -67,41 +67,30 @@ It uses Cargo's ordinary default-feature test harness, with no retry or
 attempt, process logs, elapsed time and owned cleanup. A timeout or missing
 workspace receipt cannot qualify the lane. Its source is the actual checkout
 commit, which can be the prospective PR merge rather than the event's PR head.
-Compile-dependent inventory preparation is a separate step:
 
-```powershell
-python scripts/verify.py inventory propose --output target/verification/proposed-inventory.json
-python scripts/verify.py inventory diff --proposed target/verification/proposed-inventory.json
-python scripts/verify.py inventory refresh --proposed target/verification/proposed-inventory.json
-python scripts/verify.py inventory check --output target/verification/checked-inventory.json
-python scripts/verify.py run --lane coverage-canary --output target/verification/coverage-attempt-1
-```
+Ordinary Cargo and nextest runs discover the current tests themselves. Adding a
+test requires no global inventory file, refresh command or unrelated count edit.
+The required jobs continue to run the default-feature Cargo suite, all-feature
+nextest and doctests in their existing execution modes.
 
-`propose` lists all seven complete scopes with the pinned nextest runtime and
-locked dependencies. It preserves the source identity, commands and raw listings
-under the chosen output path. `diff` shows only additions, removals and changes
-to ignored status; `--json` retains the machine-readable row-per-scope format.
-`diff` and `check` return 1 when expectations differ, including same-count renames.
-The standalone `scripts/test_inventory.py` commands remain available.
+Focused coverage jobs declare required regression tests for their behavior.
+Every required name must pass, and every additional test selected by that job
+must also pass. Headers, individual results and summaries must agree; duplicates,
+unexpected skips, omitted required tests and tests outside the command's selector
+are failures. Filtered-out totals are recorded as observations. Full updater
+jobs additionally require zero filtered tests. A rename or removal of a required
+regression needs a corresponding review of that job's behavior requirement.
 
-After reviewing the diff, `refresh` verifies that the source and original reviewed
-inventory are unchanged, every scope completed in the expected execution mode,
-and the raw listing hashes and names agree. It then atomically updates
-`coverage/test-inventories.json`. A no-change refresh leaves that file byte-for-byte
-unchanged. Commit its reviewed changes with the source change; recollect after
-editing source or committing, since discovery is bound to its original inputs.
+Complete live compatibility keeps runtime discovery because its custom consumer
+accounts for every discovered test as executed, explicitly ignored or skipped.
+Required mode forbids optional skip paths; independent live sentinels and the
+explicit fixture-generator ignore policy remain mandatory. New ordinary tests
+are automatically included in that same execution accounting.
 
-The schema 3 reviewed file contains only scopes, test names and ignored status.
-Run timestamps, machine paths, commands and source hashes stay in separate
-discovery receipts. Existing schema 2 discovery remains readable for comparison;
-refresh requires a fresh complete receipt from the current collector. Discovery
-alone cannot overwrite the reviewed file or certify test behavior.
-Complete inventories supply totals; exact named selections still define required
-responsibilities. Empty selections, missing required tests and unexpected skips
-remain failures.
-The complete Windows updater transaction lane consumes the reviewed `updater-bin`
-scope directly. Adding, removing or ignoring an updater test therefore produces
-one explicit central inventory diff before it can qualify instrumented coverage.
+Mutation retains its independent per-scope discovery and source binding. Test
+changes select their package and declared transitive responsibilities without a
+global test-list update forcing an unrelated full campaign. Changes to mutation
+policy, shared tooling, compiler inputs and lockfiles still require full work.
 
 ## Required checks and source subjects
 
