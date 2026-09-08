@@ -203,7 +203,7 @@ def valid_sbom() -> dict[str, object]:
         "SPDXID": "SPDXRef-DOCUMENT",
         "creationInfo": {
             "created": "2026-07-31T00:00:00Z",
-            "creators": ["Tool: syft-1.44.0"],
+            "creators": ["Tool: syft-1.51.1"],
         },
         "dataLicense": "CC0-1.0",
         "documentNamespace": "https://example.invalid/sbom",
@@ -2050,6 +2050,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         sbom = self.by_name["Generate SPDX SBOM from the tested local image"]["with"]
         self.assertEqual(sbom["image"], "${{ env.TEST_IMAGE }}")
         self.assertEqual(sbom["syft-version"], "v1.51.1")
+        self.assertIn(
+            f"Tool: syft-{sbom['syft-version'].removeprefix('v')}",
+            valid_sbom()["creationInfo"]["creators"],
+        )
         self.assertEqual(sbom["upload-artifact"], "false")
         cosign = self.by_name["Install pinned Cosign"]["with"]
         self.assertEqual(cosign["cosign-release"], "v3.1.3")

@@ -289,7 +289,7 @@ jobs:
       MPV_BINARY_SHA256: 547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe
       FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-full_build.7z
       FFMPEG_ARCHIVE_SHA256: 4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96
-      FFMPEG_BINARY_SHA256: fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690
+      FFMPEG_BINARY_SHA256: 57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a
     steps:
       - name: Attest ephemeral interactive Windows runner
         id: ci_attest_ephemeral_interactive_windows_r_026d4f00

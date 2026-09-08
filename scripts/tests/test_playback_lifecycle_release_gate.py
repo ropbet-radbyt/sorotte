@@ -192,7 +192,7 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         )
         self.assertEqual(
             self.windows["env"]["FFMPEG_BINARY_SHA256"],
-            "fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690",
+            "57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a",
         )
 
     def test_windows_gate_pins_tools_and_consumes_exact_gui_status_candidate(self) -> None:

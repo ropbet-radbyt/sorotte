@@ -1248,8 +1248,8 @@ def verify_sbom(
     if not isinstance(creation, dict):
         raise VerificationError("SPDX SBOM must contain creationInfo")
     creators = creation.get("creators")
-    if not isinstance(creators, list) or "Tool: syft-1.44.0" not in creators:
-        raise VerificationError("SPDX SBOM must identify exactly Syft 1.44.0")
+    if not isinstance(creators, list) or "Tool: syft-1.51.1" not in creators:
+        raise VerificationError("SPDX SBOM must identify exactly Syft 1.51.1")
     runtime = parse_runtime_report(runtime_report_path)
     reinspected = inspect_local_image(
         runtime["image"],
