@@ -286,6 +286,13 @@ Useful Python reference files:
 
 ## Test Placement
 
+GUI filesystem fixtures can use `app::testing::support::test_temp_dir(label)`.
+Keep its `TempDir` owner alive until files and workers are closed; it allocates a
+separate directory for each call and removes it on drop, including assertion
+unwinding. Put fixture files underneath `root.path()`. Avoid timestamp-derived
+paths or deleting a candidate path before allocation. Existing `test_temp_root`
+callers retain their explicit cleanup responsibility.
+
 Every ignored Rust test is registered in `coverage/ignored-tests.toml`.
 Subprocess helpers use the `subprocess-fixture` tier, which binds a nonignored
 parent test in the same source file. Required CI invokes that exact parent with

@@ -1,24 +1,6 @@
 use super::*;
-use std::{io::Cursor, net::TcpListener, thread, time::SystemTime};
-
-struct TestRoot(PathBuf);
-impl TestRoot {
-    fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("sorotte-ingress-{}-{nonce}", std::process::id()));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for TestRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+use crate::app::testing::support::test_temp_dir;
+use std::{io::Cursor, net::TcpListener, thread};
 
 fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -86,18 +68,18 @@ fn remote_metadata_bounds_declared_chunked_and_missing_length_bodies() {
 
 #[test]
 fn archive_quotas_reject_expanding_and_many_entry_inputs_before_output() {
-    let root = TestRoot::new();
-    let path = root.0.join("expanding.zip");
+    let root = test_temp_dir("ingress");
+    let path = root.path().join("expanding.zip");
     fs::write(&path, zip_bytes(&[("data.bin", &vec![0; 32 * 1024])])).unwrap();
     let mut budget = ExtractionBudget::with_limits(10, 16 * 1024, 16 * 1024);
-    let output = root.0.join("expanded");
+    let output = root.path().join("expanded");
     assert!(
         extract_zip_file_safe(&path, &output, &mut budget, &AtomicBool::new(false))
             .unwrap_err()
             .contains("byte budget")
     );
     assert!(!output.exists());
-    let path = root.0.join("many.zip");
+    let path = root.path().join("many.zip");
     fs::write(&path, zip_bytes(&[("a", b""), ("b", b""), ("c", b"")])).unwrap();
     let mut budget = ExtractionBudget::with_limits(2, 100, 100);
     assert!(
@@ -111,10 +93,10 @@ fn archive_quotas_reject_expanding_and_many_entry_inputs_before_output() {
 #[test]
 fn duplicate_normalized_zip_paths_are_rejected_before_any_file_is_written() {
     for second in ["A.txt", "./a.txt", "a.txt/"] {
-        let root = TestRoot::new();
-        let zip = root.0.join("duplicate.zip");
+        let root = test_temp_dir("ingress");
+        let zip = root.path().join("duplicate.zip");
         fs::write(&zip, zip_bytes(&[("a.txt", b"first"), (second, b"second")])).unwrap();
-        let output = root.0.join("output");
+        let output = root.path().join("output");
         let result = extract_zip_file_safe(
             &zip,
             &output,
@@ -128,10 +110,10 @@ fn duplicate_normalized_zip_paths_are_rejected_before_any_file_is_written() {
 
 #[test]
 fn nested_actions_archives_share_entry_and_decompressed_byte_budgets() {
-    let root = TestRoot::new();
+    let root = test_temp_dir("ingress");
     let inner = zip_bytes(&[("first.bin", &[7; 32]), ("second.bin", &[8; 32])]);
     let outer = zip_bytes(&[("package.zip", &inner)]);
-    let outer_path = root.0.join("outer.zip");
+    let outer_path = root.path().join("outer.zip");
     fs::write(&outer_path, outer).unwrap();
     let cancelled = AtomicBool::new(false);
     for (index, mut budget) in [
@@ -141,9 +123,9 @@ fn nested_actions_archives_share_entry_and_decompressed_byte_budgets() {
     .into_iter()
     .enumerate()
     {
-        let artifact = root.0.join(format!("artifact-{index}"));
+        let artifact = root.path().join(format!("artifact-{index}"));
         extract_zip_file_safe(&outer_path, &artifact, &mut budget, &cancelled).unwrap();
-        let output = root.0.join(format!("extracted-{index}"));
+        let output = root.path().join(format!("extracted-{index}"));
         assert!(
             extract_zip_file_safe(
                 &artifact.join("package.zip"),
@@ -159,13 +141,13 @@ fn nested_actions_archives_share_entry_and_decompressed_byte_budgets() {
 
 #[test]
 fn quota_failure_cleans_only_its_stage_and_retains_install_and_rollback() {
-    let root = TestRoot::new();
-    let installed = root.0.join("installed.exe");
+    let root = test_temp_dir("ingress");
+    let installed = root.path().join("installed.exe");
     fs::write(&installed, b"installed").unwrap();
-    let prior = root.0.join("prior-stage");
+    let prior = root.path().join("prior-stage");
     fs::create_dir(&prior).unwrap();
     fs::write(prior.join("rollback.bin"), b"rollback").unwrap();
-    let stage = root.0.join("current-stage");
+    let stage = root.path().join("current-stage");
     sorotte_client_app::app_boundary::persistence::create_private_directory(&stage).unwrap();
     let mut bytes = zip_bytes(&[("sorotte-gui.exe", b"payload")]);
     let central = bytes

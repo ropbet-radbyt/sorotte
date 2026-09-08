@@ -63,18 +63,34 @@ pub(crate) fn test_default_sorotte_config_target() -> std::path::PathBuf {
     test_default_sorotte_config_root().join("sorotte.ini")
 }
 
+/// Keep this owner alive until all fixture files and workers have been closed.
+pub(crate) fn test_temp_dir(label: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("sorotte-gui-{label}-"))
+        .tempdir()
+        .expect("test temp directory should be created")
+}
+
+/// Existing callers own cleanup of this path; new fixtures should keep a TempDir.
 pub(crate) fn test_temp_root(label: &str) -> std::path::PathBuf {
-    let unique_suffix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "sorotte-gui-{label}-{}-{unique_suffix}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("test temp root should be created");
-    normalize_test_temp_root(root)
+    normalize_test_temp_root(test_temp_dir(label).keep())
+}
+
+#[test]
+fn repeated_fixture_labels_preserve_files_until_explicit_cleanup() {
+    let first = test_temp_root("repeated-label");
+    std::fs::write(first.join("payload"), b"first fixture").unwrap();
+    let second = test_temp_root("repeated-label");
+    std::fs::write(second.join("payload"), b"second fixture").unwrap();
+    let first_payload = std::fs::read(first.join("payload"));
+    let second_payload = std::fs::read(second.join("payload"));
+    std::fs::remove_dir_all(&first).unwrap();
+    if first != second {
+        std::fs::remove_dir_all(&second).unwrap();
+    }
+    assert_eq!(first_payload.unwrap(), b"first fixture");
+    assert_eq!(second_payload.unwrap(), b"second fixture");
+    assert_ne!(first, second);
 }
 
 #[cfg(windows)]

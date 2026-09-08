@@ -3761,6 +3761,7 @@ dependencies = [
  "sorotte-protocol",
  "sorotte-secret",
  "sorotte-server",
+ "tempfile",
  "tokio",
  "webpki-roots",
  "windows",

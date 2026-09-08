@@ -51,6 +51,7 @@ windows.workspace = true
 embed-resource = "3.0.11"
 
 [dev-dependencies]
+tempfile = "3.27.0"
 sorotte-server = { path = "../sorotte-server" }
 sorotte-client-core = { path = "../sorotte-client-core", features = ["test-support"] }
 sorotte-player-api = { path = "../sorotte-player-api", features = ["test-support"] }
