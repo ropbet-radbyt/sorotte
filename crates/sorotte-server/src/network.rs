@@ -634,7 +634,16 @@ where
     S: AsyncRead + Unpin,
 {
     let mut bytes = Vec::new();
-    read_network_line_from_stream_with_buffer(stream, &mut bytes).await
+    // This test convenience API has no persistent read buffer. Do not consume
+    // bytes belonging to the next frame, including coalesced TLS records.
+    let mut byte = [0_u8; 1];
+    while bytes.len() < MAX_PROTOCOL_LINE_BYTES + 2 && stream.read(&mut byte).await? != 0 {
+        bytes.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    read_network_line_from_stream_with_buffer(&mut tokio::io::empty(), &mut bytes).await
 }
 
 #[derive(Debug)]

@@ -597,12 +597,14 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
     let mut renderer = GuiWidgetEguiRenderer::default();
 
     state.render_shell_widgets(&mut renderer);
-    let output = context.run_ui(egui::RawInput::default(), |ui| {
+    let mut output = context.run_ui(egui::RawInput::default(), |ui| {
         for node in &menu_nodes {
             renderer.render_button_like(ui, node, &state);
         }
         let _ = renderer.show(ui, &state, false);
     });
+    // These tests inspect layout and accessibility without an integration painter.
+    output.textures_delta.clear();
     let accesskit_update = output
         .platform_output
         .accesskit_update
@@ -678,11 +680,12 @@ fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wi
             .or_default()
             .inner_rect = input.screen_rect;
 
-        let output = context.run_ui(input, |ui| {
+        let mut output = context.run_ui(input, |ui| {
             ui.set_width(width);
             ui.set_max_width(width);
             renderer.render_combined_room_panel(ui, room_panel, &state);
         });
+        output.textures_delta.clear();
         let accesskit_update = output
             .platform_output
             .accesskit_update
@@ -738,7 +741,7 @@ fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
                 context.set_zoom_factor(zoom);
                 let mut renderer = GuiWidgetEguiRenderer::default();
                 let mut right_edge = 0.0;
-                let output = context.run_ui(
+                let mut output = context.run_ui(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -751,6 +754,7 @@ fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
                         renderer.render_combined_room_panel(ui, panel, &state);
                     },
                 );
+                output.textures_delta.clear();
                 let update = output
                     .platform_output
                     .accesskit_update
@@ -792,9 +796,10 @@ fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
         });
         let mut actions = Vec::new();
 
-        let _ = context.run_ui(input, |ui| {
+        let mut output = context.run_ui(input, |ui| {
             actions = renderer.show(ui, &state, false);
         });
+        output.textures_delta.clear();
 
         assert_eq!(
             actions,
