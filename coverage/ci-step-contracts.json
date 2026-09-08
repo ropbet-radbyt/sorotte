@@ -1306,12 +1306,6 @@
     {
       "workflow": ".github/workflows/rust-ci.yml",
       "job_id": "rust_windows_tests",
-      "step_id": "ci_check_reviewed_compile_dependent_inven_57396f6a",
-      "display_name": "Check reviewed compile-dependent inventories"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "rust_windows_tests",
       "step_id": "nextest",
       "display_name": "Nextest fail-on-flaky workspace tests"
     },
