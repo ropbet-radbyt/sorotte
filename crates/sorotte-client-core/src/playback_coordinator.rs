@@ -526,10 +526,18 @@ impl fmt::Debug for MediaState {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ObservedPositionSample {
+    observation_sequence: u64,
+    observed_at_seconds: f64,
+    position_seconds: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ObservedState {
     observed_at_seconds: f64,
     phase: PlayerTransportPhase,
     position_seconds: Option<f64>,
+    position_sample: Option<ObservedPositionSample>,
     playback_rate: Option<f64>,
     logical_pause: Option<bool>,
     paused_for_cache: bool,
@@ -1349,6 +1357,7 @@ impl PlaybackCoordinator {
             observed_at_seconds: observation.observed_at_seconds,
             phase: PlayerTransportPhase::Empty,
             position_seconds: None,
+            position_sample: None,
             playback_rate: None,
             logical_pause: None,
             paused_for_cache: false,
@@ -1371,6 +1380,13 @@ impl PlaybackCoordinator {
             .filter(|value| value.is_finite() && *value >= 0.0)
         {
             observed.position_seconds = Some(value);
+            if seek_preparation_evidence_is_fresh {
+                observed.position_sample = Some(ObservedPositionSample {
+                    observation_sequence: self.observation_sequence,
+                    observed_at_seconds: observation.observed_at_seconds,
+                    position_seconds: value,
+                });
+            }
         }
         if let Some(value) = observation
             .playback_rate
@@ -1917,6 +1933,45 @@ impl PlaybackCoordinator {
 
     pub fn clear_seek_preparation_terminal(&mut self) {
         self.last_seek_preparation_terminal = None;
+    }
+
+    /// A confirmed local Play can supersede an older preparation once the
+    /// player has physically reached its frozen target. This is a manual
+    /// transport decision, not new evidence of buffered headroom.
+    pub(crate) fn confirm_aligned_local_play(
+        &mut self,
+        now_seconds: f64,
+        maximum_position_age_seconds: f64,
+    ) -> bool {
+        let (Some(episode), Some(observed), Some(desired)) =
+            (self.seek_preparation.as_ref(), self.observed, self.desired)
+        else {
+            return false;
+        };
+        let aligned_play = episode.primary_seek_issued
+            && !desired.paused
+            && observed.phase == PlayerTransportPhase::Playing
+            && observed.logical_pause == Some(false)
+            && !observed.seeking
+            && !observed.paused_for_cache
+            && observed.core_idle != Some(true)
+            && self.required_seek_dispatch_revision.is_none()
+            && observed.position_sample.is_some_and(|sample| {
+                let age = now_seconds - sample.observed_at_seconds;
+                episode
+                    .primary_seek_observation_sequence
+                    .is_some_and(|sequence| sample.observation_sequence > sequence)
+                    && age.is_finite()
+                    && (0.0..=maximum_position_age_seconds).contains(&age)
+                    && (sample.position_seconds - episode.frozen_target_seconds).abs()
+                        <= self.config.position_tolerance_seconds
+            });
+        if !aligned_play {
+            return false;
+        }
+        self.desired_seek_satisfied_revision = Some(desired.state_revision);
+        self.finish_seek_preparation(SeekPreparationTerminalOutcome::Superseded);
+        true
     }
 
     pub fn join_nearest_buffered_seek_preparation(

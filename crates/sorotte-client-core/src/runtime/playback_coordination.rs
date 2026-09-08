@@ -1488,6 +1488,24 @@ impl RuntimePlaybackCoordination {
                             && observation.logical_pause == Some(intent.paused)
                     })
                 });
+        if matches!(
+            authority,
+            RoomPlaystateAuthority::LegacyLocalEcho | RoomPlaystateAuthority::LegacyRemoteUser
+        ) && raw.do_seek != Some(true)
+            && !paused
+            && player_confirms_local_intent
+            && self.has_active_local_pause_intent(false, session)
+        {
+            // A preceding local seek echo can still own a preparation pause.
+            // Retire that hold before acknowledging the newer confirmed Play;
+            // otherwise removing the overlay reactivates the old pause on the
+            // next player observation. Alignment and physical transport must
+            // already be proven, and server-owned barriers never enter here.
+            self.coordinator.confirm_aligned_local_play(
+                self.coordinator_now(external_now_seconds),
+                MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS,
+            );
+        }
         let mut retire_confirmed_or_stale_local_intent = false;
         if let Some(intent) = self.pending_local_pause_intent.as_mut() {
             let canonical_playstate_changed = match (

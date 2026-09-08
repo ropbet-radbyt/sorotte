@@ -9720,6 +9720,14 @@ fn staged_local_unpause_survives_transport_observation_before_canonical_echo() {
 
 #[test]
 fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo() {
+    for author in ["alice", "bob"] {
+        for echo_before_player in [false, true] {
+            assert_local_play_survives_seek_preparation_echo(author, echo_before_player);
+        }
+    }
+}
+
+fn assert_local_play_survives_seek_preparation_echo(author: &str, echo_before_player: bool) {
     let mut session = ClientSession::default();
     session
         .apply_message_json_at(
@@ -9771,6 +9779,19 @@ fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo()
         "the network seek echo should reproduce the preparation window"
     );
 
+    let play_echo_wire = serde_json::json!({
+        "State": {"playstate": {
+            "position": 0.0, "paused": false, "doSeek": false, "setBy": author,
+        }}
+    })
+    .to_string();
+    if echo_before_player {
+        runtime
+            .session_mut()
+            .apply_message_json_at(&play_echo_wire, 0.115)
+            .unwrap();
+        runtime.reconcile_external_player_playback(0.115);
+    }
     let observed_play = runtime.observe_external_player_transport(
         transport(1, 0.12, PlayerTransportPhase::Playing, 0.0),
         0.12,
@@ -9791,6 +9812,63 @@ fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo()
             .pending_local_pause_intent,
         Some(false),
         "suppressing the stale pause must retain the local intent until its canonical echo"
+    );
+
+    if !echo_before_player {
+        runtime
+            .session_mut()
+            .apply_message_json_at(&play_echo_wire, 0.13)
+            .unwrap();
+    }
+    let play_echo = runtime.reconcile_external_player_playback(0.13);
+    let continued_play = runtime.observe_external_player_transport(
+        transport(1, 0.14, PlayerTransportPhase::Playing, 0.02),
+        0.14,
+    );
+    assert!(
+        !play_echo
+            .iter()
+            .chain(&continued_play)
+            .any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+        "acknowledging local Play must not reactivate its superseded seek pause: echo={play_echo:?}; observation={continued_play:?}; snapshot={:?}",
+        runtime.playback_coordination_snapshot(),
+    );
+    assert!(
+        runtime
+            .playback_coordination_snapshot()
+            .seek_preparation
+            .is_none()
+    );
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        None,
+        "the acknowledged command must relinquish its temporary authority",
+    );
+    runtime
+        .session_mut()
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.02,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            0.2,
+        )
+        .unwrap();
+    let later_pause = runtime.reconcile_external_player_playback(0.2);
+    assert!(
+        later_pause.iter().any(|action| matches!(
+            action,
+            PlaybackCoordinatorAction::Execute {
+                command: CoordinatorPlayerCommand::SetPaused(true),
+                ..
+            }
+        )),
+        "a later authoritative room pause must still be enforced: {later_pause:?}"
     );
 }
 
