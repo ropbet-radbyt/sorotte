@@ -22,32 +22,32 @@ resolver = "2"
 version = "0.2.11"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.97.1"
+rust-version = "1.98.1"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-base64 = "0.22.1"
-eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
-egui = "0.35.0"
+base64 = "0.23.1"
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
+egui = "0.36.1"
 getrandom = "0.4.3"
 md-5 = "0.11.0"
-mlua = { version = "0.12.0", features = ["lua54", "serde", "vendored"] }
+mlua = { version = "0.12.1", features = ["lua54", "serde", "vendored"] }
 proptest = "1.11.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "query", "rustls-no-provider"] }
 rfd = "0.17.2"
-rustls = "0.23.42"
-rustls-pki-types = { version = "1.15.0", features = ["std"] }
-rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
+rustls = "0.23.44"
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 semver = "1.0.28"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = "0.26.4"
+tokio-rustls = "0.26.5"
 url = "2.5.8"
 webpki-roots = "1.0.9"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }

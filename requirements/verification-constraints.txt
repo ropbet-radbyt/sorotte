@@ -1,4 +1,4 @@
-# Reviewed 2026-09-06 from pip dry-run closure on Linux/Windows, CPython 3.11-3.13.
+# Reviewed 2026-09-08 from pip dry-run closure on Linux/Windows, CPython 3.11-3.13.
 # Constraints limit packages selected by each environment; they do not install
 # the audit environment into interop or override dependency environment markers.
 # Resolution context and wheel hashes: target/verification/python-resolution/.
@@ -35,10 +35,10 @@ pycparser==3.0
 pygments==2.21.0
 pyopenssl==26.4.0
 pyparsing==3.3.2
-pyyaml==6.0.2
+pyyaml==6.0.3
 requests==2.34.2
 rich==15.0.0
-service-identity==24.2.0
+service-identity==26.1.0
 sortedcontainers==2.4.0
 tomli==2.4.1
 tomli-w==1.2.0

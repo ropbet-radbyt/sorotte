@@ -44,9 +44,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_64dd10de
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -287,8 +287,8 @@ jobs:
       MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-08-30-e8673660ab/mpv-x86_64-20260830-git-e8673660ab.7z
       MPV_ARCHIVE_SHA256: 6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879
       MPV_BINARY_SHA256: 547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe
-      FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/2026-08-27-git-a6f573a1db/ffmpeg-2026-08-27-git-a6f573a1db-full_build.7z
-      FFMPEG_ARCHIVE_SHA256: 64d2b339dc536808b7c155ebc4d41cc7940eab7277659e43a3979078d665ed13
+      FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-full_build.7z
+      FFMPEG_ARCHIVE_SHA256: 4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96
       FFMPEG_BINARY_SHA256: fb7623671bf0e6748325ef41b325c0f3dcc9f80ab0cc5e947807ce3444b71690
     steps:
       - name: Attest ephemeral interactive Windows runner
@@ -338,9 +338,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_19d5cf83
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable resolved 2026-07-28
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.1
           components: rustfmt, clippy
 
       - name: Setup Python

@@ -253,13 +253,13 @@ class CoverageProfileLaneTests(unittest.TestCase):
         }
 
     def test_pinned_producer_version_is_exact(self) -> None:
-        result = command_result(b"cargo-llvm-cov 0.8.4\n")
-        self.assertEqual(lanes.parse_producer_version(result), "0.8.4")
+        result = command_result(b"cargo-llvm-cov 0.9.1\n")
+        self.assertEqual(lanes.parse_producer_version(result), "0.9.1")
 
         stale = command_result(b"cargo-llvm-cov 0.8.3\n")
         with self.assertRaisesRegex(
             lanes.CoverageProfileLaneError,
-            "must be 0.8.4",
+            "must be 0.9.1",
         ):
             lanes.parse_producer_version(stale)
 

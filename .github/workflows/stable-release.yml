@@ -32,7 +32,7 @@ jobs:
           python-version: "3.11"
       - name: Mint repository-scoped protection reader
         id: protection-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
           private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
@@ -85,9 +85,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.1
           components: rustfmt, clippy
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -204,7 +204,7 @@ jobs:
       - name: Mint repository-scoped protection reader
         if: github.event_name == 'push' || inputs.publish
         id: protection-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
           private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}

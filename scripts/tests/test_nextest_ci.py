@@ -173,7 +173,7 @@ class NextestConfigPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root_field = self.write_config(
                 pathlib.Path(temporary),
-                'nextest-version = "0.9.137"\n' + VALID_CONFIG,
+                'nextest-version = "0.9.143"\n' + VALID_CONFIG,
             )
             with self.assertRaisesRegex(
                 nextest_ci.PolicyError,
@@ -195,7 +195,7 @@ class NextestConfigPolicyTests(unittest.TestCase):
                 nextest_ci.validate_config(junit_field)
 
     def test_command_line_reasserts_policy_over_environment_and_overrides(self) -> None:
-        self.assertEqual(nextest_ci.PINNED_NEXTEST_VERSION, "0.9.137")
+        self.assertEqual(nextest_ci.PINNED_NEXTEST_VERSION, "0.9.143")
         retry_index = nextest_ci.NEXTEST_COMMAND.index("--retries")
         self.assertEqual(nextest_ci.NEXTEST_COMMAND[retry_index + 1], "1")
         status_index = nextest_ci.NEXTEST_COMMAND.index("--status-level")

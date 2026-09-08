@@ -18,7 +18,7 @@ ACTION_USES = {
     "actions/setup-python": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
     "actions/download-artifact": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "actions/upload-artifact": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "dtolnay/rust-toolchain": "dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4",
+    "dtolnay/rust-toolchain": "dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87",
 }
 
 
@@ -183,12 +183,12 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             self.windows["env"]["FFMPEG_ARCHIVE_URL"],
             "https://github.com/GyanD/codexffmpeg/releases/download/"
-            "2026-08-27-git-a6f573a1db/"
-            "ffmpeg-2026-08-27-git-a6f573a1db-full_build.7z",
+            "9.0.1/"
+            "ffmpeg-9.0.1-full_build.7z",
         )
         self.assertEqual(
             self.windows["env"]["FFMPEG_ARCHIVE_SHA256"],
-            "64d2b339dc536808b7c155ebc4d41cc7940eab7277659e43a3979078d665ed13",
+            "4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96",
         )
         self.assertEqual(
             self.windows["env"]["FFMPEG_BINARY_SHA256"],

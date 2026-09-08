@@ -7,7 +7,7 @@
   "max_jobs": 1,
   "memory_mb": 16384,
   "minimum_physical_display": [1800, 1200],
-  "rust_toolchain": "1.97.1",
+  "rust_toolchain": "1.98.1",
   "python_version": "3.12.10",
   "msvc_version": "14.29.30133",
   "sdk_version": "10.0.19041.0",

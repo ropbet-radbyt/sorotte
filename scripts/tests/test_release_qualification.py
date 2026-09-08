@@ -579,7 +579,7 @@ class PackageWorkflowTests(unittest.TestCase):
         import yaml
 
         root = Path(__file__).resolve().parents[2]
-        action = "actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349"
+        action = "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
         files = ("stable-release.yml", "sorotte-server-release.yml", "sorotte-gui-release.yml", "publish-server-container.yml")
         authorizations = 0
         for name in files:

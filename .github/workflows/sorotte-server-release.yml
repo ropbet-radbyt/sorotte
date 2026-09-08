@@ -35,9 +35,9 @@ jobs:
           persist-credentials: false
       - name: Setup Rust for dependency inventory
         id: ci_setup_rust_for_dependency_inventory_e8eb8a28
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
-          toolchain: 1.97.1
+          toolchain: 1.98.1
       - name: Setup Python
         id: ci_setup_python_2d5b0efc
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -125,7 +125,7 @@ jobs:
           python-version: "3.11"
       - name: Mint repository-scoped protection reader
         id: protection-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2 resolved 2026-09-06
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
           private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}

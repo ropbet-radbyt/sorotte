@@ -36,7 +36,7 @@ SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE = (3, 14)
 PINNED_PACKAGES = {
     "cryptography": ("cryptography", "50.0.1"),
     "pyopenssl": ("pyopenssl", "26.4.0"),
-    "service-identity": ("service_identity", "24.2.0"),
+    "service-identity": ("service_identity", "26.1.0"),
     "twisted": ("twisted", "26.4.0"),
 }
 FIXTURE_ROOT_COUNTS = {

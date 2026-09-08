@@ -1,5 +1,52 @@
 use super::*;
 
+#[derive(Debug)]
+struct TestDroppedFile(PathBuf);
+
+impl egui::DroppedFile for TestDroppedFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        panic!("routing a dropped media file must not read its contents")
+    }
+}
+
+fn dropped_file(path: &str) -> egui::DroppedFileHandle {
+    std::sync::Arc::new(TestDroppedFile(PathBuf::from(path)))
+}
+
+#[test]
+fn gui_widget_egui_renderer_routes_drop_handles_without_reading_media() {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
+        &state,
+        false,
+        None,
+        None,
+        None,
+        vec![
+            dropped_file(""),
+            dropped_file("episode 1.mkv"),
+            dropped_file("C:/Media/episode 2.mkv"),
+        ],
+    )
+    .expect("nonempty file paths should be routed");
+    assert_eq!(request.paths, ["episode 1.mkv", "C:/Media/episode 2.mkv"]);
+    assert!(
+        GuiWidgetEguiRenderer::dropped_files_request_for_input(
+            &state,
+            false,
+            None,
+            None,
+            None,
+            vec![dropped_file("")],
+        )
+        .is_none()
+    );
+}
+
 #[test]
 fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_drops() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
@@ -13,10 +60,7 @@ fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_
         None,
         None,
         None,
-        vec![egui::DroppedFile {
-            path: Some(PathBuf::from("C:/Media/episode1.mkv")),
-            ..Default::default()
-        }],
+        vec![dropped_file("C:/Media/episode1.mkv")],
     )
     .expect("dropped-file request should be derived");
 
@@ -42,10 +86,7 @@ fn gui_widget_egui_renderer_defaults_shared_playlist_drops_to_playlist_target() 
         None,
         None,
         None,
-        vec![egui::DroppedFile {
-            path: Some(PathBuf::from("C:/Media/episode2.mkv")),
-            ..Default::default()
-        }],
+        vec![dropped_file("C:/Media/episode2.mkv")],
     )
     .expect("dropped-file request should be derived");
 
@@ -65,10 +106,7 @@ fn gui_widget_egui_renderer_defaults_drops_to_playlist_target_when_shared_playli
         None,
         None,
         None,
-        vec![egui::DroppedFile {
-            path: Some(PathBuf::from("C:/Media/movie.mkv")),
-            ..Default::default()
-        }],
+        vec![dropped_file("C:/Media/movie.mkv")],
     )
     .expect("dropped-file request should be derived");
 
@@ -92,10 +130,7 @@ fn gui_widget_egui_renderer_carries_playlist_insert_slot_for_hovered_playlist_dr
         None,
         Some(1),
         None,
-        vec![egui::DroppedFile {
-            path: Some(PathBuf::from("C:/Media/episode3.mkv")),
-            ..Default::default()
-        }],
+        vec![dropped_file("C:/Media/episode3.mkv")],
     )
     .expect("dropped-file request should be derived");
 
@@ -121,10 +156,7 @@ fn gui_widget_egui_renderer_defaults_playlist_drops_to_append_slot_when_hover_sl
         None,
         None,
         None,
-        vec![egui::DroppedFile {
-            path: Some(PathBuf::from("C:/Media/episode3.mkv")),
-            ..Default::default()
-        }],
+        vec![dropped_file("C:/Media/episode3.mkv")],
     )
     .expect("dropped-file request should be derived");
 

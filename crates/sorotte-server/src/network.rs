@@ -1646,6 +1646,10 @@ pub async fn run_server_network_loops_until_shutdown(
 /// Owns the production server lifecycle through the explicit durability
 /// barrier. Actor shutdown is attempted even when network startup or teardown
 /// fails, and dual failures retain both causes.
+#[allow(
+    clippy::result_large_err,
+    reason = "The public lifecycle error preserves both causes by value; boxing would break callers"
+)]
 pub async fn run_server_network_loops_and_shutdown_actor(
     listeners: Vec<TcpListener>,
     runtime: ServerActorHandle,

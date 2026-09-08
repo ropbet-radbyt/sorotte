@@ -51,20 +51,20 @@ class PinProjectionTests(unittest.TestCase):
             tools.validate_pin_projections(self.root)
 
     def test_tool_version_drift_is_rejected(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.8.4"',
+        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
                      'CARGO_LLVM_COV_VERSION = "0.8.3"')
         with self.assertRaisesRegex(ValueError, "CARGO_LLVM_COV_VERSION"):
             tools.validate_pin_projections(self.root)
 
     def test_dynamic_pin_is_rejected_without_evaluation(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.8.4"',
+        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
                      'CARGO_LLVM_COV_VERSION = dangerous_function()')
         with self.assertRaisesRegex(ValueError, "static literal"):
             tools.validate_pin_projections(self.root)
 
     def test_duplicate_pin_is_rejected(self) -> None:
-        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.8.4"',
-                     'CARGO_LLVM_COV_VERSION = "0.8.4"\nCARGO_LLVM_COV_VERSION = "0.8.4"')
+        self.replace("scripts/diff_coverage.py", 'CARGO_LLVM_COV_VERSION = "0.9.1"',
+                     'CARGO_LLVM_COV_VERSION = "0.9.1"\nCARGO_LLVM_COV_VERSION = "0.9.1"')
         with self.assertRaisesRegex(ValueError, "one literal assignment"):
             tools.validate_pin_projections(self.root)
 
@@ -74,7 +74,7 @@ class PinProjectionTests(unittest.TestCase):
             tools.validate_pin_projections(self.root)
 
     def test_manifest_change_requires_wrapper_projection(self) -> None:
-        self.replace("coverage/verification-tools.toml", 'cargo-nextest = "0.9.137"',
+        self.replace("coverage/verification-tools.toml", 'cargo-nextest = "0.9.143"',
                      'cargo-nextest = "0.9.138"')
         with self.assertRaisesRegex(ValueError, "PINNED_NEXTEST_VERSION"):
             tools.validate_pin_projections(self.root)

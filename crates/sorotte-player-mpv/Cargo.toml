@@ -28,7 +28,7 @@ url.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_JobObjects", "Win32_Security_Authorization"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.189"
 
 [dev-dependencies]
 mlua.workspace = true

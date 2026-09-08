@@ -231,10 +231,10 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
     def test_rustc_identity_is_exactly_pinned(self) -> None:
         output = b"\n".join(
             [
-                b"rustc 1.97.1 (8bab26f4f 2026-07-14)",
+                b"rustc 1.98.1 (48a229cea 2026-09-01)",
                 b"binary: rustc",
                 f"commit-hash: {lanes.PINNED_RUST_COMMIT}".encode(),
-                b"commit-date: 2026-07-14",
+                b"commit-date: 2026-09-01",
                 f"host: {lanes.PINNED_RUST_HOST}".encode(),
                 f"release: {lanes.PINNED_RUST_RELEASE}".encode(),
                 f"LLVM version: {lanes.PINNED_LLVM_VERSION}".encode(),
@@ -245,10 +245,10 @@ class WindowsProcessCoverageLaneTests(unittest.TestCase):
         self.assertEqual(identity["host"], lanes.PINNED_RUST_HOST)
         self.assertEqual(identity["commit_hash"], lanes.PINNED_RUST_COMMIT)
 
-        stale = output.replace(b"release: 1.97.1", b"release: 1.97.0")
+        stale = output.replace(b"release: 1.98.1", b"release: 1.97.0")
         with self.assertRaisesRegex(
             common.CoverageProfileLaneError,
-            "release must be 1.97.1",
+            "release must be 1.98.1",
         ):
             lanes.parse_rustc_identity(command_result(stale))
 

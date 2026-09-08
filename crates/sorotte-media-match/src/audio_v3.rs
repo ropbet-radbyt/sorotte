@@ -95,10 +95,9 @@ impl AudioConstellationV3PcmStream {
                 return Ok(());
             }
         }
-        let chunks = bytes[cursor..].chunks_exact(2);
-        let remainder = chunks.remainder();
+        let (chunks, remainder) = bytes[cursor..].as_chunks::<2>();
         for chunk in chunks {
-            samples.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+            samples.push(i16::from_le_bytes(*chunk));
         }
         if let Some(byte) = remainder.first().copied() {
             self.pending_byte = Some(byte);
