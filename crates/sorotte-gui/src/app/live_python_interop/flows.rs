@@ -665,6 +665,17 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
     ];
     let media_fixture = LivePythonSharedPlaylistMediaFixture::create()?;
     request_local_shared_playlist_open(&handle, &media_fixture.path_refs());
+    // Wait while the open is still queued, so this flow also proves that the
+    // peer-observation wait drives the runtime that owns the file announcement.
+    wait_for_peer_observed_user_file_name(
+        &mut owner,
+        &handle,
+        &mut state,
+        harness,
+        LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
+        LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE,
+        Duration::from_secs(3),
+    )?;
     wait_for_projected_playlist(&mut owner, &handle, &mut state, &expected_playlist, Some(0))?;
     wait_for_projection(&mut owner, &handle, &mut state, false, false)?;
     wait_for_peer_observed_playlist(
@@ -693,6 +704,9 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
         Duration::from_secs(3),
     )?;
     let peer_snapshot = wait_for_peer_observed_user_file_name(
+        &mut owner,
+        &handle,
+        &mut state,
         harness,
         LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
         LIVE_PYTHON_INTEROP_LOCAL_OPEN_MEDIA_FILE_ONE,
