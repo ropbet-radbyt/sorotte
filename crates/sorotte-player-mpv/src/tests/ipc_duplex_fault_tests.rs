@@ -623,6 +623,7 @@ fn delayed_duplex_response_preserves_event_completion_order_and_at_most_once_del
                 command_id: 1,
                 token: 73,
                 response,
+                ..
             }
         ) if response == &json!({
             "request_id": 1,

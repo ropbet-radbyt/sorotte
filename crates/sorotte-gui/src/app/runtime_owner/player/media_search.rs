@@ -289,7 +289,11 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return None;
         }
-        Some(target.to_string_lossy().into_owned())
+        Some(
+            Self::display_path_for_existing_media_file(target)
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     fn indexed_resolution_excludes_current_player_collision(

@@ -364,7 +364,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     #[cfg(windows)]
-    fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
+    pub(super) fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
         fn strip_verbatim_prefix(path: &Path) -> PathBuf {
             let mut components = path.components();
             let Some(std::path::Component::Prefix(prefix)) = components.next() else {
@@ -395,7 +395,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     #[cfg(not(windows))]
-    fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
+    pub(super) fn display_path_for_existing_media_file(path: &Path) -> PathBuf {
         path.to_path_buf()
     }
 

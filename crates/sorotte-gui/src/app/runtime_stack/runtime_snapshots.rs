@@ -497,6 +497,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let now_seconds = system_time_seconds();
         if let Some(playstate) = session.current_room_playstate_at(now_seconds) {
             snapshot.room_playback_intent.position_seconds = playstate.position;
+            snapshot.room_playback_intent.position_sampled_at = (playstate.paused == Some(false)
+                && playstate.position.is_some())
+            .then(std::time::Instant::now);
             snapshot.room_playback_intent.paused = playstate.paused;
             snapshot.room_playback_intent.set_by = playstate.set_by;
             snapshot.room_playback_intent.authority = session

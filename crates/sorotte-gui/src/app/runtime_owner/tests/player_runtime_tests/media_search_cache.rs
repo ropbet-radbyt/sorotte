@@ -1,5 +1,35 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn local_load_recovers_disk_casing_from_a_case_folded_resolution() {
+    let root = test_temp_root("physical-load-casing");
+    let actual = root.join("Library").join("MixedCaseEpisode.MKV");
+    std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+    std::fs::write(&actual, b"media fixture").unwrap();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+    let folded = actual.to_string_lossy().to_lowercase();
+    owner
+        .open_media_files_through_attached_player_result_impl(&[folded], false)
+        .expect("attached player")
+        .expect("accepted load");
+    let file = owner.player_local_file.as_ref().unwrap();
+    assert_eq!(file.name, "MixedCaseEpisode.MKV");
+    assert_eq!(file.path.as_deref(), Some(actual.to_str().unwrap()));
+    let opened = owner
+        .player
+        .as_mut()
+        .unwrap()
+        .take_local_file_update()
+        .unwrap();
+    assert_eq!(
+        opened.path, file.path,
+        "mpv input must use the same filesystem spelling as the row and title"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
 
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
@@ -703,7 +733,7 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
-        vec![sorotte_media_match::normalize_media_path(&local_media_path)],
+        vec![local_media_path.to_string_lossy().into_owned()],
         "probable sampled-fast media-match signatures should use indexed candidates instead of scanning every search-root file"
     );
 
@@ -953,9 +983,7 @@ fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_ch
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .opened_paths,
-        vec![sorotte_media_match::normalize_media_path(
-            &local_candidate_path
-        )],
+        vec![local_candidate_path.to_string_lossy().into_owned()],
         "updated peer media-match metadata for the selected playlist item should retrigger automatic resolution"
     );
 
@@ -2443,10 +2471,7 @@ fn gui_persisted_config_runtime_owner_preferred_media_match_recovers_from_local_
         *opened_paths
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        vec![
-            direct_path,
-            sorotte_media_match::normalize_media_path(&media_match_path),
-        ]
+        vec![direct_path, media_match_path.to_string_lossy().into_owned(),]
     );
     let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
     assert_eq!(attempt.candidate_failures.len(), 1);
@@ -4070,7 +4095,7 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     owner.active_shared_playlist_index = Some(0);
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
-    let selected_media_path = sorotte_media_match::normalize_media_path(&selected_media_path);
+    let selected_media_path = selected_media_path.to_string_lossy().into_owned();
 
     assert_eq!(outcome, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(

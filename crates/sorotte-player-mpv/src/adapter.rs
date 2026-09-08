@@ -1,5 +1,6 @@
 mod attachment;
 mod bridge_settings;
+mod transport_readback;
 use network_options::NetworkOptionsState;
 use network_options::*;
 use stream_recovery::StreamRecoveryState;
@@ -487,6 +488,7 @@ pub struct MpvAdapter {
     pending_load_generation: Option<PlayerMediaGeneration>,
     last_polled_local_file_update: Option<LocalFileUpdate>,
     last_paused_position_poll_at: Option<Instant>,
+    transport_readback: transport_readback::TransportReadbackState,
     last_paused_position_telemetry_at: Option<Instant>,
     last_ipc_event_fence_at: Option<Instant>,
     pending_ipc_event_fence_command_id: Option<u64>,

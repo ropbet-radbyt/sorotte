@@ -1441,6 +1441,7 @@ fn nonblocking_property_read_retains_its_response_for_scoped_consumers() {
                 command_id: 1,
                 token: 5,
                 response: observed,
+                ..
             }
         )] if observed == &response
     ));

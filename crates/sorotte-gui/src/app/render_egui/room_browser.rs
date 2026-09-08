@@ -21,6 +21,17 @@ impl GuiWidgetEguiRenderer {
         node: &GuiWidgetNode,
         state: &SorotteGuiShellAppState,
     ) {
+        if state.main_window.room_playback_intent.paused == Some(false)
+            && state
+                .main_window
+                .room_playback_intent
+                .position_sampled_at
+                .is_some_and(|sampled_at| sampled_at.elapsed() < std::time::Duration::from_secs(5))
+        {
+            // Animate the room clock between worker/network snapshots.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let status_node = node
             .children
             .iter()
@@ -558,8 +569,13 @@ impl GuiWidgetEguiRenderer {
                                     0.0
                                 };
                                 let name_width = (ui.available_width() - icon_width).max(0.0);
-                                ui.add_sized([name_width, 0.0], egui::Label::new(name).truncate())
-                                    .on_hover_text(&user_node.label);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(name_width, 0.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| ui.add(egui::Label::new(name).truncate()),
+                                )
+                                .inner
+                                .on_hover_text(&user_node.label);
                                 if is_controller {
                                     Self::render_inline_controller_icon(ui);
                                 }

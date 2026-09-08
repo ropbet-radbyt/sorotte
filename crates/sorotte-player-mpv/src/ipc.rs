@@ -627,13 +627,20 @@ impl MpvJsonIpcClient {
     ) {
         match completion {
             Ok(outcome) => match outcome.result {
-                Ok(response) if include_response => self.push_nonblocking_completion(
-                    MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
-                        command_id,
-                        token,
-                        response,
-                    },
-                ),
+                Ok(response) if include_response => {
+                    let (sequence, received_at) = outcome
+                        .response_observation
+                        .expect("successful IPC response has an ingress boundary");
+                    self.push_nonblocking_completion_at(
+                        sequence,
+                        MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
+                            command_id,
+                            token,
+                            response,
+                            received_at,
+                        },
+                    );
+                }
                 Ok(_) => self.push_nonblocking_completion(
                     MpvIpcNonblockingCommandCompletion::Succeeded { command_id, token },
                 ),
@@ -683,6 +690,14 @@ impl MpvJsonIpcClient {
 
     fn push_nonblocking_completion(&mut self, value: MpvIpcNonblockingCommandCompletion) {
         let sequence = self.next_runtime_item_sequence();
+        self.push_nonblocking_completion_at(sequence, value);
+    }
+
+    fn push_nonblocking_completion_at(
+        &mut self,
+        sequence: u64,
+        value: MpvIpcNonblockingCommandCompletion,
+    ) {
         self.runtime_queues
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -861,6 +876,7 @@ struct MpvIpcWorkerRequest {
 
 struct MpvIpcCommandOutcome {
     result: Result<Value, MpvIpcCommandFailure>,
+    response_observation: Option<(u64, Instant)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1005,6 +1021,7 @@ impl MpvIpcWorker {
             Ok(line) => line,
             Err(err) => {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::command_failed(format!(
                         "failed to serialize mpv IPC request: {err}"
                     ))),
@@ -1014,6 +1031,7 @@ impl MpvIpcWorker {
         line.push('\n');
         if remaining_until(deadline).is_err() {
             return MpvIpcCommandOutcome {
+                response_observation: None,
                 result: Err(MpvIpcCommandFailure::timed_out(format!(
                     "mpv IPC command timed out after {:.1} seconds",
                     timeout.as_secs_f64()
@@ -1022,6 +1040,7 @@ impl MpvIpcWorker {
         }
         if let Err(err) = self.transport.send_line_until(&line, deadline) {
             return MpvIpcCommandOutcome {
+                response_observation: None,
                 result: Err(
                     if matches!(
                         err.kind(),
@@ -1046,12 +1065,14 @@ impl MpvIpcWorker {
                 Ok(bytes_read) => bytes_read,
                 Err(err) => {
                     return MpvIpcCommandOutcome {
+                        response_observation: None,
                         result: Err(MpvIpcCommandFailure::from_read_error(err, timeout)),
                     };
                 }
             };
             if bytes_read == 0 {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::disconnected(format!(
                         "unexpected EOF while waiting for mpv IPC response (request_id={request_id})"
                     ))),
@@ -1059,6 +1080,7 @@ impl MpvIpcWorker {
             }
             if let Err(err) = validate_mpv_ipc_line_len(response_line.as_bytes()) {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::protocol_corruption(err)),
                 };
             }
@@ -1072,6 +1094,7 @@ impl MpvIpcWorker {
                 Ok(parsed) => parsed,
                 Err(err) => {
                     return MpvIpcCommandOutcome {
+                        response_observation: None,
                         result: Err(MpvIpcCommandFailure::protocol_corruption(format!(
                             "invalid mpv IPC JSON line ({} bytes): {err}",
                             trimmed.len()
@@ -1085,6 +1108,7 @@ impl MpvIpcWorker {
             }
             let Some(parsed_request_id) = parsed.get("request_id").and_then(Value::as_u64) else {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::protocol_corruption(format!(
                         "mpv IPC response omitted request_id while waiting for request_id={request_id}"
                     ))),
@@ -1092,6 +1116,7 @@ impl MpvIpcWorker {
             };
             if parsed_request_id != request_id {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::protocol_corruption(format!(
                         "mpv IPC response request_id mismatch: expected {request_id}, received {parsed_request_id}"
                     ))),
@@ -1100,6 +1125,7 @@ impl MpvIpcWorker {
 
             let Some(error) = parsed.get("error").and_then(Value::as_str) else {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::protocol_corruption(format!(
                         "mpv IPC response omitted error for request_id={request_id}"
                     ))),
@@ -1107,6 +1133,7 @@ impl MpvIpcWorker {
             };
             if error != MPV_RESPONSE_SUCCESS {
                 return MpvIpcCommandOutcome {
+                    response_observation: None,
                     result: Err(MpvIpcCommandFailure::server_rejected(
                         request_id,
                         error.to_owned(),
@@ -1114,7 +1141,13 @@ impl MpvIpcWorker {
                 };
             }
 
-            return MpvIpcCommandOutcome { result: Ok(parsed) };
+            return MpvIpcCommandOutcome {
+                result: Ok(parsed),
+                response_observation: Some((
+                    next_nonzero_sequence(&self.next_runtime_item_sequence),
+                    Instant::now(),
+                )),
+            };
         }
     }
 
@@ -1522,10 +1555,23 @@ impl MpvIpcRuntimeQueues {
                     }
                     selected.push((item.sequence, MpvIpcNonblockingRuntimeItem::Event(event)))
                 }
-                MpvIpcControlItem::Completion(completion) => selected.push((
-                    item.sequence,
-                    MpvIpcNonblockingRuntimeItem::Completion(completion),
-                )),
+                MpvIpcControlItem::Completion(completion) => {
+                    if matches!(
+                        completion,
+                        MpvIpcNonblockingCommandCompletion::SucceededWithResponse { .. }
+                    ) {
+                        // A property read must see every earlier media/transport
+                        // event, and must be applied before later events.
+                        causal_event_barrier = Some(
+                            causal_event_barrier
+                                .map_or(item.sequence, |barrier: u64| barrier.max(item.sequence)),
+                        );
+                    }
+                    selected.push((
+                        item.sequence,
+                        MpvIpcNonblockingRuntimeItem::Completion(completion),
+                    ));
+                }
                 MpvIpcControlItem::ControlQueueOverflow => selected.push((
                     item.sequence,
                     MpvIpcNonblockingRuntimeItem::ControlQueueOverflow,
@@ -1572,6 +1618,7 @@ pub(crate) enum MpvIpcNonblockingCommandCompletion {
         command_id: u64,
         token: u64,
         response: Value,
+        received_at: Instant,
     },
     Failed {
         command_id: u64,

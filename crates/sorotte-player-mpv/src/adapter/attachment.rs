@@ -93,6 +93,7 @@ impl MpvAdapter {
         self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
         self.last_paused_position_poll_at = None;
+        self.transport_readback = transport_readback::TransportReadbackState::default();
         self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
@@ -180,6 +181,7 @@ impl MpvAdapter {
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
         self.last_paused_position_poll_at = None;
+        self.transport_readback = transport_readback::TransportReadbackState::default();
         self.last_paused_position_telemetry_at = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;

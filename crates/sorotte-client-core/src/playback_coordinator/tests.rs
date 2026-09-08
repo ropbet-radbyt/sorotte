@@ -549,7 +549,7 @@ fn ready_paused_core_idle_allows_prepare_seek_and_play() {
 }
 
 #[test]
-fn authoritative_pause_aligns_position_before_sending_pause() {
+fn authoritative_pause_stops_playback_before_waiting_for_position_alignment() {
     let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
     coordinator.update_desired_room_state(desired(generation, 1, false, 10.0));
     coordinator.observe(playing(generation, 1.0, 10.0).with_restart_sequence(1));
@@ -571,7 +571,7 @@ fn authoritative_pause_aligns_position_before_sending_pause() {
             ..
         } if (*position - 12.0).abs() < f64::EPSILON
     )));
-    assert!(!seek_first.iter().any(|action| matches!(
+    assert!(seek_first.iter().any(|action| matches!(
         action,
         PlaybackCoordinatorAction::Execute {
             command: CoordinatorPlayerCommand::SetPaused(true),
@@ -579,15 +579,73 @@ fn authoritative_pause_aligns_position_before_sending_pause() {
         }
     )));
 
+    let commands = seek_first
+        .iter()
+        .filter_map(|action| match action {
+            PlaybackCoordinatorAction::Execute { command, .. } => Some(command),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands.first(),
+        Some(&&CoordinatorPlayerCommand::SetPaused(true))
+    );
+
     let pause_second = coordinator.observe(
         playing(generation, 2.1, 12.0)
+            .with_logical_pause(true)
             .with_seeking(false)
             .with_restart_sequence(2),
     );
-    assert!(pause_second.iter().any(|action| matches!(
+    assert!(!pause_second.iter().any(|action| matches!(
         action,
         PlaybackCoordinatorAction::Execute {
             command: CoordinatorPlayerCommand::SetPaused(true),
+            ..
+        }
+    )));
+    assert_eq!(coordinator.desired_revision_pending(), None);
+}
+
+#[test]
+fn exhausted_alignment_budget_cannot_disable_authoritative_pause() {
+    let (mut coordinator, generation) = coordinator(MediaTransportKind::LocalFile);
+    coordinator.update_desired_room_state(DesiredRoomPlayback {
+        force_seek: true,
+        ..desired(generation, 1, true, 300.0)
+    });
+    coordinator.command_budget_degraded = true;
+    coordinator.failed_command_attempts = 10;
+    let first = coordinator.observe(playing(generation, 10.0, 10.0));
+    let pause = first
+        .iter()
+        .find_map(|action| match action {
+            PlaybackCoordinatorAction::Execute {
+                command_id,
+                command: CoordinatorPlayerCommand::SetPaused(true),
+            } => Some(*command_id),
+            _ => None,
+        })
+        .expect("room pause survives failed position recovery");
+    assert!(coordinator.command_failed(pause, 10.0));
+    assert!(
+        !coordinator
+            .observe(playing(generation, 10.1, 10.1))
+            .iter()
+            .any(|action| matches!(action, PlaybackCoordinatorAction::Execute { .. }))
+    );
+    let retry = coordinator.observe(playing(generation, 12.1, 12.1));
+    assert!(retry.iter().any(|action| matches!(
+        action,
+        PlaybackCoordinatorAction::Execute {
+            command: CoordinatorPlayerCommand::SetPaused(true),
+            ..
+        }
+    )));
+    assert!(!retry.iter().any(|action| matches!(
+        action,
+        PlaybackCoordinatorAction::Execute {
+            command: CoordinatorPlayerCommand::SetPosition(_),
             ..
         }
     )));

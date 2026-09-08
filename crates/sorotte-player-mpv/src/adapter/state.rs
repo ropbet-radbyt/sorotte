@@ -308,6 +308,7 @@ impl Default for MpvAdapter {
             pending_load_generation: None,
             last_polled_local_file_update: None,
             last_paused_position_poll_at: None,
+            transport_readback: transport_readback::TransportReadbackState::default(),
             last_paused_position_telemetry_at: None,
             last_ipc_event_fence_at: None,
             pending_ipc_event_fence_command_id: None,

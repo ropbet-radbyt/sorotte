@@ -722,6 +722,52 @@ fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wi
 }
 
 #[test]
+fn short_participant_names_align_with_their_status_and_file_text() {
+    for is_controller in [false, true] {
+        for width in [360.0, 800.0] {
+            let mut state =
+                SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+                    username: Some("Alice".to_owned()),
+                    room: Some("room1".to_owned()),
+                    ..StoredClientSettingsMvp::default()
+                });
+            state.main_window.users[0].is_controller = is_controller;
+            let tree = state.main_window_widget_tree();
+            let panel = tree.find("main-window:connection").expect("room panel");
+            let context = egui::Context::default();
+            let mut renderer = GuiWidgetEguiRenderer::default();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| renderer.render_combined_room_panel(ui, panel, &state),
+            );
+            output.textures_delta.clear();
+            let text_x = |expected: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == expected => {
+                            Some(text.pos.x)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing rendered text {expected:?}"))
+            };
+            assert!(
+                (text_x("Alice") - text_x("No file")).abs() <= 1.0,
+                "name and file must share a left edge at width {width}, controller={is_controller}"
+            );
+        }
+    }
+}
+
+#[test]
 fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
     let name = "viewer-000 multilingual participant with a deliberately long display name";
     for is_controller in [false, true] {

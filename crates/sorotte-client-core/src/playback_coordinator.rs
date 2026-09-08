@@ -2673,27 +2673,9 @@ impl PlaybackCoordinator {
         }
 
         if desired.paused {
-            if self.transport_blocks_correction(observed) {
-                if observed.logical_pause != Some(true) {
-                    // Latch room pause immediately even while loading,
-                    // buffering, or seeking. Position correction remains
-                    // deferred until the transport is safe, and completion
-                    // still requires an observation of logical pause.
-                    self.issue_command(
-                        desired.state_revision,
-                        observed.observed_at_seconds,
-                        PendingCommandKind::Pause,
-                        CoordinatorPlayerCommand::SetPaused(true),
-                        actions,
-                    );
-                }
-                return;
-            }
-            self.issue_desired_seek_if_needed(desired, observed, actions);
-            if !self.desired_seek_is_satisfied(desired) {
-                return;
-            }
             if observed.logical_pause != Some(true) {
+                // Stop playback before position recovery: a slow or failed
+                // seek must never leave a paused room playing locally.
                 self.issue_command(
                     desired.state_revision,
                     observed.observed_at_seconds,
@@ -2701,6 +2683,12 @@ impl PlaybackCoordinator {
                     CoordinatorPlayerCommand::SetPaused(true),
                     actions,
                 );
+            }
+            if self.transport_blocks_correction(observed) {
+                return;
+            }
+            self.issue_desired_seek_if_needed(desired, observed, actions);
+            if !self.desired_seek_is_satisfied(desired) {
                 return;
             }
             if observed.logical_pause == Some(true) {
@@ -3170,7 +3158,11 @@ impl PlaybackCoordinator {
                         .rate_override
                         .is_some_and(|rate_override| rate_override.reset_requested)
         );
+        // A failed recovery budget cannot abandon the room's pause. Keep
+        // pause single-flight and respect cooldowns, as for every command.
+        let safety_pause = matches!(kind, PendingCommandKind::Pause);
         if (!baseline_rate_reset
+            && !safety_pause
             && (self.command_budget_degraded
                 || self.failed_command_attempts > self.config.command_retry_budget))
             || now_seconds < self.retry_not_before_seconds
