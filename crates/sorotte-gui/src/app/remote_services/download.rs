@@ -144,10 +144,22 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        destination_at(nonce)
+    }
+
+    fn destination_at(nonce: u128) -> PathBuf {
+        static NEXT_DESTINATION: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_DESTINATION.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "sorotte-download-{}-{nonce}.tmp",
+            "sorotte-download-{}-{nonce}-{sequence}.tmp",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn download_destinations_are_unique_when_timestamp_repeats() {
+        assert_ne!(destination_at(42), destination_at(42));
     }
 
     #[test]

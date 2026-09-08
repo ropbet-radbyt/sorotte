@@ -18,8 +18,8 @@
       "sha256": "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
     },
     "rustup-init.exe": {
-      "url": "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
-      "sha256": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7"
+      "url": "https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-pc-windows-msvc/rustup-init.exe",
+      "sha256": "6f4bef66261261fcb43131be8720bab817d403a09edec7455c371974b90bdb7e"
     }
   },
   "tool_directories": ["7zip", "git", "powershell", "msvc", "sdk", "cmake", "ninja", "python312"],
