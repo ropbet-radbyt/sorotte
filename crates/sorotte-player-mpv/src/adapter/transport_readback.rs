@@ -165,12 +165,22 @@ mod tests {
     struct PropertyTransport {
         responses: VecDeque<String>,
         paused: bool,
+        reject_first_read: bool,
     }
 
     impl MpvJsonIpcTransport for PropertyTransport {
         fn send_line_until(&mut self, line: &str, _deadline: Instant) -> io::Result<()> {
             let request: Value = serde_json::from_str(line).map_err(io::Error::other)?;
             let property = request["command"][1].as_str().unwrap_or_default();
+            if self.reject_first_read && request["command"][0] == "get_property" {
+                self.reject_first_read = false;
+                self.responses.push_back(
+                    json!({"request_id": request["request_id"], "error":"property unavailable"})
+                        .to_string()
+                        + "\n",
+                );
+                return Ok(());
+            }
             let data = match property {
                 MPV_PROPERTY_TIME_POS => json!(12.0),
                 MPV_PROPERTY_PAUSE => json!(self.paused),
@@ -197,10 +207,15 @@ mod tests {
     }
 
     fn adapter(paused: bool) -> MpvAdapter {
+        adapter_with_readback_rejection(paused, false)
+    }
+
+    fn adapter_with_readback_rejection(paused: bool, reject_first_read: bool) -> MpvAdapter {
         let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
             PropertyTransport {
                 responses: VecDeque::new(),
                 paused,
+                reject_first_read,
             },
             Duration::from_secs(1),
         );
@@ -217,6 +232,54 @@ mod tests {
         adapter.active_generation_has_restarted = true;
         adapter.paused = paused;
         adapter
+    }
+
+    #[test]
+    fn property_rejection_releases_readback_without_disconnect_or_fresh_evidence() {
+        let mut adapter = adapter_with_readback_rejection(false, true);
+        adapter.observers_registered = true;
+        adapter.transport_observers_registered = true;
+        adapter.last_ipc_event_fence_at = Some(Instant::now());
+        while let Some(batch) = adapter.player_lifecycle.peek_event_batch() {
+            adapter
+                .acknowledge_player_event_batch(batch.acknowledgement_token)
+                .unwrap();
+        }
+        adapter.maintain_transport_readback_nonblocking();
+        assert!(adapter.transport_readback.pending.is_some());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.transport_readback.pending.is_some() {
+            adapter.drain_runtime_lease_events_nonblocking();
+            assert!(
+                Instant::now() < deadline,
+                "rejected read must release its slot"
+            );
+            std::thread::yield_now();
+        }
+        assert!(adapter.is_connected());
+        assert!(adapter.player_lifecycle.peek_event_batch().is_none());
+        adapter.force_transport_readback_due_for_test();
+        loop {
+            if let Some(batch) = adapter.take_player_event_batch() {
+                let recovered = batch.events.iter().any(|event| {
+                    matches!(
+                        &event.event,
+                        PlayerEvent::TransportDelta(delta) if delta.position_seconds == Some(12.0)
+                    )
+                });
+                adapter
+                    .acknowledge_player_event_batch(batch.acknowledgement_token)
+                    .unwrap();
+                if recovered {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a later successful read must restore sampling"
+            );
+            std::thread::yield_now();
+        }
     }
 
     #[test]

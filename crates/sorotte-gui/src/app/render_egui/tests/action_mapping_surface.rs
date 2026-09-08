@@ -722,6 +722,55 @@ fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wi
 }
 
 #[test]
+fn room_clock_repaints_between_snapshots_and_stops_when_paused_or_stale() {
+    use std::time::{Duration, Instant};
+
+    for (paused, sample_age, animating) in [
+        (false, Some(Duration::ZERO), true),
+        (true, Some(Duration::ZERO), false),
+        (false, Some(Duration::from_secs(6)), false),
+        (false, None, false),
+    ] {
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        state.main_window.room_playback_intent.paused = Some(paused);
+        state.main_window.room_playback_intent.position_seconds = Some(12.0);
+        state.main_window.room_playback_intent.position_sampled_at =
+            sample_age.map(|age| Instant::now() - age);
+        let tree = state.main_window_widget_tree();
+        let panel = tree.find("main-window:connection").expect("room panel");
+        let context = egui::Context::default();
+        let mut renderer = GuiWidgetEguiRenderer::default();
+        let mut repaint_delay = Duration::ZERO;
+        // Settle the initial layout repaint before measuring an otherwise idle
+        // frame. No new runtime snapshot or user input arrives between frames.
+        for frame in 0..4 {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    time: Some(f64::from(frame)),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| renderer.render_combined_room_panel(ui, panel, &state),
+            );
+            repaint_delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            output.textures_delta.clear();
+        }
+        if animating {
+            assert!(
+                repaint_delay <= Duration::from_millis(100),
+                "{repaint_delay:?}"
+            );
+        } else {
+            assert!(repaint_delay > Duration::from_secs(1), "{repaint_delay:?}");
+        }
+    }
+}
+
+#[test]
 fn short_participant_names_align_with_their_status_and_file_text() {
     for is_controller in [false, true] {
         for width in [360.0, 800.0] {

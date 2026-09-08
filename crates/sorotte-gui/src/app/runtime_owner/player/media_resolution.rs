@@ -138,6 +138,13 @@ impl GuiMediaResolutionPlan {
         path: String,
         source: GuiUserMediaTargetResolutionSource,
     ) {
+        // Bind the same filesystem spelling that the player will receive. Lookup
+        // keys and Windows directory aliases must not become load identities.
+        let path = GuiPersistedConfigRuntimeOwner::display_path_for_existing_media_file(
+            std::path::Path::new(&path),
+        )
+        .to_string_lossy()
+        .into_owned();
         let (provider, phase, priority) = match source {
             GuiUserMediaTargetResolutionSource::QuickLocal => (
                 GuiMediaResolutionProviderKind::Core,
@@ -175,6 +182,11 @@ impl GuiMediaResolutionPlan {
     }
 
     pub(super) fn push_media_match_candidate(&mut self, path: String) {
+        let path = GuiPersistedConfigRuntimeOwner::display_path_for_existing_media_file(
+            std::path::Path::new(&path),
+        )
+        .to_string_lossy()
+        .into_owned();
         self.candidates.push(GuiMediaResolutionCandidate {
             provider: GuiMediaResolutionProviderKind::MediaMatch,
             phase: GuiMediaResolutionPhase::AlternateMatch,

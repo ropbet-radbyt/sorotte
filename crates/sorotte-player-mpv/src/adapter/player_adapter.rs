@@ -245,10 +245,10 @@ impl MpvAdapter {
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
                             command_id,
-                            token: transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN,
+                            token,
                             response,
                             received_at,
-                        } => self
+                        } if token == transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN => self
                             .complete_transport_readback(command_id, Some((response, received_at))),
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded { .. } => {}
                         crate::ipc::MpvIpcNonblockingCommandCompletion::SucceededWithResponse {
@@ -307,9 +307,11 @@ impl MpvAdapter {
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
                             command_id,
-                            token: transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN,
+                            token,
                             ..
-                        } => self.complete_transport_readback(command_id, None),
+                        } if token == transport_readback::TRANSPORT_READBACK_COMMAND_TOKEN => {
+                            self.complete_transport_readback(command_id, None)
+                        }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed { .. } => {}
                     }
                 }
