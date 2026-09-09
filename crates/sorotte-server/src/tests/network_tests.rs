@@ -2875,15 +2875,20 @@ async fn raw_loopback_ancient_ping_does_not_amplify_an_authorized_seek() {
 
 #[test]
 fn persistence_shutdown_held_lock_subprocess_finishes_without_durability_claim() {
-    run_persistence_shutdown_held_lock_subprocess(false);
+    run_persistence_shutdown_held_lock_subprocess(false, false);
 }
 
 #[test]
 fn persistence_shutdown_includes_preceding_flush_in_total_budget() {
-    run_persistence_shutdown_held_lock_subprocess(true);
+    run_persistence_shutdown_held_lock_subprocess(true, false);
 }
 
-fn run_persistence_shutdown_held_lock_subprocess(preceding_flush: bool) {
+#[test]
+fn persistence_shutdown_retains_slow_worker_until_owned_cleanup_finishes() {
+    run_persistence_shutdown_held_lock_subprocess(true, true);
+}
+
+fn run_persistence_shutdown_held_lock_subprocess(preceding_flush: bool, delay_worker_exit: bool) {
     let db = temporary_sqlite_path("bounded-shutdown");
     let log = db.with_extension("log");
     let output = fs::File::create(&log).unwrap();
@@ -2898,6 +2903,10 @@ fn run_persistence_shutdown_held_lock_subprocess(preceding_flush: bool) {
         .env(
             "SOROTTE_TEST_SHUTDOWN_PRECEDING_FLUSH",
             if preceding_flush { "1" } else { "0" },
+        )
+        .env(
+            "SOROTTE_TEST_SHUTDOWN_DELAY_WORKER_EXIT",
+            if delay_worker_exit { "1" } else { "0" },
         )
         .stdout(output.try_clone().unwrap())
         .stderr(output)
@@ -2967,6 +2976,16 @@ async fn persistence_shutdown_held_lock_helper() {
             .unwrap();
     }
     model.flush_persistence().unwrap();
+    let worker_exit_barrier = (std::env::var("SOROTTE_TEST_SHUTDOWN_DELAY_WORKER_EXIT").as_deref()
+        == Ok("1"))
+    .then(|| {
+        model
+            .room_persistence
+            .as_ref()
+            .unwrap()
+            .control()
+            .hold_worker_exit_for_test()
+    });
     let blocker = Connection::open(&db).unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
     let actor = ServerActorHandle::spawn(model);
@@ -3006,12 +3025,25 @@ async fn persistence_shutdown_held_lock_helper() {
         .shutdown_with_timeout(Duration::from_millis(500))
         .await;
     let elapsed = start.elapsed();
-    assert!(
-        result
-            .as_ref()
-            .is_err_and(|error| error.to_string().contains("durability deadline exceeded")),
-        "{result:?}"
-    );
+    let retained_cleanup = match &result {
+        Err(crate::ServerActorError::TaskFailed(message))
+            if message
+                == "persistence durability deadline exceeded; workers stopped without claiming unsaved changes were durable" =>
+        {
+            false
+        }
+        Err(crate::ServerActorError::TaskFailed(message))
+            if message
+                == "persistence shutdown deadline exceeded; worker ownership retained in the unjoined registry"
+                || message
+                    == "server actor shutdown deadline exceeded; cleanup ownership retained in the unjoined registry" =>
+        {
+            true
+        }
+        _ => panic!(
+            "held-lock shutdown must report an explicit durability or owned-cleanup deadline: {result:?}"
+        ),
+    };
     assert!(
         elapsed < Duration::from_millis(1000),
         "shutdown including Drop took {elapsed:?}"
@@ -3020,7 +3052,32 @@ async fn persistence_shutdown_held_lock_helper() {
         ticks.load(std::sync::atomic::Ordering::Relaxed) >= 5,
         "blocking persistence stalled unrelated tasks on the one-thread runtime"
     );
-    assert_eq!(crate::persistence_workers_awaiting_join(), 0);
+    if let Some((entered, release)) = worker_exit_barrier {
+        timeout(Duration::from_secs(2), entered)
+            .await
+            .expect("the worker must reach its exit barrier")
+            .expect("the worker must report its exit barrier");
+        assert!(
+            retained_cleanup,
+            "a held worker cannot be reported as joined"
+        );
+        assert!(
+            crate::persistence_workers_awaiting_join() > 0,
+            "the held worker or its cleanup task must remain observably owned"
+        );
+        release.send(()).unwrap();
+    } else if !retained_cleanup {
+        assert_eq!(crate::persistence_workers_awaiting_join(), 0);
+    }
+    // The shutdown budget bounds the caller, not OS scheduling. A delayed
+    // worker must still be owned, stop and join while SQLite remains locked.
+    timeout(Duration::from_secs(2), async {
+        while crate::persistence_workers_awaiting_join() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained shutdown ownership must be reaped without releasing the database lock");
     if queued_flush {
         assert!(
             preceding_flush.await.is_err(),

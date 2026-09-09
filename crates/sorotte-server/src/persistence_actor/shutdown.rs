@@ -19,9 +19,50 @@ pub(crate) struct WorkerControl {
     shutdown_deadline: Mutex<Option<Instant>>,
     pub(super) stop: AtomicBool,
     pub(super) wake_pending: AtomicBool,
+    #[cfg(test)]
+    exit_barrier: Mutex<Option<WorkerExitBarrier>>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct WorkerExitBarrier {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 impl WorkerControl {
+    #[cfg(test)]
+    pub(crate) fn hold_worker_exit_for_test(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, arrival) = tokio::sync::oneshot::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let previous = self
+            .exit_barrier
+            .lock()
+            .unwrap()
+            .replace(WorkerExitBarrier {
+                entered,
+                release: gate,
+            });
+        assert!(previous.is_none(), "worker exit barrier must be armed once");
+        (arrival, release)
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_before_exit_for_test(&self) {
+        if let Some(barrier) = self.exit_barrier.lock().unwrap().take() {
+            let _ = barrier.entered.send(());
+            barrier
+                .release
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the test must release its owned worker exit barrier");
+        }
+    }
+
     pub(crate) fn begin_shutdown(&self, deadline: Instant) {
         let mut current = self
             .shutdown_deadline

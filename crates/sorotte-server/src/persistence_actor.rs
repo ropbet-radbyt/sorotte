@@ -241,7 +241,13 @@ impl PersistenceWorkerService {
         let worker_reporter = reporter.clone();
         let join_handle = thread::Builder::new()
             .name(format!("sorotte-persistence-{worker:?}"))
-            .spawn(move || run(receiver, worker_reporter))
+            .spawn(move || {
+                #[cfg(test)]
+                let exit_control = worker_reporter.control.clone();
+                run(receiver, worker_reporter);
+                #[cfg(test)]
+                exit_control.wait_before_exit_for_test();
+            })
             .expect("persistence worker thread should spawn");
         Self {
             worker,
