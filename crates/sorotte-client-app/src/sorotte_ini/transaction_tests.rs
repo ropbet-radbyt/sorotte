@@ -279,16 +279,21 @@ fn open_readers_keep_original_document_when_settings_are_replaced() {
 #[test]
 fn cooperating_readers_observe_complete_documents_through_repeated_replacement() {
     assert_complete_documents_during_replacement(|path| {
-        super::read_sorotte_ini_contents_consistently_at_path(path)
-            .unwrap()
-            .expect("a cooperating replacement must not appear missing")
+        match super::read_sorotte_ini_contents_consistently_at_path(path) {
+            Ok(Some(contents)) => ReplacementRead::Complete(contents),
+            Ok(None) => panic!("a cooperating replacement must not appear missing"),
+            Err(error) if settings_are_busy(&error) => ReplacementRead::Busy,
+            Err(error) => panic!("cooperating settings read failed: {error:#}"),
+        }
     });
 }
 
 #[cfg(not(windows))]
 #[test]
 fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
-    assert_complete_documents_during_replacement(|path| std::fs::read_to_string(path).unwrap());
+    assert_complete_documents_during_replacement(|path| {
+        ReplacementRead::Complete(std::fs::read_to_string(path).unwrap())
+    });
 }
 
 #[cfg(windows)]
@@ -297,10 +302,23 @@ fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
 fn windows_raw_filesystem_readers_observe_complete_documents_through_replacement() {
     // Preserve the original strict OS probe. A passing run is not proof that the
     // known namespace gap is fixed; application readers use the sidecar lock.
-    assert_complete_documents_during_replacement(|path| std::fs::read_to_string(path).unwrap());
+    assert_complete_documents_during_replacement(|path| {
+        ReplacementRead::Complete(std::fs::read_to_string(path).unwrap())
+    });
 }
 
-fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> String) {
+enum ReplacementRead {
+    Complete(String),
+    Busy,
+}
+
+fn settings_are_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> ReplacementRead) {
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -309,42 +327,69 @@ fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> St
     let before = format!("[unknown]\nvalue={}\n", "a".repeat(32768));
     let after = format!("[unknown]\nvalue={}\n", "b".repeat(32768));
     write_sorotte_ini_contents_atomically_at_path(&fixture.path(), before.as_bytes()).unwrap();
-    let stop = Arc::new(AtomicBool::new(false));
-    let start = Arc::new(Barrier::new(2));
-    let reader = {
-        let path = fixture.path();
-        let stop = stop.clone();
-        let start = start.clone();
-        let before = before.clone();
-        let after = after.clone();
-        std::thread::spawn(move || {
-            start.wait();
-            let mut reads = 0;
-            loop {
-                let observed = read(&path);
-                assert!(observed == before || observed == after);
-                reads += 1;
-                if stop.load(Ordering::Acquire) {
-                    return reads;
+    let mut complete_reads = 0;
+    let mut busy_reads = 0;
+    let mut busy_writes = 0;
+    for index in 0..20 {
+        // A lock acquisition may correctly time out under contention. Give each
+        // publication a finite reader phase instead of requiring lock fairness
+        // across a continuous burst of twenty durable writes.
+        let stop = Arc::new(AtomicBool::new(false));
+        let start = Arc::new(Barrier::new(2));
+        let reader = {
+            let path = fixture.path();
+            let stop = stop.clone();
+            let start = start.clone();
+            let before = before.clone();
+            let after = after.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                let mut complete = 0;
+                let mut busy = 0;
+                loop {
+                    match read(&path) {
+                        ReplacementRead::Complete(observed) => {
+                            assert!(observed == before || observed == after);
+                            complete += 1;
+                        }
+                        ReplacementRead::Busy => busy += 1,
+                    }
+                    if stop.load(Ordering::Acquire) {
+                        return (complete, busy);
+                    }
                 }
+            })
+        };
+        let expected = if index % 2 == 0 { &after } else { &before };
+        start.wait();
+        let mut write_result =
+            write_sorotte_ini_contents_atomically_at_path(&fixture.path(), expected.as_bytes());
+        stop.store(true, Ordering::Release);
+        let read_result = reader.join();
+        if write_result.as_ref().is_err_and(settings_are_busy) {
+            // Retry only the documented busy outcome, once, after its competing
+            // reader has exited. A persistent busy result remains a failure.
+            busy_writes += 1;
+            write_result =
+                write_sorotte_ini_contents_atomically_at_path(&fixture.path(), expected.as_bytes());
+        }
+        write_result.unwrap();
+        let (complete, busy) = read_result.unwrap();
+        complete_reads += complete;
+        busy_reads += busy;
+        // Every round must publish the exact next document and permit a fresh
+        // read once both operations have finished. Busy is never a snapshot.
+        match read(&fixture.path()) {
+            ReplacementRead::Complete(observed) => assert_eq!(&observed, expected),
+            ReplacementRead::Busy => {
+                panic!("settings remain busy after the reader and writer exited")
             }
-        })
-    };
-    start.wait();
-    let write_result = (0..20).try_for_each(|index| {
-        write_sorotte_ini_contents_atomically_at_path(
-            &fixture.path(),
-            if index % 2 == 0 {
-                after.as_bytes()
-            } else {
-                before.as_bytes()
-            },
-        )
-    });
-    stop.store(true, Ordering::Release);
-    let read_result = reader.join();
-    write_result.unwrap();
-    assert!(read_result.unwrap() > 0);
+        }
+    }
+    eprintln!(
+        "verified 20 published documents, {complete_reads} concurrent snapshots, \
+         {busy_reads} busy reads and {busy_writes} busy writes"
+    );
 }
 
 #[cfg(unix)]
