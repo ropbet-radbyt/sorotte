@@ -129,6 +129,9 @@ def validate(value):
         for item in job.get("steps", []):
             if "FULL" in item.get("env", {}):
                 assert item["env"]["FULL"] == "1"
+    assert value["rust-mutation.yml"]["jobs"]["mutation"]["strategy"].get("max-parallel") == "8"
+    container_candidate = value["qualify-server-container.yml"]["jobs"]["qualify"]
+    assert "org.opencontainers.image.version=${{ steps.build_info.outputs.version }}" in step(container_candidate, "meta")["with"]["labels"].splitlines()
     package = value["package-ci.yml"]["jobs"]["package-required"]
     required = step(package, "candidate_required")
     assert required["if"] == "github.event_name == 'pull_request'"
@@ -164,6 +167,8 @@ class CandidateWorkflowTests(unittest.TestCase):
             "wrong-base": lambda w: step(w["rust-ci.yml"]["jobs"]["preflight"], "pr_base")["env"].update(PR_BASE_SHA="HEAD^"),
             "assumed-container-attempt": lambda w: w["stable-release.yml"]["jobs"]["container"]["with"].update(container_evidence_artifact="server-container-verification-123-2"),
             "stale-container-authority": lambda w: step(w["publish-server-container.yml"]["jobs"]["publish"], "reauthorize_publication").update({"if": "false"}),
+            "unbounded-mutation-concurrency": lambda w: w["rust-mutation.yml"]["jobs"]["mutation"]["strategy"].pop("max-parallel"),
+            "sha-version-label": lambda w: step(w["qualify-server-container.yml"]["jobs"]["qualify"], "meta")["with"].update(labels="org.opencontainers.image.revision=${{ github.sha }}"),
         }
         original = workflows()
         for name, mutate in defects.items():

@@ -1819,6 +1819,43 @@ class ImmutableBuildMetadataCommandTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.output.read_bytes(), before)
 
+    def candidate_metadata_step(self) -> None:
+        workflow = yaml.load(
+            (REPO_ROOT / ".github/workflows/qualify-server-container.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.step = next(step for step in workflow["jobs"]["qualify"]["steps"]
+                         if step.get("id") == "build_info")
+        self.environment["GITHUB_REF"] = "refs/heads/unreleased-candidate"
+
+    def test_candidate_metadata_uses_cargo_version_before_any_tag_exists(self) -> None:
+        self.candidate_metadata_step()
+        for version in ("0.2.12", "0.3.0-rc.1"):
+            with self.subTest(version=version):
+                (self.root / "Cargo.toml").write_text(
+                    f'[workspace.package]\nversion = "{version}"\n', encoding="utf-8",
+                )
+                self.git("add", "Cargo.toml")
+                source = self.commit("2026-09-07T13:53:22+1000")
+                self.assertEqual(self.git("tag", "--list"), "")
+                self.output.write_text("existing=preserved\n", encoding="utf-8")
+                result = self.run_metadata(source)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    self.output.read_text(encoding="utf-8"),
+                    f"existing=preserved\ncreated=2026-09-07T03:53:22Z\nversion=v{version}\n",
+                )
+
+    def test_candidate_without_cargo_version_fails_before_emitting_metadata(self) -> None:
+        self.candidate_metadata_step()
+        source = self.commit("2026-09-07T13:53:22+1000")
+        for manifest in ("[workspace.package]\n", "invalid TOML"):
+            with self.subTest(manifest=manifest):
+                (self.root / "Cargo.toml").write_text(manifest, encoding="utf-8")
+                before = self.output.read_bytes()
+                self.assertNotEqual(self.run_metadata(source).returncode, 0)
+                self.assertEqual(self.output.read_bytes(), before)
+
 
 class WorkflowPolicyTests(unittest.TestCase):
     @classmethod

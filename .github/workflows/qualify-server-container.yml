@@ -62,15 +62,19 @@ jobs:
         run: |
           import datetime
           import os
+          from pathlib import Path
           import subprocess
+          import tomllib
 
           epoch = int(subprocess.check_output(
               ["git", "show", "-s", "--format=%ct", os.environ["GITHUB_SHA"]],
               text=True, timeout=30,
           ).strip())
           created = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          version = tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version']
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8", newline="\n") as output:
               output.write(f"created={created}\n")
+              output.write(f"version=v{version}\n")
 
       - name: Define publication tags and OCI labels
         id: meta
@@ -86,6 +90,7 @@ jobs:
             org.opencontainers.image.description=Sorotte Syncplay-compatible server
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.build_info.outputs.version }}
             org.opencontainers.image.created=${{ steps.build_info.outputs.created }}
             org.opencontainers.image.licenses=Apache-2.0
 
