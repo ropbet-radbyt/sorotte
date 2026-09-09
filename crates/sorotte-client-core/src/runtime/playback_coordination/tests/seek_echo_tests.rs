@@ -219,6 +219,45 @@ fn a_pause_echo_requires_its_counter_author_revision_and_transport_kind() {
 }
 
 #[test]
+fn an_older_pause_frame_cannot_replace_the_predecessor_of_a_newer_command() {
+    for canonical_paused in [false, true] {
+        let mut fixture = SeekFixture::with_paused(canonical_paused);
+        let mut older_frame = emit_pause_mutation(&mut fixture, !canonical_paused);
+        assert!(fixture.runtime.run_set_paused(canonical_paused).unwrap());
+        assert_eq!(
+            fixture
+                .runtime
+                .playback_coordination
+                .active_local_pause_intent(&fixture.runtime.session),
+            Some(canonical_paused),
+            "the newer command has returned to the old canonical value"
+        );
+        let predecessor = fixture
+            .runtime
+            .playback_coordination
+            .pending_local_transport_echo
+            .clone();
+        assert!(predecessor.is_some());
+        let counter = older_frame.ignoring_on_the_fly.as_mut().unwrap();
+        counter.client = Some(counter.client.unwrap() + 1);
+        // A larger counter cannot make an older frame match the newer
+        // pending command, even when both share the current room revision.
+        fixture
+            .runtime
+            .playback_coordination
+            .record_emitted_local_transport(&fixture.runtime.session, &older_frame);
+        assert_eq!(
+            fixture
+                .runtime
+                .playback_coordination
+                .pending_local_transport_echo,
+            predecessor,
+            "a superseded pause frame cannot replace the actual issued predecessor"
+        );
+    }
+}
+
+#[test]
 fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
@@ -265,6 +304,10 @@ fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
 
 #[test]
 fn a_causal_pause_keeps_participant_reports_cancellable() {
+    assert_causal_pause_keeps_participant_reports_cancellable();
+}
+
+pub(super) fn assert_causal_pause_keeps_participant_reports_cancellable() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
     fixture.runtime.flush_queued_protocol_messages();
@@ -301,6 +344,67 @@ fn a_causal_pause_keeps_participant_reports_cancellable() {
         vec![pending[0].clone()],
         "status withdrawal must preserve the exact causal Play frame"
     );
+}
+
+#[test]
+fn pause_queue_keeps_only_current_command_frames_in_order() {
+    assert_pause_queue_keeps_only_current_command_frames_in_order();
+}
+
+pub(super) fn assert_pause_queue_keeps_only_current_command_frames_in_order() {
+    for mismatch in ["none", "pause", "revision", "missing-playstate"] {
+        let mut fixture = SeekFixture::new();
+        assert!(fixture.runtime.run_set_paused(false).unwrap());
+        fixture.runtime.flush_queued_protocol_messages();
+        let mut frame = StatePayload::new()
+            .with_playstate(
+                PlaystatePayload::new()
+                    .with_position(0.0)
+                    .with_paused(false)
+                    .with_transport_revision(34),
+            )
+            .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1));
+        match mismatch {
+            "none" => {}
+            "pause" => frame.playstate.as_mut().unwrap().paused = Some(true),
+            "revision" => {
+                frame.playstate = Some(frame.playstate.take().unwrap().with_transport_revision(35));
+            }
+            "missing-playstate" => frame.playstate = None,
+            _ => unreachable!(),
+        }
+        assert!(
+            fixture
+                .runtime
+                .queue_connection_scoped_state_with_participant_status(frame.clone(), true, 1.2)
+        );
+        // A later heartbeat may absorb only an observational frame. A State
+        // matching the pending command must keep its original FIFO identity.
+        let heartbeat = StatePayload::new()
+            .with_ping(sorotte_protocol::PingPayload::new().with_client_rtt(0.2));
+        assert!(
+            fixture
+                .runtime
+                .queue_connection_scoped_state_with_participant_status(
+                    heartbeat.clone(),
+                    true,
+                    1.3
+                )
+        );
+        fixture
+            .runtime
+            .control
+            .cancel_protocol_participant_status_reports();
+        let messages = fixture.runtime.flush_queued_protocol_messages();
+        if mismatch == "none" {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0], ProtocolMessage::state(frame));
+            assert_eq!(messages[1], ProtocolMessage::state(heartbeat));
+        } else {
+            frame.ping = heartbeat.ping;
+            assert_eq!(messages, vec![ProtocolMessage::state(frame)], "{mismatch}");
+        }
+    }
 }
 
 struct SeekFixture {

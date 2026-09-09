@@ -58,7 +58,7 @@ where
         }
     }
 
-    fn queue_connection_scoped_state_with_participant_status(
+    pub(super) fn queue_connection_scoped_state_with_participant_status(
         &mut self,
         mut state: StatePayload,
         force: bool,
