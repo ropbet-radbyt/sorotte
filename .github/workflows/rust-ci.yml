@@ -1,9 +1,6 @@
 name: sorotte CI
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
     inputs:
@@ -39,6 +36,8 @@ jobs:
         id: ci_checkout_1066f6c2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_63e0b3e6
@@ -48,6 +47,18 @@ jobs:
       - name: Install reviewed policy prerequisites
         id: ci_install_reviewed_policy_prerequisites_63e3ab01
         run: python -m pip install --disable-pip-version-check -r requirements/ci-policy.txt
+      - name: Require the PR head to contain its immutable main base
+        id: pr_base
+        if: github.event_name == 'pull_request'
+        shell: python
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          import os, subprocess
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if head != os.environ['VERIFICATION_SHA']:
+              raise SystemExit('Preflight must inspect the exact PR head')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', os.environ['PR_BASE_SHA'], head], check=True)
       - name: Setup actionlint toolchain
         id: ci_setup_actionlint_toolchain_bca40e4c
         if: runner.os == 'Linux'
@@ -92,6 +103,7 @@ jobs:
         id: ci_checkout_2858a3e2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           fetch-depth: 0
           persist-credentials: false
       - name: Setup Rust
@@ -157,6 +169,7 @@ jobs:
         id: ci_checkout_d90905a1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.VERIFICATION_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -368,6 +381,7 @@ jobs:
         id: ci_checkout_1193c5c5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
@@ -458,6 +472,8 @@ jobs:
         id: ci_checkout_prospective_merge_revision_f3dc527d
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
@@ -500,6 +516,7 @@ jobs:
         id: ci_checkout_exact_evidence_revision_4cd22c15
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           path: evidence-source
           persist-credentials: false
@@ -558,6 +575,8 @@ jobs:
         id: ci_checkout_sorotte_ddf2e145
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
@@ -678,6 +697,8 @@ jobs:
         id: ci_checkout_sorotte_ee8140a6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -731,6 +752,7 @@ jobs:
         id: ci_checkout_exact_windows_coverage_revisi_4c9d2529
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
@@ -874,6 +896,7 @@ jobs:
         id: ci_checkout_exact_coverage_revision_751ea2db
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
@@ -1128,6 +1151,8 @@ jobs:
         id: ci_checkout_712fbfbe
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
@@ -1201,6 +1226,8 @@ jobs:
         id: ci_checkout_sorotte_e740c16e
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -1256,6 +1283,8 @@ jobs:
         id: ci_checkout_sorotte_16a00989
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -1338,7 +1367,7 @@ jobs:
 
       - name: Verify Sorotte candidate revision
         id: ci_verify_sorotte_candidate_revision_03e2dbaf
-        run: test "$(git rev-parse 'HEAD^{commit}')" = "$GITHUB_SHA"
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "$VERIFICATION_SHA"
 
       - name: Build packaged playback lifecycle candidates
         id: ci_build_packaged_playback_lifecycle_cand_2e5b88d5
@@ -1354,7 +1383,7 @@ jobs:
             --mpv target/mpv-supported/build/mpv \
             --ffmpeg ffmpeg \
             --artifact-dir target/verification/playback-lifecycle-system \
-            --candidate-sha "$GITHUB_SHA"
+            --candidate-sha "$VERIFICATION_SHA"
 
       - name: Validate and stage privacy-safe lifecycle evidence
         id: playback_lifecycle_evidence
@@ -1436,6 +1465,7 @@ jobs:
         id: ci_checkout_exact_verification_revision_254342e3
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
@@ -1519,6 +1549,8 @@ jobs:
         id: ci_checkout_ccabee4f
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Checkout pinned legacy reference
@@ -1629,6 +1661,8 @@ jobs:
         id: ci_checkout_ae744adc
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
 
       - name: Setup Rust
@@ -1666,6 +1700,7 @@ jobs:
         id: ci_checkout_exact_verification_revision_f4733e9e
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
       - name: Setup Python
@@ -1713,6 +1748,7 @@ jobs:
         id: ci_checkout_4a2b10f9
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           ref: ${{ env.VERIFICATION_SHA }}
           persist-credentials: false
       - name: Setup Python

@@ -9,6 +9,15 @@ on:
       publish:
         type: boolean
         required: true
+      qualification_run_id:
+        type: string
+        required: true
+      qualification_run_attempt:
+        type: string
+        required: true
+      container_evidence_artifact:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       publication_run_id:
@@ -28,6 +37,7 @@ permissions:
   contents: read
   actions: read
   checks: read
+  pull-requests: read
   id-token: write
   packages: write
 
@@ -68,37 +78,30 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
-      - name: Recheck protected source and trusted checks before container qualification
+      - name: Recheck protected candidate authority before restoring the tested image
         id: ci_recheck_protected_source_and_trusted_c_b63f2449
         env:
           GH_TOKEN: ${{ github.token }}
           SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
-        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/container-release-authorization.json
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          CONTAINER_EVIDENCE_ARTIFACT: ${{ inputs.container_evidence_artifact }}
+        run: |
+          python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+            --artifact "qualified-container-$GITHUB_SHA" --output target/qualified-container
+          python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+            --artifact "$CONTAINER_EVIDENCE_ARTIFACT" \
+            --output "$EVIDENCE_DIR"
 
       - name: Setup pinned Docker Buildx
         id: ci_setup_pinned_docker_buildx_62fdb6c9
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - name: Download shared qualified Linux product bundle
-        id: ci_download_shared_qualified_linux_produc_173d6011
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-bundle-linux-x86_64-${{ github.sha }}
-          path: target/qualified-bundle
-
-      - name: Download complete shared lifecycle qualification
-        id: ci_download_complete_shared_lifecycle_qua_165f9d73
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: playback-lifecycle-complete-${{ github.sha }}
-          path: target/qualified-receipt
-
-      - name: Verify exact qualified lifecycle input closure
-        id: ci_verify_exact_qualified_lifecycle_input_f6d32895
+      - name: Restore and identify the exact pre-merge tested image
+        id: restore_candidate
         run: >-
-          python scripts/release_qualification.py consume --candidate-sha "${{ github.sha }}"
-          --platform linux-x86_64 --channel stable --bundle-dir target/qualified-bundle
-          --complete-receipt target/qualified-receipt/platform-complete.json
+          python scripts/container_candidate.py load --source-sha "$GITHUB_SHA" --image "$TEST_IMAGE"
+          --evidence-dir "$EVIDENCE_DIR" --bundle-dir target/qualified-container
+          --report target/container-restoration.json
 
       - name: Capture immutable build metadata
         id: build_info
@@ -143,56 +146,7 @@ jobs:
           mkdir -p "$EVIDENCE_DIR"
           printf '%s\n' "$PUBLISH_TAGS" > "$EVIDENCE_DIR/tags.txt"
 
-      - name: Build once and load the candidate image
-        id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.server
-          platforms: linux/amd64
-          load: true
-          push: false
-          tags: ${{ env.TEST_IMAGE }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BUILD_DATE=${{ steps.build_info.outputs.created }}
-            VCS_REF=${{ github.sha }}
-            SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
-          provenance: false
-          sbom: false
-
-      - name: Consume the loaded image through real server boundaries
-        id: ci_consume_the_loaded_image_through_real__b835a461
-        run: >-
-          python scripts/verify_server_container.py smoke
-          --image "${{ env.TEST_IMAGE }}"
-          --expected-source-sha "${{ github.sha }}"
-          --expected-source-url "https://github.com/${{ github.repository }}"
-          --artifacts-dir "${{ env.EVIDENCE_DIR }}/runtime"
-          --report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
-
-      - name: Generate SPDX SBOM from the tested local image
-        id: ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          image: ${{ env.TEST_IMAGE }}
-          format: spdx-json
-          output-file: ${{ env.EVIDENCE_DIR }}/sbom.spdx.json
-          artifact-name: sorotte-server-${{ github.sha }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-          dependency-snapshot: false
-          syft-version: v1.51.1
-
-      - name: Bind SBOM bytes to the tested local image ID
-        id: ci_bind_sbom_bytes_to_the_tested_local_im_e9888757
-        run: >-
-          python scripts/verify_server_container.py verify-sbom
-          --sbom "${{ env.EVIDENCE_DIR }}/sbom.spdx.json"
-          --runtime-report "${{ env.EVIDENCE_DIR }}/runtime/runtime-report.json"
-          --report "${{ env.EVIDENCE_DIR }}/sbom-report.json"
-
-      - name: Login only after local consumption passes
+      - name: Login only after the qualified image is restored
         id: ci_login_only_after_local_consumption_pas_79253942
         if: inputs.publish
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -200,6 +154,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Recheck candidate publication authority immediately before pushing
+        id: reauthorize_publication
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: >-
+          python scripts/candidate_authority.py authorize-release --source-sha "$GITHUB_SHA"
+          --output target/container-publication-authorization.json
 
       - name: Push only tags of the already-tested daemon image
         id: ci_push_only_tags_of_the_already_tested_d_e9d5952d

@@ -6,15 +6,21 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish qualified artifacts (requires a release tag; false is a full dry run)
+        description: Publish the previously qualified candidate (requires its version tag)
         required: true
         type: boolean
         default: false
+      pull_request_number:
+        description: Open PR to qualify without publication; dispatch its current branch
+        required: false
+        type: number
+        default: 0
 
 permissions:
   contents: read
   actions: read
   checks: read
+  pull-requests: read
 
 concurrency:
   group: coordinated-stable-release-${{ github.sha }}
@@ -22,43 +28,34 @@ concurrency:
 
 jobs:
   authorize-source:
+    if: github.event_name == 'workflow_dispatch' && !inputs.publish
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout the exact reviewed candidate
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
-      - name: Mint repository-scoped protection reader
-        id: protection-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
-          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-administration: read
-      - name: Require protected main and complete trusted checks
-        id: ci_require_protected_main_and_complete_tr_9eb72761
+          python-version: '3.11'
+      - name: Authorize only the open up-to-date PR head without publication credentials
+        id: authorize_pr
         env:
           GH_TOKEN: ${{ github.token }}
-          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
         run: >-
-          python scripts/merge_gate.py authorize-release
-          --candidate-sha "${{ github.sha }}"
-          --output target/release-authorization.json
-      - name: Require a tag for publication
-        id: ci_require_a_tag_for_publication_e1cc92e5
-        if: github.event_name == 'push' || inputs.publish
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: |
-          case "$RELEASE_REF" in refs/tags/v*|refs/tags/server-v*) ;; *) exit 1 ;; esac
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          python scripts/candidate_authority.py qualify-source --source-sha "$GITHUB_SHA"
+          --pull-request "$PR_NUMBER" --output target/pr-candidate-authorization.json
+      - name: Retain pre-merge source authorization
+        id: retain_source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-authorization-${{ github.sha }}
-          path: target/release-authorization.json
+          name: pr-candidate-authorization-${{ github.sha }}
+          path: target/pr-candidate-authorization.json
           if-no-files-found: error
           retention-days: 90
 
@@ -125,59 +122,31 @@ jobs:
 
   server-archives:
     needs: [playback-lifecycle-release-gate, default-workspace]
-    permissions:
-      contents: write
-      actions: read
-      checks: read
-    uses: ./.github/workflows/sorotte-server-release.yml
-    secrets:
-      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
-    with:
-      publish: ${{ github.event_name == 'push' || inputs.publish }}
+    uses: ./.github/workflows/qualify-server-archives.yml
 
   gui-archive:
-    if: ${{ !startsWith(github.ref, 'refs/tags/server-v') }}
-    needs: playback-lifecycle-release-gate
-    permissions:
-      contents: write
-      actions: read
-      checks: read
-    uses: ./.github/workflows/sorotte-gui-release.yml
-    secrets:
-      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
-    with:
-      qualified: true
-      publish: ${{ github.event_name == 'push' || inputs.publish }}
+    needs: [playback-lifecycle-release-gate, default-workspace]
+    uses: ./.github/workflows/qualify-gui-archive.yml
 
-  container:
-    needs: playback-lifecycle-release-gate
-    permissions:
-      contents: read
-      actions: read
-      checks: read
-      id-token: write
-      packages: write
-    uses: ./.github/workflows/publish-server-container.yml
-    secrets:
-      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
-    with:
-      publish: ${{ github.event_name == 'push' || inputs.publish }}
+  container-candidate:
+    needs: [playback-lifecycle-release-gate, default-workspace]
+    uses: ./.github/workflows/qualify-server-container.yml
 
   retain-release-qualification:
-    if: ${{ always() && needs.server-archives.result == 'success' && needs.container.result == 'success' && (needs.gui-archive.result == 'success' || (startsWith(github.ref, 'refs/tags/server-v') && needs.gui-archive.result == 'skipped')) }}
-    needs: [server-archives, gui-archive, container]
+    needs: [server-archives, gui-archive, container-candidate]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      actions: read
-      checks: read
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout qualification inputs
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: '3.11'
       - name: Download complete build and lifecycle authority
         id: ci_download_complete_build_and_lifecycle__eb431787
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -188,7 +157,7 @@ jobs:
         id: ci_download_original_protected_source_aut_25176c30
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-authorization-${{ github.sha }}
+          name: pr-candidate-authorization-${{ github.sha }}
           path: target/durable-qualification/authorization
       - name: Download exact default workspace receipts
         id: ci_download_exact_default_workspace_recei_1bc59cb3
@@ -200,9 +169,73 @@ jobs:
         id: ci_seal_compact_durable_receipt_inventory_8d7e50cd
         run: >-
           python scripts/release_qualification.py archive-evidence --candidate-sha "${{ github.sha }}"
-          --evidence-dir target/durable-qualification --output-dir target/qualification-archives
+          --evidence-dir target/durable-qualification --output-dir target/qualification-archives --authorization-kind pr-candidate-authorization
+      - name: Retain qualified evidence archive
+        id: retain_archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/qualification-archives/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Exercise the actual artifact handoff before merging
+        id: handoff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/candidate_authority.py handoff --source-sha "$GITHUB_SHA"
+          --authorization target/durable-qualification/authorization/pr-candidate-authorization.json
+          --output target/candidate-handoff
+      - name: Retain handoff and cold image restoration evidence
+        id: retain_handoff
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-handoff-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/candidate-handoff/handoff.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Seal immutable candidate artifact identities while the PR remains open
+        id: seal_candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/candidate_authority.py seal --source-sha "$GITHUB_SHA"
+          --authorization target/durable-qualification/authorization/pr-candidate-authorization.json
+          --output target/qualified-release-candidate/candidate.json
+      - name: Retain the pre-merge qualification decision
+        id: retain_candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualified-release-candidate-${{ github.sha }}
+          path: target/qualified-release-candidate/candidate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-source:
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      qualification_run_id: ${{ steps.authorize.outputs.qualification_run_id }}
+      qualification_run_attempt: ${{ steps.authorize.outputs.qualification_run_attempt }}
+      container_evidence_artifact: ${{ steps.authorize.outputs.container_evidence_artifact }}
+    steps:
+      - name: Checkout the exact tagged candidate
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Require a version tag for publication
+        id: tag
+        run: |
+          case "$GITHUB_REF" in refs/tags/v*|refs/tags/server-v*) ;; *) exit 1 ;; esac
       - name: Mint repository-scoped protection reader
-        if: github.event_name == 'push' || inputs.publish
         id: protection-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -211,37 +244,52 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
-      - name: Recheck publication authorization before durable attachment
-        id: ci_recheck_publication_authorization_befo_61e8954e
-        if: github.event_name == 'push' || inputs.publish
+      - name: Require the protected unchanged merge and original PR-qualified artifacts
+        id: authorize
         env:
           GH_TOKEN: ${{ github.token }}
           SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
-        run: python scripts/merge_gate.py authorize-release --candidate-sha "${{ github.sha }}" --output target/durable-publication-authorization.json
-      - name: Attach durable qualification receipts
-        id: ci_attach_durable_qualification_receipts_6a5e5997
-        if: github.event_name == 'push' || inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: >-
-          python scripts/release_assets.py attach --repository "$GITHUB_REPOSITORY"
-          --tag "$RELEASE_TAG" --artifacts-dir target/qualification-archives
-      - name: Verify public durable receipt bytes
-        id: ci_verify_public_durable_receipt_bytes_6054399b
-        if: github.event_name == 'push' || inputs.publish
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: >-
-          python scripts/release_assets.py verify-public --repository "$GITHUB_REPOSITORY"
-          --tag "$RELEASE_TAG" --artifacts-dir target/qualification-archives
-          --report target/durable-publication-report.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
+          python scripts/candidate_authority.py authorize-release --source-sha "$GITHUB_SHA"
+          --output target/publication-authorization/authorization.json --github-output "$GITHUB_OUTPUT"
+      - name: Retain publication authorization separately from candidate execution
+        id: retain_authority
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: durable-qualification-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            target/qualification-archives/*
-            target/durable-publication-report.json
+          name: publication-authorization-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/publication-authorization/**
           if-no-files-found: error
           retention-days: 90
+
+  archives:
+    needs: publish-source
+    permissions:
+      contents: write
+      actions: read
+      checks: read
+      pull-requests: read
+    uses: ./.github/workflows/publish-qualified-archives.yml
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+    with:
+      qualification_run_id: ${{ needs.publish-source.outputs.qualification_run_id }}
+      qualification_run_attempt: ${{ needs.publish-source.outputs.qualification_run_attempt }}
+      server_only: ${{ startsWith(github.ref, 'refs/tags/server-v') }}
+
+  container:
+    needs: publish-source
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/publish-server-container.yml
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+    with:
+      publish: true
+      qualification_run_id: ${{ needs.publish-source.outputs.qualification_run_id }}
+      qualification_run_attempt: ${{ needs.publish-source.outputs.qualification_run_attempt }}
+      container_evidence_artifact: ${{ needs.publish-source.outputs.container_evidence_artifact }}

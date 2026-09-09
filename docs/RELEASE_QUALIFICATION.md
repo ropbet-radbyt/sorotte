@@ -1,20 +1,23 @@
 # Reproducible release qualification
 
-`package-ci.yml` supplies the independent `package-required` merge check on every
-PR and main push. It builds and consumes Linux/Windows server archives and the
+`package-ci.yml` supplies the `package-required` merge check on every PR.
+It builds and consumes Linux/Windows server archives and the
 Windows GUI archive. The GUI runtime check exercises updater replacement and
 rollback when its environment supports installation; an elevated process instead
 verifies launch and updater refusal before mutation. Its report records which
-path ran. It has no dependency on publication or interactive release
-authorization. This prevents the main approval graph from waiting on a
-publication job that itself needs main approval.
+path ran. Before this required check can pass, the same exact PR head must also
+complete the full nonpublishing stable candidate campaign. Neither campaign
+depends on publication permission. See [the PR qualification contract](PR_QUALIFICATION.md).
 
 The required native PR job builds default-feature release binaries and exercises
 the same Windows playback qualification action used below, including real-mpv
 HTTP faults/stalls, process recovery and second-client status. A failed or skipped
 suite blocks `native-required`. This brings those regressions before merge while
 preserving maintainer-authorized, isolated desktop execution. PR-head evidence
-cannot qualify the different merge/tag source or authorize publication.
+remains bound to the tested head. Main verifies that its ordinary two-parent
+merge incorporated that exact head and base without changing the tree; the
+release tag names the original qualified head. The merge SHA is recorded
+separately and is never substituted into binary provenance.
 
 Publication requires the dedicated Administration-read GitHub App described in
 [protection reader setup](PROTECTION_READER_SETUP.md). The normal workflow token
@@ -22,13 +25,12 @@ continues to query checks and artifacts. Only protection authorization receives 
 short-lived repository-scoped App token; package and native candidate jobs receive
 no App credentials. An absent App configuration fails closed.
 
-Stable tags (`v*` and `server-v*`) enter `stable-release.yml`. Individual GUI,
-server and container workflows are reusable consumers; they do not each launch
-another stable lifecycle campaign. The orchestrator:
+Both PR candidate dispatches and stable tags (`v*` and `server-v*`) enter
+`stable-release.yml`, through disjoint job graphs. Before merge, the orchestrator:
 
-1. Requires the exact protected main source and every trusted required check via
-   `merge_gate.py authorize-release`. A tag, artifact file, or successful lifecycle
-   alone grants no publication authority.
+1. Requires a maintainer-dispatched, open, up-to-date repository PR whose head is
+   the exact workflow source. No publication or protection-reader credentials
+   are supplied to candidate jobs.
 2. Runs one Linux/isolated Windows lifecycle pair and prepares server behavior in
    parallel. Each platform seals its release binaries and optional PDBs into a
    closed bundle. All existing real-player, terminal, missing-file, recovery,
@@ -36,19 +38,26 @@ another stable lifecycle campaign. The orchestrator:
 3. Validates the complete cross-platform receipt, downloads the sealed binaries,
    constructs GUI/server archives, and consumes their actual runtime boundaries.
    An extra check compares archive binary hashes with the lifecycle bundle hashes.
-4. Independently rechecks authorization before publication, attaches immutable
-   archives and sidecars, and compares every published byte through anonymous
-   release URLs. Existing assets with different bytes are never overwritten.
-5. Attaches a deterministic `sorotte-qualification-<sha>.zip` and sidecar to the
-   release. This preserves the compact build/lifecycle/default-workspace/source
-   receipts beyond the Actions retention window. Native raw logs remain private;
-   their diagnostic projection is distinct from a passing qualification.
+4. Exports the tested container, proves cold restoration, and uploads all release
+   artifacts. A separate worker downloads the actual uploads using the same
+   byte/digest validation as publication, collects the archives and restores the
+   image while it is absent locally. Handoff failure blocks candidate completion.
+5. Seals the immutable artifact IDs/digests, original producer run/attempt, PR
+   head/base and policy in the candidate manifest. It retains a deterministic
+   `sorotte-qualification-<sha>.zip` and sidecar containing the compact
+   build/lifecycle/default-workspace/source receipts. Native raw logs stay private.
 
-`rust-ci.yml` runs the required Rust checks for main and PRs; release tags do not
-start a second copy on the same commit. The stable orchestrator requires the
-existing protected-main checks and executes its distinct release obligations.
-Duplicate required checks remain an authorization error, including duplicates
-from another manually requested Rust campaign on the same source.
+After merge, `main-qualification.yml` checks the exact PR, merge parents, equal
+tree, seven trusted PR checks and candidate artifact identities. Its
+`main-qualified` result performs no application execution. Tag publication then
+rechecks current main protection, this trusted main producer, PR authority and
+candidate artifacts through `candidate_authority.py authorize-release`.
+`publish-qualified-archives.yml` attaches the original archives and compares every
+public byte; `publish-server-container.yml` restores, pushes and signs the exact
+saved image. Neither rebuilds nor reruns application tests. Conflicting existing
+assets are never overwritten. The durable qualification archive preserves the
+original pre-merge source authorization; publication authorization is retained
+separately. A tag or local JSON file alone grants no publication authority.
 
 Version 2 bundle manifests record exact source files, Cargo inputs, compiler/Cargo/Python
 binary hashes, target, default features, release profile, absence of
@@ -138,18 +147,31 @@ dependency resolution.
 
 ## Dry run and retry boundaries
 
-Run `coordinated stable release` manually at the approved main source with
-`publish=false` for full native/build/behavior/archive/container qualification
-without uploading releases, authenticating to GHCR or signing/pushing an image.
-It still requires a provisioned trusted isolated Windows worker. It is not a
-shortcut around merge prerequisites. Publication requires a version tag.
+Update the PR branch to include current main, then dispatch its exact reviewed
+branch while the PR is open:
+
+```powershell
+gh workflow run stable-release.yml --ref <reviewed-branch> -f publish=false -f pull_request_number=<number>
+```
+
+This runs full native/build/behavior/archive/container and delivery qualification
+without publishing. Provision the trusted isolated Windows worker for that run.
+The ordinary native-required campaign and this candidate campaign both belong
+to the PR phase. Required checks reject an outdated base or different source.
+After a normal two-parent merge and successful `main-qualified`, create the
+version tag at the qualified PR head. Its tree must equal current main.
 
 Use Actions **Re-run failed jobs** after diagnosing the recorded primary failure.
-This retains successful lifecycle producers and the same qualified bundles. A
+During candidate qualification this retains successful lifecycle producers and
+the same qualified bundles. The final candidate manifest records the current
+attempt while container evidence retains its actual producing attempt. A
 missing/expired artifact is an error, never permission to find a different green
-run. Re-running every job after assets were published can produce a new build
-manifest; immutable publication will reject conflicting assets. Preserve the
-original successful package/publication artifacts when retrying publication.
+run. If a completed artifact would conflict with an immutable upload on a retry,
+start a new nonpublishing candidate dispatch while the PR is still open. Never
+rebuild after merge to repair qualification. Publication retries use the original
+successful candidate artifacts; they only repeat authorization, delivery and
+public verification. Missing or expired candidate artifacts require a new PR
+qualification, not a tag-time application run.
 
 ## Container identity and latest promotion
 
@@ -178,9 +200,10 @@ existing publication. Select qualified `main` as the workflow ref and supply:
 - `version_tag`: the current latest stable release tag from that run.
 
 `container_promotion.py` authenticates the tool revision as the exact current
-protected `main`, including its complete trusted checks. It separately resolves
+protected `main`, including its trusted `main-qualified` check. It separately resolves
 the published source from the explicit original producer, requires an annotated
-tag naming that source, and verifies its historical trusted main checks. The
+tag naming that source, and verifies its original trusted PR checks and unchanged
+merge. Older published releases retain their historical main-push check contract. The
 published source must be an ancestor of the tool revision and its tag must still
 be GitHub's latest stable release. This permits a reviewed promotion-tool repair
 without changing the published binaries, tag or original signing identity.

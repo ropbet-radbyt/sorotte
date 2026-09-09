@@ -1,0 +1,125 @@
+name: publish original qualified archives
+
+on:
+  workflow_call:
+    secrets:
+      SOROTTE_PROTECTION_APP_PRIVATE_KEY:
+        required: true
+    inputs:
+      qualification_run_id:
+        required: true
+        type: string
+      qualification_run_attempt:
+        required: true
+        type: string
+      server_only:
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout publication tooling from the exact candidate
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Mint repository-scoped protection reader
+        id: protection-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
+          private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+      - name: Download only the original qualified archive identities
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
+          SERVER_ONLY: ${{ inputs.server_only }}
+        run: |
+          set -euo pipefail
+          python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+            --artifact sorotte-server-ubuntu-24.04 --output target/qualified-publication/linux
+          python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+            --artifact sorotte-server-windows-2025 --output target/qualified-publication/windows
+          python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+            --artifact "durable-qualification-$QUALIFICATION_RUN_ID-$QUALIFICATION_RUN_ATTEMPT" --output target/qualified-publication/evidence
+          if [ "$SERVER_ONLY" != true ]; then
+            python scripts/candidate_authority.py download --source-sha "$GITHUB_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+              --artifact sorotte-gui-windows-x86_64 --output target/qualified-publication/gui
+          fi
+      - name: Collect and verify the original publication bytes without rebuilding
+        id: collect
+        env:
+          SERVER_ONLY: ${{ inputs.server_only }}
+        run: |
+          set -euo pipefail
+          optional=(--input target/qualified-publication/gui)
+          if [ "$SERVER_ONLY" = true ]; then optional=(--server-only); fi
+          python scripts/candidate_archives.py --source-sha "$GITHUB_SHA" \
+            --input target/qualified-publication/linux --input target/qualified-publication/windows \
+            --input target/qualified-publication/evidence "${optional[@]}" \
+            --output-dir target/publication-files --report target/publication-reports/qualified-files.json
+      - name: Recheck publication authorization immediately before attachment
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOROTTE_PROTECTION_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: >-
+          python scripts/candidate_authority.py authorize-release --source-sha "$GITHUB_SHA"
+          --output target/final-archive-authority/authorization.json
+      - name: Attach immutable qualified files
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/release_assets.py attach --repository "$GITHUB_REPOSITORY"
+          --tag "$GITHUB_REF_NAME" --artifacts-dir target/publication-files
+      - name: Independently compare every public byte
+        id: verify
+        run: >-
+          python scripts/release_assets.py verify-public --repository "$GITHUB_REPOSITORY"
+          --tag "$GITHUB_REF_NAME" --artifacts-dir target/publication-files
+          --report target/publication-reports/public-files.json
+      - name: Reject unexpected published assets
+        id: inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import json, os, pathlib, subprocess
+          expected = json.loads(pathlib.Path('target/publication-reports/qualified-files.json').read_text())['files']
+          observed = json.loads(subprocess.check_output(
+              ['gh', 'release', 'view', os.environ['GITHUB_REF_NAME'], '--repo', os.environ['GITHUB_REPOSITORY'], '--json', 'assets'], text=True))
+          names = [asset['name'] for asset in observed['assets']]
+          if len(names) != len(set(names)) or set(names) != set(expected):
+              raise SystemExit('Public asset inventory differs from the qualified candidate')
+      - name: Retain publication and original candidate identities
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualified-archive-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/publication-reports/**
+            target/final-archive-authority/**
+          if-no-files-found: error
+          retention-days: 90

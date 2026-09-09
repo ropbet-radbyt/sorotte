@@ -318,9 +318,11 @@ def verify_source(
     )
     if not FULL_SHA.fullmatch(commit):
         raise InteropContractError(f"source revision is not a full commit SHA: {commit!r}")
-    expected = environment.get("GITHUB_SHA", commit)
+    # PR workflows explicitly select the reviewed head. GITHUB_SHA remains the
+    # event's synthetic merge identity and must not relabel that checkout.
+    expected = environment.get("VERIFICATION_SHA", environment.get("GITHUB_SHA", commit))
     if not FULL_SHA.fullmatch(expected):
-        raise InteropContractError("GITHUB_SHA is not a full lowercase commit SHA")
+        raise InteropContractError("expected source is not a full lowercase commit SHA")
     if commit != expected:
         raise InteropContractError(
             f"source revision {commit} does not match expected revision {expected}"

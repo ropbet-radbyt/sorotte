@@ -416,9 +416,9 @@ def validate_default_workspace_bindings(workflow: dict[str, Any]) -> None:
                 or step.get("continue-on-error") != "true" or "env" in step):
             raise AssertionError("default workspace must execute the bounded ordinary Cargo lane")
         if job.get("if") != "github.event_name != 'schedule'" or "continue-on-error" in job:
-            raise AssertionError("default workspace worker cannot skip PR/main or tolerate failure")
-        if "ref" in named_step(jobs, job_id, checkout).get("with", {}):
-            raise AssertionError("default workspace must retain the prospective PR merge checkout")
+            raise AssertionError("default workspace worker cannot skip PR qualification or tolerate failure")
+        if named_step(jobs, job_id, checkout).get("with", {}).get("ref") != HEAD_REF:
+            raise AssertionError("default workspace must test the exact up-to-date PR head")
         for environment in (workflow.get("env", {}), job.get("env", {})):
             if "RUST_TEST_THREADS" in environment:
                 raise AssertionError("ordinary Cargo workspace cannot override harness concurrency")
@@ -557,7 +557,7 @@ class CiPolicyTests(unittest.TestCase):
             jobs,
             "mpv-pr-semantics",
             "Verify Sorotte candidate revision",
-            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$GITHUB_SHA\"",
+            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$VERIFICATION_SHA\"",
         )
         self.assert_exact_run(
             jobs,
@@ -576,7 +576,7 @@ class CiPolicyTests(unittest.TestCase):
               --mpv target/mpv-supported/build/mpv \
               --ffmpeg ffmpeg \
               --artifact-dir target/verification/playback-lifecycle-system \
-              --candidate-sha "$GITHUB_SHA"
+              --candidate-sha "$VERIFICATION_SHA"
             """,
             continue_on_error="true",
         )
@@ -801,6 +801,7 @@ class CiPolicyTests(unittest.TestCase):
             {
                 "fetch-depth": "0",
                 "persist-credentials": "false",
+                "ref": HEAD_REF,
             },
         )
         linux_legacy_checkout = named_step(
@@ -1637,6 +1638,7 @@ done""",
         self.assertEqual(
             windows_coverage_checkout.get("with"),
             {
+                "fetch-depth": "0",
                 "ref": HEAD_REF,
                 "persist-credentials": "false",
             },
@@ -2221,7 +2223,7 @@ done""",
             and "repository" not in step.get("with", {})
         ]
 
-    def test_general_pr_gates_use_merge_revision_and_evidence_uses_head(self) -> None:
+    def test_general_pr_gates_and_release_evidence_use_the_same_exact_head(self) -> None:
         for job_id in (
             "checks",
             "compat-live-tls",
@@ -2230,12 +2232,12 @@ done""",
         ):
             checkouts = self.sorotte_checkouts(job_id)
             self.assertEqual(len(checkouts), 1)
-            self.assertNotIn("ref", checkouts[0].get("with", {}))
+            self.assertEqual(checkouts[0].get("with", {}).get("ref"), HEAD_REF)
 
         for job_id in ("rust_windows_tests", "rust_windows_release"):
             windows = self.sorotte_checkouts(job_id)
             self.assertEqual(len(windows), 1)
-            self.assertNotIn("ref", windows[0].get("with", {}))
+            self.assertEqual(windows[0].get("with", {}).get("ref"), HEAD_REF)
 
         windows_coverage = self.sorotte_checkouts("rust_windows_coverage")
         self.assertEqual(len(windows_coverage), 1)
@@ -2259,7 +2261,7 @@ done""",
 
         semantic = self.sorotte_checkouts("gui_semantic")
         self.assertEqual(len(semantic), 2)
-        self.assertNotIn("ref", semantic[0].get("with", {}))
+        self.assertEqual(semantic[0].get("with", {}).get("ref"), HEAD_REF)
         self.assertEqual(semantic[1]["with"]["ref"], HEAD_REF)
         self.assertEqual(semantic[1]["with"]["path"], "evidence-source")
         self.assertNotIn("clean", semantic[1]["with"])
@@ -2511,7 +2513,7 @@ done""",
         self.assertEqual(set(jobs), {"selection", "preparation", "mutation", "mutation-required"})
         self.assertEqual(self.mutation_workflow["permissions"], {"contents": "read"})
         self.assertEqual(self.mutation_workflow["on"]["pull_request"], "")
-        self.assertEqual(self.mutation_workflow["on"]["push"], {"branches": ["main"]})
+        self.assertNotIn("push", self.mutation_workflow["on"])
         required_graph(jobs, "mutation-required", {"selection", "preparation", "mutation"},
                        dependency_conditions={"mutation": "needs.preparation.outputs.matrix != '[]'"})
         self.assertEqual(jobs["mutation-required"].get("name"),
@@ -3063,7 +3065,7 @@ done""",
                         "test_filter": "",
                         "jobs": 2,
                         "timeout_seconds": 60,
-                        "build_timeout_seconds": 120,
+                        "build_timeout_seconds": 240,
                         "minimum_viable_kill_percent": "100.00",
                         "max_missed": 0,
                         "max_timeouts": 0,
@@ -4542,9 +4544,9 @@ done""",
             with self.subTest(neighbor=neighbor):
                 self.assertIsNone(re.search(mutant_filter, neighbor))
 
-    def test_rust_pushes_only_qualify_main_without_duplicate_feature_or_tag_runs(self) -> None:
+    def test_rust_qualification_finishes_before_merge_without_main_or_tag_reruns(self) -> None:
         triggers = self.workflow["on"]
-        self.assertEqual(triggers["push"], {"branches": ["main"]})
+        self.assertNotIn("push", triggers)
         self.assertIn("pull_request", triggers)
         self.assertEqual(
             triggers["workflow_dispatch"],
@@ -4574,7 +4576,7 @@ done""",
 
     def test_default_workspace_binding_rejects_missing_skipped_or_bypassed_execution(self) -> None:
         for job_id in ("checks", "rust_windows_tests"):
-            for mutation in ("missing", "skip", "unbounded", "head-checkout", "job-skip", "serial",
+            for mutation in ("missing", "skip", "unbounded", "merge-checkout", "job-skip", "serial",
                              "missing-outcome", "conclusion", "missing-enforcement", "optional-gate", "lost-artifact"):
                 with self.subTest(job=job_id, mutation=mutation):
                     changed = copy.deepcopy(self.workflow)
@@ -4588,8 +4590,8 @@ done""",
                         step["if"] = "false"
                     elif mutation == "unbounded":
                         step["run"] = "cargo test --locked --workspace"
-                    elif mutation == "head-checkout":
-                        job["steps"][0]["with"]["ref"] = HEAD_REF
+                    elif mutation == "merge-checkout":
+                        job["steps"][0]["with"]["ref"] = "${{ github.sha }}"
                     elif mutation == "job-skip":
                         job["if"] = "github.event_name == 'push'"
                     elif mutation == "serial":

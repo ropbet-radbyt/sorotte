@@ -706,24 +706,6 @@
     {
       "workflow": ".github/workflows/publish-server-container.yml",
       "job_id": "publish",
-      "step_id": "ci_download_shared_qualified_linux_produc_173d6011",
-      "display_name": "Download shared qualified Linux product bundle"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "ci_download_complete_shared_lifecycle_qua_165f9d73",
-      "display_name": "Download complete shared lifecycle qualification"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "ci_verify_exact_qualified_lifecycle_input_f6d32895",
-      "display_name": "Verify exact qualified lifecycle input closure"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
       "step_id": "build_info",
       "display_name": "Capture immutable build metadata"
     },
@@ -738,30 +720,6 @@
       "job_id": "publish",
       "step_id": "ci_record_closed_publication_tag_inventor_3cc0c00e",
       "display_name": "Record closed publication tag inventory"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "build",
-      "display_name": "Build once and load the candidate image"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "ci_consume_the_loaded_image_through_real__b835a461",
-      "display_name": "Consume the loaded image through real server boundaries"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4",
-      "display_name": "Generate SPDX SBOM from the tested local image"
-    },
-    {
-      "workflow": ".github/workflows/publish-server-container.yml",
-      "job_id": "publish",
-      "step_id": "ci_bind_sbom_bytes_to_the_tested_local_im_e9888757",
-      "display_name": "Bind SBOM bytes to the tested local image ID"
     },
     {
       "workflow": ".github/workflows/publish-server-container.yml",
@@ -2769,24 +2727,6 @@
     },
     {
       "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "authorize-source",
-      "step_id": "protection-token",
-      "display_name": "Mint repository-scoped protection reader"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "authorize-source",
-      "step_id": "ci_require_protected_main_and_complete_tr_9eb72761",
-      "display_name": "Require protected main and complete trusted checks"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "authorize-source",
-      "step_id": "ci_require_a_tag_for_publication_e1cc92e5",
-      "display_name": "Require a tag for publication"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
       "job_id": "default-workspace",
       "step_id": "ci_prepare_immutable_server_qualification_fc15a940",
       "display_name": "Prepare immutable server qualification prerequisites"
@@ -2826,30 +2766,6 @@
       "job_id": "retain-release-qualification",
       "step_id": "ci_seal_compact_durable_receipt_inventory_8d7e50cd",
       "display_name": "Seal compact durable receipt inventory"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "retain-release-qualification",
-      "step_id": "protection-token",
-      "display_name": "Mint repository-scoped protection reader"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "retain-release-qualification",
-      "step_id": "ci_recheck_publication_authorization_befo_61e8954e",
-      "display_name": "Recheck publication authorization before durable attachment"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "retain-release-qualification",
-      "step_id": "ci_attach_durable_qualification_receipts_6a5e5997",
-      "display_name": "Attach durable qualification receipts"
-    },
-    {
-      "workflow": ".github/workflows/stable-release.yml",
-      "job_id": "retain-release-qualification",
-      "step_id": "ci_verify_public_durable_receipt_bytes_6054399b",
-      "display_name": "Verify public durable receipt bytes"
     },
     {
       "workflow": ".github/workflows/package-ci.yml",
@@ -2904,6 +2820,462 @@
       "job_id": "windows-process-coverage",
       "step_id": "coverage_canary_receipt",
       "display_name": "Retain Windows coverage producer canary receipt"
+    },
+    {
+      "workflow": ".github/workflows/main-qualification.yml",
+      "job_id": "main-qualified",
+      "step_id": "checkout",
+      "display_name": "Checkout the actual integration commit"
+    },
+    {
+      "workflow": ".github/workflows/main-qualification.yml",
+      "job_id": "main-qualified",
+      "step_id": "evidence",
+      "display_name": "Retain source and producer identity"
+    },
+    {
+      "workflow": ".github/workflows/main-qualification.yml",
+      "job_id": "main-qualified",
+      "step_id": "promote",
+      "display_name": "Promote only the unchanged qualified PR candidate"
+    },
+    {
+      "workflow": ".github/workflows/main-qualification.yml",
+      "job_id": "main-qualified",
+      "step_id": "python",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/package-ci.yml",
+      "job_id": "package-required",
+      "step_id": "candidate_required",
+      "display_name": "Require complete pre-merge release candidate qualification"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "authorize",
+      "display_name": "Recheck publication authorization immediately before attachment"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "checkout",
+      "display_name": "Checkout publication tooling from the exact candidate"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "collect",
+      "display_name": "Collect and verify the original publication bytes without rebuilding"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "download",
+      "display_name": "Download only the original qualified archive identities"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "evidence",
+      "display_name": "Retain publication and original candidate identities"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "inventory",
+      "display_name": "Reject unexpected published assets"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "publish",
+      "display_name": "Attach immutable qualified files"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "python",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/publish-qualified-archives.yml",
+      "job_id": "publish",
+      "step_id": "verify",
+      "display_name": "Independently compare every public byte"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "reauthorize_publication",
+      "display_name": "Recheck candidate publication authority immediately before pushing"
+    },
+    {
+      "workflow": ".github/workflows/publish-server-container.yml",
+      "job_id": "publish",
+      "step_id": "restore_candidate",
+      "display_name": "Restore and identify the exact pre-merge tested image"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_bind_exact_gui_archive_bytes_to_lifecy_7aa01f58",
+      "display_name": "Bind exact GUI archive bytes to lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_check_formatting_32f0bc99",
+      "display_name": "Check formatting"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_checkout_0b7d4b20",
+      "display_name": "Checkout"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_download_complete_gui_lifecycle_qualif_d4bdb9b3",
+      "display_name": "Download complete GUI lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_download_exact_qualified_gui_bundle_373a9a20",
+      "display_name": "Download exact qualified GUI bundle"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_package_gui_release_bf3ff0ed",
+      "display_name": "Package GUI release"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_run_gui_updater_tests_24ec5dff",
+      "display_name": "Run GUI updater tests"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_setup_python_536b411d",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_setup_rust_3ff97947",
+      "display_name": "Setup Rust"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_upload_gui_artifact_verification_repor_f47159a5",
+      "display_name": "Upload GUI artifact verification report"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_upload_gui_package_artifact_c62cee5c",
+      "display_name": "Upload GUI package artifact"
+    },
+    {
+      "workflow": ".github/workflows/qualify-gui-archive.yml",
+      "job_id": "gui-release",
+      "step_id": "ci_verify_exact_gui_release_artifact_20d21afd",
+      "display_name": "Verify exact GUI release artifact"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_bind_archive_consumption_receipt_to_qu_9ab2e861",
+      "display_name": "Bind archive-consumption receipt to qualified binary bytes"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_checkout_exact_package_inputs_0330fd2a",
+      "display_name": "Checkout exact package inputs"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_construct_server_archive_from_qualifie_79a52cde",
+      "display_name": "Construct server archive from qualified bytes"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_consume_exact_server_archive_including_97dc01a6",
+      "display_name": "Consume exact server archive including runtime boundaries"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_complete_qualification_receip_d8623cb7",
+      "display_name": "Download complete qualification receipt"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_independent_server_behavior_r_46c83117",
+      "display_name": "Download independent server behavior receipt"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_download_qualified_platform_bytes_12aabead",
+      "display_name": "Download qualified platform bytes"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_require_complete_exact_source_server_b_fcc55e04",
+      "display_name": "Require complete exact-source server behavior"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_setup_python_2d5b0efc",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_setup_rust_for_dependency_inventory_e8eb8a28",
+      "display_name": "Setup Rust for dependency inventory"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_upload_archive_consumption_receipt_8b91621c",
+      "display_name": "Upload archive-consumption receipt"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-archives.yml",
+      "job_id": "server-release",
+      "step_id": "ci_upload_server_package_4c003b37",
+      "display_name": "Upload server package"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "build",
+      "display_name": "Build once and load the candidate image"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "build_info",
+      "display_name": "Capture immutable build metadata"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_bind_sbom_bytes_to_the_tested_local_im_e9888757",
+      "display_name": "Bind SBOM bytes to the tested local image ID"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_checkout_exact_source_c21f032e",
+      "display_name": "Checkout exact source"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_consume_the_loaded_image_through_real__b835a461",
+      "display_name": "Consume the loaded image through real server boundaries"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_download_complete_shared_lifecycle_qua_165f9d73",
+      "display_name": "Download complete shared lifecycle qualification"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_download_shared_qualified_linux_produc_173d6011",
+      "display_name": "Download shared qualified Linux product bundle"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4",
+      "display_name": "Generate SPDX SBOM from the tested local image"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_record_closed_publication_tag_inventor_3cc0c00e",
+      "display_name": "Record closed publication tag inventory"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_setup_pinned_docker_buildx_62fdb6c9",
+      "display_name": "Setup pinned Docker Buildx"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_setup_pinned_python_97c5ab5c",
+      "display_name": "Setup pinned Python"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "ci_verify_exact_qualified_lifecycle_input_f6d32895",
+      "display_name": "Verify exact qualified lifecycle input closure"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "meta",
+      "display_name": "Define publication tags and OCI labels"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "restore_image",
+      "display_name": "Prove cold restoration before merging"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "retain_evidence",
+      "display_name": "Retain all container qualification evidence"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "retain_image",
+      "display_name": "Retain the exact tested container image"
+    },
+    {
+      "workflow": ".github/workflows/qualify-server-container.yml",
+      "job_id": "qualify",
+      "step_id": "seal_image",
+      "display_name": "Seal the tested container image for promotion"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "preflight",
+      "step_id": "pr_base",
+      "display_name": "Require the PR head to contain its immutable main base"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "authorize_pr",
+      "display_name": "Authorize only the open up-to-date PR head without publication credentials"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "checkout",
+      "display_name": "Checkout the exact reviewed candidate"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "python",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "authorize-source",
+      "step_id": "retain_source",
+      "display_name": "Retain pre-merge source authorization"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "authorize",
+      "display_name": "Require the protected unchanged merge and original PR-qualified artifacts"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "checkout",
+      "display_name": "Checkout the exact tagged candidate"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "protection-token",
+      "display_name": "Mint repository-scoped protection reader"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "python",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "retain_authority",
+      "display_name": "Retain publication authorization separately from candidate execution"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "publish-source",
+      "step_id": "tag",
+      "display_name": "Require a version tag for publication"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "checkout",
+      "display_name": "Checkout qualification inputs"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "handoff",
+      "display_name": "Exercise the actual artifact handoff before merging"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "python",
+      "display_name": "Setup Python"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "retain_archive",
+      "display_name": "Retain qualified evidence archive"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "retain_candidate",
+      "display_name": "Retain the pre-merge qualification decision"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "retain_handoff",
+      "display_name": "Retain handoff and cold image restoration evidence"
+    },
+    {
+      "workflow": ".github/workflows/stable-release.yml",
+      "job_id": "retain-release-qualification",
+      "step_id": "seal_candidate",
+      "display_name": "Seal immutable candidate artifact identities while the PR remains open"
     }
   ]
 }

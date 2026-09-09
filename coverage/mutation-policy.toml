@@ -384,7 +384,9 @@ test_target = "package"
 test_filter = ""
 jobs = 2
 timeout_seconds = 60
-build_timeout_seconds = 120
+# Two workers rebuild the complete CLI package, including integration binaries.
+# See docs/evidence/testing/cli-mutation-build-budget-2026-09-09.md.
+build_timeout_seconds = 240
 minimum_viable_kill_percent = "100.00"
 max_missed = 0
 max_timeouts = 0

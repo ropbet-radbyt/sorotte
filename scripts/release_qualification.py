@@ -30,7 +30,7 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 PLATFORMS = {"linux-x86_64": "x86_64-unknown-linux-gnu", "windows-x86_64": "x86_64-pc-windows-msvc"}
 LEGACY_SHA = verification_tools.pins()["references"]["legacy-sha"]
 CONTAINER_PRODUCER_JOB = "container / publish"
-CONTAINER_PUBLICATION_STEPS = (
+LEGACY_CONTAINER_PUBLICATION_STEPS = (
     "Consume the loaded image through real server boundaries",
     "Generate SPDX SBOM from the tested local image",
     "Bind SBOM bytes to the tested local image ID",
@@ -40,6 +40,12 @@ CONTAINER_PUBLICATION_STEPS = (
     "Compare every public tag, digest, config, SBOM, and signature subject",
     "Enforce every container publication phase",
     "Retain all container verification evidence",
+)
+CONTAINER_PUBLICATION_STEPS = (
+    "Recheck protected candidate authority before restoring the tested image",
+    "Restore and identify the exact pre-merge tested image",
+    "Recheck candidate publication authority immediately before pushing",
+    *LEGACY_CONTAINER_PUBLICATION_STEPS[3:],
 )
 
 
@@ -318,7 +324,13 @@ def select_container_producer(value: dict, jobs: list[dict], artifacts: list[dic
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise QualificationError("container producer has no publication steps")
     numbers = []
-    for name in CONTAINER_PUBLICATION_STEPS:
+    # Published releases from the previous pipeline keep their original producer
+    # evidence. A new producer cannot fall back to that shape after restoration
+    # or authorization fails: any new-phase marker selects the entire new shape.
+    new_phase = set(CONTAINER_PUBLICATION_STEPS[:3])
+    contract = (CONTAINER_PUBLICATION_STEPS if any(step.get("name") in new_phase for step in steps)
+                else LEGACY_CONTAINER_PUBLICATION_STEPS)
+    for name in contract:
         selected = [step for step in steps if step.get("name") == name]
         if (len(selected) != 1 or selected[0].get("status") != "completed"
             or selected[0].get("conclusion") != "success"
@@ -416,12 +428,14 @@ def resolve_container_producer(sha: str, repository: str, run_id: str, version_t
     return selected
 
 
-def archive_evidence(root: Path, output: Path, sha: str) -> None:
+def archive_evidence(root: Path, output: Path, sha: str, *, authorization_kind: str = "release-authorization") -> None:
     if not SHA.fullmatch(sha):
         raise QualificationError("evidence archive requires an exact source SHA")
     members = {}
     records = []
-    kinds = {"release-authorization", "sorotte-playback-release-candidate-bundle", "sorotte-playback-release-platform-gate", "sorotte-playback-release-complete-gate", "sorotte-release-workspace-receipt"}
+    if authorization_kind not in {"release-authorization", "pr-candidate-authorization"}:
+        raise QualificationError("unsupported qualification authorization kind")
+    kinds = {authorization_kind, "sorotte-playback-release-candidate-bundle", "sorotte-playback-release-platform-gate", "sorotte-playback-release-complete-gate", "sorotte-release-workspace-receipt"}
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise QualificationError("evidence archive cannot follow symlinks")
@@ -443,7 +457,7 @@ def archive_evidence(root: Path, output: Path, sha: str) -> None:
         raise QualificationError("durable qualification archive is missing an authority")
     for kind in kinds:
         selected = [record for record in records if record["kind"] == kind]
-        if kind in {"release-authorization", "sorotte-playback-release-complete-gate"}:
+        if kind in {authorization_kind, "sorotte-playback-release-complete-gate"}:
             if len(selected) != 1:
                 raise QualificationError("durable qualification archive duplicated a final authority")
         elif len(selected) != 2 or {record.get("platform") for record in selected} != set(PLATFORMS):
@@ -481,6 +495,7 @@ def main(argv: list[str] | None = None) -> int:
     archive.add_argument("--candidate-sha", required=True)
     archive.add_argument("--evidence-dir", required=True, type=Path)
     archive.add_argument("--output-dir", required=True, type=Path)
+    archive.add_argument("--authorization-kind", choices=("release-authorization", "pr-candidate-authorization"), default="release-authorization")
     for name in ("inputs", "consume", "verify-package", "workspace", "verify-workspace"):
         p = sub.add_parser(name)
         p.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -520,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"authorized container job {value['container_job_id']} attempt {value['container_attempt']} "
                   f"from publication run {args.run_id} final attempt {value['publication_final_attempt']}; artifact {value['artifact_id']}")
         elif args.command == "archive-evidence":
-            archive_evidence(args.evidence_dir, args.output_dir, args.candidate_sha)
+            archive_evidence(args.evidence_dir, args.output_dir, args.candidate_sha, authorization_kind=args.authorization_kind)
         elif args.command == "inputs":
             tools = {}
             for item in args.tool:

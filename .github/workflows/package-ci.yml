@@ -2,12 +2,12 @@ name: package verification
 
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: package-verification-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -132,7 +132,7 @@ jobs:
     if: always()
     needs: [preflight, archive]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,6 +162,16 @@ jobs:
           --base-sha "$VERIFICATION_BASE" --source-sha "$VERIFICATION_SHA"
           --expected-job archive --job-result "archive=$ARCHIVE_RESULT"
           --output target/verification/package-required.json
+      - name: Require complete pre-merge release candidate qualification
+        id: candidate_required
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: >-
+          python scripts/candidate_authority.py require --source-sha "$VERIFICATION_SHA"
+          --pull-request "$PR_NUMBER" --wait-seconds 5400
+          --output target/verification/release-candidate-required.json
       - name: Retain required package decision
         id: required_receipt
         if: always()

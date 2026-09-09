@@ -1,0 +1,49 @@
+name: promote qualified PR on main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+
+concurrency:
+  group: main-candidate-promotion
+  cancel-in-progress: false
+
+jobs:
+  main-qualified:
+    name: main-qualified
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the actual integration commit
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Setup Python
+        id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Promote only the unchanged qualified PR candidate
+        id: promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/candidate_authority.py promote-main --source-sha "$GITHUB_SHA"
+          --output target/main-qualification/promotion.json
+      - name: Retain source and producer identity
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: main-candidate-promotion-${{ github.sha }}
+          path: target/main-qualification/**
+          if-no-files-found: error
+          retention-days: 90

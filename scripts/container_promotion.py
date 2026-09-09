@@ -18,6 +18,7 @@ import time
 import uuid
 
 import merge_gate as gate
+import candidate_authority as candidate
 import release_qualification as qualification
 import verification_tools
 import verify_server_container as container
@@ -182,6 +183,37 @@ def container_authority(api, value: dict, source: str) -> dict:
     return selected
 
 
+def released_source_checks(api, source: str, tooling: str, required: dict) -> list[dict]:
+    """Retain legacy release evidence; require the unchanged merge for PR candidates.
+
+    Select by the producer event, never by falling back after a failed validator.
+    Older published versions predate pre-merge qualification and retain their
+    original trusted main-push checks.
+    """
+    checks = gate.ready_checks(api, source, required)
+    events = {api.get(f"actions/runs/{gate.check_run_id(api, check, source)}").get("event")
+              for check in checks.values()}
+    if events == {"push"}:
+        return gate.trusted_checks(api, source, required)
+    if events != {"pull_request"}:
+        raise PromotionError("released source has mixed or untrusted qualification events")
+    associated = api.get(f"commits/{source}/pulls?per_page=100")
+    if not isinstance(associated, list):
+        raise PromotionError("released candidate has no merged PR inventory")
+    matches = [pr for pr in associated if pr.get("head", {}).get("sha") == source and pr.get("merged_at")]
+    if len(matches) != 1:
+        raise PromotionError("released candidate must identify exactly one merged PR")
+    integration = candidate.sha(matches[0].get("merge_commit_sha"), "released candidate integration")
+    subject = candidate.merged_subject(api, integration, current=False)
+    comparison = api.get(f"compare/{integration}...{tooling}")
+    if (subject["candidate_sha"] != source
+            or comparison.get("merge_base_commit", {}).get("sha") != integration):
+        raise PromotionError("released candidate integration must remain an ancestor of current main")
+    # Original publication and retained immutable container evidence are verified
+    # separately; promotion never rebuilds or re-runs application qualification.
+    return candidate.pr_checks(api, subject, required)
+
+
 def collect_authority(value: dict, output: Path, environ: dict) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     write(output / "request.json", value)
@@ -192,18 +224,20 @@ def collect_authority(value: dict, output: Path, environ: dict) -> dict:
         api.require_protection_token()
         required = qualification.read(gate.POLICY)["required_checks"]
         validate_operator_run(api, operator)
-        tooling = gate.authorize(api, value["tooling_sha"], required)
+        protection = gate.protected_source(api, value["tooling_sha"], required)
+        tooling = {"candidate_sha": value["tooling_sha"], "protection": protection,
+                   "producers": gate.trusted_checks(api, value["tooling_sha"], candidate.MAIN_CHECKS)}
         release = release_identity(api, value["version_tag"], value["tooling_sha"])
         source = release["candidate_sha"]
-        historical = gate.trusted_checks(api, source, required)
+        historical = released_source_checks(api, source, value["tooling_sha"], required)
         producer = container_authority(api, value, source)
         # Repeat mutable source/channel/check authority after producer lookup.
         if release_identity(api, value["version_tag"], value["tooling_sha"]) != release:
             raise PromotionError("release tag or latest stable identity changed during lookup")
-        if gate.trusted_checks(api, source, required) != historical:
-            raise PromotionError("historical main check authority changed during lookup")
+        if released_source_checks(api, source, value["tooling_sha"], required) != historical:
+            raise PromotionError("released source check authority changed during lookup")
         if (gate.protected_source(api, value["tooling_sha"], required) != tooling["protection"]
-                or gate.trusted_checks(api, value["tooling_sha"], required) != tooling["producers"]):
+                or gate.trusted_checks(api, value["tooling_sha"], candidate.MAIN_CHECKS) != tooling["producers"]):
             raise PromotionError("tooling protection or trusted checks changed during lookup")
         validate_operator_run(api, operator)
         if assert_checkout(value["tooling_sha"]) != checkout:

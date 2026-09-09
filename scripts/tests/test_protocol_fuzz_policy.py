@@ -173,7 +173,7 @@ def assert_workflow_contract(text: str) -> None:
         "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}",
     }, "fuzz concurrency contract changed")
     require(workflow.get("on") == {
-        "pull_request": "", "push": {"branches": ["main"]}, "workflow_dispatch": "",
+        "pull_request": "", "workflow_dispatch": "",
         "schedule": [{"cron": "45 3 * * 3"}],
     }, "always-present PR/main gate and weekly/manual qualification are required")
     require(workflow.get("env", {}).get("VERIFICATION_SHA") ==
@@ -315,7 +315,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
     def test_adversarial_workflow_weakening_is_rejected(self) -> None:
         original = WORKFLOW_PATH.read_text(encoding="utf-8")
         mutations = [
-            original.replace("branches:\n      - main", "branches:\n      - '**'"),
+            original.replace("on:\n", "on:\n  push:\n    branches: [main]\n", 1),
             original.replace("&& '45' || '900'", "&& '45' || '1800'"),
             original.replace("timeout-minutes: 25", "timeout-minutes: 0"),
             original.replace("if: always()", "if: success()"),
@@ -1228,7 +1228,9 @@ class FuzzToolCanaryTests(unittest.TestCase):
         except (FileNotFoundError, ProcessLookupError):
             # The kernel may reap the killed child before or during the procfs read.
             return
-        self.assertEqual(state, "Z", "owned descendant remained running")
+        # proc_pid_stat(5): X is dead, Z is an exited child awaiting reaping.
+        # A procfs read during final teardown can observe either terminal state.
+        self.assertIn(state, {"Z", "X"}, "owned descendant remained running")
 
     def test_descendant_observation_accepts_process_disappearance(self) -> None:
         for error in (FileNotFoundError(2, "No such file"), ProcessLookupError(3, "No such process")):
@@ -1239,12 +1241,12 @@ class FuzzToolCanaryTests(unittest.TestCase):
                 self.assert_descendant_stopped(status)
 
     def test_descendant_observation_still_rejects_live_processes(self) -> None:
-        for state in ("Z", "R", "S", "D", "T"):
+        for state in ("Z", "X", "R", "S", "D", "T", "t", "I", "P", "W", "?"):
             with self.subTest(state=state):
                 status = mock.Mock(spec=pathlib.Path)
                 status.exists.return_value = True
                 status.read_text.return_value = f"123 (python) {state} 1"
-                if state == "Z":
+                if state in {"Z", "X"}:
                     self.assert_descendant_stopped(status)
                 else:
                     with self.assertRaisesRegex(AssertionError, "owned descendant remained running"):

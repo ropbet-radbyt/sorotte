@@ -30,11 +30,11 @@ REQUIRED = {
 }
 AUTHORITY = {name: ".github/workflows/" + entry[0] for name, entry in REQUIRED.items()}
 EVENTS = {
-    name: {"push", "pull_request", "schedule", "workflow_dispatch"}
+    name: {"pull_request", "schedule", "workflow_dispatch"}
     for name in ("rust-ci.yml", "rust-mutation.yml", "rust-fuzz.yml", "dependency-policy.yml")
 }
-EVENTS.update({"package-ci.yml": {"push", "pull_request", "workflow_dispatch"},
-               "native-required.yml": {"push", "pull_request"}})
+EVENTS.update({"package-ci.yml": {"pull_request", "workflow_dispatch"},
+               "native-required.yml": {"pull_request"}})
 GROUPS = {
     "rust-ci.yml": ("sorotte-ci-", "pr-or-ref"),
     "rust-mutation.yml": ("sorotte-mutation-", "ref"),
@@ -92,8 +92,8 @@ def configured_events(value: dict, name: str) -> set[str]:
     triggers = value.get("on")
     if not isinstance(triggers, dict) or set(triggers) != EVENTS[name]:
         raise AssertionError("required-workflow events changed; review every emitted check name")
-    if triggers["push"] != {"branches": ["main"]}:
-        raise AssertionError("required push authority must remain main-only without tags")
+    if "push" in triggers:
+        raise AssertionError("application qualification must finish before merge")
     if triggers["pull_request"] != "":
         raise AssertionError("required PR checks cannot acquire an unreviewed trigger filter")
     return set(triggers)
@@ -152,15 +152,15 @@ class RequiredCheckEventTests(unittest.TestCase):
             for variant in ("new-event", "tags", "feature-branch", "unfiltered-push", "filtered-pr"):
                 value = workflow(name)
                 if variant == "new-event": value["on"]["workflow_run"] = {}
-                if variant == "tags": value["on"]["push"]["tags"] = ["v*"]
-                if variant == "feature-branch": value["on"]["push"]["branches"].append("feature")
+                if variant == "tags": value["on"]["push"] = {"tags": ["v*"]}
+                if variant == "feature-branch": value["on"]["push"] = {"branches": ["feature"]}
                 if variant == "unfiltered-push": value["on"]["push"] = ""
                 if variant == "filtered-pr": value["on"]["pull_request"] = {"paths": ["docs/**"]}
                 with self.subTest(workflow=name, variant=variant), self.assertRaises(AssertionError):
                     configured_events(value, name)
 
-    def test_push_and_pr_emit_exactly_the_seven_unique_reserved_contexts(self):
-        for event in ("push", "pull_request"):
+    def test_pr_emits_exactly_the_seven_unique_reserved_contexts(self):
+        for event in ("pull_request",):
             names = [check_name(name, event) for name in REQUIRED]
             with self.subTest(event=event):
                 self.assertEqual(len(names), len(set(names)))
