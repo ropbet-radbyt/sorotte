@@ -1503,6 +1503,7 @@ impl RuntimePlaybackCoordination {
             // already be proven, and server-owned barriers never enter here.
             self.coordinator.confirm_aligned_local_play(
                 self.coordinator_now(external_now_seconds),
+                position_seconds,
                 MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS,
             );
         }

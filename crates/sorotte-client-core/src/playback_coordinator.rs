@@ -1936,11 +1936,14 @@ impl PlaybackCoordinator {
     }
 
     /// A confirmed local Play can supersede an older preparation once the
-    /// player has physically reached its frozen target. This is a manual
-    /// transport decision, not new evidence of buffered headroom.
+    /// player is physically aligned with the confirmed playing room timeline.
+    /// The supplied room position belongs to `now_seconds`; compare it at the
+    /// position sample's own time so delayed acknowledgements allow progress.
+    /// This is a manual transport decision, not buffered-headroom evidence.
     pub(crate) fn confirm_aligned_local_play(
         &mut self,
         now_seconds: f64,
+        confirmed_room_position_seconds: f64,
         maximum_position_age_seconds: f64,
     ) -> bool {
         let (Some(episode), Some(observed), Some(desired)) =
@@ -1949,6 +1952,8 @@ impl PlaybackCoordinator {
             return false;
         };
         let aligned_play = episode.primary_seek_issued
+            && confirmed_room_position_seconds.is_finite()
+            && confirmed_room_position_seconds >= 0.0
             && !desired.paused
             && observed.phase == PlayerTransportPhase::Playing
             && observed.logical_pause == Some(false)
@@ -1963,7 +1968,8 @@ impl PlaybackCoordinator {
                     .is_some_and(|sequence| sample.observation_sequence > sequence)
                     && age.is_finite()
                     && (0.0..=maximum_position_age_seconds).contains(&age)
-                    && (sample.position_seconds - episode.frozen_target_seconds).abs()
+                    && (sample.position_seconds - (confirmed_room_position_seconds - age).max(0.0))
+                        .abs()
                         <= self.config.position_tolerance_seconds
             });
         if !aligned_play {
