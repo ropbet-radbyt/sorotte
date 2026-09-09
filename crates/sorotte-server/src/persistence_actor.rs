@@ -1244,17 +1244,16 @@ mod tests {
         }
     }
 
-    fn sqlite_full_replacement_room_state(version: u64) -> PersistedRoomState {
+    fn sqlite_full_replacement_room_state(
+        version: u64,
+        growth_payload_bytes: usize,
+    ) -> PersistedRoomState {
         PersistedRoomState {
-            files: (0..512)
-                .map(|index| {
-                    format!(
-                        "replacement-{index:04}-{}.mkv",
-                        "deterministic-payload-".repeat(256)
-                    )
-                })
-                .collect(),
-            index: Some(511),
+            files: vec![
+                format!("replacement-{}.mkv", "x".repeat(growth_payload_bytes)),
+                "replacement-tail.mkv".to_owned(),
+            ],
+            index: Some(1),
             position: 987.75,
             last_activity_at_seconds: 2_002.5,
             version,
@@ -1901,6 +1900,18 @@ mod tests {
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
             .expect("baseline WAL should checkpoint");
         assert_eq!(checkpoint_busy, 0, "baseline checkpoint must not be busy");
+        let page_size: i64 = seed_connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("baseline page size should be queryable");
+        let page_count: i64 = seed_connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .expect("baseline page count should be queryable");
+        // One field larger than the entire baseline database must allocate
+        // another page even if existing pages have free space. Derive that
+        // boundary instead of serializing and checkpointing megabytes that
+        // add unrelated I/O pressure to this capacity-recovery assertion.
+        let growth_payload_bytes = usize::try_from((page_count + 1) * page_size)
+            .expect("the small fixture database should have a representable size");
         drop(seed_connection);
         let durable_before_failure = raw_persisted_room_row(&db_path, "room");
 
@@ -1943,7 +1954,7 @@ mod tests {
         )
         .expect("controlled room persistence worker should start");
 
-        let failed_replacement = sqlite_full_replacement_room_state(42);
+        let failed_replacement = sqlite_full_replacement_room_state(42, growth_payload_bytes);
         service.enqueue(room_state_effect("room", &failed_replacement));
         assert!(
             !service.flush(),
@@ -1995,11 +2006,27 @@ mod tests {
             "the failure must be imposed on the actor-owned connection with no page headroom"
         );
 
-        let recovered_replacement = sqlite_full_replacement_room_state(43);
+        let recovered_replacement = sqlite_full_replacement_room_state(43, growth_payload_bytes);
         service.enqueue(room_state_effect("room", &recovered_replacement));
+        let recovery_started = std::time::Instant::now();
+        let recovered = service.flush();
         assert!(
-            service.flush(),
-            "a newer desired state should persist after capacity is restored on the same worker connection"
+            recovered,
+            "a newer desired state should persist after capacity is restored on the same worker connection; elapsed={:?}, worker_finished={}, page_limits={:?}, desired={:?}, events={:?}",
+            recovery_started.elapsed(),
+            service
+                .worker
+                .join_handle
+                .as_ref()
+                .is_none_or(|worker| worker.is_finished()),
+            connection_limits
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            service
+                .desired_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>()
         );
         assert_eq!(
             degraded_worker_count.load(Ordering::Acquire),
