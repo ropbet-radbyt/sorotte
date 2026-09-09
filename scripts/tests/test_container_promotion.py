@@ -54,13 +54,15 @@ class FakeAPI(promotion.gate.GitHub):
                            "status": "ahead", "ahead_by": 1, "behind_by": 0}
         self.runs, self.checks = {}, {}
         for run_id, source, suite in ((42, TOOL, 9), (43, SOURCE, 10)):
-            self.runs[run_id] = dict(id=run_id, head_sha=source, run_attempt=1, path=WORKFLOW,
+            workflow = promotion.candidate.MAIN_WORKFLOW if source == TOOL else WORKFLOW
+            contexts = promotion.candidate.MAIN_CHECKS if source == TOOL else REQUIRED
+            self.runs[run_id] = dict(id=run_id, head_sha=source, run_attempt=1, path=workflow,
                 repository={"full_name": REPO}, head_repository={"full_name": REPO}, event="push", head_branch="main",
                 status="completed", conclusion="success", check_suite_id=suite,
                 html_url=f"https://github.com/{REPO}/actions/runs/{run_id}")
             self.checks[source] = [dict(id=run_id*10+index, name=name, head_sha=source, status="completed", conclusion="success",
                 app={"slug": "github-actions"}, check_suite={"id": suite}, details_url=self.runs[run_id]["html_url"],
-                completed_at="2026-09-07T19:00:00Z") for index, name in enumerate(REQUIRED, 1)]
+                completed_at="2026-09-07T19:00:00Z") for index, name in enumerate(contexts, 1)]
         self.runs[99] = dict(id=99, run_attempt=1, head_sha=TOOL, event="workflow_dispatch", head_branch="main",
             path=promotion.WORKFLOW, status="in_progress", conclusion=None,
             repository={"full_name": REPO}, head_repository={"full_name": REPO},
@@ -129,12 +131,30 @@ class PromotionAuthorityTests(unittest.TestCase):
         self.assertEqual(result["tooling_authorization"]["candidate_sha"], TOOL)
         self.assertEqual({p["head_sha"] for p in result["identity"]["historical_producers"]}, {SOURCE})
         self.assertEqual(result["identity"]["container_producer"]["artifact_id"], 901)
-        self.assertGreaterEqual(self.api.calls["branches/main"], 3)
+        self.assertGreaterEqual(self.api.calls["branches/main"], 2)
         for source in (TOOL, SOURCE):
-            self.assertEqual(self.api.calls[f"commits/{source}/check-runs?filter=latest&per_page=100&page=1"], 2)
+            self.assertEqual(self.api.calls[f"commits/{source}/check-runs?filter=latest&per_page=100&page=1"], 2 if source == TOOL else 4)
         text = (self.root/"initial/authority.json").read_text()
         self.assertNotIn(ENV["GH_TOKEN"], text)
         self.assertNotIn(ENV["SOROTTE_PROTECTION_TOKEN"], text)
+
+    def test_pr_qualified_release_requires_its_unchanged_merged_ancestor(self):
+        from scripts.tests import test_candidate_authority as fixture
+
+        class CandidateAPI(fixture.FakeAPI):
+            def get(self, path):
+                if path == f"commits/{fixture.HEAD}/pulls?per_page=100":
+                    return [{**self.pr, "merged_at": "2026-09-09T01:00:00Z"}]
+                if path == f"compare/{fixture.MAIN}...{fixture.MAIN}":
+                    return {"merge_base_commit": {"sha": fixture.MAIN}}
+                return super().get(path)
+
+        api = CandidateAPI(merged=True)
+        checks = promotion.released_source_checks(api, fixture.HEAD, fixture.MAIN, fixture.REQUIRED)
+        self.assertEqual({check["source_sha"] for check in checks}, {fixture.HEAD})
+        api.commits[fixture.MAIN]["tree"]["sha"] = "f" * 40
+        with self.assertRaisesRegex(promotion.gate.GateError, "merge changed"):
+            promotion.released_source_checks(api, fixture.HEAD, fixture.MAIN, fixture.REQUIRED)
 
     def test_manual_current_main_operator_environment_is_closed(self):
         for index, (key, wrong) in enumerate((

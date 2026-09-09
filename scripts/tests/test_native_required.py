@@ -160,7 +160,7 @@ class NativeSelectionTests(unittest.TestCase):
     def test_required_workflow_is_always_present_and_never_exposes_pr_code_to_native_runner(self):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.load((root / '.github/workflows/native-required.yml').read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(workflow['on'], {'pull_request': '', 'push': {'branches': ['main']}})
+        self.assertEqual(workflow['on'], {'pull_request': ''})
         job = workflow['jobs']['native-required']
         self.assertNotIn('if', job)
         self.assertNotIn('continue-on-error', job)

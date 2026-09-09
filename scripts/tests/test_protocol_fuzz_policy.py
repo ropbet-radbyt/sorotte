@@ -173,7 +173,7 @@ def assert_workflow_contract(text: str) -> None:
         "cancel-in-progress": "${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}",
     }, "fuzz concurrency contract changed")
     require(workflow.get("on") == {
-        "pull_request": "", "push": {"branches": ["main"]}, "workflow_dispatch": "",
+        "pull_request": "", "workflow_dispatch": "",
         "schedule": [{"cron": "45 3 * * 3"}],
     }, "always-present PR/main gate and weekly/manual qualification are required")
     require(workflow.get("env", {}).get("VERIFICATION_SHA") ==
@@ -315,7 +315,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
     def test_adversarial_workflow_weakening_is_rejected(self) -> None:
         original = WORKFLOW_PATH.read_text(encoding="utf-8")
         mutations = [
-            original.replace("branches:\n      - main", "branches:\n      - '**'"),
+            original.replace("on:\n", "on:\n  push:\n    branches: [main]\n", 1),
             original.replace("&& '45' || '900'", "&& '45' || '1800'"),
             original.replace("timeout-minutes: 25", "timeout-minutes: 0"),
             original.replace("if: always()", "if: success()"),

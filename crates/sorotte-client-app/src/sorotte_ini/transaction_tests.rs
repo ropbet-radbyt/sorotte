@@ -278,22 +278,48 @@ fn open_readers_keep_original_document_when_settings_are_replaced() {
 
 #[test]
 fn cooperating_readers_observe_complete_documents_through_repeated_replacement() {
-    assert_complete_documents_during_replacement(|path| {
-        match super::read_sorotte_ini_contents_consistently_at_path(path) {
-            Ok(Some(contents)) => ReplacementRead::Complete(contents),
-            Ok(None) => panic!("a cooperating replacement must not appear missing"),
-            Err(error) if settings_are_busy(&error) => ReplacementRead::Busy,
-            Err(error) => panic!("cooperating settings read failed: {error:#}"),
-        }
-    });
+    assert_complete_documents_during_replacement(
+        read_cooperating_replacement,
+        ReplacementSchedule::Concurrent,
+    );
+}
+
+#[test]
+fn cooperating_reader_busy_results_recover_after_replacement() {
+    assert_complete_documents_during_replacement(
+        read_cooperating_replacement,
+        ReplacementSchedule::ReaderBusy,
+    );
+}
+
+#[test]
+fn cooperating_writer_busy_results_recover_after_contention_clears() {
+    assert_complete_documents_during_replacement(
+        read_cooperating_replacement,
+        ReplacementSchedule::WriterBusy,
+    );
+}
+
+fn read_cooperating_replacement(path: &std::path::Path) -> ReplacementRead {
+    replacement_read_result(super::read_sorotte_ini_contents_consistently_at_path(path))
+}
+
+fn replacement_read_result(result: anyhow::Result<Option<String>>) -> ReplacementRead {
+    match result {
+        Ok(Some(contents)) => ReplacementRead::Complete(contents),
+        Ok(None) => panic!("a cooperating replacement must not appear missing"),
+        Err(error) if settings_are_busy(&error) => ReplacementRead::Busy,
+        Err(error) => panic!("cooperating settings read failed: {error:#}"),
+    }
 }
 
 #[cfg(not(windows))]
 #[test]
 fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
-    assert_complete_documents_during_replacement(|path| {
-        ReplacementRead::Complete(std::fs::read_to_string(path).unwrap())
-    });
+    assert_complete_documents_during_replacement(
+        |path| ReplacementRead::Complete(std::fs::read_to_string(path).unwrap()),
+        ReplacementSchedule::Concurrent,
+    );
 }
 
 #[cfg(windows)]
@@ -302,9 +328,17 @@ fn readers_observe_complete_documents_through_repeated_atomic_replacement() {
 fn windows_raw_filesystem_readers_observe_complete_documents_through_replacement() {
     // Preserve the original strict OS probe. A passing run is not proof that the
     // known namespace gap is fixed; application readers use the sidecar lock.
-    assert_complete_documents_during_replacement(|path| {
-        ReplacementRead::Complete(std::fs::read_to_string(path).unwrap())
-    });
+    assert_complete_documents_during_replacement(
+        |path| ReplacementRead::Complete(std::fs::read_to_string(path).unwrap()),
+        ReplacementSchedule::Concurrent,
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReplacementSchedule {
+    Concurrent,
+    ReaderBusy,
+    WriterBusy,
 }
 
 enum ReplacementRead {
@@ -318,7 +352,11 @@ fn settings_are_busy(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
 }
 
-fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> ReplacementRead) {
+fn assert_complete_documents_during_replacement(
+    read: fn(&std::path::Path) -> ReplacementRead,
+    schedule: ReplacementSchedule,
+) {
+    use super::transaction::{SettingsTransaction, read_consistently_with_timeout};
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicBool, Ordering},
@@ -336,6 +374,8 @@ fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> Re
         // across a continuous burst of twenty durable writes.
         let stop = Arc::new(AtomicBool::new(false));
         let start = Arc::new(Barrier::new(2));
+        let writer_blocker = matches!(schedule, ReplacementSchedule::WriterBusy)
+            .then(|| SettingsTransaction::acquire(&fixture.path()).unwrap());
         let reader = {
             let path = fixture.path();
             let stop = stop.clone();
@@ -343,11 +383,29 @@ fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> Re
             let before = before.clone();
             let after = after.clone();
             std::thread::spawn(move || {
+                // Acquire before the barrier so the forced read cannot race the
+                // publisher for its blocker. Unwrap after it to preserve cleanup
+                // if fixture setup itself fails.
+                let reader_blocker = matches!(schedule, ReplacementSchedule::ReaderBusy)
+                    .then(|| SettingsTransaction::acquire(&path));
                 start.wait();
+                let mut reader_blocker = reader_blocker.map(Result::unwrap);
                 let mut complete = 0;
                 let mut busy = 0;
                 loop {
-                    match read(&path) {
+                    let observed = if let Some(blocker) = reader_blocker.take() {
+                        let result =
+                            read_consistently_with_timeout(blocker.path(), Duration::ZERO, |_| {
+                                panic!("a blocked reader must not inspect settings")
+                            });
+                        let observed = replacement_read_result(result);
+                        drop(blocker);
+                        assert!(matches!(&observed, ReplacementRead::Busy));
+                        observed
+                    } else {
+                        read(&path)
+                    };
+                    match observed {
                         ReplacementRead::Complete(observed) => {
                             assert!(observed == before || observed == after);
                             complete += 1;
@@ -362,10 +420,23 @@ fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> Re
         };
         let expected = if index % 2 == 0 { &after } else { &before };
         start.wait();
-        let mut write_result =
-            write_sorotte_ini_contents_atomically_at_path(&fixture.path(), expected.as_bytes());
+        let mut write_result = if writer_blocker.is_some() {
+            // Exercise the real acquisition failure used by the writer, with a
+            // held kernel lock and zero test deadline, rather than waiting for a
+            // slow worker to exhaust the ordinary five-second deadline.
+            SettingsTransaction::acquire_with_timeout(&fixture.path(), Duration::ZERO).map(drop)
+        } else {
+            write_sorotte_ini_contents_atomically_at_path(&fixture.path(), expected.as_bytes())
+        };
         stop.store(true, Ordering::Release);
+        drop(writer_blocker);
         let read_result = reader.join();
+        if matches!(schedule, ReplacementSchedule::WriterBusy) {
+            assert!(
+                write_result.as_ref().is_err_and(settings_are_busy),
+                "the held sidecar must cause a busy writer: {write_result:?}"
+            );
+        }
         if write_result.as_ref().is_err_and(settings_are_busy) {
             // Retry only the documented busy outcome, once, after its competing
             // reader has exited. A persistent busy result remains a failure.
@@ -386,9 +457,14 @@ fn assert_complete_documents_during_replacement(read: fn(&std::path::Path) -> Re
             }
         }
     }
+    match schedule {
+        ReplacementSchedule::Concurrent => {}
+        ReplacementSchedule::ReaderBusy => assert!(busy_reads >= 20),
+        ReplacementSchedule::WriterBusy => assert_eq!(busy_writes, 20),
+    }
     eprintln!(
         "verified 20 published documents, {complete_reads} concurrent snapshots, \
-         {busy_reads} busy reads and {busy_writes} busy writes"
+         {busy_reads} busy reads and {busy_writes} busy writes ({schedule:?})"
     );
 }
 

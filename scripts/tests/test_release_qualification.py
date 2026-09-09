@@ -346,6 +346,17 @@ class ContainerProducerTests(unittest.TestCase):
                           selected["container_job_id"], selected["artifact_id"]), (2, 1, 101, 901))
         self.assertEqual(selected["artifact_name"], "server-container-verification-12-1")
 
+    def test_legacy_published_producer_keeps_its_original_runtime_obligations(self):
+        run, jobs, artifacts = self.fixture()
+        jobs[0]["steps"] = [{"name": name, "number": index, "status": "completed", "conclusion": "success"}
+                            for index, name in enumerate(qualification.LEGACY_CONTAINER_PUBLICATION_STEPS, 10)]
+        self.assertEqual(self.select(run, jobs, artifacts)["container_attempt"], 1)
+        for name in qualification.LEGACY_CONTAINER_PUBLICATION_STEPS[:3]:
+            broken = copy.deepcopy(jobs)
+            next(step for step in broken[0]["steps"] if step["name"] == name)["conclusion"] = "skipped"
+            with self.subTest(name=name), self.assertRaises(qualification.QualificationError):
+                self.select(run, broken, artifacts)
+
     def test_later_successful_container_selects_its_own_artifact(self):
         run, jobs, artifacts = self.fixture()
         jobs.append(self.later_job(jobs[0]))
@@ -584,7 +595,7 @@ class PackageWorkflowTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[2]
         action = f"actions/create-github-app-token@{VERIFICATION_PINS['actions']['actions/create-github-app-token']['sha']}"
-        files = ("stable-release.yml", "sorotte-server-release.yml", "sorotte-gui-release.yml", "publish-server-container.yml")
+        files = ("stable-release.yml", "sorotte-server-release.yml", "sorotte-gui-release.yml", "publish-server-container.yml", "publish-qualified-archives.yml")
         authorizations = 0
         for name in files:
             workflow = yaml.load((root / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
@@ -593,10 +604,13 @@ class PackageWorkflowTests(unittest.TestCase):
                 for index, step in enumerate(steps):
                     if not any(command in step.get("run", "") for command in (
                         "merge_gate.py authorize-release", "container_promotion.py prepare",
+                        "candidate_authority.py authorize-release", "candidate_authority.py download",
                     )):
                         continue
                     authorizations += 1
-                    token = steps[index - 1]
+                    tokens = [item for item in steps[:index] if item.get("uses") == action]
+                    self.assertEqual(len(tokens), 1)
+                    token = tokens[0]
                     self.assertEqual(token["uses"], action)
                     self.assertEqual(token["with"], {
                         "app-id": "${{ vars.SOROTTE_PROTECTION_APP_ID }}",
@@ -608,16 +622,17 @@ class PackageWorkflowTests(unittest.TestCase):
                     self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
                     self.assertEqual(step["env"]["SOROTTE_PROTECTION_TOKEN"], "${{ steps.protection-token.outputs.token }}")
                     self.assertNotIn("--wait-seconds", step["run"])
-                    self.assertEqual(token.get("if"), step.get("if"))
+                    self.assertIn(token.get("if"), (None, step.get("if")))
             if name != "stable-release.yml":
                 self.assertEqual(workflow["on"]["workflow_call"]["secrets"], {"SOROTTE_PROTECTION_APP_PRIVATE_KEY": {"required": "true"}})
             else:
                 consumers = {name for name, job in workflow["jobs"].items() if "secrets" in job}
-                self.assertEqual(consumers, {"server-archives", "gui-archive", "container"})
+                self.assertEqual(consumers, {"archives", "container"})
                 for consumer in consumers:
                     self.assertEqual(workflow["jobs"][consumer]["secrets"], {"SOROTTE_PROTECTION_APP_PRIVATE_KEY": "${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}"})
-        self.assertEqual(authorizations, 7)
-        for name in ("package-ci.yml", "playback-lifecycle-release-gate.yml", "gui-native-interactive.yml"):
+        self.assertEqual(authorizations, 9)
+        for name in ("package-ci.yml", "playback-lifecycle-release-gate.yml", "gui-native-interactive.yml",
+                     "qualify-gui-archive.yml", "qualify-server-archives.yml", "qualify-server-container.yml"):
             text = (root / ".github/workflows" / name).read_text()
             self.assertNotIn("SOROTTE_PROTECTION_APP_PRIVATE_KEY", text)
             self.assertNotIn("create-github-app-token", text)
@@ -637,7 +652,7 @@ class PackageWorkflowTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = yaml.load((root / ".github/workflows/package-ci.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertIn("pull_request", workflow["on"])
-        self.assertEqual(workflow["on"]["push"]["branches"], ["main"])
+        self.assertNotIn("push", workflow["on"])
         jobs = workflow["jobs"]
         self.assertEqual(jobs["package-required"]["if"], "always()")
         self.assertEqual(set(jobs["package-required"]["needs"]), {"preflight", "archive"})

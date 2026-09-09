@@ -54,12 +54,12 @@ bounded evidence writer and a fresh output directory:
 python scripts/verify.py run --lane workspace-default --output target/verification/workspace-default-attempt-1 --deadline-seconds 1200
 ```
 
-Both Linux and Windows PR/main test workers require this Cargo harness run,
+Both Linux and Windows PR test workers require this Cargo harness run,
 all-feature nextest, and all-feature doctests. Cargo's concurrent tests within a
 binary exercise a different execution mode from nextest's process isolation;
 default features also select different code. Keep both modes and do not add
 retries or a `RUST_TEST_THREADS` override to make the default obligation pass.
-The wrapper uses the actual checkout SHA (the prospective merge on PR workers),
+The wrapper uses the exact PR head, which must contain its current main base,
 requires unchanged clean inputs, streams bounded diagnostics, and retains failed
 attempts and owned cleanup. Its 1,200-second phase limit and the 55/45-minute
 Linux/Windows job limits are ceilings; additional runtime must be measured from
@@ -208,7 +208,8 @@ loopback default (`127.0.0.1:5719`).
 
 ## GUI Release Publishing
 
-GUI packages are built by `.github/workflows/sorotte-gui-release.yml` and staged locally by:
+GUI packages are qualified before merge by `.github/workflows/qualify-gui-archive.yml`
+under the coordinated candidate campaign, and staged locally by:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-gui-release.ps1 -Channel stable
@@ -226,12 +227,16 @@ python scripts/verify_gui_release_artifact.py `
   --report target/gui-release/artifact-verification.json
 ```
 
-The workflow always keeps the Actions artifact. Version tags `v*` publish stable releases in `ropbet-radbyt/sorotte`; pushes to the current `main` tip update the moving `sorotte-gui-dev` prerelease in the same repository for dev-channel GUI update checks. Publication rechecks the remote `main` tip so rerunning an older workflow cannot roll dev clients backward.
-Both the build and publication jobs independently verify the downloaded
-archive, checksum, external update manifest, embedded install manifest, closed
-payload inventory, source SHA, and channel. Only the build job executes the
-Windows binaries; publication reconsumes the same bytes without repeating the
-runtime smoke.
+The workflow keeps the immutable Actions artifact. Version tags `v*` publish the
+original qualified bytes in `ropbet-radbyt/sorotte`, with fresh protected-main and
+PR provenance checks. Application and archive runtime checks finish before
+merge; publication verifies the sealed file identities and anonymous public
+bytes. See [release qualification](RELEASE_QUALIFICATION.md).
+
+Main pushes no longer build or automatically update `sorotte-gui-dev`. The existing
+moving prerelease remains untouched; a future development-channel publisher must
+also promote a candidate qualified before merge. Local dev-channel packaging
+continues to accept `-Channel dev`.
 
 ## Server Release Checks
 

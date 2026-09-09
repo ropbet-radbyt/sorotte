@@ -36,11 +36,33 @@ The failed release attempt was cancelled before the GUI, container or server
 publishers ran. Its job log, cancellation snapshot and native cleanup receipt
 are retained under `target/verification/v0.2.12-release/`.
 
-Local validation passed the full default workspace (4,290 tests; 18 registered
+The first repair head passed the full default workspace (4,290 tests; 18 registered
 ignores), client-app all-feature checks (276 passed; two registered ignores),
 all-feature Clippy, formatting and static preflight. Eight simultaneous owned
 fixture processes verified 160 published documents and 3,773 concurrent
 snapshots, and all eight cleanup receipts passed. Those stress runs observed no
-busy outcome; the original hosted trace and the existing forced-contention
-regressions establish that part of the contract. Hosted qualification of this
-repair remains required before merge and publication.
+busy outcome. Those counts are historical and do not qualify the subsequent
+pipeline changes.
+
+Two additional replacement tests now force contention at the actual lock
+boundary, using a held kernel lock, a barrier and a zero acquisition deadline.
+They require twenty typed busy reader results and twenty typed busy writer
+results, followed by the exact expected published document after each lock is
+released. They use the same read-result adapter as the concurrent fixture.
+Neither depends on a scheduling delay or silently accepts missing settings.
+
+A red/green experiment restored the old unconditional unwrap in that adapter:
+the forced-reader test failed on the actual stored-settings busy result. After
+restoring the corrected source, all three replacement tests passed with the
+required busy counts. This demonstrates the contract defect deterministically;
+it does not reproduce the original hosted scheduling conditions.
+
+The updated working tree passed 4,292 default-workspace tests (18 existing
+ignores), 278 client-app all-feature tests (two existing ignores), all-feature
+Clippy and formatting. Its pipeline suite passed 1,205 tests (four platform/tool
+skips), with static preflight and actionlint also passing. Local actionlint did
+not run ShellCheck; the Linux PR preflight requires it.
+
+The release remains paused while [PR qualification](../../PR_QUALIFICATION.md)
+moves the full application and artifact handoff campaign before merge. Hosted
+qualification of the committed source remains required.

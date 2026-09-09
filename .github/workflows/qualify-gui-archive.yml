@@ -1,0 +1,105 @@
+name: qualify GUI archive before merge
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
+jobs:
+  gui-release:
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        id: ci_checkout_0b7d4b20
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        id: ci_setup_rust_3ff97947
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Setup Python
+        id: ci_setup_python_536b411d
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check formatting
+        id: ci_check_formatting_32f0bc99
+        shell: pwsh
+        run: cargo fmt --all --check
+
+      - name: Run GUI updater tests
+        id: ci_run_gui_updater_tests_24ec5dff
+        shell: pwsh
+        run: |
+          cargo test --locked -p sorotte-gui --lib update_
+          if ($LASTEXITCODE -ne 0) { throw "Updater library tests failed" }
+          cargo test --locked -p sorotte-gui --bin sorotte-gui-updater
+          if ($LASTEXITCODE -ne 0) { throw "Updater binary tests failed" }
+          cargo test --locked -p sorotte-gui --features updater-integration-test --test updater_self_replacement_windows
+          if ($LASTEXITCODE -ne 0) { throw "Updater process replacement tests failed" }
+
+      - name: Download exact qualified GUI bundle
+        id: ci_download_exact_qualified_gui_bundle_373a9a20
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle-windows-x86_64-${{ github.sha }}
+          path: target/qualified-bundle
+
+      - name: Download complete GUI lifecycle qualification
+        id: ci_download_complete_gui_lifecycle_qualif_d4bdb9b3
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: playback-lifecycle-complete-${{ github.sha }}
+          path: target/qualified-receipt
+
+      - name: Package GUI release
+        id: ci_package_gui_release_bf3ff0ed
+        shell: pwsh
+        run: ./scripts/package-gui-release.ps1 -Channel stable -QualifiedBundle target/qualified-bundle -QualificationReceipt target/qualified-receipt/platform-complete.json
+
+      - name: Verify exact GUI release artifact
+        id: ci_verify_exact_gui_release_artifact_20d21afd
+        shell: pwsh
+        run: |
+          python scripts/verify_gui_release_artifact.py `
+            --artifacts-dir target/gui-release/artifacts `
+            --expected-source-sha "$env:GITHUB_SHA" `
+            --expected-channel "stable" `
+            --report target/gui-release/artifact-verification.json
+
+      - name: Bind exact GUI archive bytes to lifecycle qualification
+        id: ci_bind_exact_gui_archive_bytes_to_lifecy_7aa01f58
+        shell: pwsh
+        run: >-
+          python scripts/release_qualification.py verify-package --candidate-sha "$env:GITHUB_SHA"
+          --platform windows-x86_64 --channel "stable" --bundle-dir target/qualified-bundle
+          --complete-receipt target/qualified-receipt/platform-complete.json
+          --artifact-report target/gui-release/artifact-verification.json
+
+      - name: Upload GUI artifact verification report
+        id: ci_upload_gui_artifact_verification_repor_f47159a5
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-gui-artifact-verification
+          path: target/gui-release/artifact-verification.json
+          if-no-files-found: warn
+
+      - name: Upload GUI package artifact
+        id: ci_upload_gui_package_artifact_c62cee5c
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sorotte-gui-windows-x86_64
+          path: target/gui-release/artifacts/*
+

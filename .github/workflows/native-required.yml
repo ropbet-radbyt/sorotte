@@ -2,8 +2,6 @@ name: trusted native obligation
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read

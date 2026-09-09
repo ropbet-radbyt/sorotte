@@ -1828,18 +1828,22 @@ class WorkflowPolicyTests(unittest.TestCase):
         cls.job = cls.workflow["jobs"]["publish"]
         cls.steps = cls.job["steps"]
         cls.by_name = {step["name"]: step for step in cls.steps}
+        candidate = yaml.load((REPO_ROOT / ".github/workflows/qualify-server-container.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        cls.candidate = candidate
+        cls.candidate_steps = candidate["jobs"]["qualify"]["steps"]
+        cls.candidate_by_name = {step["name"]: step for step in cls.candidate_steps}
 
     def test_permissions_runner_timeout_and_concurrency_are_fail_closed(self) -> None:
         self.assertEqual(
             self.workflow["permissions"],
-            {"contents": "read", "actions": "read", "checks": "read", "id-token": "write", "packages": "write"},
+            {"contents": "read", "actions": "read", "checks": "read", "pull-requests": "read", "id-token": "write", "packages": "write"},
         )
         self.assertEqual(self.job["runs-on"], "ubuntu-24.04")
         self.assertEqual(self.job["timeout-minutes"], "45")
         self.assertEqual(self.workflow["concurrency"]["cancel-in-progress"], "false")
 
     def test_every_action_is_immutable_commit_pinned(self) -> None:
-        uses = [step["uses"] for step in self.steps if "uses" in step]
+        uses = [step["uses"] for step in [*self.steps, *self.candidate_steps] if "uses" in step]
         self.assertGreaterEqual(len(uses), 7)
         for value in uses:
             reference = value.split("@", 1)[1]
@@ -1860,7 +1864,7 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_build_occurs_once_loads_locally_and_never_pushes(self) -> None:
         build_steps = [
             step
-            for step in self.steps
+            for step in self.candidate_steps
             if step.get("uses", "").startswith("docker/build-push-action@")
         ]
         self.assertEqual(len(build_steps), 1)
@@ -1871,11 +1875,12 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(build["tags"], "${{ env.TEST_IMAGE }}")
         self.assertEqual(build["provenance"], "false")
         self.assertEqual(build["sbom"], "false")
+        self.assertFalse(any("build-push-action" in step.get("uses", "") for step in self.steps))
 
     def assert_latest_promotion_contract(self, workflow) -> None:
         # Tag refs implicitly add latest unless the action's auto flavor is disabled.
         self.assertEqual(set(workflow["on"]), {"workflow_call", "workflow_dispatch"})
-        self.assertEqual(set(workflow["on"]["workflow_call"]["inputs"]), {"publish"})
+        self.assertEqual(set(workflow["on"]["workflow_call"]["inputs"]), {"publish", "qualification_run_id", "qualification_run_attempt", "container_evidence_artifact"})
         publish = workflow["jobs"]["publish"]
         metadata_steps = [step for step in publish["steps"] if step.get("uses", "").startswith("docker/metadata-action@")]
         self.assertEqual(len(metadata_steps), 1)
@@ -2018,21 +2023,26 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertLess(command.index(guard), command.index("gh release create"))
 
     def test_smoke_and_sbom_finish_before_registry_login_or_push(self) -> None:
-        names = [step["name"] for step in self.steps]
+        names = [step["name"] for step in self.candidate_steps]
         smoke = names.index("Consume the loaded image through real server boundaries")
         sbom = names.index("Bind SBOM bytes to the tested local image ID")
-        login = names.index("Login only after local consumption passes")
-        publish = names.index("Push only tags of the already-tested daemon image")
         self.assertLess(smoke, sbom)
-        self.assertLess(sbom, login)
+        self.assertFalse(any("login-action" in step.get("uses", "") for step in self.candidate_steps))
+        self.assertEqual(self.candidate["permissions"], {"contents": "read", "actions": "read"})
+        publish_names = [step["name"] for step in self.steps]
+        restore = publish_names.index("Restore and identify the exact pre-merge tested image")
+        login = publish_names.index("Login only after the qualified image is restored")
+        publish = publish_names.index("Push only tags of the already-tested daemon image")
+        self.assertLess(restore, login)
         self.assertLess(login, publish)
+        self.assertNotIn("verify_server_container.py smoke", str(self.steps))
         self.assertIn(
             "verify_server_container.py smoke",
-            self.by_name["Consume the loaded image through real server boundaries"]["run"],
+            self.candidate_by_name["Consume the loaded image through real server boundaries"]["run"],
         )
         self.assertIn(
             "verify_server_container.py verify-sbom",
-            self.by_name["Bind SBOM bytes to the tested local image ID"]["run"],
+            self.candidate_by_name["Bind SBOM bytes to the tested local image ID"]["run"],
         )
 
     def test_publish_uses_only_the_loaded_image_and_exact_full_sha_tag(self) -> None:
@@ -2051,7 +2061,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
 
     def test_syft_and_cosign_versions_are_explicit_and_keyless_identity_is_exact(self) -> None:
-        sbom = self.by_name["Generate SPDX SBOM from the tested local image"]["with"]
+        sbom = self.candidate_by_name["Generate SPDX SBOM from the tested local image"]["with"]
         self.assertEqual(sbom["image"], "${{ env.TEST_IMAGE }}")
         self.assertEqual(sbom["syft-version"], f"v{VERIFICATION_PINS['tools']['syft']}")
         self.assertIn(

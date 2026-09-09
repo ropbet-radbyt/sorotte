@@ -140,9 +140,9 @@ def require_fragments(text: str, fragments: list[str], *, label: str) -> None:
 
 def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     triggers = workflow.get("on")
-    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch", "schedule", "push"}:
+    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch", "schedule"}:
         raise AssertionError(
-            "native execution must use trusted dispatch, scheduled main or main push"
+            "native execution must use reviewed PR dispatch or separate scheduled assurance"
         )
     dispatch = triggers["workflow_dispatch"]
     if not isinstance(dispatch, dict) or set(dispatch) != {"inputs"}:
@@ -165,8 +165,6 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         raise AssertionError("workflow-level environment can bypass runner attestation")
 
     jobs = workflow.get("jobs")
-    if triggers["push"] != {"branches": ["main"]}:
-        raise AssertionError("automatic native execution must use only main pushes")
     if not isinstance(jobs, dict) or set(jobs) != {"selection", "native_interactive"}:
         raise AssertionError("workflow must contain hosted selection and one native_interactive job")
     selection = jobs["selection"]

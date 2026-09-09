@@ -323,9 +323,12 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         jobs = coordinated["jobs"]
         self.assertEqual(jobs["playback-lifecycle-release-gate"]["needs"], "authorize-source")
         self.assertEqual(jobs["playback-lifecycle-release-gate"]["with"]["candidate_sha"], "${{ github.sha }}")
-        for consumer in ("server-archives", "gui-archive", "container"):
+        for consumer in ("server-archives", "gui-archive", "container-candidate"):
             needs = jobs[consumer]["needs"]
             self.assertIn("playback-lifecycle-release-gate", [needs] if isinstance(needs, str) else needs)
+            self.assertIn("default-workspace", needs)
+        for publisher in ("archives", "container"):
+            self.assertEqual(jobs[publisher]["needs"], "publish-source")
         self.assertIn("workflow_call", self.server_release["on"])
         self.assertNotIn("push", self.server_release["on"])
         self.assertNotIn("push", self.container_release["on"])
