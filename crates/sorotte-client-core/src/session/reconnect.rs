@@ -521,7 +521,14 @@ impl ClientSession {
                 playstate = playstate.with_transport_revision(transport_revision);
             }
             response.playstate = Some(playstate);
-            state_change = pause_change || seeked;
+            // The explicit command may already have updated the local player
+            // projection. Its semantic mutation still needs an acknowledgement
+            // counter, so a following command can distinguish this response
+            // from unrelated or periodic room state.
+            let explicit_pause_change = local_pause_mutation_intent.is_some_and(|intent| {
+                canonical_paused.is_some_and(|paused| paused != intent.paused)
+            });
+            state_change = pause_change || seeked || explicit_pause_change;
         }
 
         // The response projection above may echo canonical authority while a

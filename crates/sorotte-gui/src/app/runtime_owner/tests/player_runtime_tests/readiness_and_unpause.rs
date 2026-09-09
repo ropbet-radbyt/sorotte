@@ -1564,10 +1564,28 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
         "allowed GUI unpause should emit an immediate paused=false state update"
     );
 
-    session_transport.push_inbound_protocol_line(
-        r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#
-            .to_owned(),
-    );
+    let play_counter = outbound_protocol_lines
+        .iter()
+        .find_map(|line| {
+            let sorotte_protocol::ProtocolMessage::State(payload) =
+                sorotte_protocol::decode_message_line(line).unwrap()
+            else {
+                return None;
+            };
+            payload
+                .state
+                .playstate
+                .as_ref()
+                .filter(|playstate| playstate.paused == Some(false))
+                .and_then(|_| payload.state.ignoring_on_the_fly.as_ref()?.client)
+        })
+        .expect("an explicit Play must request the legacy server acknowledgement");
+    assert!(play_counter > 0);
+    // The server returns the sender's client counter even without Sorotte's
+    // revision extension. An unrelated periodic State is not this echo.
+    session_transport.push_inbound_protocol_line(format!(
+        r#"{{"State":{{"playstate":{{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}},"ignoringOnTheFly":{{"client":{play_counter}}}}}}}"#
+    ));
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert_eq!(
         owner.pending_local_attached_pause_override, None,

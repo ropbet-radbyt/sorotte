@@ -790,7 +790,7 @@ where
                     .emit_causal_state(state.clone())
                     .map_err(client_effect_player_error)?;
                 self.playback_coordination
-                    .record_emitted_local_seek(&self.session, &state);
+                    .record_emitted_local_transport(&self.session, &state);
                 Ok(())
             });
         match result {
@@ -823,7 +823,7 @@ where
     ) -> Result<(), PlayerError> {
         for action in actions {
             if matches!(action, ClientRuntimeAction::SetRoom { .. }) {
-                self.playback_coordination.clear_local_seek_echo();
+                self.playback_coordination.clear_local_transport_echo();
             }
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 let cause = self.system_pause_command_cause(*paused);

@@ -3598,13 +3598,13 @@ done""",
                             "playback_coordination/local_seek.rs"
                         ),
                         "function": (
-                            "RuntimePlaybackCoordination::capture_local_seek_echo"
+                            "RuntimePlaybackCoordination::capture_local_transport_echo"
                         ),
-                        "return_type": "-> Option<LocalSeekEchoCandidate>",
+                        "return_type": "-> Option<LocalTransportEchoCandidate>",
                         "genre": "FnValue",
                         "replacement": "Some(Default::default())",
                         "reason": (
-                            "cargo-mutants requests Default for a Seek acknowledgement "
+                            "cargo-mutants requests Default for a transport acknowledgement "
                             "candidate whose emitted command identity and captured "
                             "client counter are required, so the generated replacement "
                             "cannot type-check"

@@ -481,7 +481,7 @@ impl RuntimePlaybackCoordination {
         current_room: Option<&str>,
     ) {
         if current_room != Some(target_room) {
-            self.clear_local_seek_echo();
+            self.clear_local_transport_echo();
         }
         self.participant_status
             .pending_participant_status_room_switch_target =

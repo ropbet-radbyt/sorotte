@@ -67,6 +67,49 @@ where
         let pending = self
             .playback_coordination
             .pending_participant_status_report(&self.session, force, now_seconds);
+        let causal_pause = self
+            .playback_coordination
+            .active_local_pause_state_mutation_intent(&self.session)
+            .is_some_and(|intent| {
+                state.playstate.as_ref().is_some_and(|playstate| {
+                    playstate.paused == Some(intent.paused)
+                        && playstate.transport_revision().ok().flatten()
+                            == intent.base_transport_revision
+                        && self
+                            .session
+                            .current_room_playstate()
+                            .is_some_and(|canonical| {
+                                canonical
+                                    .paused
+                                    .is_some_and(|paused| paused != intent.paused)
+                            })
+                })
+            });
+        if causal_pause {
+            // Explicit transport changes cannot be coalesced away by a later
+            // heartbeat while the writer is busy. Keep their wire identity
+            // and FIFO delivery just like an explicit Seek.
+            let queued = self
+                .control
+                .queue_connection_scoped_causal_state(state.clone());
+            if queued {
+                self.playback_coordination
+                    .record_emitted_local_transport(&self.session, &state);
+                // Advisory status must retain its independent coalescing and
+                // cancellation rules across room/media changes. Never freeze
+                // it inside a reliable transport command.
+                if let Some(pending) = pending.as_ref() {
+                    let report = StatePayload::new().with_participant_status_v1(
+                        ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
+                    );
+                    if self.control.queue_connection_scoped_state(report) {
+                        self.playback_coordination
+                            .commit_participant_status_report(pending);
+                    }
+                }
+            }
+            return queued;
+        }
         if let Some(pending) = pending.as_ref() {
             state = state.with_participant_status_v1(
                 ParticipantStatusStateExtension::new().with_report(pending.report.clone()),
@@ -221,9 +264,9 @@ where
         self.control.activate_protocol_connection_generation();
         let player_projection_is_current =
             self.refresh_player_projection_before_state_sync(clocks.response_at_seconds);
-        let local_seek_echo = self
+        let local_transport_echo = self
             .playback_coordination
-            .capture_local_seek_echo(&self.session, &inbound_state);
+            .capture_local_transport_echo(&self.session, &inbound_state);
         let inbound_transport_revision = inbound_state
             .playstate
             .as_ref()
@@ -257,7 +300,7 @@ where
                 clocks.received_at_seconds,
             );
             self.playback_coordination
-                .finish_local_seek_echo(&self.session, local_seek_echo);
+                .finish_local_transport_echo(&self.session, local_transport_echo);
             return self.queue_connection_scoped_state_with_participant_status(
                 outbound_state,
                 true,
@@ -280,7 +323,7 @@ where
                 },
             );
         self.playback_coordination
-            .finish_local_seek_echo(&self.session, local_seek_echo);
+            .finish_local_transport_echo(&self.session, local_transport_echo);
         self.queue_connection_scoped_state_with_participant_status(
             outbound_state,
             true,

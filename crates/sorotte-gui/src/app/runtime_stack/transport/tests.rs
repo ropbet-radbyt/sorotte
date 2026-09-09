@@ -159,6 +159,7 @@ fn gui_tcp_rejects_inbound_line_over_max_bytes() {
         .local_addr()
         .expect("oversized-line transport test server should expose its address");
     let (first_line_tx, first_line_rx) = mpsc::channel();
+    let (error_observed_tx, error_observed_rx) = mpsc::channel();
     let server_thread = thread::spawn(move || {
         let (mut stream, _) = listener
             .accept()
@@ -178,7 +179,9 @@ fn gui_tcp_rejects_inbound_line_over_max_bytes() {
         stream
             .write_all(&vec![b'a'; MAX_INBOUND_PROTOCOL_LINE_BYTES + 1])
             .expect("oversized-line transport test server should write the oversized line");
-        thread::sleep(Duration::from_millis(250));
+        // Keep peer closure from competing with the size-limit rejection on
+        // a busy worker, as the adjacent accepted-line fixture already does.
+        let _ = error_observed_rx.recv_timeout(Duration::from_secs(5));
     });
 
     let mut driver = connect_gui_transport_driver(address.port());
@@ -196,6 +199,7 @@ fn gui_tcp_rejects_inbound_line_over_max_bytes() {
         );
         thread::sleep(Duration::from_millis(10));
     };
+    let _ = error_observed_tx.send(());
 
     let first_line = first_line_rx
         .recv_timeout(Duration::from_secs(1))
@@ -203,7 +207,7 @@ fn gui_tcp_rejects_inbound_line_over_max_bytes() {
     assert!(first_line.contains(r#""TLS""#));
     assert!(
         error.contains("inbound protocol line exceeded"),
-        "oversized inbound line should surface a clear transport error"
+        "oversized inbound line should surface a clear transport error; received: {error}"
     );
     assert!(transport.drain_inbound_protocol_lines().is_empty());
 
