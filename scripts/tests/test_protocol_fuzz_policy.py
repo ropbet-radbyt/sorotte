@@ -1228,7 +1228,9 @@ class FuzzToolCanaryTests(unittest.TestCase):
         except (FileNotFoundError, ProcessLookupError):
             # The kernel may reap the killed child before or during the procfs read.
             return
-        self.assertEqual(state, "Z", "owned descendant remained running")
+        # proc_pid_stat(5): X is dead, Z is an exited child awaiting reaping.
+        # A procfs read during final teardown can observe either terminal state.
+        self.assertIn(state, {"Z", "X"}, "owned descendant remained running")
 
     def test_descendant_observation_accepts_process_disappearance(self) -> None:
         for error in (FileNotFoundError(2, "No such file"), ProcessLookupError(3, "No such process")):
@@ -1239,12 +1241,12 @@ class FuzzToolCanaryTests(unittest.TestCase):
                 self.assert_descendant_stopped(status)
 
     def test_descendant_observation_still_rejects_live_processes(self) -> None:
-        for state in ("Z", "R", "S", "D", "T"):
+        for state in ("Z", "X", "R", "S", "D", "T", "t", "I", "P", "W", "?"):
             with self.subTest(state=state):
                 status = mock.Mock(spec=pathlib.Path)
                 status.exists.return_value = True
                 status.read_text.return_value = f"123 (python) {state} 1"
-                if state == "Z":
+                if state in {"Z", "X"}:
                     self.assert_descendant_stopped(status)
                 else:
                     with self.assertRaisesRegex(AssertionError, "owned descendant remained running"):

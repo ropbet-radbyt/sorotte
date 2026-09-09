@@ -61,7 +61,8 @@ class MutationProcessTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
             return
-        self.assertEqual(state, "Z")
+        # Both procfs terminal states are possible while a killed child is reaped.
+        self.assertIn(state, {"Z", "X"})
 
     def test_posix_observation_accepts_absent_or_reaped_pid(self):
         for exists, error in ((False, FileNotFoundError(2, "gone")),
@@ -76,14 +77,14 @@ class MutationProcessTests(unittest.TestCase):
                 path.assert_called_once_with("/proc/123/stat")
                 kill.assert_called_once_with(123, 0)
 
-    def test_posix_observation_accepts_only_zombie_state(self):
-        for state in ("Z", "R", "S", "D", "T"):
+    def test_posix_observation_accepts_only_terminal_states(self):
+        for state in ("Z", "X", "R", "S", "D", "T", "t", "I", "P", "W", "?"):
             with self.subTest(state=state):
                 stat = mock.Mock(spec=pathlib.Path)
                 stat.exists.return_value = True
                 stat.read_text.return_value = f"123 (fixture child) {state} 1"
                 with mock.patch.object(pathlib, "Path", return_value=stat), mock.patch.object(os, "kill") as kill:
-                    if state == "Z":
+                    if state in {"Z", "X"}:
                         self.assert_posix_dead(123)
                     else:
                         with self.assertRaises(AssertionError):

@@ -42,3 +42,12 @@ The implementation has passed local pipeline regressions, default workspace
 tests, all-feature client tests, Clippy, static preflight and workflow validation.
 Hosted acceptance is pending on the current PR; these local checks do not claim
 a completed candidate campaign or publication.
+
+The first hosted revision was stopped by Linux PR preflight: the fuzz cleanup
+canary read procfs state `X` for its killed descendant, but the assertion accepted
+only `Z`. The [Linux process-state contract](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)
+defines `X` as dead and `Z` as zombie. Fuzz and mutation cleanup observations now accept both terminal
+states while still rejecting running, sleeping, stopped, idle and unknown states
+and preserving other procfs read errors. The actual timeout/descendant test
+remains required on Linux. This failure stayed in the open PR; main and release
+were not changed.
