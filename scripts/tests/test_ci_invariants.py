@@ -33,17 +33,34 @@ class WorkflowIdentityTests(unittest.TestCase):
         expected = {(item["workflow"], item["job_id"], item["step_id"]) for item in invariants.contracts()}
         observed = set()
         paths = sorted((invariants.ROOT / ".github/workflows").glob("*.y*ml"))
+        paths.extend(sorted((invariants.ROOT / ".github/actions").rglob("action.y*ml")))
         self.assertTrue(paths)
         for path in paths:
             workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
             scope = invariants.workflow_name(path)
-            jobs = invariants.canonicalize_labels(workflow["jobs"], path)
+            if "jobs" in workflow:
+                definitions = workflow["jobs"]
+            else:
+                self.assertEqual(workflow["runs"]["using"], "composite")
+                definitions = {"composite": workflow["runs"]}
+            jobs = invariants.canonicalize_labels(definitions, path)
             for job_id, job in jobs.items():
                 for step in job.get("steps", []):
                     if "name" in step:
                         self.assertIn("id", step, f"{scope}/{job_id}")
                         observed.add((scope, job_id, step["id"]))
         self.assertEqual(observed, expected)
+
+    def test_composite_step_identity_requires_an_explicit_repository_action_path(self) -> None:
+        path = ".github/actions/windows-playback-qualification/action.yml"
+        self.assertEqual(invariants.workflow_name(path), path)
+        with mock.patch.object(invariants, "contracts", return_value=(entry(path, "composite"),)):
+            jobs = {"composite": sample_jobs()["producer"]}
+            scoped = invariants.canonicalize_labels(jobs, path)
+            self.assertEqual(invariants.by_contract(scoped, "composite", LABEL)["id"], "evidence")
+        for invalid in (".github/actions/../action.yml", "scripts/action.yml", ".github/actions/action.yml"):
+            with self.subTest(path=invalid), self.assertRaises(AssertionError):
+                invariants.workflow_name(invalid)
 
     def test_all_policy_tests_still_pass_after_every_display_step_label_changes(self) -> None:
         # Preserve commands and action-pin comments, replacing only YAML labels.

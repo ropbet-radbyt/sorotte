@@ -169,6 +169,22 @@ class PinUpdateTests(unittest.TestCase):
             with self.subTest(inputs=inputs), self.assertRaises(ValueError):
                 sync.plan(self.root)
 
+    def test_shared_composite_action_pins_remain_reviewed_and_updatable(self):
+        relative = ".github/actions/windows-playback-qualification/action.yml"
+        manifest = verification_tools.pins()
+        original = manifest["actions"]["actions/upload-artifact"]["sha"]
+        self.replace(sync.MANIFEST, original, "c" * 40)
+        changes, _ = sync.plan(self.root)
+        self.assertIn(relative, [change.path for change in changes])
+        sync.write_changes(self.root, changes)
+        action = (self.root / relative).read_text(encoding="utf-8")
+        self.assertIn("actions/upload-artifact@" + "c" * 40, action)
+        self.assertNotIn(original, action)
+        self.assertEqual(sync.plan(self.root)[0], [])
+        self.replace(relative, "actions/upload-artifact@", "unreviewed/action@")
+        with self.assertRaisesRegex(ValueError, "undeclared action"):
+            sync.plan(self.root)
+
     def test_malformed_authority_fails(self):
         self.replace(sync.MANIFEST, 'rust = "' + verification_tools.pins()["tools"]["rust"] + '"',
                      'rust = "stable"')

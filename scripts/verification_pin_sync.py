@@ -195,8 +195,14 @@ class Projection:
             if any(isinstance(token, (yaml.AnchorToken, yaml.AliasToken)) for token in yaml.scan(self.text, Loader=loader)):
                 raise ValueError(f"{self.relative}: YAML aliases need explicit pin locations")
             workflow = mapping(yaml.compose(self.text, Loader=loader))
-            for job in mapping(workflow["jobs"]).values():
-                settings = mapping(job)
+            if "jobs" in workflow:
+                settings_list = [mapping(job) for job in mapping(workflow["jobs"]).values()]
+            else:
+                settings = mapping(workflow["runs"])
+                if settings["using"].value != "composite":
+                    raise ValueError(f"{self.relative}: only composite local actions contain workflow pins")
+                settings_list = [settings]
+            for settings in settings_list:
                 action(settings)
                 if "steps" in settings:
                     if not isinstance(settings["steps"], yaml.SequenceNode):
@@ -245,6 +251,7 @@ def plan(root: Path = ROOT, *, workflows: bool = True) -> tuple[list[Change], li
         paths = sorted(path for path in (root / ".github/workflows").iterdir() if path.suffix in (".yml", ".yaml"))
         if not paths:
             raise ValueError("workflow projections are missing")
+        paths.extend(sorted(path for path in (root / ".github/actions").rglob("*") if path.name in {"action.yml", "action.yaml"}))
         for path in paths:
             file(path.relative_to(root).as_posix()).workflow(manifest)
     return ([change for projection in projections.values() if (change := projection.change())],

@@ -9,6 +9,13 @@ path ran. It has no dependency on publication or interactive release
 authorization. This prevents the main approval graph from waiting on a
 publication job that itself needs main approval.
 
+The required native PR job builds default-feature release binaries and exercises
+the same Windows playback qualification action used below, including real-mpv
+HTTP faults/stalls, process recovery and second-client status. A failed or skipped
+suite blocks `native-required`. This brings those regressions before merge while
+preserving maintainer-authorized, isolated desktop execution. PR-head evidence
+cannot qualify the different merge/tag source or authorize publication.
+
 Publication requires the dedicated Administration-read GitHub App described in
 [protection reader setup](PROTECTION_READER_SETUP.md). The normal workflow token
 continues to query checks and artifacts. Only protection authorization receives a

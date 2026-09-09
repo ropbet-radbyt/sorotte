@@ -239,6 +239,14 @@ requires GitHub to report one successful physical Windows job from
 `gui-native-interactive.yml` at that exact source and attempt; local reports,
 diagnostic exports, older sources and equal trees cannot satisfy it.
 
+That physical job runs both the strict native GUI inventory and the shared
+Windows release playback action before it can pass. The latter builds the
+default-feature release executables, exercises all four real-mpv lifecycle modes
+and the second-client status composition, and attests their exact digests. The
+release workflow calls the same action so the two suites cannot drift through
+separate command lists. Its failure or skip is enforced by the native job's final
+outcome check. No publication occurs during this PR qualification.
+
 Main pushes automatically run hosted applicability before queueing their
 native job. This has no dependency on release authorization and does not
 expose an arbitrary PR checkout to a self-hosted runner. PR candidates use

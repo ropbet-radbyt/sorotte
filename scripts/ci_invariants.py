@@ -28,8 +28,10 @@ class ContractJobs(dict):
 def workflow_name(path: str | Path) -> str:
     path = Path(path)
     name = path.relative_to(ROOT).as_posix() if path.is_absolute() else path.as_posix()
-    if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_-]+\.ya?ml", name):
-        raise AssertionError("step contracts require an explicit repository workflow path")
+    if not re.fullmatch(
+        r"\.github/(?:workflows/[A-Za-z0-9_-]+\.ya?ml|actions/(?:[A-Za-z0-9_-]+/)+action\.ya?ml)", name
+    ):
+        raise AssertionError("step contracts require an explicit repository workflow or composite action path")
     return name
 
 

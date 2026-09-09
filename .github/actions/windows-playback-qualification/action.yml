@@ -1,0 +1,233 @@
+name: Qualify Windows release playback
+description: Build and exercise the exact release candidate against real mpv and second-client status.
+inputs:
+  candidate_sha:
+    description: Exact checked-out source commit.
+    required: true
+  channel:
+    description: Release channel included in the candidate input closure.
+    required: true
+outputs:
+  vertical:
+    description: Outcome of the vertical obligation.
+    value: ${{ steps.vertical.outcome }}
+  http_fault:
+    description: Outcome of the http_fault obligation.
+    value: ${{ steps.http_fault.outcome }}
+  http_stall:
+    description: Outcome of the http_stall obligation.
+    value: ${{ steps.http_stall.outcome }}
+  recovery:
+    description: Outcome of the recovery obligation.
+    value: ${{ steps.recovery.outcome }}
+  status:
+    description: Outcome of the status obligation.
+    value: ${{ steps.status.outcome }}
+  attestation:
+    description: Outcome of the attestation obligation.
+    value: ${{ steps.attestation.outcome }}
+runs:
+  using: composite
+  steps:
+    - name: Bind shared playback qualification to the checked-out candidate
+      id: context
+      shell: pwsh
+      env:
+        REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      run: |
+        $source = git rev-parse HEAD
+        if ($LASTEXITCODE -ne 0 -or $source -cne $env:REQUESTED_CANDIDATE_SHA -or $source -cne $env:GITHUB_SHA) {
+            throw "shared playback qualification requires the exact workflow source"
+        }
+        "CANDIDATE_SHA=$source" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+        "CANDIDATE_DIR=target/playback-release-candidate/windows-x86_64" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Download and verify pinned supported Windows media tools
+      id: ci_download_and_verify_pinned_supported_w_e01a4873
+      shell: pwsh
+      env:
+        MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-08-30-e8673660ab/mpv-x86_64-20260830-git-e8673660ab.7z
+        MPV_ARCHIVE_SHA256: 6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879
+        MPV_BINARY_SHA256: 547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe
+        FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-full_build.7z
+        FFMPEG_ARCHIVE_SHA256: 4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96
+        FFMPEG_BINARY_SHA256: 57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = "Stop"
+        $tools = Join-Path $PWD "target\playback-release-tools"
+        $null = New-Item -ItemType Directory -Force -Path $tools
+        $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+        $mpvArchive = Join-Path $tools "mpv.7z"
+        $ffmpegArchive = Join-Path $tools "ffmpeg.7z"
+        Invoke-WebRequest -Uri $env:MPV_ARCHIVE_URL -OutFile $mpvArchive
+        Invoke-WebRequest -Uri $env:FFMPEG_ARCHIVE_URL -OutFile $ffmpegArchive
+        if ((Get-FileHash -LiteralPath $mpvArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:MPV_ARCHIVE_SHA256) {
+            throw "downloaded mpv archive digest differs from pinned identity"
+        }
+        if ((Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FFMPEG_ARCHIVE_SHA256) {
+            throw "downloaded FFmpeg archive digest differs from pinned identity"
+        }
+        & $sevenZip x $mpvArchive "-o$(Join-Path $tools 'mpv')" -y | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "mpv extraction failed" }
+        & $sevenZip x $ffmpegArchive "-o$(Join-Path $tools 'ffmpeg')" -y | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "FFmpeg extraction failed" }
+        $mpv = @(Get-ChildItem -LiteralPath (Join-Path $tools "mpv") -Recurse -File -Filter mpv.exe)
+        $ffmpeg = @(Get-ChildItem -LiteralPath (Join-Path $tools "ffmpeg") -Recurse -File -Filter ffmpeg.exe)
+        if ($mpv.Count -ne 1 -or $ffmpeg.Count -ne 1) {
+            throw "supported media tool extraction did not produce one exact binary each"
+        }
+        if ((Get-FileHash -LiteralPath $mpv[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:MPV_BINARY_SHA256) {
+            throw "extracted mpv binary digest differs from pinned identity"
+        }
+        if ((Get-FileHash -LiteralPath $ffmpeg[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:FFMPEG_BINARY_SHA256) {
+            throw "extracted FFmpeg binary digest differs from pinned identity"
+        }
+        "MPV_PATH=$($mpv[0].FullName)" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+        "FFMPEG_PATH=$($ffmpeg[0].FullName)" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+        "MPV_BINARY_SHA256=$env:MPV_BINARY_SHA256" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+        "FFMPEG_BINARY_SHA256=$env:FFMPEG_BINARY_SHA256" | Out-File -LiteralPath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Validate closed lifecycle declarations and harness contracts
+      id: ci_validate_closed_lifecycle_declarations_3e5046ad
+      shell: pwsh
+      run: |
+        python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        python -m unittest `
+          scripts.tests.test_gui_real_mpv_vertical_contract `
+          scripts.tests.test_playback_status_system `
+          scripts.tests.test_playback_release_gate
+
+    - name: Build Windows native qualification driver
+      id: ci_build_windows_native_qualification_dri_0ee89fd3
+      shell: pwsh
+      run: cargo build --locked -p sorotte-gui --features gui-native-smoke --bin sorotte-gui-native-smoke
+
+    - name: Capture Windows release build inputs
+      id: ci_capture_windows_release_build_inputs_1a15d757
+      shell: pwsh
+      run: |
+        python scripts/release_qualification.py inputs `
+          --candidate-sha $env:CANDIDATE_SHA --platform windows-x86_64 --channel "${{ inputs.channel }}" `
+          --tool "mpv=$env:MPV_PATH" --tool "ffmpeg=$env:FFMPEG_PATH" `
+          --tool native-harness=target/debug/sorotte-gui-native-smoke.exe `
+          --output target/playback-release-build-inputs.json
+
+    - name: Build exact Windows release candidates and native driver
+      id: ci_build_exact_windows_release_candidates_aa822db1
+      shell: pwsh
+      run: |
+        cargo build --locked --release -p sorotte-server -p sorotte-cli
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        cargo build --locked --release -p sorotte-gui --bin sorotte-gui --bin sorotte-gui-updater
+
+    - name: Seal immutable Windows candidate bundle
+      id: ci_seal_immutable_windows_candidate_bundl_103603d7
+      shell: pwsh
+      run: |
+        python scripts/playback_release_gate.py bundle `
+          --candidate-sha $env:CANDIDATE_SHA `
+          --platform windows-x86_64 `
+          --channel "${{ inputs.channel }}" `
+          --input-manifest target/playback-release-build-inputs.json `
+          --artifact server=target/release/sorotte-server.exe `
+          --artifact client=target/release/sorotte-cli.exe `
+          --artifact gui=target/release/sorotte-gui.exe `
+          --artifact gui-updater=target/release/sorotte-gui-updater.exe `
+          --output-dir $env:CANDIDATE_DIR
+
+    - name: Upload immutable Windows release bundle
+      id: ci_upload_immutable_windows_release_bundl_9a557991
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-bundle-windows-x86_64-${{ inputs.candidate_sha }}
+        path: ${{ env.CANDIDATE_DIR }}
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - name: Upload Windows approved build input record
+      id: ci_upload_windows_approved_build_input_re_9b15bdce
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: release-input-record-windows-x86_64-${{ inputs.candidate_sha }}
+        path: ${{ env.CANDIDATE_DIR }}/candidate-manifest.json
+        if-no-files-found: error
+        retention-days: 90
+        overwrite: true
+
+    - name: Run exact GUI baseline and terminal fault modes
+      id: vertical
+      shell: pwsh
+      run: |
+        python scripts/native_harness_canary.py --output target/verification/native-harness-readiness.json
+        if ($LASTEXITCODE -ne 0) { throw "Native fixture readiness failed" }
+        ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000
+
+    - name: Run exact GUI HTTP failure recovery
+      id: http_fault
+      shell: pwsh
+      run: |
+        ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseFaultingHttpRecovery
+
+    - name: Run exact GUI stalled HTTP boundary
+      id: http_stall
+      shell: pwsh
+      run: |
+        ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 50000 -ExerciseStalledHttp
+
+    - name: Run exact GUI owned-process recovery
+      id: recovery
+      shell: pwsh
+      run: |
+        ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000 -ExerciseOwnedMpvRecovery
+
+    - name: Run exact second-client native participant status composition
+      id: status
+      shell: pwsh
+      run: |
+        python scripts/playback_status_system.py `
+          --server target/release/sorotte-server.exe `
+          --client target/release/sorotte-cli.exe `
+          --gui target/release/sorotte-gui.exe `
+          --native-harness target/debug/sorotte-gui-native-smoke.exe `
+          --mpv $env:MPV_PATH `
+          --artifact-dir target/verification/playback-status-release `
+          --candidate-sha $env:CANDIDATE_SHA
+
+    - name: Attest exact Windows suite and candidate digests
+      id: attestation
+      shell: pwsh
+      run: |
+        $baseline = @(Get-ChildItem target/verification/gui-real-mpv-vertical -Recurse -File -Filter contract-summary.json)
+        $faulting = @(Get-ChildItem target/verification/gui-real-mpv-faulting-http-recovery -Recurse -File -Filter contract-summary.json)
+        $stalled = @(Get-ChildItem target/verification/gui-real-mpv-stalled-http -Recurse -File -Filter contract-summary.json)
+        $owned = @(Get-ChildItem target/verification/gui-real-mpv-owned-process-recovery -Recurse -File -Filter contract-summary.json)
+        if ($baseline.Count -ne 1 -or $faulting.Count -ne 1 -or $stalled.Count -ne 1 -or $owned.Count -ne 1) {
+            throw "exact-GUI release summary inventory is not one per required mode"
+        }
+        python scripts/playback_release_gate.py attest-windows `
+          --bundle-dir $env:CANDIDATE_DIR `
+          --candidate-sha $env:CANDIDATE_SHA `
+          --status-report target/verification/playback-status-release/playback-status-system-report.json `
+          --vertical-summary "baseline=$($baseline[0].FullName)" `
+          --vertical-summary "faulting-http=$($faulting[0].FullName)" `
+          --vertical-summary "stalled-http=$($stalled[0].FullName)" `
+          --vertical-summary "owned-process-recovery=$($owned[0].FullName)" `
+          --mpv $env:MPV_PATH `
+          --ffmpeg $env:FFMPEG_PATH `
+          --expected-mpv-sha256 $env:MPV_BINARY_SHA256 `
+          --expected-ffmpeg-sha256 $env:FFMPEG_BINARY_SHA256 `
+          --model coverage/playback-lifecycle.toml `
+          --output target/verification/playback-status-release/platform-gate.json
+
+    - name: Upload Windows platform lifecycle attestation
+      id: ci_upload_windows_platform_lifecycle_atte_09ec89b8
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
+        path: target/verification/playback-status-release/platform-gate.json
+        if-no-files-found: error
+        retention-days: 30
+        overwrite: true

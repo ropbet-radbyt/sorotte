@@ -2,6 +2,102 @@
   "schema_version": 1,
   "steps": [
     {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "context",
+      "display_name": "Bind shared playback qualification to the checked-out candidate"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_download_and_verify_pinned_supported_w_e01a4873",
+      "display_name": "Download and verify pinned supported Windows media tools"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_validate_closed_lifecycle_declarations_3e5046ad",
+      "display_name": "Validate closed lifecycle declarations and harness contracts"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_build_windows_native_qualification_dri_0ee89fd3",
+      "display_name": "Build Windows native qualification driver"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_capture_windows_release_build_inputs_1a15d757",
+      "display_name": "Capture Windows release build inputs"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_build_exact_windows_release_candidates_aa822db1",
+      "display_name": "Build exact Windows release candidates and native driver"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_seal_immutable_windows_candidate_bundl_103603d7",
+      "display_name": "Seal immutable Windows candidate bundle"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_upload_immutable_windows_release_bundl_9a557991",
+      "display_name": "Upload immutable Windows release bundle"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_upload_windows_approved_build_input_re_9b15bdce",
+      "display_name": "Upload Windows approved build input record"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "vertical",
+      "display_name": "Run exact GUI baseline and terminal fault modes"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "http_fault",
+      "display_name": "Run exact GUI HTTP failure recovery"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "http_stall",
+      "display_name": "Run exact GUI stalled HTTP boundary"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "recovery",
+      "display_name": "Run exact GUI owned-process recovery"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "status",
+      "display_name": "Run exact second-client native participant status composition"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "attestation",
+      "display_name": "Attest exact Windows suite and candidate digests"
+    },
+    {
+      "workflow": ".github/actions/windows-playback-qualification/action.yml",
+      "job_id": "composite",
+      "step_id": "ci_upload_windows_platform_lifecycle_atte_09ec89b8",
+      "display_name": "Upload Windows platform lifecycle attestation"
+    },
+    {
       "workflow": ".github/workflows/dependency-policy.yml",
       "job_id": "selection",
       "step_id": "ci_checkout_exact_candidate_f2157bd5",
@@ -216,6 +312,12 @@
       "job_id": "native_interactive",
       "step_id": "display",
       "display_name": "Validate measured native display profile"
+    },
+    {
+      "workflow": ".github/workflows/gui-native-interactive.yml",
+      "job_id": "native_interactive",
+      "step_id": "playback",
+      "display_name": "Qualify release playback before merge"
     },
     {
       "workflow": ".github/workflows/gui-native-interactive.yml",
@@ -502,92 +604,8 @@
     {
       "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
       "job_id": "windows-candidate",
-      "step_id": "ci_download_and_verify_pinned_supported_w_e01a4873",
-      "display_name": "Download and verify pinned supported Windows media tools"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_validate_closed_lifecycle_declarations_3e5046ad",
-      "display_name": "Validate closed lifecycle declarations and harness contracts"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_build_windows_native_qualification_dri_0ee89fd3",
-      "display_name": "Build Windows native qualification driver"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_capture_windows_release_build_inputs_1a15d757",
-      "display_name": "Capture Windows release build inputs"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_build_exact_windows_release_candidates_aa822db1",
-      "display_name": "Build exact Windows release candidates and native driver"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_seal_immutable_windows_candidate_bundl_103603d7",
-      "display_name": "Seal immutable Windows candidate bundle"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_upload_immutable_windows_release_bundl_9a557991",
-      "display_name": "Upload immutable Windows release bundle"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_upload_windows_approved_build_input_re_9b15bdce",
-      "display_name": "Upload Windows approved build input record"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "vertical",
-      "display_name": "Run exact GUI baseline and terminal fault modes"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "http_fault",
-      "display_name": "Run exact GUI HTTP failure recovery"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "http_stall",
-      "display_name": "Run exact GUI stalled HTTP boundary"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "recovery",
-      "display_name": "Run exact GUI owned-process recovery"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "status",
-      "display_name": "Run exact second-client native participant status composition"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "attestation",
-      "display_name": "Attest exact Windows suite and candidate digests"
-    },
-    {
-      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
-      "job_id": "windows-candidate",
-      "step_id": "ci_upload_windows_platform_lifecycle_atte_09ec89b8",
-      "display_name": "Upload Windows platform lifecycle attestation"
+      "step_id": "playback",
+      "display_name": "Qualify the exact Windows release playback candidate"
     },
     {
       "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
