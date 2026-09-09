@@ -9727,17 +9727,153 @@ fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo()
                     author,
                     echo_before_player,
                     playback_progress,
+                    false,
+                    false,
                 );
             }
         }
     }
 }
 
-fn assert_local_play_survives_seek_preparation_echo(
-    author: &str,
-    echo_before_player: bool,
-    playback_progress: f64,
-) {
+#[test]
+fn attached_local_play_waits_for_split_transport_evidence_after_canonical_echo() {
+    for author in ["alice", "bob"] {
+        assert_local_play_survives_seek_preparation_echo(author, true, 0.0, true, false);
+    }
+}
+
+#[test]
+fn attached_local_play_supersedes_nonseekable_seek_hold_after_canonical_echo() {
+    for author in ["alice", "bob"] {
+        for echo_before_player in [false, true] {
+            for split_transport_evidence in [false, true] {
+                assert_local_play_survives_seek_preparation_echo(
+                    author,
+                    echo_before_player,
+                    0.0,
+                    split_transport_evidence,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+fn acknowledged_play_waiting_for_split_evidence(
+    nonseekable: bool,
+) -> ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl> {
+    let mut runtime = local_play_with_seek_echo(nonseekable);
+    runtime.session_mut().apply_message_json_at(
+        r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
+        0.115,
+    ).unwrap();
+    runtime.reconcile_external_player_playback(0.115);
+    runtime.observe_external_player_transport(
+        PlayerTransportTelemetryUpdate::new(
+            PlayerMediaGeneration::new(1),
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(0.116)),
+        )
+        .with_logical_pause(false),
+        0.116,
+    );
+    runtime.reconcile_external_player_playback(0.117);
+    assert_eq!(
+        runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(false)
+    );
+    runtime
+}
+
+#[test]
+fn acknowledged_play_handoff_cannot_retain_authority_without_transport_evidence() {
+    for nonseekable in [false, true] {
+        let mut runtime = acknowledged_play_waiting_for_split_evidence(nonseekable);
+        runtime.reconcile_external_player_playback(1.9);
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            Some(false)
+        );
+        let expired = runtime.reconcile_external_player_playback(2.118);
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            None
+        );
+        // A late position sample is still no proof that transport started.
+        // Do not introduce a new native Play gesture after the intent expired.
+        let corrections = runtime.observe_external_player_transport(
+            PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.12)),
+            )
+            .with_position_seconds(0.02),
+            2.12,
+        );
+        assert!(
+            expired.iter().chain(&corrections).any(|action| matches!(
+                action,
+                PlaybackCoordinatorAction::Execute {
+                    command: CoordinatorPlayerCommand::SetPaused(true),
+                    ..
+                }
+            )),
+            "unproven or displaced playback must return to normal coordination after the bounded handoff: nonseekable={nonseekable}, expired={expired:?}, corrections={corrections:?}, snapshot={:?}",
+            runtime.playback_coordination_snapshot()
+        );
+        assert_eq!(
+            runtime
+                .playback_coordination_snapshot()
+                .pending_local_pause_intent,
+            None
+        );
+    }
+}
+
+#[test]
+fn acknowledged_play_handoff_cannot_override_a_later_room_pause_or_seek() {
+    for nonseekable in [false, true] {
+        for seek in [false, true] {
+            let mut runtime = acknowledged_play_waiting_for_split_evidence(nonseekable);
+            runtime
+                .session_mut()
+                .apply_message_json_at(
+                    &serde_json::json!({"State": {"playstate": {
+                        "position": if seek { 50.0 } else { 0.0 },
+                        "paused": !seek, "doSeek": seek, "setBy": "bob",
+                    }}})
+                    .to_string(),
+                    0.118,
+                )
+                .unwrap();
+            let corrections = runtime.reconcile_external_player_playback(0.118);
+            assert_eq!(
+                runtime
+                    .playback_coordination_snapshot()
+                    .pending_local_pause_intent,
+                None
+            );
+            assert!(
+                corrections.iter().any(|action| matches!(
+                    action,
+                    PlaybackCoordinatorAction::Execute {
+                        command: CoordinatorPlayerCommand::SetPaused(true),
+                        ..
+                    }
+                )),
+                "a later canonical decision must supersede the already acknowledged Play immediately: {corrections:?}"
+            );
+        }
+    }
+}
+
+fn local_play_with_seek_echo(
+    nonseekable: bool,
+) -> ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl> {
     let mut session = ClientSession::default();
     session
         .apply_message_json_at(
@@ -9759,10 +9895,9 @@ fn assert_local_play_survives_seek_preparation_echo(
         0.0,
     );
     runtime.reconcile_external_player_playback(0.0);
-    runtime.observe_external_player_transport(
-        paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 0.0),
-        0.0,
-    );
+    let mut initial = paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 0.0);
+    initial.seekable = Some(!nonseekable);
+    runtime.observe_external_player_transport(initial, 0.0);
 
     let staged = runtime.stage_external_player_pause_intent(false, 0.1);
     assert!(!has_pause_play_or_seek(&staged));
@@ -9781,13 +9916,35 @@ fn assert_local_play_survives_seek_preparation_echo(
         .expect("the local seek echo should apply before the Play echo");
     let seek_echo = runtime.reconcile_external_player_playback(0.11);
     assert!(!has_pause_play_or_seek(&seek_echo));
-    assert!(
-        runtime
-            .playback_coordination_snapshot()
-            .seek_preparation
-            .is_some(),
-        "the network seek echo should reproduce the preparation window"
-    );
+    if nonseekable {
+        assert_eq!(
+            runtime
+                .playback_coordination
+                .coordinator
+                .last_seek_preparation_terminal_outcome(),
+            Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::NonSeekable
+            )),
+        );
+    } else {
+        assert!(
+            runtime
+                .playback_coordination_snapshot()
+                .seek_preparation
+                .is_some()
+        );
+    }
+    runtime
+}
+
+fn assert_local_play_survives_seek_preparation_echo(
+    author: &str,
+    echo_before_player: bool,
+    playback_progress: f64,
+    split_transport_evidence: bool,
+    nonseekable: bool,
+) {
+    let mut runtime = local_play_with_seek_echo(nonseekable);
 
     let play_echo_wire = serde_json::json!({
         "State": {"playstate": {
@@ -9802,15 +9959,26 @@ fn assert_local_play_survives_seek_preparation_echo(
             .unwrap();
         runtime.reconcile_external_player_playback(0.115 + playback_progress);
     }
-    let observed_play = runtime.observe_external_player_transport(
-        transport(
-            1,
-            0.12 + playback_progress,
-            PlayerTransportPhase::Playing,
-            playback_progress,
-        ),
+    if split_transport_evidence {
+        runtime.observe_external_player_transport(
+            PlayerTransportTelemetryUpdate::new(
+                PlayerMediaGeneration::new(1),
+                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(0.116)),
+            )
+            .with_logical_pause(false),
+            0.116,
+        );
+        runtime.reconcile_external_player_playback(0.117);
+    }
+    let mut playing = transport(
+        1,
         0.12 + playback_progress,
+        PlayerTransportPhase::Playing,
+        playback_progress,
     );
+    playing.seekable = Some(!nonseekable);
+    let observed_play =
+        runtime.observe_external_player_transport(playing, 0.12 + playback_progress);
     assert!(
         !observed_play.iter().any(|action| matches!(
             action,
@@ -9836,15 +10004,15 @@ fn assert_local_play_survives_seek_preparation_echo(
             .unwrap();
     }
     let play_echo = runtime.reconcile_external_player_playback(0.13 + playback_progress);
-    let continued_play = runtime.observe_external_player_transport(
-        transport(
-            1,
-            0.14 + playback_progress,
-            PlayerTransportPhase::Playing,
-            0.02 + playback_progress,
-        ),
+    let mut continued = transport(
+        1,
         0.14 + playback_progress,
+        PlayerTransportPhase::Playing,
+        0.02 + playback_progress,
     );
+    continued.seekable = Some(!nonseekable);
+    let continued_play =
+        runtime.observe_external_player_transport(continued, 0.14 + playback_progress);
     assert!(
         !play_echo
             .iter()
