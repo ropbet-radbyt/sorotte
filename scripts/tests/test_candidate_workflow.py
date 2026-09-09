@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import yaml
+
+from scripts import compat_live_interop
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALIFIERS = {
@@ -125,6 +134,12 @@ def validate(value):
     assert "if" not in step(job, "promote")
     for path in (*PR_WORKFLOWS, "gui-native-interactive.yml", "sorotte-gui-release.yml"):
         assert "push" not in value[path]["on"]
+    for path in PR_WORKFLOWS:
+        assert value[path]["env"]["VERIFICATION_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+        for job in value[path]["jobs"].values():
+            for item in job.get("steps", []):
+                assert "GITHUB_SHA" not in item.get("run", ""), (path, item.get("id"))
+                assert "github.sha" not in item.get("run", ""), (path, item.get("id"))
     for job in value["rust-mutation.yml"]["jobs"].values():
         for item in job.get("steps", []):
             if "FULL" in item.get("env", {}):
@@ -169,6 +184,7 @@ class CandidateWorkflowTests(unittest.TestCase):
             "stale-container-authority": lambda w: step(w["publish-server-container.yml"]["jobs"]["publish"], "reauthorize_publication").update({"if": "false"}),
             "unbounded-mutation-concurrency": lambda w: w["rust-mutation.yml"]["jobs"]["mutation"]["strategy"].pop("max-parallel"),
             "sha-version-label": lambda w: step(w["qualify-server-container.yml"]["jobs"]["qualify"], "meta")["with"].update(labels="org.opencontainers.image.revision=${{ github.sha }}"),
+            "merge-instead-of-head": lambda w: step(w["rust-ci.yml"]["jobs"]["mpv-pr-semantics"], "ci_verify_sorotte_candidate_revision_03e2dbaf").update(run='test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'),
         }
         original = workflows()
         for name, mutate in defects.items():
@@ -178,6 +194,84 @@ class CandidateWorkflowTests(unittest.TestCase):
                 self.assertNotEqual(changed, original)
                 with self.assertRaises(AssertionError):
                     validate(changed)
+
+
+class PullRequestSourceCommandTests(unittest.TestCase):
+    """Exercise source propagation with different real head and event commits."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix="candidate-source-")
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.environment = {key: value for key, value in os.environ.items()
+                            if not key.startswith("GIT_") and key != "VERIFICATION_SHA"}
+        self.environment.update({
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": self.root.as_posix(),
+            "GIT_AUTHOR_NAME": "Source fixture", "GIT_AUTHOR_EMAIL": "source@example.invalid",
+            "GIT_COMMITTER_NAME": "Source fixture", "GIT_COMMITTER_EMAIL": "source@example.invalid",
+        })
+        self.git("init", "--quiet", "--template=", ".")
+        self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Reviewed PR head")
+        self.head = self.git("rev-parse", "HEAD")
+        self.git("-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Different event commit")
+        self.event_sha = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(self.head, self.event_sha)
+        self.git("checkout", "--quiet", "--detach", self.head)
+        self.environment.update(GITHUB_SHA=self.event_sha, VERIFICATION_SHA=self.head)
+
+    def git(self, *arguments):
+        result = subprocess.run(["git", *arguments], cwd=self.root, env=self.environment,
+                                capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_live_interop_uses_selected_head_and_rejects_invalid_or_wrong_selections(self):
+        expected = {"commit_sha": self.head, "expected_commit_sha": self.head}
+        self.assertEqual(compat_live_interop.verify_source(self.root, self.environment), expected)
+        for selected in ("", "bad", self.event_sha):
+            with self.subTest(selected=selected):
+                with self.assertRaises(compat_live_interop.InteropContractError):
+                    compat_live_interop.verify_source(
+                        self.root, {**self.environment, "GITHUB_SHA": self.head, "VERIFICATION_SHA": selected})
+        fallback = {key: value for key, value in self.environment.items() if key != "VERIFICATION_SHA"}
+        with self.assertRaises(compat_live_interop.InteropContractError):
+            compat_live_interop.verify_source(self.root, fallback)
+        fallback["GITHUB_SHA"] = self.head
+        self.assertEqual(compat_live_interop.verify_source(self.root, fallback), expected)
+        fallback.pop("GITHUB_SHA")
+        self.assertEqual(compat_live_interop.verify_source(self.root, fallback), expected)
+
+    def test_actual_mpv_workflow_checks_and_passes_the_selected_head(self):
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = Path(shutil.which("git"))
+            bash = next((str(path) for path in (git.parent / "bash.exe", git.parent.parent / "bin/bash.exe")
+                         if path.is_file()), None)
+        if not bash:
+            self.skipTest("Bash is unavailable; the Linux PR worker requires it")
+        job = workflows()["rust-ci.yml"]["jobs"]["mpv-pr-semantics"]
+        guard = step(job, "ci_verify_sorotte_candidate_revision_03e2dbaf")["run"]
+        for source, passed in ((self.head, True), (self.event_sha, False)):
+            result = subprocess.run([bash, "-e", "-c", guard], cwd=self.root,
+                                    env={**self.environment, "VERIFICATION_SHA": source},
+                                    capture_output=True, text=True, encoding="utf-8", timeout=15)
+            self.assertEqual(result.returncode == 0, passed, result.stderr)
+
+        # Capture the application's actual argv at the process boundary without
+        # substituting shell expansion or running the expensive player suite.
+        script = self.root / "scripts/playback_lifecycle_system.py"
+        script.parent.mkdir()
+        script.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+        python = shlex.quote(Path(sys.executable).as_posix())
+        lifecycle = next(item for item in job["steps"] if item.get("id") == "playback_lifecycle_system")
+        command = f'python3() {{ {python} "$@"; }}\n' + lifecycle["run"]
+        result = subprocess.run([bash, "-e", "-c", command], cwd=self.root, env=self.environment,
+                                capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout)
+        self.assertEqual(arguments[arguments.index("--candidate-sha") + 1], self.head)
 
 
 if __name__ == "__main__":

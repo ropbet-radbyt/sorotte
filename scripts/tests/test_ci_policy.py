@@ -557,7 +557,7 @@ class CiPolicyTests(unittest.TestCase):
             jobs,
             "mpv-pr-semantics",
             "Verify Sorotte candidate revision",
-            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$GITHUB_SHA\"",
+            "test \"$(git rev-parse 'HEAD^{commit}')\" = \"$VERIFICATION_SHA\"",
         )
         self.assert_exact_run(
             jobs,
@@ -576,7 +576,7 @@ class CiPolicyTests(unittest.TestCase):
               --mpv target/mpv-supported/build/mpv \
               --ffmpeg ffmpeg \
               --artifact-dir target/verification/playback-lifecycle-system \
-              --candidate-sha "$GITHUB_SHA"
+              --candidate-sha "$VERIFICATION_SHA"
             """,
             continue_on_error="true",
         )

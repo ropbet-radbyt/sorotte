@@ -1367,7 +1367,7 @@ jobs:
 
       - name: Verify Sorotte candidate revision
         id: ci_verify_sorotte_candidate_revision_03e2dbaf
-        run: test "$(git rev-parse 'HEAD^{commit}')" = "$GITHUB_SHA"
+        run: test "$(git rev-parse 'HEAD^{commit}')" = "$VERIFICATION_SHA"
 
       - name: Build packaged playback lifecycle candidates
         id: ci_build_packaged_playback_lifecycle_cand_2e5b88d5
@@ -1383,7 +1383,7 @@ jobs:
             --mpv target/mpv-supported/build/mpv \
             --ffmpeg ffmpeg \
             --artifact-dir target/verification/playback-lifecycle-system \
-            --candidate-sha "$GITHUB_SHA"
+            --candidate-sha "$VERIFICATION_SHA"
 
       - name: Validate and stage privacy-safe lifecycle evidence
         id: playback_lifecycle_evidence
