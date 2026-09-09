@@ -38,6 +38,66 @@ fn reconcile(
 }
 
 #[test]
+fn command_acknowledgements_are_independent_of_optimistic_player_pause() {
+    for revision in [None, Some(12)] {
+        for canonical_paused in [false, true] {
+            for previous_player_paused in [false, true] {
+                for requested_pause in [None, Some(false), Some(true)] {
+                    for seek in [false, true] {
+                        let mut session = joined_session();
+                        session
+                            .apply_protocol_message_at(
+                                ProtocolMessage::state(state(
+                                    revision,
+                                    10.0,
+                                    canonical_paused,
+                                    false,
+                                )),
+                                2.0,
+                            )
+                            .unwrap();
+                        session.model.playback.local_position = Some(10.0);
+                        session.model.playback.local_paused = Some(previous_player_paused);
+                        let observed_pause = requested_pause.unwrap_or(!canonical_paused);
+                        let response = reconcile(
+                            &mut session,
+                            StatePayload::new(),
+                            if seek { 14.0 } else { 10.0 },
+                            observed_pause,
+                            2.1,
+                            requested_pause.map(|paused| LocalPauseMutationIntent {
+                                paused,
+                                base_transport_revision: revision,
+                            }),
+                        );
+                        let playstate = response.playstate.as_ref().unwrap();
+                        assert_eq!(
+                            playstate.paused,
+                            Some(requested_pause.unwrap_or(canonical_paused)),
+                            "an observation alone cannot author a room pause change"
+                        );
+                        assert_eq!(playstate.do_seek == Some(true), seek);
+                        let counter = (seek
+                            || requested_pause.is_some_and(|paused| paused != canonical_paused))
+                        .then_some(1);
+                        assert_eq!(
+                            response
+                                .ignoring_on_the_fly
+                                .as_ref()
+                                .and_then(|ignore| ignore.client),
+                            counter,
+                            "revision={revision:?}, canonical={canonical_paused}, previous player={previous_player_paused}, request={requested_pause:?}, seek={seek}"
+                        );
+                        assert_eq!(session.client_ignoring_on_the_fly(), counter.unwrap_or(0));
+                        assert_eq!(session.model.playback.local_paused, Some(observed_pause));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn ping_and_sampled_reconciliation_reject_retired_revisions_without_poisoning_evidence() {
     for ping_only in [true, false] {
         for baseline in [None, Some(12)] {

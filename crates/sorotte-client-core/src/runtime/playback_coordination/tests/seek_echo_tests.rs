@@ -1,6 +1,411 @@
 use super::*;
 
+#[test]
+fn a_new_pause_survives_the_delayed_acknowledgement_of_its_prior_play() {
+    let mut fixture = SeekFixture::new();
+    assert!(fixture.runtime.run_set_paused(false).unwrap());
+    fixture.queue_observation(false, 0.1);
+    assert!(
+        fixture
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(false)
+    );
+    let play = fixture.take_response();
+    assert_eq!(play.playstate.as_ref().unwrap().paused, Some(false));
+    let counter = play
+        .ignoring_on_the_fly
+        .as_ref()
+        .and_then(|ignore| ignore.client);
+    let mut acknowledgement = IgnoringOnTheFlyPayload::new().with_server(1);
+    if let Some(counter) = counter {
+        acknowledgement = acknowledgement.with_client(counter);
+    }
+
+    // The server has accepted Play, but its echo has not yet reached this
+    // controller when the user presses Pause. The new command is based on
+    // the preceding revision until that exact acknowledgement arrives.
+    assert!(fixture.runtime.run_set_paused(true).unwrap());
+    fixture.queue_observation(true, 0.1);
+    fixture.reconcile(
+        StatePayload::new()
+            .with_playstate(
+                PlaystatePayload::new()
+                    .with_position(0.1)
+                    .with_paused(false)
+                    .with_do_seek(false)
+                    .with_set_by("alice")
+                    .with_transport_revision(35),
+            )
+            .with_ignoring_on_the_fly(acknowledgement),
+    );
+    fixture
+        .runtime
+        .drain_player_transport_coordination(1.4)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .runtime
+            .playback_coordination_snapshot()
+            .pending_local_pause_intent,
+        Some(true),
+        "the older Play acknowledgement must not erase the newer Pause"
+    );
+    fixture.queue_observation(true, 0.1);
+    assert!(
+        fixture
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(false)
+    );
+    let pause = fixture.take_response();
+    let playstate = pause
+        .playstate
+        .expect("the next heartbeat must publish Pause");
+    assert_eq!(playstate.paused, Some(true));
+    assert_eq!(playstate.transport_revision().unwrap(), Some(35));
+    assert_ne!(playstate.do_seek, Some(true));
+}
+
 type TestRuntime = ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl>;
+
+fn emit_pause_mutation(fixture: &mut SeekFixture, paused: bool) -> StatePayload {
+    assert!(fixture.runtime.run_set_paused(paused).unwrap());
+    fixture.queue_observation(paused, 0.1);
+    assert!(
+        fixture
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(false)
+    );
+    let state = fixture.take_response();
+    assert_eq!(state.playstate.as_ref().unwrap().paused, Some(paused));
+    assert!(state.ignoring_on_the_fly.as_ref().unwrap().client.unwrap() > 0);
+    assert!(
+        fixture
+            .runtime
+            .playback_coordination
+            .pending_local_transport_echo
+            .is_some()
+    );
+    state
+}
+
+fn pause_mutation_echo(state: &StatePayload) -> StatePayload {
+    let playstate = state.playstate.as_ref().unwrap();
+    StatePayload::new()
+        .with_playstate(
+            PlaystatePayload::new()
+                .with_position(0.2)
+                .with_paused(playstate.paused.unwrap())
+                .with_do_seek(false)
+                .with_set_by("alice")
+                .with_transport_revision(playstate.transport_revision().unwrap().unwrap() + 1),
+        )
+        .with_ignoring_on_the_fly(
+            IgnoringOnTheFlyPayload::new()
+                .with_server(1)
+                .with_client(state.ignoring_on_the_fly.as_ref().unwrap().client.unwrap()),
+        )
+}
+
+#[test]
+fn both_pause_directions_and_player_acknowledgement_orders_preserve_the_newer_command() {
+    for initial_paused in [false, true] {
+        for player_before_echo in [false, true] {
+            let mut fixture = SeekFixture::with_paused(initial_paused);
+            let preceding = emit_pause_mutation(&mut fixture, !initial_paused);
+            assert!(fixture.runtime.run_set_paused(initial_paused).unwrap());
+            if player_before_echo {
+                fixture.queue_observation(initial_paused, 0.2);
+            }
+            fixture.reconcile(pause_mutation_echo(&preceding));
+            fixture
+                .runtime
+                .drain_player_transport_coordination(1.4)
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .runtime
+                    .playback_coordination_snapshot()
+                    .pending_local_pause_intent,
+                Some(initial_paused),
+                "initial paused={initial_paused}, physical acknowledgement first={player_before_echo}"
+            );
+            fixture.queue_observation(initial_paused, 0.2);
+            fixture
+                .runtime
+                .drain_player_transport_coordination(1.5)
+                .unwrap();
+            assert!(
+                fixture
+                    .runtime
+                    .run_state_sync_heartbeat_legacy_ping_compatible(false)
+            );
+            let newer = fixture.take_response();
+            let playstate = newer.playstate.as_ref().unwrap();
+            assert_eq!(playstate.paused, Some(initial_paused));
+            assert_eq!(playstate.transport_revision().unwrap(), Some(35));
+            assert_ne!(playstate.do_seek, Some(true));
+
+            fixture.reconcile(pause_mutation_echo(&newer));
+            fixture
+                .runtime
+                .drain_player_transport_coordination(1.6)
+                .unwrap();
+            assert_eq!(
+                fixture
+                    .runtime
+                    .playback_coordination_snapshot()
+                    .pending_local_pause_intent,
+                None
+            );
+            assert_eq!(
+                fixture.runtime.session.current_room_transport_revision(),
+                Some(36)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_pause_echo_requires_its_counter_author_revision_and_transport_kind() {
+    for mismatch in [
+        "missing-counter",
+        "wrong-counter",
+        "other-user",
+        "seek",
+        "wrong-pause",
+        "skipped-revision",
+        "missing-revision",
+    ] {
+        let mut fixture = SeekFixture::new();
+        let preceding = emit_pause_mutation(&mut fixture, false);
+        assert!(fixture.runtime.run_set_paused(true).unwrap());
+        fixture.queue_observation(true, 0.2);
+        let mut echo = pause_mutation_echo(&preceding);
+        match mismatch {
+            "missing-counter" => echo.ignoring_on_the_fly.as_mut().unwrap().client = None,
+            "wrong-counter" => echo.ignoring_on_the_fly.as_mut().unwrap().client = Some(99),
+            "other-user" => echo.playstate.as_mut().unwrap().set_by = Some("bob".into()),
+            "seek" => echo.playstate.as_mut().unwrap().do_seek = Some(true),
+            "wrong-pause" => echo.playstate.as_mut().unwrap().paused = Some(true),
+            "skipped-revision" => {
+                echo.playstate = Some(echo.playstate.take().unwrap().with_transport_revision(36))
+            }
+            "missing-revision" => {
+                echo.playstate = Some(
+                    PlaystatePayload::new()
+                        .with_position(0.2)
+                        .with_paused(false)
+                        .with_do_seek(false)
+                        .with_set_by("alice"),
+                );
+            }
+            _ => unreachable!(),
+        }
+        fixture.reconcile(echo);
+        fixture
+            .runtime
+            .drain_player_transport_coordination(1.4)
+            .unwrap();
+        assert!(
+            fixture
+                .runtime
+                .playback_coordination
+                .pending_local_pause_intent
+                .as_ref()
+                .is_none_or(|intent| intent.base_transport_revision != Some(35)),
+            "{mismatch} must not grant the newer command the predecessor's revision"
+        );
+    }
+}
+
+#[test]
+fn an_older_pause_frame_cannot_replace_the_predecessor_of_a_newer_command() {
+    for canonical_paused in [false, true] {
+        let mut fixture = SeekFixture::with_paused(canonical_paused);
+        let mut older_frame = emit_pause_mutation(&mut fixture, !canonical_paused);
+        assert!(fixture.runtime.run_set_paused(canonical_paused).unwrap());
+        assert_eq!(
+            fixture
+                .runtime
+                .playback_coordination
+                .active_local_pause_intent(&fixture.runtime.session),
+            Some(canonical_paused),
+            "the newer command has returned to the old canonical value"
+        );
+        let predecessor = fixture
+            .runtime
+            .playback_coordination
+            .pending_local_transport_echo
+            .clone();
+        assert!(predecessor.is_some());
+        let counter = older_frame.ignoring_on_the_fly.as_mut().unwrap();
+        counter.client = Some(counter.client.unwrap() + 1);
+        // A larger counter cannot make an older frame match the newer
+        // pending command, even when both share the current room revision.
+        fixture
+            .runtime
+            .playback_coordination
+            .record_emitted_local_transport(&fixture.runtime.session, &older_frame);
+        assert_eq!(
+            fixture
+                .runtime
+                .playback_coordination
+                .pending_local_transport_echo,
+            predecessor,
+            "a superseded pause frame cannot replace the actual issued predecessor"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
+    let mut fixture = SeekFixture::new();
+    assert!(fixture.runtime.run_set_paused(false).unwrap());
+    fixture.runtime.flush_queued_protocol_messages();
+    assert!(
+        fixture
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(false)
+    );
+    let first = fixture
+        .runtime
+        .control()
+        .outbound_messages()
+        .front()
+        .unwrap()
+        .clone();
+    assert!(
+        matches!(&first, ProtocolMessage::State(state) if state.state.playstate.as_ref().is_some_and(|playstate| playstate.paused == Some(false)))
+    );
+    for _ in 0..8 {
+        assert!(
+            fixture
+                .runtime
+                .run_state_sync_heartbeat_legacy_ping_compatible(false)
+        );
+    }
+    let messages = fixture.runtime.flush_queued_protocol_messages();
+    assert_eq!(
+        messages.len(),
+        2,
+        "one causal command plus one coalesced heartbeat"
+    );
+    assert_eq!(
+        messages[0], first,
+        "the older command must retain its exact FIFO bytes"
+    );
+    assert!(
+        matches!(&messages[0], ProtocolMessage::State(state) if state.state.playstate.as_ref().is_some_and(|playstate| playstate.paused == Some(false)))
+    );
+    assert!(
+        matches!(&messages[1], ProtocolMessage::State(state) if state.state.playstate.is_none())
+    );
+}
+
+#[test]
+fn a_causal_pause_keeps_participant_reports_cancellable() {
+    assert_causal_pause_keeps_participant_reports_cancellable();
+}
+
+pub(super) fn assert_causal_pause_keeps_participant_reports_cancellable() {
+    let mut fixture = SeekFixture::new();
+    assert!(fixture.runtime.run_set_paused(false).unwrap());
+    fixture.runtime.flush_queued_protocol_messages();
+    fixture
+        .runtime
+        .playback_coordination
+        .participant_status
+        .last_participant_status_fingerprint = None;
+    assert!(
+        fixture
+            .runtime
+            .run_state_sync_heartbeat_legacy_ping_compatible(false)
+    );
+    let pending: Vec<_> = fixture
+        .runtime
+        .control()
+        .outbound_messages()
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(reports_in(pending.clone()).len(), 1);
+    assert!(matches!(&pending[0], ProtocolMessage::State(state)
+        if state.state.playstate.as_ref().is_some_and(|playstate| playstate.paused == Some(false))
+            && state.state.participant_status_v1().unwrap().is_none()));
+
+    fixture
+        .runtime
+        .control
+        .cancel_protocol_participant_status_reports();
+    let remaining = fixture.runtime.flush_queued_protocol_messages();
+    assert!(reports_in(remaining.clone()).is_empty());
+    assert_eq!(
+        remaining,
+        vec![pending[0].clone()],
+        "status withdrawal must preserve the exact causal Play frame"
+    );
+}
+
+#[test]
+fn pause_queue_keeps_only_current_command_frames_in_order() {
+    assert_pause_queue_keeps_only_current_command_frames_in_order();
+}
+
+pub(super) fn assert_pause_queue_keeps_only_current_command_frames_in_order() {
+    for mismatch in ["none", "pause", "revision", "missing-playstate"] {
+        let mut fixture = SeekFixture::new();
+        assert!(fixture.runtime.run_set_paused(false).unwrap());
+        fixture.runtime.flush_queued_protocol_messages();
+        let mut frame = StatePayload::new()
+            .with_playstate(
+                PlaystatePayload::new()
+                    .with_position(0.0)
+                    .with_paused(false)
+                    .with_transport_revision(34),
+            )
+            .with_ignoring_on_the_fly(IgnoringOnTheFlyPayload::new().with_client(1));
+        match mismatch {
+            "none" => {}
+            "pause" => frame.playstate.as_mut().unwrap().paused = Some(true),
+            "revision" => {
+                frame.playstate = Some(frame.playstate.take().unwrap().with_transport_revision(35));
+            }
+            "missing-playstate" => frame.playstate = None,
+            _ => unreachable!(),
+        }
+        assert!(
+            fixture
+                .runtime
+                .queue_connection_scoped_state_with_participant_status(frame.clone(), true, 1.2)
+        );
+        // A later heartbeat may absorb only an observational frame. A State
+        // matching the pending command must keep its original FIFO identity.
+        let heartbeat = StatePayload::new()
+            .with_ping(sorotte_protocol::PingPayload::new().with_client_rtt(0.2));
+        assert!(
+            fixture
+                .runtime
+                .queue_connection_scoped_state_with_participant_status(
+                    heartbeat.clone(),
+                    true,
+                    1.3
+                )
+        );
+        fixture
+            .runtime
+            .control
+            .cancel_protocol_participant_status_reports();
+        let messages = fixture.runtime.flush_queued_protocol_messages();
+        if mismatch == "none" {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0], ProtocolMessage::state(frame));
+            assert_eq!(messages[1], ProtocolMessage::state(heartbeat));
+        } else {
+            frame.ping = heartbeat.ping;
+            assert_eq!(messages, vec![ProtocolMessage::state(frame)], "{mismatch}");
+        }
+    }
+}
 
 struct SeekFixture {
     runtime: TestRuntime,
@@ -94,7 +499,7 @@ impl SeekFixture {
         assert!(
             self.runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_some()
         );
     }
@@ -298,7 +703,7 @@ fn already_admitted_canonical_seek_cannot_be_replayed_as_a_fresh_acknowledgement
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none()
         );
         assert!(
@@ -389,7 +794,7 @@ fn reset_and_reused_seek_counter_has_no_special_rebase_authority() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
     fixture.queue_observation(true, 11.0);
@@ -421,7 +826,7 @@ fn saturated_seek_counter_has_no_special_rebase_authority() {
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none()
         );
         fixture.queue_observation(true, 11.0);
@@ -477,7 +882,7 @@ fn ordered_seek_echo_preserves_and_delivers_the_later_explicit_play() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
     let play = fixture.heartbeat_play();
@@ -592,12 +997,12 @@ fn protocol_suppressed_matching_echo_waits_for_actual_admission() {
             .as_ref()
             .unwrap();
         assert_eq!(intent.base_transport_revision, Some(34));
-        assert!(intent.preceding_local_seek.is_some());
+        assert!(intent.preceding_local_transport.is_some());
         assert!(
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_some()
         );
         let echo = fixture.echo();
@@ -623,7 +1028,7 @@ fn protocol_suppressed_matching_echo_waits_for_actual_admission() {
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none()
         );
     }
@@ -682,7 +1087,7 @@ fn seek_echo_requires_every_recorded_wire_identity_axis() {
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none(),
             advanced,
             "{mismatch}"
@@ -695,7 +1100,7 @@ fn seek_echo_requires_every_recorded_wire_identity_axis() {
         {
             assert_eq!(intent.base_transport_revision, Some(34), "{mismatch}");
             assert_eq!(
-                intent.preceding_local_seek.is_none(),
+                intent.preceding_local_transport.is_none(),
                 advanced,
                 "{mismatch}"
             );
@@ -784,7 +1189,7 @@ fn seek_predecessor_expires_on_room_connection_and_media_boundaries() {
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none(),
             "{boundary}"
         );
@@ -821,7 +1226,7 @@ fn every_new_seek_attempt_invalidates_the_earlier_play_association_before_refres
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none(),
             "{operation}"
         );
@@ -831,7 +1236,7 @@ fn every_new_seek_attempt_invalidates_the_earlier_play_association_before_refres
                 .playback_coordination
                 .pending_local_pause_intent
                 .as_ref()
-                .is_none_or(|intent| intent.preceding_local_seek.is_none()),
+                .is_none_or(|intent| intent.preceding_local_transport.is_none()),
             "{operation}"
         );
     }
@@ -860,7 +1265,7 @@ fn later_seek_and_failed_player_dispatch_cannot_reuse_an_older_echo() {
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none()
         );
     }
@@ -887,7 +1292,7 @@ fn failed_play_dispatch_cannot_leave_an_intent_to_rebase() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
 }
@@ -902,7 +1307,7 @@ fn acknowledged_seek_without_following_intent_cannot_authorize_a_future_play() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
     fixture.queue_observation(true, 11.0);
@@ -914,7 +1319,7 @@ fn acknowledged_seek_without_following_intent_cannot_authorize_a_future_play() {
             .pending_local_pause_intent
             .as_ref()
             .unwrap()
-            .preceding_local_seek
+            .preceding_local_transport
             .is_none()
     );
     fixture.reconcile(echo);
@@ -922,7 +1327,7 @@ fn acknowledged_seek_without_following_intent_cannot_authorize_a_future_play() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
 }
@@ -993,7 +1398,7 @@ fn queued_previous_seek_does_not_consume_the_newer_seek_acknowledgement() {
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_some()
     );
     assert_eq!(
@@ -1041,7 +1446,7 @@ pub(super) fn assert_public_room_effect_roundtrip_cannot_resurrect_an_old_seek_p
         fixture
             .runtime
             .playback_coordination
-            .pending_local_seek_echo
+            .pending_local_transport_echo
             .is_none()
     );
     let echo = fixture.echo();
@@ -1122,7 +1527,7 @@ fn failed_causal_delivery_does_not_arm_or_restore_a_seek_predecessor() {
             assert!(
                 runtime
                     .playback_coordination
-                    .pending_local_seek_echo
+                    .pending_local_transport_echo
                     .is_some()
             );
         }
@@ -1139,7 +1544,7 @@ fn failed_causal_delivery_does_not_arm_or_restore_a_seek_predecessor() {
         assert!(
             runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none()
         );
         assert!(
@@ -1147,7 +1552,7 @@ fn failed_causal_delivery_does_not_arm_or_restore_a_seek_predecessor() {
                 .playback_coordination
                 .pending_local_pause_intent
                 .as_ref()
-                .is_none_or(|intent| intent.preceding_local_seek.is_none())
+                .is_none_or(|intent| intent.preceding_local_transport.is_none())
         );
     }
 }
@@ -1216,12 +1621,12 @@ fn malformed_or_unversioned_emitted_states_cannot_arm_seek_correlation() {
         fixture
             .runtime
             .playback_coordination
-            .record_emitted_local_seek(&fixture.runtime.session, &state);
+            .record_emitted_local_transport(&fixture.runtime.session, &state);
         assert!(
             fixture
                 .runtime
                 .playback_coordination
-                .pending_local_seek_echo
+                .pending_local_transport_echo
                 .is_none(),
             "{invalid}"
         );

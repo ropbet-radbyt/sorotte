@@ -24,6 +24,14 @@ fn participant_status_room_requests_preserve_only_current_seek_authority() {
 }
 
 #[test]
+fn participant_status_cancellation_preserves_current_pause_command_order() {
+    // Exercise the shared command/status boundary in both responsibility
+    // shards, whose normal test prefixes intentionally differ.
+    seek_echo_tests::assert_causal_pause_keeps_participant_reports_cancellable();
+    seek_echo_tests::assert_pause_queue_keeps_only_current_command_frames_in_order();
+}
+
+#[test]
 fn playback_barrier_start_defaults_to_immediate() {
     assert_eq!(PlaybackBarrierStartConfig::default().policy, None);
 }

@@ -291,12 +291,13 @@ impl RuntimePlaybackCoordination {
             local_media_generation,
             connection_generation: self.connection_generation,
             base_transport_revision: session.current_room_transport_revision(),
-            preceding_local_seek: self
-                .pending_local_seek_echo
+            preceding_local_transport: self
+                .pending_local_transport_echo
                 .as_ref()
-                .filter(|seek| {
-                    self.local_seek_scope_matches(seek, session)
-                        && session.current_room_transport_revision() == Some(seek.base_revision)
+                .filter(|predecessor| {
+                    self.local_transport_scope_matches(predecessor, session)
+                        && session.current_room_transport_revision()
+                            == Some(predecessor.base_revision)
                 })
                 .cloned(),
             authorization,
@@ -463,7 +464,7 @@ impl RuntimePlaybackCoordination {
     /// in the session model; this only prevents the superseded transport
     /// command from impersonating current player authority.
     pub(super) fn supersede_local_pause_transport(&mut self, at_seconds: f64) {
-        self.clear_local_seek_echo();
+        self.clear_local_transport_echo();
         self.pending_local_pause_intent = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.player_transition_classifier
@@ -935,7 +936,7 @@ pub(super) struct PendingLocalPauseIntent {
     pub(super) local_media_generation: u64,
     pub(super) connection_generation: u64,
     pub(super) base_transport_revision: Option<u64>,
-    pub(super) preceding_local_seek: Option<PendingLocalSeekEcho>,
+    pub(super) preceding_local_transport: Option<PendingLocalTransportEcho>,
     pub(super) authorization: LocalIntentAuthorization,
     pub(super) replay_player_after_reauthorization: bool,
     pub(super) last_canonical_playstate_updated_at_seconds: Option<f64>,

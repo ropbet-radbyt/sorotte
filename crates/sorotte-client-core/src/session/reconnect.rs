@@ -501,13 +501,12 @@ impl ClientSession {
                         .map(|intent| intent.paused)
                         .unwrap_or(local_paused)
                 });
-            let (pause_change, seeked) = self
-                .determine_local_state_change_with_global_playstate_override_at(
-                    reconciled_local_paused,
-                    reconciled_local_position,
-                    local_state_change_global_playstate,
-                    received_at_seconds,
-                );
+            let (_, seeked) = self.determine_local_state_change_with_global_playstate_override_at(
+                reconciled_local_paused,
+                reconciled_local_position,
+                local_state_change_global_playstate,
+                received_at_seconds,
+            );
 
             let mut playstate = PlaystatePayload::new()
                 .with_position(reconciled_local_position)
@@ -521,7 +520,17 @@ impl ClientSession {
                 playstate = playstate.with_transport_revision(transport_revision);
             }
             response.playstate = Some(playstate);
-            state_change = pause_change || seeked;
+            // The explicit command may already have updated the local player
+            // projection. Its semantic mutation still needs an acknowledgement
+            // counter, so a following command can distinguish this response
+            // from unrelated or periodic room state.
+            let explicit_pause_change = local_pause_mutation_intent.is_some_and(|intent| {
+                canonical_paused.is_some_and(|paused| paused != intent.paused)
+            });
+            // Without explicit intent the response already echoes canonical
+            // pause. With it, canonical disagreement above fully identifies
+            // the mutation, including an optimistically updated player.
+            state_change = seeked || explicit_pause_change;
         }
 
         // The response projection above may echo canonical authority while a
