@@ -2801,6 +2801,11 @@ fn confirmed_local_play_requires_fresh_post_seek_alignment() {
         "stale",
         "future",
         "superseded-dispatch",
+        "progressed",
+        "aged-progressed",
+        "canonical-displaced",
+        "canonical-negative",
+        "canonical-nonfinite",
     ] {
         let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
         coordinator.observe(
@@ -2828,6 +2833,10 @@ fn confirmed_local_play_requires_fresh_post_seek_alignment() {
             "idle" => observation.core_idle = Some(true),
             "displaced" => observation.position_seconds = Some(5.0),
             "sparse" => observation.position_seconds = None,
+            "progressed" | "aged-progressed" => {
+                observation.observed_at_seconds = 1.1;
+                observation.position_seconds = Some(1.0);
+            }
             _ => {}
         }
         if case == "replay" {
@@ -2847,21 +2856,32 @@ fn confirmed_local_play_requires_fresh_post_seek_alignment() {
         let now = match case {
             "stale" => 2.101,
             "future" => 0.09,
+            "progressed" => 1.13,
+            "aged-progressed" => 2.1,
             _ => 0.1,
         };
+        let confirmed_room_position = match case {
+            "progressed" => 1.03,
+            "aged-progressed" => 2.0,
+            "canonical-displaced" => 5.0,
+            "canonical-negative" => -1.0,
+            "canonical-nonfinite" => f64::NAN,
+            _ => 0.0,
+        };
+        let confirms_play = matches!(case, "playing" | "progressed" | "aged-progressed");
         assert_eq!(
-            coordinator.confirm_aligned_local_play(now, 2.0),
-            case == "playing",
+            coordinator.confirm_aligned_local_play(now, confirmed_room_position, 2.0),
+            confirms_play,
             "case {case}",
         );
         assert_eq!(
             coordinator.seek_preparation_snapshot().is_some(),
-            case != "playing",
+            !confirms_play,
             "case {case}",
         );
     }
     let (mut empty, _) = coordinator(MediaTransportKind::NetworkVod);
-    assert!(!empty.confirm_aligned_local_play(0.0, 2.0));
+    assert!(!empty.confirm_aligned_local_play(0.0, 0.0, 2.0));
 }
 
 #[test]

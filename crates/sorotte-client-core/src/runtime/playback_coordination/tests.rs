@@ -9722,12 +9722,22 @@ fn staged_local_unpause_survives_transport_observation_before_canonical_echo() {
 fn attached_local_play_suppresses_seek_preparation_pause_before_canonical_echo() {
     for author in ["alice", "bob"] {
         for echo_before_player in [false, true] {
-            assert_local_play_survives_seek_preparation_echo(author, echo_before_player);
+            for playback_progress in [0.0, 1.0, 3.0] {
+                assert_local_play_survives_seek_preparation_echo(
+                    author,
+                    echo_before_player,
+                    playback_progress,
+                );
+            }
         }
     }
 }
 
-fn assert_local_play_survives_seek_preparation_echo(author: &str, echo_before_player: bool) {
+fn assert_local_play_survives_seek_preparation_echo(
+    author: &str,
+    echo_before_player: bool,
+    playback_progress: f64,
+) {
     let mut session = ClientSession::default();
     session
         .apply_message_json_at(
@@ -9781,20 +9791,25 @@ fn assert_local_play_survives_seek_preparation_echo(author: &str, echo_before_pl
 
     let play_echo_wire = serde_json::json!({
         "State": {"playstate": {
-            "position": 0.0, "paused": false, "doSeek": false, "setBy": author,
+            "position": playback_progress, "paused": false, "doSeek": false, "setBy": author,
         }}
     })
     .to_string();
     if echo_before_player {
         runtime
             .session_mut()
-            .apply_message_json_at(&play_echo_wire, 0.115)
+            .apply_message_json_at(&play_echo_wire, 0.115 + playback_progress)
             .unwrap();
-        runtime.reconcile_external_player_playback(0.115);
+        runtime.reconcile_external_player_playback(0.115 + playback_progress);
     }
     let observed_play = runtime.observe_external_player_transport(
-        transport(1, 0.12, PlayerTransportPhase::Playing, 0.0),
-        0.12,
+        transport(
+            1,
+            0.12 + playback_progress,
+            PlayerTransportPhase::Playing,
+            playback_progress,
+        ),
+        0.12 + playback_progress,
     );
     assert!(
         !observed_play.iter().any(|action| matches!(
@@ -9817,13 +9832,18 @@ fn assert_local_play_survives_seek_preparation_echo(author: &str, echo_before_pl
     if !echo_before_player {
         runtime
             .session_mut()
-            .apply_message_json_at(&play_echo_wire, 0.13)
+            .apply_message_json_at(&play_echo_wire, 0.13 + playback_progress)
             .unwrap();
     }
-    let play_echo = runtime.reconcile_external_player_playback(0.13);
+    let play_echo = runtime.reconcile_external_player_playback(0.13 + playback_progress);
     let continued_play = runtime.observe_external_player_transport(
-        transport(1, 0.14, PlayerTransportPhase::Playing, 0.02),
-        0.14,
+        transport(
+            1,
+            0.14 + playback_progress,
+            PlayerTransportPhase::Playing,
+            0.02 + playback_progress,
+        ),
+        0.14 + playback_progress,
     );
     assert!(
         !play_echo
@@ -9855,11 +9875,17 @@ fn assert_local_play_survives_seek_preparation_echo(author: &str, echo_before_pl
     runtime
         .session_mut()
         .apply_message_json_at(
-            r#"{"State":{"playstate":{"position":0.02,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
-            0.2,
+            &serde_json::json!({
+                "State": {"playstate": {
+                    "position": 0.02 + playback_progress, "paused": true,
+                    "doSeek": false, "setBy": "bob",
+                }}
+            })
+            .to_string(),
+            0.2 + playback_progress,
         )
         .unwrap();
-    let later_pause = runtime.reconcile_external_player_playback(0.2);
+    let later_pause = runtime.reconcile_external_player_playback(0.2 + playback_progress);
     assert!(
         later_pause.iter().any(|action| matches!(
             action,
