@@ -1935,6 +1935,10 @@ impl PlaybackCoordinator {
         self.last_seek_preparation_terminal = None;
     }
 
+    pub(crate) fn local_play_handoff_pending(&self) -> bool {
+        self.seek_preparation.is_some() || self.terminal_seek_preparation_holds_current_revision()
+    }
+
     /// A confirmed local Play can supersede an older preparation once the
     /// player is physically aligned with the confirmed playing room timeline.
     /// The supplied room position belongs to `now_seconds`; compare it at the
@@ -1946,12 +1950,10 @@ impl PlaybackCoordinator {
         confirmed_room_position_seconds: f64,
         maximum_position_age_seconds: f64,
     ) -> bool {
-        let (Some(episode), Some(observed), Some(desired)) =
-            (self.seek_preparation.as_ref(), self.observed, self.desired)
-        else {
+        let (Some(observed), Some(desired)) = (self.observed, self.desired) else {
             return false;
         };
-        let aligned_play = episode.primary_seek_issued
+        let aligned_play = self.local_play_handoff_pending()
             && confirmed_room_position_seconds.is_finite()
             && confirmed_room_position_seconds >= 0.0
             && !desired.paused
@@ -1963,9 +1965,20 @@ impl PlaybackCoordinator {
             && self.required_seek_dispatch_revision.is_none()
             && observed.position_sample.is_some_and(|sample| {
                 let age = now_seconds - sample.observed_at_seconds;
-                episode
-                    .primary_seek_observation_sequence
-                    .is_some_and(|sequence| sample.observation_sequence > sequence)
+                let post_preparation_sample = if let Some(episode) = self.seek_preparation.as_ref()
+                {
+                    episode.primary_seek_issued
+                        && episode
+                            .primary_seek_observation_sequence
+                            .is_some_and(|sequence| sample.observation_sequence > sequence)
+                } else {
+                    self.last_seek_preparation_terminal
+                        .as_ref()
+                        .is_some_and(|terminal| {
+                            sample.observed_at_seconds > terminal.started_at_seconds
+                        })
+                };
+                post_preparation_sample
                     && age.is_finite()
                     && (0.0..=maximum_position_age_seconds).contains(&age)
                     && (sample.position_seconds - (confirmed_room_position_seconds - age).max(0.0))
@@ -1976,7 +1989,13 @@ impl PlaybackCoordinator {
             return false;
         }
         self.desired_seek_satisfied_revision = Some(desired.state_revision);
-        self.finish_seek_preparation(SeekPreparationTerminalOutcome::Superseded);
+        if self.seek_preparation.is_some() {
+            self.finish_seek_preparation(SeekPreparationTerminalOutcome::Superseded);
+        } else if let Some(terminal) = self.last_seek_preparation_terminal.as_mut() {
+            // A completed failure (for example a non-seekable HTTP stream)
+            // must not keep pausing a newer, physically aligned manual Play.
+            terminal.terminal_outcome = Some(SeekPreparationTerminalOutcome::Superseded);
+        }
         true
     }
 

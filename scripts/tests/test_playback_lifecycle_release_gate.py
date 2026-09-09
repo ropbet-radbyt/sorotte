@@ -13,6 +13,7 @@ VERIFICATION_PINS = verification_pins()
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 GATE_PATH = WORKFLOWS / "playback-lifecycle-release-gate.yml"
+WINDOWS_SUITE_PATH = REPO_ROOT / ".github/actions/windows-playback-qualification/action.yml"
 GUI_RELEASE_PATH = WORKFLOWS / "sorotte-gui-release.yml"
 SERVER_RELEASE_PATH = WORKFLOWS / "sorotte-server-release.yml"
 CONTAINER_RELEASE_PATH = WORKFLOWS / "publish-server-container.yml"
@@ -59,6 +60,8 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
             raise AssertionError("release gate has no jobs mapping")
         cls.linux = jobs["linux-candidate"]
         cls.windows = jobs["windows-candidate"]
+        cls.windows_suite = load_workflow(WINDOWS_SUITE_PATH)["runs"]
+        cls.media_tools = named_step(cls.windows_suite, "Download and verify pinned supported Windows media tools")["env"]
         cls.complete = jobs["complete-candidate"]
 
     def test_gate_is_reusable_and_candidate_sha_is_explicit(self) -> None:
@@ -185,17 +188,17 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
     def test_windows_ffmpeg_pin_uses_the_reviewed_release_archive(self) -> None:
         # A fixed digest on the rolling gyan.dev URL fails after the next build.
         self.assertEqual(
-            self.windows["env"]["FFMPEG_ARCHIVE_URL"],
+            self.media_tools["FFMPEG_ARCHIVE_URL"],
             "https://github.com/GyanD/codexffmpeg/releases/download/"
             "9.0.1/"
             "ffmpeg-9.0.1-full_build.7z",
         )
         self.assertEqual(
-            self.windows["env"]["FFMPEG_ARCHIVE_SHA256"],
+            self.media_tools["FFMPEG_ARCHIVE_SHA256"],
             "4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96",
         )
         self.assertEqual(
-            self.windows["env"]["FFMPEG_BINARY_SHA256"],
+            self.media_tools["FFMPEG_BINARY_SHA256"],
             "57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a",
         )
 
@@ -207,30 +210,30 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertIn("SessionId", preflight)
         self.assertIn("Explorer shell", preflight)
         self.assertEqual(
-            self.windows["env"]["MPV_ARCHIVE_SHA256"],
+            self.media_tools["MPV_ARCHIVE_SHA256"],
             "6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879",
         )
         self.assertEqual(
-            self.windows["env"]["MPV_BINARY_SHA256"],
+            self.media_tools["MPV_BINARY_SHA256"],
             "547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe",
         )
         tools = normalized(
-            named_step(self.windows, "Download and verify pinned supported Windows media tools")["run"]
+            named_step(self.windows_suite, "Download and verify pinned supported Windows media tools")["run"]
         )
         self.assertIn("MPV_ARCHIVE_SHA256", tools)
         self.assertIn("FFMPEG_ARCHIVE_SHA256", tools)
         self.assertIn("FFMPEG_BINARY_SHA256", tools)
         build = normalized(
-            named_step(self.windows, "Build exact Windows release candidates and native driver")["run"]
+            named_step(self.windows_suite, "Build exact Windows release candidates and native driver")["run"]
         )
         for binary in ("sorotte-server", "sorotte-cli", "sorotte-gui", "sorotte-gui-updater"):
             self.assertIn(binary, build)
         bundle = normalized(
-            named_step(self.windows, "Seal immutable Windows candidate bundle")["run"]
+            named_step(self.windows_suite, "Seal immutable Windows candidate bundle")["run"]
         )
         self.assertIn("--platform windows-x86_64", bundle)
         self.assertIn("--artifact gui=target/release/sorotte-gui.exe", bundle)
-        vertical = normalized("\n".join(step.get("run", "") for step in self.windows["steps"]))
+        vertical = normalized("\n".join(step.get("run", "") for step in self.windows_suite["steps"]))
         self.assertEqual(vertical.count("gui-real-mpv-vertical.ps1"), 4)
         for switch in (
             "ExerciseFaultingHttpRecovery",
@@ -240,17 +243,39 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
             self.assertIn(switch, vertical)
         status = normalized(
             named_step(
-                self.windows,
+                self.windows_suite,
                 "Run exact second-client native participant status composition",
             )["run"]
         )
         self.assertIn("playback_status_system.py", status)
         self.assertIn("target/release/sorotte-gui.exe", status)
         attestation = normalized(
-            named_step(self.windows, "Attest exact Windows suite and candidate digests")["run"]
+            named_step(self.windows_suite, "Attest exact Windows suite and candidate digests")["run"]
         )
         self.assertIn("playback_release_gate.py attest-windows", attestation)
         self.assertEqual(attestation.count("--vertical-summary"), 4)
+
+    def test_pr_and_release_use_the_same_complete_windows_suite(self) -> None:
+        native = load_workflow(WORKFLOWS / "gui-native-interactive.yml")["jobs"]["native_interactive"]
+        for job, source in ((native, "${{ inputs.source_sha || github.sha }}"), (self.windows, "${{ inputs.candidate_sha }}")):
+            calls = [step for step in job["steps"] if step.get("uses") == "./.github/actions/windows-playback-qualification"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["with"]["candidate_sha"], source)
+        self.assertEqual(self.windows_suite["using"], "composite")
+        for step in self.windows_suite["steps"]:
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("if", step)
+        binding = named_step(self.windows_suite, "Bind shared playback qualification to the checked-out candidate")
+        self.assertIn('$source -cne $env:GITHUB_SHA', binding["run"])
+        self.assertIn('$source -cne $env:REQUESTED_CANDIDATE_SHA', binding["run"])
+        for name, command in (
+            ("Validate closed lifecycle declarations and harness contracts",
+             "python scripts/playback_lifecycle_model.py validate --model coverage/playback-lifecycle.toml --require-closed"),
+            ("Build exact Windows release candidates and native driver",
+             "cargo build --locked --release -p sorotte-server -p sorotte-cli"),
+        ):
+            self.assertIn(command + "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n",
+                          named_step(self.windows_suite, name)["run"])
 
     def test_platform_attestations_are_composed_and_cover_the_checked_out_model(self) -> None:
         self.assertEqual(
@@ -261,7 +286,7 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
             self.linux, "Upload Linux platform lifecycle attestation"
         )
         windows_upload = named_step(
-            self.windows, "Upload Windows platform lifecycle attestation"
+            self.windows_suite, "Upload Windows platform lifecycle attestation"
         )
         for upload in (linux_upload, windows_upload):
             self.assertEqual(upload["uses"], ACTION_USES["actions/upload-artifact"])

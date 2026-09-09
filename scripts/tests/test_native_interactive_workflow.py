@@ -94,6 +94,7 @@ SUMMARY_OUTCOMES = {
     "SOURCE_BINDING_OUTCOME": "${{ steps.source_binding.outcome }}",
     "NATIVE_OUTCOME": "${{ steps.native.outcome }}",
     "NATIVE_INVENTORY_OUTCOME": "${{ steps.native_inventory.outcome }}",
+    "PLAYBACK_OUTCOME": "${{ steps.playback.outcome }}",
 }
 ENFORCED_OUTCOMES = {
     key: value
@@ -198,7 +199,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     steps = job.get("steps")
     if not isinstance(steps, list):
         raise AssertionError("native_interactive steps must be an array")
-    expected_ids = ["preflight", "checkout", "source_binding", "rust", "python", "prerequisites", "native", "display", "native_inventory", "lane_summary", "safe_export", "evidence_upload", "enforce"]
+    expected_ids = ["preflight", "checkout", "source_binding", "rust", "python", "prerequisites", "native", "display", "playback", "native_inventory", "lane_summary", "safe_export", "evidence_upload", "enforce"]
     if [step.get("id") for step in steps] != expected_ids:
         raise AssertionError("native trust, evidence, and execution dependency order drifted")
     for step in steps:
@@ -432,6 +433,12 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
     if display.get("if") != "steps.native.outcome == 'success' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.native_dpi != '' && inputs.native_dpi != 'none'))":
         raise AssertionError("display profiles require a passed isolated native inventory")
     require_fragments(display.get("run", ""), ["-ExpectedNativeDpi ([int]$env:EXPECTED_NATIVE_DPI)", "gui-display-matrix.ps1"], label="measured display profile")
+    playback = next(step for step in steps if step.get("id") == "playback")
+    if (playback.get("uses") != "./.github/actions/windows-playback-qualification"
+            or playback.get("if") != "steps.native.outcome == 'success'"
+            or playback.get("continue-on-error") != "true"
+            or playback.get("with") != {"candidate_sha": REQUESTED_SHA, "channel": "stable"}):
+        raise AssertionError("required PR playback must use the shared exact-source release suite")
     require_fragments(preflight_run, ["$env:GITHUB_EVENT_NAME -ne 'schedule'", "'refs/heads/main'"], label="scheduled source authorization")
 
     enforcement = step_by_name(job, STEP_NAMES[10])
@@ -448,6 +455,7 @@ def validate_native_interactive_workflow(workflow: dict[str, Any]) -> None:
         [
             "$env:NATIVE_OUTCOME",
             "$env:NATIVE_INVENTORY_OUTCOME",
+            "$env:PLAYBACK_OUTCOME",
             "$env:EVIDENCE_UPLOAD_OUTCOME",
             '$_.Value -ne "success"',
             "native interactive lane is incomplete",
@@ -484,6 +492,24 @@ class NativeInteractiveWorkflowPolicyTests(unittest.TestCase):
 
     def test_checked_in_workflow_passes_policy(self) -> None:
         validate_native_interactive_workflow(self.workflow)
+
+    def test_missing_or_skipped_release_playback_cannot_pass_native_policy(self) -> None:
+        for change in ("remove", "skip", "source", "channel", "enforcement"):
+            workflow = copy.deepcopy(self.workflow)
+            job = self.job(workflow)
+            playback = next(step for step in job["steps"] if step.get("id") == "playback")
+            if change == "remove":
+                job["steps"].remove(playback)
+            elif change == "skip":
+                playback["if"] = "false"
+            elif change == "source":
+                playback["with"]["candidate_sha"] = "main"
+            elif change == "channel":
+                playback["with"]["channel"] = "dev"
+            else:
+                next(step for step in job["steps"] if step.get("id") == "enforce")["env"].pop("PLAYBACK_OUTCOME")
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                validate_native_interactive_workflow(workflow)
 
     def test_actionlint_declares_only_external_native_labels(self) -> None:
         config = parse_yaml(ACTIONLINT_CONFIG_PATH.read_text(encoding="utf-8"))

@@ -2807,78 +2807,87 @@ fn confirmed_local_play_requires_fresh_post_seek_alignment() {
         "canonical-negative",
         "canonical-nonfinite",
     ] {
-        let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
-        coordinator.observe(
-            PlayerTransportObservation::new(generation, 0.0)
-                .with_phase(PlayerTransportPhase::ReadyPaused)
-                .with_position(0.0)
-                .with_logical_pause(true)
-                .with_seekable(true),
-        );
-        coordinator.update_desired_room_state_with_kind(
-            DesiredRoomPlayback {
-                force_seek: true,
-                ..desired(generation, 1, false, 0.0)
-            },
-            DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched,
-        );
-        let mut observation = playing(generation, 0.1, 0.0);
-        match case {
-            "paused" => {
-                observation.phase = Some(PlayerTransportPhase::ReadyPaused);
-                observation.logical_pause = Some(true);
-            }
-            "seeking" => observation.seeking = Some(true),
-            "cache" => observation.paused_for_cache = Some(true),
-            "idle" => observation.core_idle = Some(true),
-            "displaced" => observation.position_seconds = Some(5.0),
-            "sparse" => observation.position_seconds = None,
-            "progressed" | "aged-progressed" => {
-                observation.observed_at_seconds = 1.1;
-                observation.position_seconds = Some(1.0);
-            }
-            _ => {}
-        }
-        if case == "replay" {
-            coordinator.replay_observation(observation);
-        } else {
-            coordinator.observe(observation);
-        }
-        if case == "superseded-dispatch" {
+        for nonseekable in [false, true] {
+            let (mut coordinator, generation) = coordinator(MediaTransportKind::NetworkVod);
+            coordinator.observe(
+                PlayerTransportObservation::new(generation, 0.0)
+                    .with_phase(PlayerTransportPhase::ReadyPaused)
+                    .with_position(0.0)
+                    .with_logical_pause(true)
+                    .with_seekable(!nonseekable),
+            );
             coordinator.update_desired_room_state_with_kind(
                 DesiredRoomPlayback {
                     force_seek: true,
-                    ..desired(generation, 2, false, 0.0)
+                    ..desired(generation, 1, false, 0.0)
                 },
-                DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch,
+                DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched,
             );
+            let mut observation = playing(generation, 0.1, 0.0);
+            match case {
+                "paused" => {
+                    observation.phase = Some(PlayerTransportPhase::ReadyPaused);
+                    observation.logical_pause = Some(true);
+                }
+                "seeking" => observation.seeking = Some(true),
+                "cache" => observation.paused_for_cache = Some(true),
+                "idle" => observation.core_idle = Some(true),
+                "displaced" => observation.position_seconds = Some(5.0),
+                "sparse" => observation.position_seconds = None,
+                "progressed" | "aged-progressed" => {
+                    observation.observed_at_seconds = 1.1;
+                    observation.position_seconds = Some(1.0);
+                }
+                _ => {}
+            }
+            if case == "replay" {
+                coordinator.replay_observation(observation);
+            } else {
+                coordinator.observe(observation);
+            }
+            if case == "superseded-dispatch" {
+                coordinator.update_desired_room_state_with_kind(
+                    DesiredRoomPlayback {
+                        force_seek: true,
+                        ..desired(generation, 2, false, 0.0)
+                    },
+                    DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch,
+                );
+            }
+            let now = match case {
+                "stale" => 2.101,
+                "future" => 0.09,
+                "progressed" => 1.13,
+                "aged-progressed" => 2.1,
+                _ => 0.1,
+            };
+            let confirmed_room_position = match case {
+                "progressed" => 1.03,
+                "aged-progressed" => 2.0,
+                "canonical-displaced" => 5.0,
+                "canonical-negative" => -1.0,
+                "canonical-nonfinite" => f64::NAN,
+                _ => 0.0,
+            };
+            let confirms_play = matches!(case, "playing" | "progressed" | "aged-progressed");
+            assert_eq!(
+                coordinator.confirm_aligned_local_play(now, confirmed_room_position, 2.0),
+                confirms_play,
+                "case {case}; nonseekable={nonseekable}",
+            );
+            if !nonseekable {
+                assert_eq!(
+                    coordinator.seek_preparation_snapshot().is_some(),
+                    !confirms_play,
+                    "case {case}",
+                );
+            } else if confirms_play {
+                assert_eq!(
+                    coordinator.last_seek_preparation_terminal_outcome(),
+                    Some(SeekPreparationTerminalOutcome::Superseded)
+                );
+            }
         }
-        let now = match case {
-            "stale" => 2.101,
-            "future" => 0.09,
-            "progressed" => 1.13,
-            "aged-progressed" => 2.1,
-            _ => 0.1,
-        };
-        let confirmed_room_position = match case {
-            "progressed" => 1.03,
-            "aged-progressed" => 2.0,
-            "canonical-displaced" => 5.0,
-            "canonical-negative" => -1.0,
-            "canonical-nonfinite" => f64::NAN,
-            _ => 0.0,
-        };
-        let confirms_play = matches!(case, "playing" | "progressed" | "aged-progressed");
-        assert_eq!(
-            coordinator.confirm_aligned_local_play(now, confirmed_room_position, 2.0),
-            confirms_play,
-            "case {case}",
-        );
-        assert_eq!(
-            coordinator.seek_preparation_snapshot().is_some(),
-            !confirms_play,
-            "case {case}",
-        );
     }
     let (mut empty, _) = coordinator(MediaTransportKind::NetworkVod);
     assert!(!empty.confirm_aligned_local_play(0.0, 0.0, 2.0));

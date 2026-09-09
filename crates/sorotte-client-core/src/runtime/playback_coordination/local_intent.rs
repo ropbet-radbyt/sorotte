@@ -310,6 +310,7 @@ impl RuntimePlaybackCoordination {
                 .copied(),
             mismatching_canonical_playstate_updates: 0,
             first_mismatching_canonical_playstate_at_seconds: None,
+            play_handoff_started_at_seconds: None,
         });
         self.last_local_pause_intent_stage_accepted = Some(true);
     }
@@ -940,6 +941,7 @@ pub(super) struct PendingLocalPauseIntent {
     pub(super) last_canonical_playstate_updated_at_seconds: Option<f64>,
     pub(super) mismatching_canonical_playstate_updates: u8,
     pub(super) first_mismatching_canonical_playstate_at_seconds: Option<f64>,
+    pub(super) play_handoff_started_at_seconds: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

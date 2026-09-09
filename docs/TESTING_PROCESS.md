@@ -158,6 +158,18 @@ dispatch arbitrary PR code to the native runner. Missing desktop capability stay
 an unavailable required proof. The pinned minimum/newest real-mpv tests and the
 independent lifecycle oracle remain separate from fake-server readiness canaries.
 
+The required native PR job also builds default-feature release binaries and runs
+the same Windows playback suite used by stable release qualification. The shared
+`.github/actions/windows-playback-qualification` action covers real-mpv baseline
+and terminal failure, HTTP disconnect and 404 recovery, stalled HTTP, owned-process
+recovery, and second-client participant status. It binds the binaries and media
+tools to the exact checked-out PR head and records a platform attestation. A failed
+or skipped suite fails the native job and therefore `native-required`; diagnostic
+export still runs. Maintainer review and one-job Sandbox provisioning remain
+required. This adds release-build and playback work to PR qualification; receipts
+record the actual duration. Release qualification repeats the suite on the final
+merge/tag source and does not reuse a PR-head pass as publication authority.
+
 ## Inputs and evidence
 
 ### Updating verification tooling

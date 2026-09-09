@@ -1479,6 +1479,16 @@ impl RuntimePlaybackCoordination {
                 .get(room)
                 .copied()
         });
+        if (paused || raw.do_seek == Some(true))
+            && self
+                .pending_local_pause_intent
+                .as_ref()
+                .is_some_and(|intent| intent.play_handoff_started_at_seconds.is_some())
+        {
+            // Canonical Play has already accepted this intent. Waiting for
+            // split player evidence must not overrule a later room decision.
+            self.pending_local_pause_intent = None;
+        }
         let player_confirms_local_intent =
             self.pending_local_pause_intent
                 .as_ref()
@@ -1488,6 +1498,7 @@ impl RuntimePlaybackCoordination {
                             && observation.logical_pause == Some(intent.paused)
                     })
                 });
+        let mut defer_local_play_retirement = false;
         if matches!(
             authority,
             RoomPlaystateAuthority::LegacyLocalEcho | RoomPlaystateAuthority::LegacyRemoteUser
@@ -1501,11 +1512,25 @@ impl RuntimePlaybackCoordination {
             // otherwise removing the overlay reactivates the old pause on the
             // next player observation. Alignment and physical transport must
             // already be proven, and server-owned barriers never enter here.
-            self.coordinator.confirm_aligned_local_play(
-                self.coordinator_now(external_now_seconds),
+            let coordinator_now = self.coordinator_now(external_now_seconds);
+            let handed_off = self.coordinator.confirm_aligned_local_play(
+                coordinator_now,
                 position_seconds,
                 MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS,
             );
+            if !handed_off && self.coordinator.local_play_handoff_pending() {
+                // mpv reports pause, position and core-idle independently. A
+                // matching pause flag may precede the evidence that releases
+                // an older seek hold. Bridge that gap, but never let missing
+                // or displaced evidence retain manual authority indefinitely.
+                let intent = self.pending_local_pause_intent.as_mut().unwrap();
+                let started = intent
+                    .play_handoff_started_at_seconds
+                    .get_or_insert(coordinator_now);
+                let elapsed = coordinator_now - *started;
+                defer_local_play_retirement = elapsed.is_finite()
+                    && (0.0..MAX_DESYNC_POSITION_SAMPLE_AGE_SECONDS).contains(&elapsed);
+            }
         }
         let mut retire_confirmed_or_stale_local_intent = false;
         if let Some(intent) = self.pending_local_pause_intent.as_mut() {
@@ -1524,6 +1549,7 @@ impl RuntimePlaybackCoordination {
             if canonical_playstate_changed
                 && intent.paused == paused
                 && player_confirms_local_intent
+                && !defer_local_play_retirement
             {
                 // The server may attribute a matching state to another user
                 // after selecting its room anchor. Matching canonical truth
@@ -1579,6 +1605,7 @@ impl RuntimePlaybackCoordination {
         if self.pending_local_pause_intent.is_some()
             && canonical_local_echo
             && player_confirms_local_intent
+            && !defer_local_play_retirement
             && self
                 .pending_local_pause_intent
                 .as_ref()
