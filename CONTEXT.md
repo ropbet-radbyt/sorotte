@@ -18,6 +18,10 @@ _Avoid_: Peer status, observed room state
 The server-owned playlist contents and selected entry for a room. A participant's local queue or currently open path is an observation, not canonical selection.
 _Avoid_: Local playlist, mpv playlist
 
+**Client playlist projection**:
+The client session's reconciliation of canonical playlist replies and pending local edits. The GUI reads this projection directly; it does not retain a second optimistic playlist. Local file resolution and player loading follow its selected entry without owning playlist contents.
+_Avoid_: GUI playlist authority, optimistic GUI queue
+
 **Playlist selection generation**:
 The identity of one accepted selection or replay of a canonical playlist entry. Selecting the same numeric row again creates a successor generation even when the visible index and playlist contents are unchanged.
 _Avoid_: Playlist contents revision, row number
@@ -72,6 +76,7 @@ _Avoid_: Local autoplay timer, participant status
 
 **Participant status**:
 Transient, privacy-safe evidence about one participant's local player, attributed by the authenticated Sorotte session. It is explanatory only and never controls room playback, readiness, or membership.
+An internal recovery stability wait does not replace observed Playing with Loading.
 _Avoid_: Participant state, canonical telemetry
 
 **Status epoch**:

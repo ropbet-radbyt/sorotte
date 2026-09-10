@@ -582,14 +582,8 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return Ok(());
         }
 
-        match self
-            .runtime
-            .run_replace_playlist(files.clone(), selected_index)
-        {
-            Ok(true) => {
-                self.set_optimistic_current_room_playlist(files, selected_index);
-                Ok(())
-            }
+        match self.runtime.run_replace_playlist(files, selected_index) {
+            Ok(true) => Ok(()),
             Ok(false) => {
                 if !self.shared_playlist_control_available() {
                     Err(

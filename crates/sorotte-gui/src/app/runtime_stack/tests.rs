@@ -34,6 +34,7 @@ fn sync_adapter_to_saved_session_settings(
 
 mod chat_projection_tests;
 mod controller_autoplay_tests;
+mod current_server_playlist_tests;
 mod participant_status_projection_tests;
 mod playback_barrier_integration_tests;
 mod playlist_tests;

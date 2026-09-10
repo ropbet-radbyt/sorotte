@@ -163,6 +163,14 @@ runs:
       run: |
         python scripts/native_harness_canary.py --output target/verification/native-harness-readiness.json
         if ($LASTEXITCODE -ne 0) { throw "Native fixture readiness failed" }
+        $env:SOROTTE_TEST_MPV_BIN = $env:MPV_PATH
+        $regressionLog = 'target/verification/current-server-mpv.log'
+        cargo test --locked -p sorotte-gui --lib real_mpv_current_server -- --ignored --nocapture --test-threads=1 *> $regressionLog
+        $regressionExit = $LASTEXITCODE
+        Get-Content -LiteralPath $regressionLog
+        if ($regressionExit -ne 0 -or -not (Select-String -LiteralPath $regressionLog -Pattern 'test result: ok\. 4 passed; 0 failed; 0 ignored;' -Quiet)) {
+          throw 'Current-server playlist, participant status, and loaded-stream resume regressions failed or did not all execute'
+        }
         ./scripts/gui-real-mpv-vertical.ps1 -MpvPath $env:MPV_PATH -BinaryPath target/release/sorotte-gui.exe -TimeoutMs 30000
 
     - name: Run exact GUI HTTP failure recovery

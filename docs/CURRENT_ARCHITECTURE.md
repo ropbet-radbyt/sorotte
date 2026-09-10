@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.13; landed base `4035f974f8a5de7810a64250ad297b63993ea18c`; fixing commit **pending**; hosted evidence **pending**. The v0.2.13 candidate fixes dropped room seeks and rejected-seek reconciliation, delayed remote pauses changing readiness, local sources mislabeled as Plex, and participant status scope/recovery stalls. Deterministic regression coverage is included; exact-source hosted and native qualification remains pending. Boundary-local evidence below retains its historical context and does not qualify this candidate.
+Release 0.2.14; landed base `70ae9d0079a791d96629d02e3ab783b7dcc3310e`; fixing commit **pending**; hosted evidence **pending**. The v0.2.14 candidate removes duplicate GUI playlist ownership and fixes fresh Loading reports during observed playback. Both failures have current-server and real-mpv regression coverage. Investigation of the reported direct Plex resume delay remains open. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
 
 ## Authority flow
 

@@ -23,7 +23,6 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) playback_transport_adapter_epoch: u64,
     pub(super) last_streaming_quality_suggestion: Option<StreamingQualityDowngradeSuggestion>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
-    pub(super) optimistic_room_playlist: Option<(String, RoomPlaylistView)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +136,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             playback_transport_adapter_epoch,
             last_streaming_quality_suggestion: None,
             tracked_remote_usernames: BTreeSet::new(),
-            optimistic_room_playlist: None,
         })
     }
 
@@ -362,7 +360,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_ready_at_start_on_server_hello = true;
         self.request_user_list_on_first_state_without_media = true;
         self.tracked_remote_usernames.clear();
-        self.optimistic_room_playlist = None;
         Ok(())
     }
 
@@ -399,7 +396,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_ready_at_start_on_server_hello =
             self.pending_ready_at_start_on_server_hello || !self.server_handshake_completed();
         self.tracked_remote_usernames.clear();
-        self.optimistic_room_playlist = None;
     }
 
     fn current_room_name(&self) -> Option<&str> {
@@ -487,105 +483,15 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn room_playlist_matches_projection_target(
-        current: &RoomPlaylistView,
-        optimistic: &RoomPlaylistView,
-    ) -> bool {
-        current.files == optimistic.files
-            && current.index == optimistic.index
-            && current.revision >= optimistic.revision
-    }
-
     pub(in crate::app) fn projected_current_room_playlist(&self) -> Option<&RoomPlaylistView> {
-        let current_room = self.current_room_name();
-        let optimistic_playlist =
-            self.optimistic_room_playlist
-                .as_ref()
-                .and_then(|(room_name, playlist)| {
-                    (Some(room_name.as_str()) == current_room).then_some(playlist)
-                });
-        let session_playlist = self.runtime.session().current_room_playlist();
-
-        match (optimistic_playlist, session_playlist) {
-            (Some(optimistic), Some(current))
-                if !Self::room_playlist_matches_projection_target(current, optimistic) =>
-            {
-                Some(optimistic)
-            }
-            (Some(_), Some(current)) => Some(current),
-            (Some(optimistic), None) => Some(optimistic),
-            (None, Some(current)) => Some(current),
-            (None, None) => None,
-        }
+        // The session reconciles pending local actions with authoritative replies.
+        // A second optimistic copy can retain an obsolete selection indefinitely.
+        self.runtime.session().current_room_playlist()
     }
 
     fn projected_current_room_playlist_contains_entry(&self, entry: &str) -> bool {
         self.projected_current_room_playlist()
             .is_some_and(|playlist| playlist.files.iter().any(|file| file == entry))
-    }
-
-    fn sync_optimistic_room_playlist(&mut self) {
-        let current_room = self.current_room_name();
-        let should_clear = match self.optimistic_room_playlist.as_ref() {
-            Some((room_name, _)) if Some(room_name.as_str()) != current_room => true,
-            Some((_, optimistic)) => {
-                self.runtime
-                    .session()
-                    .current_room_playlist()
-                    .is_some_and(|current| {
-                        Self::room_playlist_matches_projection_target(current, optimistic)
-                    })
-            }
-            None => false,
-        };
-        if should_clear {
-            self.optimistic_room_playlist = None;
-        }
-    }
-
-    fn set_optimistic_current_room_playlist(
-        &mut self,
-        files: Vec<String>,
-        selected_index: Option<usize>,
-    ) {
-        let Some(room_name) = self.current_room_name().map(str::to_owned) else {
-            self.optimistic_room_playlist = None;
-            return;
-        };
-
-        let index = if files.is_empty() {
-            None
-        } else {
-            selected_index
-                .filter(|index| *index < files.len())
-                .or_else(|| {
-                    self.projected_current_room_playlist().map(|playlist| {
-                        let current_index =
-                            playlist.index.and_then(|index| usize::try_from(index).ok());
-                        SorotteGuiShellAppState::shared_playlist_target_index_from_changed_entries(
-                            &playlist.files,
-                            current_index,
-                            &files,
-                        )
-                        .min(files.len().saturating_sub(1))
-                    })
-                })
-                .and_then(|index| i64::try_from(index).ok())
-                .or(Some(0))
-        };
-        let revision = self
-            .projected_current_room_playlist()
-            .map(|playlist| playlist.revision)
-            .unwrap_or(1);
-        self.optimistic_room_playlist = Some((
-            room_name,
-            RoomPlaylistView {
-                files,
-                index,
-                set_by: Some(self.username.clone()),
-                revision,
-            },
-        ));
     }
 
     fn queue_periodic_state_sync_heartbeat_if_due(&mut self) {
@@ -893,7 +799,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 message_updates_authoritative_local_room,
             );
         }
-        self.sync_optimistic_room_playlist();
         result
     }
 

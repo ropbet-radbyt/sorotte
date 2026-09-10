@@ -20,6 +20,19 @@ impl RuntimePlaybackCoordination {
         if diagnostic == PlaybackDiagnostic::Starting && starting_is_seeking {
             return ParticipantPlaybackPhase::Seeking;
         }
+        if diagnostic == PlaybackDiagnostic::Starting
+            && self.latest_observation.as_ref().is_some_and(|observation| {
+                observation.phase == Some(sorotte_player_api::PlayerTransportPhase::Playing)
+                    && observation.logical_pause != Some(true)
+                    && observation.paused_for_cache != Some(true)
+                    && observation.core_idle != Some(true)
+            })
+        {
+            // Starting also describes recovery's stability wait. That policy
+            // can remain active while playback advances, so it cannot replace
+            // current player evidence with an advisory Loading report.
+            return ParticipantPlaybackPhase::Playing;
+        }
         match diagnostic {
             PlaybackDiagnostic::Empty => ParticipantPlaybackPhase::Empty,
             PlaybackDiagnostic::Loading => ParticipantPlaybackPhase::Loading,
