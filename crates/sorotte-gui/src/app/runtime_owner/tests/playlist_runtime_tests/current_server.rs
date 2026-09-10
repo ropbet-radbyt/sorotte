@@ -273,7 +273,7 @@ impl GuiSessionTransportDriver for CurrentServerDriver {
 }
 
 struct ObservedFilePlayer {
-    current: Arc<Mutex<Option<String>>>,
+    current: Arc<Mutex<Option<std::path::PathBuf>>>,
     update: Option<LocalFileUpdate>,
 }
 
@@ -282,7 +282,9 @@ impl PlayerAdapter for ObservedFilePlayer {
         "observed-file"
     }
     fn open_file(&mut self, path: &str) -> Result<(), PlayerError> {
-        *self.current.lock().unwrap() = Some(path.to_owned());
+        // The player may receive the expanded spelling of a Windows 8.3 path.
+        // Observe the actual fixture identity, not the caller's path spelling.
+        *self.current.lock().unwrap() = Some(std::fs::canonicalize(path).unwrap());
         self.update = Some(
             LocalFileUpdate::new(
                 std::path::Path::new(path)
@@ -325,6 +327,8 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
         .into_owned();
     std::fs::write(&first, b"first").unwrap();
     std::fs::write(&second, b"second").unwrap();
+    let first_identity = std::fs::canonicalize(&first).unwrap();
+    let second_identity = std::fs::canonicalize(&second).unwrap();
     let (owner, _) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .unwrap();
@@ -357,7 +361,7 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
         &handle,
         &mut state,
         std::time::Duration::from_secs(3),
-        |_| current.lock().unwrap().as_deref() == Some(&first),
+        |_| current.lock().unwrap().as_deref() == Some(first_identity.as_path()),
         "first local file should open through current server",
     );
     for _ in 0..12 {
@@ -381,7 +385,7 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
     }
     assert_eq!(
         current.lock().unwrap().as_deref(),
-        Some(first.as_str()),
+        Some(first_identity.as_path()),
         "append preserves playback"
     );
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(1));
@@ -390,10 +394,13 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
         &handle,
         &mut state,
         std::time::Duration::from_secs(3),
-        |_| current.lock().unwrap().as_deref() == Some(&second),
+        |_| current.lock().unwrap().as_deref() == Some(second_identity.as_path()),
         "select second file must reach local player",
     );
-    assert_eq!(current.lock().unwrap().as_deref(), Some(second.as_str()));
+    assert_eq!(
+        current.lock().unwrap().as_deref(),
+        Some(second_identity.as_path())
+    );
     handle.push_request(GuiRuntimeRequest::DeletePlaylistIndex(0));
     pump_and_apply_runtime_owner_actions_until(
         &mut owner,
