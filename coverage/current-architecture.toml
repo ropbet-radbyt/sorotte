@@ -1,11 +1,11 @@
 schema_version = 1
 
 [release]
-version = "0.2.12"
-base_sha = "ddb8bd8880352a1513ec39363e13518d27e2f58f"
+version = "0.2.13"
+base_sha = "4035f974f8a5de7810a64250ad297b63993ea18c"
 fixing_sha = "pending"
 hosted = "pending"
-note = "The v0.2.12 candidate builds on main after PR #53. It repairs player telemetry delivery and reconnection, authoritative pause enforcement, room-clock presentation, participant alignment and local filename casing. Boundary-local evidence below retains its historical context and does not qualify this candidate; fresh hosted and native qualification is required."
+note = "The v0.2.13 candidate fixes dropped room seeks and rejected-seek reconciliation, delayed remote pauses changing readiness, local sources mislabeled as Plex, and participant status scope/recovery stalls. Deterministic regression coverage is included; exact-source hosted and native qualification remains pending. Boundary-local evidence below retains its historical context and does not qualify this candidate."
 
 [[crate]]
 name = "sorotte-secret"

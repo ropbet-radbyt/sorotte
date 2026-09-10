@@ -24,7 +24,7 @@ needs Python 3.11 or newer and authenticated `gh` with runner administration
 permission for `ropbet-radbyt/sorotte`. No existing guest may be running.
 
 `verification/windows-native-guest.json` is the reviewed guest profile. It
-names Rust 1.97.1, Python 3.12.10, MSVC 14.29.30133, SDK 10.0.19041.0 and Actions
+names Rust 1.98.1, Python 3.12.10, MSVC 14.29.30133, SDK 10.0.19041.0 and Actions
 runner 2.337.0. The runner archive hash matches the [published runner checksum](https://github.com/actions/runner/releases/tag/v2.337.0).
 Every copied tool file is also hashed. Updating a compiler or tool requires
 reviewing the profile and producing a fresh bundle; an existing sealed bundle
