@@ -117,7 +117,10 @@ reference_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     def produce(self):
         prepared = campaign.prepare(self.repo, self.selected)
         for item in campaign.matrix(prepared):
-            code = campaign.run_chunk(self.repo, prepared, self.selected, item["chunk"], self.artifacts / item["chunk"])
+            # This fixture creates the initial attempt, independent of whether
+            # its hosting CI workflow is itself being retried.
+            code = campaign.run_chunk(self.repo, prepared, self.selected, item["chunk"], self.artifacts / item["chunk"],
+                                      attempt_number=1)
             self.assertEqual(code, 0)
         return prepared
 
