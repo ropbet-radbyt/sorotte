@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn rejected_seek_is_corrected_even_when_canonical_state_names_the_local_user() {
+    for revision in [34, 35] {
+        for correction_position in [0.0, 40.0] {
+            let mut fixture = SeekFixture::new();
+            fixture.seek();
+            fixture.queue_observation(true, 11.0);
+            fixture
+                .runtime
+                .drain_player_transport_coordination(1.2)
+                .unwrap();
+            fixture.runtime.player.commands.clear();
+            fixture.reconcile(
+                StatePayload::new()
+                    .with_playstate(
+                        PlaystatePayload::new()
+                            .with_position(correction_position)
+                            .with_paused(true)
+                            .with_do_seek(true)
+                            .with_set_by("alice")
+                            .with_transport_revision(revision),
+                    )
+                    .with_ignoring_on_the_fly(
+                        IgnoringOnTheFlyPayload::new()
+                            .with_server(1)
+                            .with_client(fixture.seek_counter),
+                    ),
+            );
+            fixture.queue_observation(true, 11.0);
+            fixture
+                .runtime
+                .drain_player_transport_coordination(1.4)
+                .unwrap();
+            assert!(fixture.runtime.player.commands.iter().any(|command| matches!(command, PlayerCommand::SetPosition(position) if (*position - correction_position).abs() < 0.001)), "a rejected local seek must dispatch the authoritative target, including a cold target");
+            assert!(
+                fixture
+                    .runtime
+                    .playback_coordination
+                    .rejected_local_seek
+                    .is_some()
+            );
+            fixture.emit_seek();
+            assert!(
+                fixture
+                    .runtime
+                    .playback_coordination
+                    .rejected_local_seek
+                    .is_none(),
+                "a new seek must not inherit an earlier correction"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_new_pause_survives_the_delayed_acknowledgement_of_its_prior_play() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());

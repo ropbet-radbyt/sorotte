@@ -2102,6 +2102,38 @@ fn ahead_after_recovery_releases_to_ordinary_correction_after_stable_playback() 
 }
 
 #[test]
+fn recovery_replayed_observations_do_not_restart_playback_stability() {
+    let mut coordinator = PlaybackCoordinator::new(PlaybackCoordinatorConfig {
+        stability_interval_seconds: 1.0,
+        ..PlaybackCoordinatorConfig::default()
+    });
+    let generation = coordinator
+        .prepare_media(
+            LogicalMediaId::new("replayed-recovery").unwrap(),
+            MediaTransportKind::NetworkVod,
+            0.0,
+        )
+        .media_generation;
+    coordinator.update_desired_room_state(desired(generation, 1, false, 0.0));
+    coordinator.observe(
+        playing(generation, 0.0, 0.0)
+            .with_phase(PlayerTransportPhase::Rebuffering)
+            .with_cache_pause(true),
+    );
+    for step in 1..=40 {
+        let now = f64::from(step) * 0.1;
+        let observation = playing(generation, now, now);
+        coordinator.observe(observation.clone());
+        coordinator.replay_observation(observation);
+    }
+    assert!(
+        coordinator.recovery_episode().is_none(),
+        "cached reconciliation must not keep healthy playback in recovery"
+    );
+    assert_eq!(coordinator.diagnostic(), PlaybackDiagnostic::Playing);
+}
+
+#[test]
 fn live_recovery_seek_is_clamped_behind_the_latest_seekable_edge() {
     let (mut coordinator, generation) = coordinator(MediaTransportKind::LiveSliding);
     coordinator.update_desired_room_state(DesiredRoomPlayback {

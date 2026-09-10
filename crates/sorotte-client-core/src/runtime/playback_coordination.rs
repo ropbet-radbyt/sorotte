@@ -238,6 +238,8 @@ pub(crate) struct RuntimePlaybackCoordination {
     desired_fingerprint: Option<RoomDesiredFingerprint>,
     pending_local_pause_intent: Option<PendingLocalPauseIntent>,
     pending_local_transport_echo: Option<PendingLocalTransportEcho>,
+    rejected_local_seek: Option<(PendingLocalTransportEcho, u64)>,
+    pending_remote_pause_observation: Option<PlayerCommandRegistration>,
     local_transport_counter_high_watermark: Option<PendingLocalTransportEcho>,
     last_local_pause_intent_stage_accepted: Option<bool>,
     connection_generation: u64,
@@ -360,6 +362,8 @@ impl RuntimePlaybackCoordination {
         self.desired_fingerprint = None;
         self.pending_local_pause_intent = None;
         self.pending_local_transport_echo = None;
+        self.rejected_local_seek = None;
+        self.pending_remote_pause_observation = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.pending_forced_seek_revision = None;
         self.transport_telemetry_observed = false;
@@ -492,6 +496,8 @@ impl RuntimePlaybackCoordination {
             self.desired_fingerprint = None;
             self.pending_local_pause_intent = None;
             self.pending_local_transport_echo = None;
+            self.rejected_local_seek = None;
+            self.pending_remote_pause_observation = None;
             self.last_local_pause_intent_stage_accepted = None;
             self.pending_forced_seek_revision = None;
             self.last_applied_revision = None;
@@ -610,6 +616,8 @@ impl RuntimePlaybackCoordination {
         self.participant_status_owner_clock_invalidated = false;
         self.pending_local_pause_intent = None;
         self.pending_local_transport_echo = None;
+        self.rejected_local_seek = None;
+        self.pending_remote_pause_observation = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.barrier.last_reported_barrier_ready = None;
         self.barrier.last_reported_barrier_started = None;
@@ -804,6 +812,8 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
         self.clear_local_transport_echo();
         self.connection_generation = self.connection_generation.saturating_add(1).max(1);
+        self.pending_remote_pause_observation = None;
+        self.rejected_local_seek = None;
         self.participant_status.next_participant_status_sequence = 0;
         self.participant_status.last_participant_status_fingerprint = None;
         self.participant_status
@@ -1389,7 +1399,8 @@ impl RuntimePlaybackCoordination {
         let Some(authority) = session.current_room_playstate_authority() else {
             return Vec::new();
         };
-        let canonical_local_echo = authority == RoomPlaystateAuthority::LegacyLocalEcho;
+        let canonical_local_echo = authority == RoomPlaystateAuthority::LegacyLocalEcho
+            && !self.local_seek_correction_is_current(session);
         let Some(projected) = session.current_room_playstate_at(external_now_seconds) else {
             return Vec::new();
         };
@@ -1767,13 +1778,23 @@ impl RuntimePlaybackCoordination {
         self.desired_generation = Some(media_generation);
         self.desired_fingerprint = Some(fingerprint);
         self.refresh_participant_status_room_scope(session);
-        if desired_changed
-            && let Some(scope) = self
-                .participant_status
-                .participant_status_room_scope
-                .as_ref()
-                .filter(|scope| scope.local_media_generation == media_generation)
-                .cloned()
+        if let Some(scope) = self
+            .participant_status
+            .participant_status_room_scope
+            .as_ref()
+            .filter(|scope| {
+                scope.local_media_generation == media_generation
+                    && scope.transport_revision.is_none_or(|revision| {
+                        session.current_room_transport_revision() == Some(revision)
+                    })
+                    && (desired_changed
+                        || self
+                            .participant_status
+                            .participant_status_applied_room_scope
+                            .as_ref()
+                            != Some(*scope))
+            })
+            .cloned()
         {
             self.participant_status
                 .participant_status_desired_scope_bindings
@@ -1816,10 +1837,11 @@ impl RuntimePlaybackCoordination {
                 DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch
             } else if explicit_seek_changed {
                 match authority {
-                    RoomPlaystateAuthority::LegacyLocalEcho => {
+                    RoomPlaystateAuthority::LegacyLocalEcho if canonical_local_echo => {
                         DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched
                     }
-                    RoomPlaystateAuthority::LegacyRemoteUser => {
+                    RoomPlaystateAuthority::LegacyLocalEcho
+                    | RoomPlaystateAuthority::LegacyRemoteUser => {
                         DesiredRoomPlaybackUpdateKind::ExplicitSeek
                     }
                     RoomPlaystateAuthority::ServerBarrier { .. }
@@ -1888,6 +1910,15 @@ impl RuntimePlaybackCoordination {
                 | PlaybackCoordinatorAction::RequestRoomPause { .. }
                 | PlaybackCoordinatorAction::CommandTimedOut { .. } => {}
             }
+        }
+        if let Some(revision) = self.coordinator.take_applied_observation_revision()
+            && let Some(scope) = self
+                .participant_status
+                .participant_status_desired_scope_bindings
+                .remove(&revision)
+        {
+            self.participant_status
+                .participant_status_applied_room_scope = Some(scope);
         }
     }
 
@@ -2068,15 +2099,34 @@ impl RuntimePlaybackCoordination {
             return false;
         };
         let adapter_epoch = self.classifier_adapter_epoch();
-        self.player_transition_classifier
-            .register_command(PlayerCommandRegistration::new(
-                command_id,
-                media_generation,
-                adapter_epoch,
-                cause,
-                desired_paused,
-                issued_at_seconds,
+        let registration = PlayerCommandRegistration::new(
+            command_id,
+            media_generation,
+            adapter_epoch,
+            cause,
+            desired_paused,
+            issued_at_seconds,
+        );
+        let registered = self
+            .player_transition_classifier
+            .register_command(registration);
+        if registered {
+            self.remember_remote_pause_observation(registration);
+        }
+        registered
+    }
+
+    fn remember_remote_pause_observation(&mut self, registration: PlayerCommandRegistration) {
+        // Keep one causal expectation beyond the classifier's short command
+        // grace. A replacement command or a confirmed edge consumes it.
+        self.pending_remote_pause_observation = (registration.cause
+            == PlayerCommandCause::RemoteRoomSynchronization
+            && registration.desired_paused
+            && matches!(
+                registration.completion,
+                PlayerCommandCompletion::Pending | PlayerCommandCompletion::Completed { .. }
             ))
+        .then_some(registration);
     }
 
     pub(crate) fn register_completed_synthetic_pause_command(
@@ -2133,9 +2183,14 @@ impl RuntimePlaybackCoordination {
             issued_at_seconds,
         );
         registration.completion = completion;
-        self.player_transition_classifier
+        if !self
+            .player_transition_classifier
             .register_command(registration)
-            .then_some(command_id)
+        {
+            return None;
+        }
+        self.remember_remote_pause_observation(registration);
+        Some(command_id)
     }
 
     pub(crate) fn standalone_command_issued_at_seconds(&self, external_now_seconds: f64) -> f64 {
@@ -2187,12 +2242,29 @@ impl RuntimePlaybackCoordination {
                 PlayerCommandCompletion::Superseded { at_seconds }
             }
         };
+        self.finish_registered_pause_command(progress.command_id, completion);
+    }
+
+    fn finish_registered_pause_command(
+        &mut self,
+        command_id: PlayerCommandId,
+        completion: PlayerCommandCompletion,
+    ) -> bool {
         let adapter_epoch = self.classifier_adapter_epoch();
-        self.player_transition_classifier.update_command_completion(
+        let updated = self.player_transition_classifier.update_command_completion(
             adapter_epoch,
-            progress.command_id,
+            command_id,
             completion,
         );
+        if let Some(mut command) = self.pending_remote_pause_observation
+            && updated
+            && command.command_id == command_id
+            && command.adapter_epoch == adapter_epoch
+        {
+            command.completion = completion;
+            self.remember_remote_pause_observation(command);
+        }
+        updated
     }
 
     fn player_transition_context(&self, session: &ClientSession) -> PlayerTransitionContext {
@@ -2225,6 +2297,20 @@ impl RuntimePlaybackCoordination {
             }))
             .with_synchronization(
                 self.reconnect_reconciliation.is_some()
+                    // A remote room pause remains synchronization even when
+                    // its physical effect arrives after the command tombstone
+                    // expires. Agreeing with that pause is no new user intent.
+                    || (observation.logical_pause == Some(true)
+                        && self.pending_remote_pause_observation.is_some_and(|command| {
+                            command.media_generation == observation.media_generation
+                                && command.adapter_epoch == self.classifier_adapter_epoch()
+                                && matches!(command.completion, PlayerCommandCompletion::Completed { .. })
+                                && observation.observed_at_seconds >= command.issued_at_seconds
+                        })
+                        && authority == Some(RoomPlaystateAuthority::LegacyRemoteUser)
+                        && session.current_room_playstate().is_some_and(|playstate| {
+                            playstate.paused == Some(true)
+                        }))
                     || (self
                         .player_command_bindings
                         .values()
@@ -2250,6 +2336,17 @@ impl RuntimePlaybackCoordination {
         let classification = self
             .player_transition_classifier
             .classify(player_observation);
+        if !matches!(
+            classification,
+            PlayerTransitionClassification::Ignored { .. }
+        ) && (logical_paused
+            || matches!(
+                classification,
+                PlayerTransitionClassification::NativePlayerGesture { .. }
+            ))
+        {
+            self.pending_remote_pause_observation = None;
+        }
         self.last_player_transition_classification = Some(classification);
         self.sync_pending_native_play_authority_fence(session);
         Some(classification)

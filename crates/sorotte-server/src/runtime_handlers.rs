@@ -1825,7 +1825,19 @@ impl ServerRuntime {
                 ProtocolMessage::State(message) if message.state.playstate.is_some()
             )
         });
-        if self.server_ignoring_counter(client_id) > 0 {
+        // A deliberate seek can overtake a queued acknowledgement. Its exact
+        // current transport revision proves the authority it was based on;
+        // dropping it here would leave only the optimistic local player moved.
+        // Legacy/unscoped commands and periodic observations retain the fence.
+        let current_revision_seek = state.playstate.as_ref().is_some_and(|playstate| {
+            playstate.do_seek == Some(true)
+                && playstate.transport_revision.is_some_and(|revision| {
+                    revision != 0
+                        && Some(revision)
+                            == self.transport_authority_revision_for_room(&session.room)
+                })
+        });
+        if self.server_ignoring_counter(client_id) > 0 && !current_revision_seek {
             return Ok(barrier_outbound);
         }
         // Barrier observations are acknowledgements, not playback-control

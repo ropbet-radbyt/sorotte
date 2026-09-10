@@ -8,9 +8,24 @@ impl RuntimePlaybackCoordination {
     /// even when refreshing or dispatching the newer command fails.
     pub(crate) fn clear_local_transport_echo(&mut self) {
         self.pending_local_transport_echo = None;
+        self.rejected_local_seek = None;
         if let Some(intent) = self.pending_local_pause_intent.as_mut() {
             intent.preceding_local_transport = None;
         }
+    }
+
+    pub(super) fn local_seek_correction_is_current(&mut self, session: &ClientSession) -> bool {
+        let current = self
+            .rejected_local_seek
+            .as_ref()
+            .is_some_and(|(seek, revision)| {
+                self.local_transport_scope_matches(seek, session)
+                    && session.current_room_transport_revision() == Some(*revision)
+            });
+        if !current {
+            self.rejected_local_seek = None;
+        }
+        current
     }
 
     pub(super) fn local_transport_scope_matches(
@@ -138,6 +153,28 @@ impl RuntimePlaybackCoordination {
         Some(LocalTransportEchoCandidate {
             predecessor: predecessor.clone(),
             matching_client_counter: client_counter == Some(predecessor.client_counter),
+            seek_correction: inbound.playstate.as_ref().and_then(|playstate| {
+                let revision = playstate.transport_revision?;
+                let position = playstate.position?;
+                let paused = playstate.paused?;
+                (predecessor.is_seek
+                    && revision >= predecessor.base_revision
+                    && playstate.do_seek == Some(true)
+                    && position.is_finite()
+                    && position >= 0.0
+                    && (position != predecessor.target_position || paused != predecessor.paused))
+                    .then(|| {
+                        (
+                            revision,
+                            RoomPlaystateView {
+                                position: Some(position),
+                                paused: Some(paused),
+                                do_seek: Some(true),
+                                set_by: playstate.set_by.clone(),
+                            },
+                        )
+                    })
+            }),
         })
     }
 
@@ -152,6 +189,7 @@ impl RuntimePlaybackCoordination {
         let Some(LocalTransportEchoCandidate {
             predecessor,
             matching_client_counter,
+            seek_correction,
         }) = candidate
         else {
             return;
@@ -160,8 +198,24 @@ impl RuntimePlaybackCoordination {
             return;
         }
         let scope_matches = self.local_transport_scope_matches(&predecessor, session);
+        let corrected = matching_client_counter
+            && scope_matches
+            && seek_correction
+                .as_ref()
+                .is_some_and(|(revision, correction)| {
+                    session.current_room_transport_revision() == Some(*revision)
+                        && session.current_room_playstate() == Some(correction)
+                });
+        if corrected {
+            // setBy names the last room controller, including this client when
+            // its newer seek was rejected. It cannot grant self-echo immunity
+            // to a correlated authoritative correction of that seek.
+            self.rejected_local_seek =
+                seek_correction.map(|(revision, _)| (predecessor.clone(), revision));
+        }
         if scope_matches
             && session.current_room_transport_revision() == Some(predecessor.base_revision)
+            && !corrected
         {
             // In particular, a matching client counter without an accepted
             // playstate is not an acknowledgement of the command's authority.
@@ -242,4 +296,5 @@ pub(crate) struct PendingLocalTransportEcho {
 pub(crate) struct LocalTransportEchoCandidate {
     predecessor: PendingLocalTransportEcho,
     matching_client_counter: bool,
+    seek_correction: Option<(u64, RoomPlaystateView)>,
 }

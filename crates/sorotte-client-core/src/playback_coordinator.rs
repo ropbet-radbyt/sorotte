@@ -679,6 +679,7 @@ pub struct PlaybackCoordinator {
     next_seek_preparation_id: u64,
     next_command_id: u64,
     last_applied_revision: Option<u64>,
+    applied_observation_revision: Option<(u64, u64)>,
     last_started_revision: Option<u64>,
     desired_seek_satisfied_revision: Option<u64>,
     required_seek_dispatch_revision: Option<u64>,
@@ -718,6 +719,7 @@ impl PlaybackCoordinator {
             next_seek_preparation_id: 0,
             next_command_id: 0,
             last_applied_revision: None,
+            applied_observation_revision: None,
             last_started_revision: None,
             desired_seek_satisfied_revision: None,
             required_seek_dispatch_revision: None,
@@ -1315,6 +1317,7 @@ impl PlaybackCoordinator {
         seek_preparation_evidence_is_fresh: bool,
         replace_previous_state: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
+        self.applied_observation_revision = None;
         let Some(media_generation) = self.media.as_ref().map(|media| media.generation) else {
             return Vec::new();
         };
@@ -1343,9 +1346,10 @@ impl PlaybackCoordinator {
         }
         self.observation_sequence = self.observation_sequence.saturating_add(1);
 
-        let position_sampled = observation
-            .position_seconds
-            .is_some_and(|value| value.is_finite() && value >= 0.0);
+        let position_sampled = seek_preparation_evidence_is_fresh
+            && observation
+                .position_seconds
+                .is_some_and(|value| value.is_finite() && value >= 0.0);
         let previous = (!replace_previous_state).then_some(self.observed).flatten();
         if replace_previous_state {
             self.cached_seekable_ranges = None;
@@ -1508,7 +1512,17 @@ impl PlaybackCoordinator {
             &mut actions,
         );
         self.reconcile_rate_override(observed, observed.observed_at_seconds, &mut actions);
+        if !seek_preparation_evidence_is_fresh {
+            self.applied_observation_revision = None;
+        }
         actions
+    }
+
+    /// Fresh observations can confirm an already-applied desired revision.
+    /// Advisory scope adoption consumes this evidence without replaying room
+    /// effects or emitting another barrier acknowledgement.
+    pub(crate) fn take_applied_observation_revision(&mut self) -> Option<(u64, u64)> {
+        self.applied_observation_revision.take()
     }
 
     pub fn command_accepted(&mut self, command_id: CoordinatorCommandId) -> bool {
@@ -3300,6 +3314,8 @@ impl PlaybackCoordinator {
         started: bool,
         actions: &mut Vec<PlaybackCoordinatorAction>,
     ) {
+        self.applied_observation_revision =
+            Some((desired.media_generation, desired.state_revision));
         if self.last_applied_revision != Some(desired.state_revision) {
             self.last_applied_revision = Some(desired.state_revision);
             self.metrics.applied_revision_count =

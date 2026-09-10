@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn current_revision_seek_reaches_every_member_while_previous_ack_is_queued() {
+    for paused in [true, false] {
+        let mut runtime = ServerRuntime::default();
+        runtime.set_time_now_override_seconds(Some(0.0));
+        for (client, username) in [("client-1", "alice"), ("client-2", "bob")] {
+            runtime.handle_line(client, &format!(
+                r#"{{"Hello":{{"username":"{username}","room":{{"name":"room1"}},"version":"1.2.255"}}}}"#
+            )).unwrap();
+            acknowledge_server_state_counter(&mut runtime, client, 1);
+        }
+        runtime.next_server_ignoring_counter("client-1");
+        // Telemetry and unscoped/old seeks still cannot bypass the ack fence.
+        for playstate in [
+            r#"{"position":11.0,"paused":true,"doSeek":false,"sorotteTransportRevision":1}"#,
+            r#"{"position":11.0,"paused":true,"doSeek":true}"#,
+            r#"{"position":11.0,"paused":true,"doSeek":true,"sorotteTransportRevision":0}"#,
+            r#"{"position":11.0,"paused":true,"doSeek":true,"sorotteTransportRevision":2}"#,
+        ] {
+            assert!(
+                runtime
+                    .handle_line_fanout(
+                        "client-1",
+                        &format!(r#"{{"State":{{"playstate":{playstate}}}}}"#)
+                    )
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let lines = runtime.handle_line_fanout("client-1", &format!(
+            r#"{{"State":{{"playstate":{{"position":11.0,"paused":{paused},"doSeek":true,"sorotteTransportRevision":1}},"ignoringOnTheFly":{{"client":1}}}}}}"#
+        )).unwrap();
+        let messages = decode_directed_lines(&lines);
+        assert_eq!(
+            messages.len(),
+            2,
+            "the room seek must not silently become local-only"
+        );
+        for client in ["client-1", "client-2"] {
+            assert!(messages.iter().any(|(recipient, message)| recipient == client && matches!(message,
+                ProtocolMessage::State(payload) if payload.state.playstate.as_ref().is_some_and(|state|
+                    state.position == Some(11.0) && state.do_seek == Some(true)
+                        && state.transport_revision().unwrap() == Some(2)))));
+        }
+        assert_eq!(runtime.room_playback_state("room1").position, 11.0);
+    }
+}
+
+#[test]
 fn state_playstate_updates_are_broadcast_to_room_members_with_metadata() {
     let mut runtime = ServerRuntime::default();
     runtime
