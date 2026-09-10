@@ -12,12 +12,11 @@ fn current_revision_seek_reaches_every_member_while_previous_ack_is_queued() {
             acknowledge_server_state_counter(&mut runtime, client, 1);
         }
         runtime.next_server_ignoring_counter("client-1");
-        // Telemetry and unscoped/old seeks still cannot bypass the ack fence.
+        // Telemetry and unscoped seeks still cannot bypass the ack fence.
         for playstate in [
             r#"{"position":11.0,"paused":true,"doSeek":false,"sorotteTransportRevision":1}"#,
             r#"{"position":11.0,"paused":true,"doSeek":true}"#,
             r#"{"position":11.0,"paused":true,"doSeek":true,"sorotteTransportRevision":0}"#,
-            r#"{"position":11.0,"paused":true,"doSeek":true,"sorotteTransportRevision":2}"#,
         ] {
             assert!(
                 runtime
@@ -45,6 +44,34 @@ fn current_revision_seek_reaches_every_member_while_previous_ack_is_queued() {
                         && state.transport_revision().unwrap() == Some(2)))));
         }
         assert_eq!(runtime.room_playback_state("room1").position, 11.0);
+        // An earlier State can cross the next seek on the wire. Reject that
+        // stale seek explicitly even before the earlier State is acknowledged.
+        for (revision, counter) in [(1, 2), (3, 3)] {
+            let rejected = runtime
+                .handle_line_fanout(
+                    "client-1",
+                    &serde_json::json!({"State": {
+                        "playstate": {"position": 19.0, "paused": true, "doSeek": true,
+                            "sorotteTransportRevision": revision},
+                        "ignoringOnTheFly": {"client": counter}
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+            let rejected = decode_directed_lines(&rejected);
+            assert_eq!(
+                rejected.len(),
+                1,
+                "a discarded stale or future seek needs a correlated correction"
+            );
+            assert!(
+                matches!(&rejected[0], (recipient, ProtocolMessage::State(message))
+                if recipient == "client-1"
+                    && message.state.playstate.as_ref().unwrap().position == Some(11.0)
+                    && message.state.ignoring_on_the_fly.as_ref().unwrap().client == Some(counter))
+            );
+            assert_eq!(runtime.room_playback_state("room1").position, 11.0);
+        }
     }
 }
 

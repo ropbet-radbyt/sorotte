@@ -1826,18 +1826,17 @@ impl ServerRuntime {
             )
         });
         // A deliberate seek can overtake a queued acknowledgement. Its exact
-        // current transport revision proves the authority it was based on;
-        // dropping it here would leave only the optimistic local player moved.
+        // transport revision must reach validation below, which either admits
+        // the current revision or sends a correlated rejection of a stale one.
+        // Dropping it here would leave only the optimistic local player moved.
         // Legacy/unscoped commands and periodic observations retain the fence.
-        let current_revision_seek = state.playstate.as_ref().is_some_and(|playstate| {
+        let revisioned_seek = state.playstate.as_ref().is_some_and(|playstate| {
             playstate.do_seek == Some(true)
-                && playstate.transport_revision.is_some_and(|revision| {
-                    revision != 0
-                        && Some(revision)
-                            == self.transport_authority_revision_for_room(&session.room)
-                })
+                && playstate
+                    .transport_revision
+                    .is_some_and(|revision| revision != 0)
         });
-        if self.server_ignoring_counter(client_id) > 0 && !current_revision_seek {
+        if self.server_ignoring_counter(client_id) > 0 && !revisioned_seek {
             return Ok(barrier_outbound);
         }
         // Barrier observations are acknowledgements, not playback-control

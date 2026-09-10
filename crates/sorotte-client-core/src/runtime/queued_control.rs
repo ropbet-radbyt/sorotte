@@ -267,6 +267,9 @@ where
         let local_transport_echo = self
             .playback_coordination
             .capture_local_transport_echo(&self.session, &inbound_state);
+        let seek_correction = self
+            .playback_coordination
+            .capture_local_seek_correction(&self.session, &inbound_state);
         let inbound_transport_revision = inbound_state
             .playstate
             .as_ref()
@@ -301,6 +304,8 @@ where
             );
             self.playback_coordination
                 .finish_local_transport_echo(&self.session, local_transport_echo);
+            self.playback_coordination
+                .finish_local_seek_correction(&self.session, seek_correction);
             return self.queue_connection_scoped_state_with_participant_status(
                 outbound_state,
                 true,
@@ -324,6 +329,8 @@ where
             );
         self.playback_coordination
             .finish_local_transport_echo(&self.session, local_transport_echo);
+        self.playback_coordination
+            .finish_local_seek_correction(&self.session, seek_correction);
         self.queue_connection_scoped_state_with_participant_status(
             outbound_state,
             true,

@@ -7,8 +7,13 @@ impl RuntimePlaybackCoordination {
     /// A superseding operation cannot reuse an older command's acknowledgement,
     /// even when refreshing or dispatching the newer command fails.
     pub(crate) fn clear_local_transport_echo(&mut self) {
-        self.pending_local_transport_echo = None;
+        self.retire_local_transport_echo();
+        self.unacknowledged_local_seek = None;
         self.rejected_local_seek = None;
+    }
+
+    fn retire_local_transport_echo(&mut self) {
+        self.pending_local_transport_echo = None;
         if let Some(intent) = self.pending_local_pause_intent.as_mut() {
             intent.preceding_local_transport = None;
         }
@@ -26,6 +31,80 @@ impl RuntimePlaybackCoordination {
             self.rejected_local_seek = None;
         }
         current
+    }
+
+    /// A preceding room update may retire Play/Pause rebase authority before
+    /// the seek's own reply arrives. Retain its correction identity separately;
+    /// it can reconcile room truth but can never rebase a newer user command.
+    pub(crate) fn capture_local_seek_correction(
+        &mut self,
+        session: &ClientSession,
+        inbound: &ClientStateUpdate,
+    ) -> Option<LocalSeekCorrectionCandidate> {
+        let seek = self.unacknowledged_local_seek.as_ref()?;
+        if !self.local_transport_scope_matches(seek, session) {
+            self.unacknowledged_local_seek = None;
+            return None;
+        }
+        if inbound
+            .ignoring_on_the_fly
+            .as_ref()
+            .and_then(|ignore| ignore.client)
+            != Some(seek.client_counter)
+        {
+            return None;
+        }
+        let playstate = inbound.playstate.as_ref()?;
+        let revision = playstate.transport_revision?;
+        let position = playstate.position?;
+        let paused = playstate.paused?;
+        (revision >= seek.base_revision
+            && playstate.do_seek == Some(true)
+            && position.is_finite()
+            && position >= 0.0)
+            .then(|| LocalSeekCorrectionCandidate {
+                seek: seek.clone(),
+                revision,
+                canonical: RoomPlaystateView {
+                    position: Some(position),
+                    paused: Some(paused),
+                    do_seek: Some(true),
+                    set_by: playstate.set_by.clone(),
+                },
+            })
+    }
+
+    pub(crate) fn finish_local_seek_correction(
+        &mut self,
+        session: &ClientSession,
+        candidate: Option<LocalSeekCorrectionCandidate>,
+    ) {
+        let Some(candidate) = candidate else {
+            return;
+        };
+        if self.unacknowledged_local_seek.as_ref() != Some(&candidate.seek)
+            || !self.local_transport_scope_matches(&candidate.seek, session)
+            || session.current_room_transport_revision() != Some(candidate.revision)
+            || session.current_room_playstate() != Some(&candidate.canonical)
+        {
+            return;
+        }
+        let corrected = candidate.canonical.position != Some(candidate.seek.target_position)
+            || candidate.canonical.paused != Some(candidate.seek.paused);
+        // A replay of the unchanged base revision cannot acknowledge this
+        // seek. Keep its identity until admission or an actual correction.
+        if !corrected && candidate.revision == candidate.seek.base_revision {
+            return;
+        }
+        self.unacknowledged_local_seek = None;
+        if self.pending_local_transport_echo.as_ref() == Some(&candidate.seek) {
+            self.retire_local_transport_echo();
+        }
+        // setBy names the last controller, including this client when its
+        // newer seek was rejected. It is not proof that the seek succeeded.
+        if corrected {
+            self.rejected_local_seek = Some((candidate.seek, candidate.revision));
+        }
     }
 
     pub(super) fn local_transport_scope_matches(
@@ -128,6 +207,9 @@ impl RuntimePlaybackCoordination {
                 return;
             }
             self.local_transport_counter_high_watermark = Some(predecessor.clone());
+            if predecessor.is_seek {
+                self.unacknowledged_local_seek = Some(predecessor.clone());
+            }
             self.pending_local_transport_echo = Some(predecessor);
         }
     }
@@ -147,34 +229,12 @@ impl RuntimePlaybackCoordination {
         let scope_matches = self.local_transport_scope_matches(predecessor, session)
             && session.current_room_transport_revision() == Some(predecessor.base_revision);
         if !scope_matches {
-            self.clear_local_transport_echo();
+            self.retire_local_transport_echo();
             return None;
         }
         Some(LocalTransportEchoCandidate {
             predecessor: predecessor.clone(),
             matching_client_counter: client_counter == Some(predecessor.client_counter),
-            seek_correction: inbound.playstate.as_ref().and_then(|playstate| {
-                let revision = playstate.transport_revision?;
-                let position = playstate.position?;
-                let paused = playstate.paused?;
-                (predecessor.is_seek
-                    && revision >= predecessor.base_revision
-                    && playstate.do_seek == Some(true)
-                    && position.is_finite()
-                    && position >= 0.0
-                    && (position != predecessor.target_position || paused != predecessor.paused))
-                    .then(|| {
-                        (
-                            revision,
-                            RoomPlaystateView {
-                                position: Some(position),
-                                paused: Some(paused),
-                                do_seek: Some(true),
-                                set_by: playstate.set_by.clone(),
-                            },
-                        )
-                    })
-            }),
         })
     }
 
@@ -189,7 +249,6 @@ impl RuntimePlaybackCoordination {
         let Some(LocalTransportEchoCandidate {
             predecessor,
             matching_client_counter,
-            seek_correction,
         }) = candidate
         else {
             return;
@@ -198,24 +257,8 @@ impl RuntimePlaybackCoordination {
             return;
         }
         let scope_matches = self.local_transport_scope_matches(&predecessor, session);
-        let corrected = matching_client_counter
-            && scope_matches
-            && seek_correction
-                .as_ref()
-                .is_some_and(|(revision, correction)| {
-                    session.current_room_transport_revision() == Some(*revision)
-                        && session.current_room_playstate() == Some(correction)
-                });
-        if corrected {
-            // setBy names the last room controller, including this client when
-            // its newer seek was rejected. It cannot grant self-echo immunity
-            // to a correlated authoritative correction of that seek.
-            self.rejected_local_seek =
-                seek_correction.map(|(revision, _)| (predecessor.clone(), revision));
-        }
         if scope_matches
             && session.current_room_transport_revision() == Some(predecessor.base_revision)
-            && !corrected
         {
             // In particular, a matching client counter without an accepted
             // playstate is not an acknowledgement of the command's authority.
@@ -296,5 +339,11 @@ pub(crate) struct PendingLocalTransportEcho {
 pub(crate) struct LocalTransportEchoCandidate {
     predecessor: PendingLocalTransportEcho,
     matching_client_counter: bool,
-    seek_correction: Option<(u64, RoomPlaystateView)>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalSeekCorrectionCandidate {
+    seek: PendingLocalTransportEcho,
+    revision: u64,
+    canonical: RoomPlaystateView,
 }
