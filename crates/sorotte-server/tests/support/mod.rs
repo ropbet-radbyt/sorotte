@@ -6,7 +6,11 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -133,22 +137,36 @@ pub fn reserve_ipv6_port_or_skip() -> Option<u16> {
 }
 
 pub fn temporary_path(label: &str, extension: &str) -> PathBuf {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after epoch")
-        .as_nanos();
-    env::temp_dir().join(format!(
-        "sorotte-{label}-{}-{suffix}.{extension}",
-        std::process::id()
-    ))
+    temporary_path_at(label, Some(extension), SystemTime::now())
 }
 
 pub fn temporary_directory_path(label: &str) -> PathBuf {
-    let suffix = SystemTime::now()
+    temporary_path_at(label, None, SystemTime::now())
+}
+
+fn temporary_path_at(label: &str, extension: Option<&str>, timestamp: SystemTime) -> PathBuf {
+    static NEXT_PATH_ID: AtomicU64 = AtomicU64::new(0);
+    let suffix = timestamp
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after epoch")
         .as_nanos();
-    env::temp_dir().join(format!("sorotte-{label}-{}-{suffix}", std::process::id()))
+    // Wall clocks can repeat across parallel cases, even with nanosecond units.
+    let id = NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed);
+    let name = format!("sorotte-{label}-{}-{suffix}-{id}", std::process::id());
+    env::temp_dir().join(match extension {
+        Some(extension) => format!("{name}.{extension}"),
+        None => name,
+    })
+}
+
+#[test]
+fn temporary_paths_are_distinct_when_clock_values_repeat() {
+    let timestamp = UNIX_EPOCH + Duration::from_secs(1);
+    for extension in [None, Some("sqlite3")] {
+        let first = temporary_path_at("same-label", extension, timestamp);
+        let second = temporary_path_at("same-label", extension, timestamp);
+        assert_ne!(first, second, "independent fixtures must not share a path");
+    }
 }
 
 pub fn wait_for_committed_playlist(
