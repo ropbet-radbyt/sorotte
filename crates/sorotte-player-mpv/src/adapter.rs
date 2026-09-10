@@ -2574,6 +2574,7 @@ impl MpvAdapter {
             matches!(
                 effect,
                 PlayerLifecycleEffect::RequestLifecycleReconciliation
+                    | PlayerLifecycleEffect::RequestAuthoritativeSnapshot
             )
         }) {
             self.lifecycle_reconciliation_due = true;

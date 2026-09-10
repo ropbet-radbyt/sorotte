@@ -90,7 +90,11 @@ fn real_mpv_two_plex_clients_resume_loaded_stream() {
                     "--idle=yes",
                     "--force-window=no",
                     "--ao=null",
-                    "--vo=null",
+                    if std::env::var_os("SOROTTE_TEST_RENDER_VIDEO").is_some() {
+                        "--vo=gpu-next"
+                    } else {
+                        "--vo=null"
+                    },
                     "--pause=yes",
                     "--keep-open=yes",
                 ])
