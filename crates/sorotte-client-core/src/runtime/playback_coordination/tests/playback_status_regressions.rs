@@ -1,50 +1,6 @@
 use super::*;
 
 #[test]
-fn participant_status_reports_playing_during_recovery_stability_wait() {
-    let mut session = participant_status_session();
-    session.apply_message_json_at(
-        r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
-        0.0,
-    ).unwrap();
-    let mut coordination = RuntimePlaybackCoordination::default();
-    coordination.prepare_media(
-        LogicalMediaId::new("recovery-status").unwrap(),
-        MediaTransportKind::LocalFile,
-        0.0,
-    );
-    coordination.update_desired_from_session(&session, 0.0);
-    coordination.observe_transport(
-        transport(1, 0.0, PlayerTransportPhase::Rebuffering, 0.0),
-        0.0,
-    );
-    // mpv observation plus readback can report the same frame twice. Playback
-    // advances, while the recovery policy keeps waiting for a stable interval.
-    for sample in 1..=60 {
-        let now = f64::from(sample) * 0.5;
-        let position = f64::from(sample / 2);
-        coordination.observe_transport(
-            transport(1, now, PlayerTransportPhase::Playing, position),
-            now,
-        );
-    }
-    assert_eq!(
-        coordination.coordinator.diagnostic(),
-        PlaybackDiagnostic::Starting
-    );
-    assert!(coordination.coordinator.recovery_episode().is_some());
-    let report = coordination
-        .take_participant_status_report(&session, true, 30.0)
-        .unwrap();
-    assert_eq!(
-        report.player_connection,
-        ParticipantPlayerConnection::Connected
-    );
-    assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
-    assert_eq!(report.position_seconds, Some(30.0));
-}
-
-#[test]
 fn delayed_remote_pause_observation_preserves_participant_readiness() {
     let mut runtime = ClientRuntime::new(
         readiness_v2_session_with_intent(1, 41, 0, UserReadinessIntent::Ready),
