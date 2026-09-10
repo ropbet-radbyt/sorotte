@@ -310,6 +310,17 @@ max_missed = 0
 max_timeouts = 0
 require_baseline = true
 
+[[accepted_unviable]]
+id = "client-seek-correction-candidate-default"
+shard = "client-local-seek-echo"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/local_seek.rs"
+function = "RuntimePlaybackCoordination::capture_local_seek_correction"
+return_type = "-> Option<LocalSeekCorrectionCandidate>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "The isolated 0.2.13 campaign reports rustc E0277 because LocalSeekCorrectionCandidate has no Default; a correction requires a captured seek identity and explicit canonical room state."
+review_by = "2026-11-30"
+
 [[shard]]
 id = "client-ping"
 owner = "client-networking"

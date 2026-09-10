@@ -1,5 +1,7 @@
 use super::*;
 
+mod correction_authority;
+
 #[test]
 fn rejected_seek_is_corrected_even_when_canonical_state_names_the_local_user() {
     for revision in [34, 35] {
