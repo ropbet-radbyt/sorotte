@@ -293,6 +293,53 @@ $ToolsManifestSha256='0'*64; $ScriptSha256='0'*64; $HelperSha256='0'*64; $Export
         self.assertNotIn("not recognized", result.stderr)
         self.assertFalse(marker.exists())
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows Sandbox firmware identity guard")
+    def test_guest_machine_guards_work_without_wmi_and_reject_missing_or_foreign_firmware(self):
+        # Execute the production machine guard with the guest's observed WMI
+        # denial. Registry fixtures cover both valid and invalid firmware; no
+        # desktop operation, guest provisioning or registration runs here.
+        probe = self.root / "firmware-guard.ps1"
+        probe.write_text(r'''
+param([string]$Guard,[string]$Fixture)
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$script:case=Get-Content -LiteralPath $Fixture -Raw | ConvertFrom-Json
+function Get-CimInstance { throw 'Access is denied.' }
+function Get-ItemProperty {
+    param([string]$LiteralPath)
+    if ($LiteralPath -cne 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS') { throw 'Unexpected registry query' }
+    if ($script:case.read_error) { throw 'Firmware registry unavailable' }
+    $script:case.firmware
+}
+try {
+    . ([ScriptBlock]::Create((Get-Content -LiteralPath $Guard -Raw)))
+    [Console]::Write('accepted')
+} catch { [Console]::Write('rejected') }
+''', encoding="utf-8")
+        cases = [
+            ({"SystemManufacturer": "Microsoft Corporation", "SystemProductName": "Virtual Machine"}, False, "accepted"),
+            ({"SystemManufacturer": "Other", "SystemProductName": "Virtual Machine"}, False, "rejected"),
+            ({"SystemManufacturer": "Microsoft Corporation", "SystemProductName": "Surface"}, False, "rejected"),
+            ({"SystemManufacturer": "Microsoft Corporation"}, False, "rejected"),
+            (None, False, "rejected"),
+            ({"SystemManufacturer": "Microsoft Corporation", "SystemProductName": "Virtual Machine"}, True, "rejected"),
+        ]
+        for entrypoint in ("native-runner-guest.ps1", "gui-sandbox-guest.ps1"):
+            source = (ROOT / "scripts" / entrypoint).read_text()
+            guard = self.root / (entrypoint + ".guard.ps1")
+            guard.write_text(source[source.index("$computer ="):source.index("$inputRoot =")], encoding="utf-8")
+            for index, (firmware, read_error, expected) in enumerate(cases):
+                with self.subTest(entrypoint=entrypoint, case=index):
+                    fixture = self.root / "firmware-case.json"
+                    fixture.write_text(json.dumps({"firmware": firmware, "read_error": read_error}), encoding="utf-8")
+                    result = subprocess.run(
+                        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                         str(probe), "-Guard", str(guard), "-Fixture", str(fixture)],
+                        capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected, result.stderr)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell controller pagination")
     def test_controller_paginates_with_old_cli_and_rejects_partial_or_unbounded_inventory(self):
         # Extract the production API functions without invoking the controller's

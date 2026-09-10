@@ -310,6 +310,17 @@ max_missed = 0
 max_timeouts = 0
 require_baseline = true
 
+[[accepted_unviable]]
+id = "client-seek-correction-candidate-default"
+shard = "client-local-seek-echo"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/local_seek.rs"
+function = "RuntimePlaybackCoordination::capture_local_seek_correction"
+return_type = "-> Option<LocalSeekCorrectionCandidate>"
+genre = "FnValue"
+replacement = "Some(Default::default())"
+reason = "The isolated 0.2.13 campaign reports rustc E0277 because LocalSeekCorrectionCandidate has no Default; a correction requires a captured seek identity and explicit canonical room state."
+review_by = "2026-11-30"
+
 [[shard]]
 id = "client-ping"
 owner = "client-networking"
@@ -1146,6 +1157,18 @@ return_type = ""
 genre = "BinaryOperator"
 replacement = "||"
 reason = "cargo-mutants changes the && connector before a Rust let-chain to ||, which rustc rejects because let-chain conditions support only &&"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-participant-status-runtime-observation-let-chain-or"
+shard = "client-participant-status-runtime"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
+function = "RuntimePlaybackCoordination::record_observation_outcomes"
+return_type = ""
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 1
+reason = "The isolated 0.2.13 campaign confirms rustc rejects the generated || connector between two let expressions; let-chain conditions support only &&. All 37 viable mutants in the observed chunk were caught."
 review_by = "2026-11-30"
 
 [[accepted_unviable]]

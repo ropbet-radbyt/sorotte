@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.12; landed base `ddb8bd8880352a1513ec39363e13518d27e2f58f`; fixing commit **pending**; hosted evidence **pending**. The v0.2.12 candidate builds on main after PR #53. It repairs player telemetry delivery and reconnection, authoritative pause enforcement, room-clock presentation, participant alignment and local filename casing. Boundary-local evidence below retains its historical context and does not qualify this candidate; fresh hosted and native qualification is required.
+Release 0.2.13; landed base `4035f974f8a5de7810a64250ad297b63993ea18c`; fixing commit **pending**; hosted evidence **pending**. The v0.2.13 candidate fixes dropped room seeks and rejected-seek reconciliation, delayed remote pauses changing readiness, local sources mislabeled as Plex, and participant status scope/recovery stalls. Deterministic regression coverage is included; exact-source hosted and native qualification remains pending. Boundary-local evidence below retains its historical context and does not qualify this candidate.
 
 ## Authority flow
 

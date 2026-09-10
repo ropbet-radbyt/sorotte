@@ -1175,22 +1175,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 if !self.attached_media_search_refresh_pending() {
                     self.attached_media_search_next_retry_at = None;
                 }
-                let provider_id = self
-                    .playlist_resolution_attempt
-                    .as_ref()
-                    .filter(|attempt| attempt.state == PlaylistResolutionAttemptState::Active)
-                    .and_then(|attempt| attempt.candidate_provider.clone())
-                    .unwrap_or_else(|| {
-                        if self.pending_logical_media_override.is_some()
-                            || self.player_local_file.as_ref().is_some_and(|file| {
-                                file.path.as_deref().is_some_and(is_plex_playlist_uri)
-                            })
-                        {
-                            GuiMediaSourceProviderId::plex_stream()
-                        } else {
-                            GuiMediaSourceProviderId::local()
-                        }
-                    });
+                let provider_id = self.current_player_source_provider();
                 self.complete_current_playlist_resolution_from_current_player(provider_id);
                 SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
             }
@@ -2536,11 +2521,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.cancel_pending_attached_media_search_index_build_impl();
             self.unresolved_attached_media_target = None;
             self.attached_media_search_next_retry_at = None;
-            let provider_id = if selected_path_is_plex_uri {
-                GuiMediaSourceProviderId::plex_stream()
-            } else {
-                GuiMediaSourceProviderId::local()
-            };
+            let provider_id = self.current_player_source_provider();
             self.complete_current_playlist_resolution_from_current_player(provider_id);
             return SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget;
         }
@@ -2623,7 +2604,87 @@ mod plex_cache_coordination_tests {
     use sorotte_plex::{PlexCachedMatch, PlexMediaType, PlexSyncStatus};
 
     use super::*;
+    use crate::app::GuiTestPlayerAdapter;
     use crate::app::runtime_owner::GuiPlexSyncWorkerResult;
+
+    #[test]
+    fn opening_a_plex_playlist_identity_preserves_its_matching_local_source() {
+        let target = sorotte_plex::format_plex_playlist_uri(&sorotte_plex::PlexPlaylistUri {
+            machine_identifier: "machine".to_owned(),
+            rating_key: "123".to_owned(),
+            title: None,
+            file_name: Some("episode.mkv".to_owned()),
+            duration_millis: None,
+            size_bytes: Some(4),
+            media_type: None,
+        });
+        let mut state =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        state.apply_shared_playlist_entries(vec![target.clone()], Some(0), false);
+        state.main_window.active_playlist_index = Some(0);
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+        owner.player_local_file = Some(
+            LocalFileUpdate::new("episode.mkv")
+                .with_path("C:/Media/episode.mkv")
+                .with_size_bytes(4),
+        );
+        assert_eq!(
+            owner.open_selected_playlist_media_path_through_attached_player_impl(
+                &state,
+                std::slice::from_ref(&target)
+            ),
+            SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+        );
+        let (_, source) = owner
+            .playlist_resolution_source_state_for_projection(&state)
+            .unwrap();
+        assert_eq!(source.current_label, "Local");
+        assert_eq!(
+            source.resolved_provider_id,
+            Some(GuiMediaSourceProviderId::local())
+        );
+        // A retained attempt is not physical evidence of a Plex stream either.
+        owner
+            .playlist_resolution_attempt
+            .as_mut()
+            .unwrap()
+            .candidate_provider = Some(GuiMediaSourceProviderId::plex_stream());
+        let mut plan = GuiMediaResolutionPlan::new(&target);
+        plan.push_current_player_candidate();
+        assert_eq!(
+            owner.open_media_resolution_candidate_with_plex_context(
+                &target,
+                plan.best_candidate().unwrap().clone(),
+                false,
+                None
+            ),
+            SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+        );
+        assert_eq!(
+            owner
+                .playlist_resolution_source_state_for_projection(&state)
+                .unwrap()
+                .1
+                .current_label,
+            "Local"
+        );
+
+        owner.player_local_file =
+            Some(LocalFileUpdate::new("episode.mkv").with_path(target.clone()));
+        assert_eq!(
+            owner.open_selected_playlist_media_path_through_attached_player_impl(&state, &[target]),
+            SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+        );
+        assert_eq!(
+            owner
+                .playlist_resolution_source_state_for_projection(&state)
+                .unwrap()
+                .1
+                .resolved_provider_id,
+            Some(GuiMediaSourceProviderId::plex_stream())
+        );
+    }
 
     #[test]
     fn extractor_page_url_is_not_a_direct_http_media_candidate() {

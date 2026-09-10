@@ -24,7 +24,7 @@ needs Python 3.11 or newer and authenticated `gh` with runner administration
 permission for `ropbet-radbyt/sorotte`. No existing guest may be running.
 
 `verification/windows-native-guest.json` is the reviewed guest profile. It
-names Rust 1.97.1, Python 3.12.10, MSVC 14.29.30133, SDK 10.0.19041.0 and Actions
+names Rust 1.98.1, Python 3.12.10, MSVC 14.29.30133, SDK 10.0.19041.0 and Actions
 runner 2.337.0. The runner archive hash matches the [published runner checksum](https://github.com/actions/runner/releases/tag/v2.337.0).
 Every copied tool file is also hashed. Updating a compiler or tool requires
 reviewing the profile and producing a fresh bundle; an existing sealed bundle
@@ -75,6 +75,11 @@ Guest preflight compiles and executes harmless C/Rust programs, checks Python
 and Git Bash, then checks Explorer, the foreground session, input-desktop
 access and at least 1800x1200 physical pixels. It records the actual Windows
 version. Keep the Sandbox viewer connected for the whole native job.
+
+The entry points require the Sandbox account and Microsoft virtual-machine
+firmware identity before changing guest state. They read the firmware values
+from the registry because Windows Sandbox may deny WMI access even to SYSTEM.
+Missing, unreadable or foreign identity values still fail closed.
 
 ## Run one trusted job and verify cleanup
 

@@ -554,11 +554,7 @@ impl RuntimePlaybackCoordination {
         } else {
             PlayerCommandCompletion::Failed { at_seconds }
         };
-        self.player_transition_classifier.update_command_completion(
-            self.classifier_adapter_epoch(),
-            command_id,
-            completion,
-        )
+        self.finish_registered_pause_command(command_id, completion)
     }
 
     #[cfg(test)]

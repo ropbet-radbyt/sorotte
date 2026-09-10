@@ -1,4 +1,6 @@
-use super::ordered_events::{OrderedLoadInstall, snapshot_known_copy};
+#[cfg(feature = "test-support")]
+use super::ordered_events::OrderedLoadInstall;
+use super::ordered_events::snapshot_known_copy;
 use super::*;
 use sorotte_player_api::{
     DisconnectedPlayer, PlayerAdapter, PlayerCapabilities, PlayerCapability, PlayerCommand,
@@ -13,6 +15,7 @@ use sorotte_protocol::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
+mod playback_status_regressions;
 mod seek_echo_tests;
 
 #[test]

@@ -3073,6 +3073,21 @@ done""",
                     },
                 ],
                 "accepted_unviable": [
+                    {
+                        "id": "client-seek-correction-candidate-default",
+                        "shard": "client-local-seek-echo",
+                        "file": "crates/sorotte-client-core/src/runtime/playback_coordination/local_seek.rs",
+                        "function": "RuntimePlaybackCoordination::capture_local_seek_correction",
+                        "return_type": "-> Option<LocalSeekCorrectionCandidate>",
+                        "genre": "FnValue",
+                        "replacement": "Some(Default::default())",
+                        "reason": (
+                            "The isolated 0.2.13 campaign reports rustc E0277 because "
+                            "LocalSeekCorrectionCandidate has no Default; a correction "
+                            "requires a captured seek identity and explicit canonical room state."
+                        ),
+                        "review_by": "2026-11-30",
+                    },
                     *[
                         {
                             "id": identifier,
@@ -3650,6 +3665,7 @@ done""",
                                         "client-participant-status-apply-update-let-chain-or": 6,
                                         "server-participant-status-snapshot-let-chain-or": 5,
                                         "player-mpv-explicit-ipc-retry-instant-duration-multiply": 2,
+                                        "client-participant-status-runtime-observation-let-chain-or": 1,
                                     }[identifier]
                                 }
                                 if identifier
@@ -3658,6 +3674,7 @@ done""",
                                     "client-participant-status-apply-update-let-chain-or",
                                     "server-participant-status-snapshot-let-chain-or",
                                     "player-mpv-explicit-ipc-retry-instant-duration-multiply",
+                                    "client-participant-status-runtime-observation-let-chain-or",
                                 }
                                 else {}
                             ),
@@ -4332,6 +4349,21 @@ done""",
                                     "cargo-mutants changes the && connector before a Rust "
                                     "let-chain to ||, which rustc rejects because let-chain "
                                     "conditions support only &&"
+                                ),
+                            ),
+                            (
+                                "client-participant-status-runtime-observation-let-chain-or",
+                                "client-participant-status-runtime",
+                                "crates/sorotte-client-core/src/runtime/playback_coordination.rs",
+                                "RuntimePlaybackCoordination::record_observation_outcomes",
+                                "",
+                                "BinaryOperator",
+                                "||",
+                                (
+                                    "The isolated 0.2.13 campaign confirms rustc rejects the "
+                                    "generated || connector between two let expressions; "
+                                    "let-chain conditions support only &&. All 37 viable "
+                                    "mutants in the observed chunk were caught."
                                 ),
                             ),
                             (

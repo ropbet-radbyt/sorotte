@@ -3,6 +3,30 @@ use super::*;
 use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
 
 impl GuiPersistedConfigRuntimeOwner {
+    /// Playlist identity can name Plex while the matching physical source is
+    /// local. Only a loaded Plex identity/URL establishes a Plex source.
+    pub(super) fn current_player_source_provider(&self) -> GuiMediaSourceProviderId {
+        let path = self
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_deref());
+        if path.is_some_and(|path| {
+            is_plex_playlist_uri(path)
+                || self
+                    .pending_logical_media_override
+                    .as_ref()
+                    .is_some_and(|pending| path == pending.loaded_target_secret.as_str())
+        }) {
+            return GuiMediaSourceProviderId::plex_stream();
+        }
+        self.playlist_resolution_attempt
+            .as_ref()
+            .filter(|attempt| attempt.state == PlaylistResolutionAttemptState::Active)
+            .and_then(|attempt| attempt.candidate_provider.clone())
+            .filter(|provider| *provider != GuiMediaSourceProviderId::plex_stream())
+            .unwrap_or_else(GuiMediaSourceProviderId::local)
+    }
+
     pub(in crate::app::runtime_owner) fn normalized_current_player_match_key(path: &str) -> String {
         let mut key = path.trim().replace('\\', "/");
         while key.ends_with('/') && key.len() > 1 {
@@ -101,10 +125,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 .pending_logical_media_override
                 .as_ref()
                 .is_some_and(|pending| {
-                    Self::plex_playlist_target_identity_matches(&pending.requested_target, target)
-                        || pending.logical_file.path.as_deref().is_some_and(|path| {
+                    let current_source_matches = local_file.path.as_deref().is_some_and(|path| {
+                        path == pending.loaded_target_secret.as_str()
+                            || pending.logical_file.path.as_deref() == Some(path)
+                    });
+                    current_source_matches
+                        && (Self::plex_playlist_target_identity_matches(
+                            &pending.requested_target,
+                            target,
+                        ) || pending.logical_file.path.as_deref().is_some_and(|path| {
                             Self::plex_playlist_target_identity_matches(path, target)
-                        })
+                        }))
                 })
             {
                 return true;

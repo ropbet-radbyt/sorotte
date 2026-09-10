@@ -127,3 +127,10 @@ assert-value	main-window:user:1:member-rate	unavailable
 assert-value	main-window:user:1:member-generation	unavailable
 assert-value	main-window:user:1:participant-status	Playing · Different playback scope · fresh
 assert-tone	main-window:user:1:participant-status	warning
+
+# Scope adoption and actual playback replace transient startup labels.
+apply-main-window-participant-status	bob	report	connected	loading	760	false	1.0	8	none	0	8	20	exact	0	0	0.2	false	pending	vod
+assert-value	main-window:user:1:member-generation	8
+apply-main-window-participant-status	bob	report	connected	playing	761	false	1.0	8	none	-0.2	8	20	exact	0	0	0.2	false	started	vod
+assert-value	main-window:user:1:participant-status	Playing · 12:41.0 · 0.2 s behind · 8.0 s buffered · fresh
+assert-tone	main-window:user:1:participant-status	success
