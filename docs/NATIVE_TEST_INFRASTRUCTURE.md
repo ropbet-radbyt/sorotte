@@ -76,6 +76,11 @@ and Git Bash, then checks Explorer, the foreground session, input-desktop
 access and at least 1800x1200 physical pixels. It records the actual Windows
 version. Keep the Sandbox viewer connected for the whole native job.
 
+The entry points require the Sandbox account and Microsoft virtual-machine
+firmware identity before changing guest state. They read the firmware values
+from the registry because Windows Sandbox may deny WMI access even to SYSTEM.
+Missing, unreadable or foreign identity values still fail closed.
+
 ## Run one trusted job and verify cleanup
 
 For a reviewed PR candidate, one command dispatches its exact source, waits

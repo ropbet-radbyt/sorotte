@@ -11,8 +11,10 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if (($identity -split '\\')[-1] -ine "WDAGUtilityAccount") {
     throw "This entry point runs only inside Windows Sandbox. Use gui-sandbox-smoke.ps1 on the host."
 }
-$computer = Get-CimInstance Win32_ComputerSystem
-if ($computer.Manufacturer -ne "Microsoft Corporation" -or $computer.Model -ne "Virtual Machine") {
+# Sandbox can deny WMI even to SYSTEM. Read the firmware identity directly;
+# the same manufacturer/model guard still applies before any guest mutation.
+$computer = Get-ItemProperty -LiteralPath 'HKLM:\HARDWARE\DESCRIPTION\System\BIOS'
+if ($computer.SystemManufacturer -ne "Microsoft Corporation" -or $computer.SystemProductName -ne "Virtual Machine") {
     throw "Windows Sandbox virtual machine identity is missing."
 }
 
