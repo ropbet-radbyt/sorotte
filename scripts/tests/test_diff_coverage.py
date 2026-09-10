@@ -600,6 +600,17 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertNotIn(13, structural)
         self.assertNotIn(14, structural)
 
+    def test_or_patterns_with_struct_rest_do_not_hide_guards_or_initializers(self) -> None:
+        lines = [
+            "PlayerCommandCompletion::Pending | PlayerCommandCompletion::Completed { .. }",
+            "State::Ready { .. } | State::Missing | State::Loading(_),",
+            "State::Pending | State::Ready { .. } if allowed()",
+            "State::Pending | State::Ready { value: calculate() }",
+            "State::Pending | State::Ready { ..previous }",
+            "State::Pending | determine_state()",
+        ]
+        self.assertEqual(coverage.lexical_non_coverable_lines(lines), {1, 2})
+
     def test_compiler_uninstrumented_path_chain_pattern_and_literal_glue_is_structural(
         self,
     ) -> None:

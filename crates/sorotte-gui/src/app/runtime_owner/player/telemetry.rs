@@ -3462,6 +3462,45 @@ mod logical_media_projection_tests {
         }
     }
 
+    #[test]
+    fn pending_plex_identity_only_matches_its_current_physical_source() {
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        for requested_target in ["episode.mkv", LOGICAL_TARGET] {
+            let mut pending = pending_override(None, None, None, 0);
+            pending.requested_target = requested_target.to_owned();
+            owner.pending_logical_media_override = Some(pending);
+            for (path, matches, provider) in [
+                (None, false, GuiMediaSourceProviderId::local()),
+                (
+                    Some("C:/Media/other.mkv"),
+                    false,
+                    GuiMediaSourceProviderId::local(),
+                ),
+                (
+                    Some(STREAM_TARGET),
+                    true,
+                    GuiMediaSourceProviderId::plex_stream(),
+                ),
+                (
+                    Some(LOGICAL_TARGET),
+                    true,
+                    GuiMediaSourceProviderId::plex_stream(),
+                ),
+            ] {
+                let mut file = LocalFileUpdate::new("opaque-media");
+                file.path = path.map(str::to_owned);
+                owner.player_local_file = Some(file);
+                assert_eq!(
+                    owner.current_player_matches_media_target(LOGICAL_TARGET),
+                    matches,
+                    "requested={requested_target}, current={path:?}"
+                );
+                assert!(!owner.current_player_matches_media_target("plex://machine/metadata/456"));
+                assert_eq!(owner.current_player_source_provider(), provider);
+            }
+        }
+    }
+
     fn tracked_plex_owner() -> (
         GuiPersistedConfigRuntimeOwner,
         PlayerCommandId,

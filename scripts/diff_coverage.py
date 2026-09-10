@@ -2619,12 +2619,13 @@ def lexical_non_coverable_lines(
         ):
             result.add(number)
             continue
-        if re.fullmatch(
-            r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*(?:\(_\))?"
-            r"(?:\s*\|\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*(?:\(_\))?)+"
-            r",?",
-            code_stripped,
-        ):
+        # Rest-only struct variants are patterns, just like tuple wildcards.
+        # Do not accept guards, field initializers or struct-update expressions.
+        or_variant = (
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Z][A-Za-z0-9_]*"
+            r"(?:\(_\)|\s*\{\s*\.\.\s*\})?"
+        )
+        if re.fullmatch(rf"{or_variant}(?:\s*\|\s*{or_variant})+,?", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(
