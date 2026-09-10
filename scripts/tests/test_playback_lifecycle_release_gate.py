@@ -255,6 +255,29 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertIn("playback_release_gate.py attest-windows", attestation)
         self.assertEqual(attestation.count("--vertical-summary"), 4)
 
+    def test_native_current_server_regressions_require_every_case_to_pass(self) -> None:
+        # These library tests require a manually provisioned native runner.
+        # Their CI obligation is this shared PR/candidate action, rather than
+        # an ordinary first.yml integration-test job in ignored-test policy.
+        step = next(step for step in self.windows_suite["steps"] if step["id"] == "vertical")
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotIn("if", step)
+        run = normalized(step["run"])
+        self.assertIn("$env:SOROTTE_TEST_MPV_BIN = $env:MPV_PATH", run)
+        self.assertIn("cargo test --locked -p sorotte-gui --lib real_mpv_current_server -- --ignored --show-output --test-threads=1", run)
+        for case in (
+            "real_mpv_current_server_local_file_append_select_then_edit",
+            "real_mpv_current_server_playing_participant_status",
+            "real_mpv_current_server_direct_http_resume_latency",
+            "real_mpv_current_server_direct_plex_resume_latency",
+        ):
+            self.assertIn(f"'{case}'", run)
+        self.assertIn('if (-not (Select-String -LiteralPath $regressionLog -SimpleMatch "::$requiredCase ... ok" -Quiet))', run)
+        self.assertIn('throw "Required current-server mpv case did not pass: $requiredCase"', run)
+        self.assertIn("$regressionExit = $LASTEXITCODE", run)
+        self.assertIn("if ($regressionExit -ne 0 -or -not", run)
+        self.assertIn(r"test result: ok\. 4 passed; 0 failed; 0 ignored;", run)
+
     def test_pr_and_release_use_the_same_complete_windows_suite(self) -> None:
         native = load_workflow(WORKFLOWS / "gui-native-interactive.yml")["jobs"]["native_interactive"]
         for job, source in ((native, "${{ inputs.source_sha || github.sha }}"), (self.windows, "${{ inputs.candidate_sha }}")):

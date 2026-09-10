@@ -289,9 +289,13 @@ impl EpochDeliveryBuffer {
     }
 
     fn has_deliverable_content(&self) -> bool {
-        !self.pending_events.is_empty()
-            || !self.retained_semantic_outcomes.is_empty()
-            || self.recovery_snapshot.is_some()
+        // Ordered consumers cannot acknowledge a sequence gap without its
+        // snapshot. Freezing such a batch would keep replaying the rejected
+        // delivery forever, hiding the snapshot when reconciliation finishes.
+        (!self.gap_detected || self.recovery_snapshot.is_some())
+            && (!self.pending_events.is_empty()
+                || !self.retained_semantic_outcomes.is_empty()
+                || self.recovery_snapshot.is_some())
     }
 
     fn prune_snapshot_covered_events(&mut self) {
@@ -3606,8 +3610,7 @@ mod tests {
             state,
             PlayerLifecycleInput::EventGapDetected { attachment_epoch },
         );
-        let gap_batch = state.peek_event_batch().expect("gap marker");
-        assert!(state.acknowledge_event_batch(gap_batch.acknowledgement_token));
+        assert!(state.peek_event_batch().is_none());
 
         let snapshot = state.closing_snapshot_for_current_epoch();
         reduce(
@@ -4883,14 +4886,15 @@ mod tests {
         }));
         assert!(state.acknowledge_event_batch(terminal_handoff.acknowledgement_token));
 
+        assert!(state.peek_event_batch().is_none());
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot),
+        );
         let replacement = state.peek_event_batch().expect("replacement epoch");
         assert_eq!(replacement.attachment_epoch, PlayerAttachmentEpoch::new(2));
-        assert!(
-            replacement
-                .events
-                .iter()
-                .any(|event| matches!(event.event, PlayerEvent::AttachmentReplaced { .. }))
-        );
+        assert!(replacement.authoritative_snapshot.is_some());
     }
 
     #[test]
@@ -4923,7 +4927,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_gap_marker_waits_for_snapshot_without_emitting_empty_batches() {
+    fn gap_marker_waits_for_snapshot_without_freezing_a_rejected_batch() {
         let mut state = PlayerLifecycleState::default();
         reduce(
             &mut state,
@@ -4932,20 +4936,11 @@ mod tests {
             },
         );
 
-        let gap_batch = state.peek_event_batch().expect("gap marker batch");
-        assert!(gap_batch.authoritative_snapshot.is_none());
-        assert!(
-            gap_batch
-                .events
-                .iter()
-                .any(|event| { matches!(event.event, PlayerEvent::EventGapDetected) })
-        );
-        assert!(state.acknowledge_event_batch(gap_batch.acknowledgement_token));
         assert!(state.requires_authoritative_snapshot());
         assert_eq!(
             state.peek_event_batch(),
             None,
-            "a pending snapshot latch has no deliverable payload of its own"
+            "a gap marker must not freeze delivery before its recovery snapshot"
         );
 
         let snapshot = state.closing_snapshot_for_current_epoch();
@@ -4958,6 +4953,35 @@ mod tests {
         assert!(state.acknowledge_event_batch(snapshot_batch.acknowledgement_token));
         assert!(!state.requires_authoritative_snapshot());
         assert_eq!(state.peek_event_batch(), None);
+    }
+
+    #[test]
+    fn telemetry_overflow_waits_for_snapshot_before_freezing_delivery() {
+        let mut state = PlayerLifecycleState::default();
+        queue_transport_deltas(&mut state, 0, MAX_PENDING_TELEMETRY_EVENTS + 4);
+        assert!(state.requires_authoritative_snapshot());
+        assert!(
+            state.peek_event_batch().is_none(),
+            "a batch with dropped sequence numbers cannot be acknowledged by ordered consumers; freezing it also hides the later recovery snapshot"
+        );
+
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        let boundary = snapshot.sequence_boundary.through_sequence;
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot.clone()),
+        );
+        let recovered = state.peek_event_batch().expect("gap-closing snapshot");
+        assert_eq!(recovered.authoritative_snapshot, Some(snapshot));
+        assert!(state.acknowledge_event_batch(recovered.acknowledgement_token));
+        assert!(!state.requires_authoritative_snapshot());
+
+        queue_transport_deltas(&mut state, 100, 1);
+        let next = state
+            .peek_event_batch()
+            .expect("fresh playback observation");
+        assert_eq!(next.events[0].order.sequence, boundary + 1);
+        assert!(next.authoritative_snapshot.is_none());
     }
 
     #[test]
@@ -4981,6 +5005,12 @@ mod tests {
         );
         assert!(state.acknowledge_event_batch(cached.acknowledgement_token));
 
+        assert!(state.peek_event_batch().is_none());
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot),
+        );
         let successor = state
             .peek_event_batch()
             .expect("overflow recovery must remain deliverable");
@@ -5077,6 +5107,12 @@ mod tests {
             PlayerLifecycleInput::EventGapDetected {
                 attachment_epoch: PlayerAttachmentEpoch::new(1),
             },
+        );
+        assert!(state.peek_event_batch().is_none());
+        let snapshot = state.closing_snapshot_for_current_epoch();
+        reduce(
+            &mut state,
+            PlayerLifecycleInput::AuthoritativeSnapshotApplied(snapshot),
         );
         let first = state.peek_event_batch().expect("batch");
         let repeated = state.peek_event_batch().expect("repeated batch");

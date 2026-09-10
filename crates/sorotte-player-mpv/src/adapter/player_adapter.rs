@@ -1795,6 +1795,28 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
+    fn telemetry_overflow_requests_reconciliation_without_waiting_for_a_quiet_timer() {
+        let mut adapter = MpvAdapter::simulated();
+        let (_, generation) = prepare_active_cache_readback(&mut adapter);
+        adapter.lifecycle_reconciliation_due = false;
+        for position in 0..128 {
+            adapter.apply_lifecycle_input(PlayerLifecycleInput::TransportDelta {
+                attachment_epoch: adapter.lifecycle_epoch(),
+                delta: sorotte_player_api::PlayerTransportDelta {
+                    media_generation: Some(generation),
+                    position_seconds: Some(f64::from(position)),
+                    ..sorotte_player_api::PlayerTransportDelta::default()
+                },
+            });
+        }
+        assert!(adapter.player_lifecycle.requires_authoritative_snapshot());
+        assert!(
+            adapter.lifecycle_reconciliation_due,
+            "continued telemetry can postpone the retry timer; the immediate snapshot request must schedule recovery itself"
+        );
+    }
+
+    #[test]
     fn acknowledged_player_batch_preserves_observation_age_after_a_consumer_stall() {
         let mut adapter = MpvAdapter::simulated();
         adapter.observation_clock_origin = Instant::now() - Duration::from_secs(30);

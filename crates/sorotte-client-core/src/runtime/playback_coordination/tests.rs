@@ -286,6 +286,81 @@ fn participant_status_accepted_generation_requires_every_operation_identity_axis
 }
 
 #[test]
+fn participant_status_reports_playing_during_recovery_stability_wait() {
+    let mut session = participant_status_session();
+    session.apply_message_json_at(
+        r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+        0.0,
+    ).unwrap();
+    let mut coordination = RuntimePlaybackCoordination::default();
+    coordination.prepare_media(
+        LogicalMediaId::new("recovery-status").unwrap(),
+        MediaTransportKind::LocalFile,
+        0.0,
+    );
+    coordination.update_desired_from_session(&session, 0.0);
+    coordination.observe_transport(
+        transport(1, 0.0, PlayerTransportPhase::Rebuffering, 0.0),
+        0.0,
+    );
+    // mpv observation plus readback can report the same frame twice. Playback
+    // advances, while the recovery policy keeps waiting for a stable interval.
+    for sample in 1..=60 {
+        let now = f64::from(sample) * 0.5;
+        let position = f64::from(sample / 2);
+        coordination.observe_transport(
+            transport(1, now, PlayerTransportPhase::Playing, position),
+            now,
+        );
+    }
+    assert_eq!(
+        coordination.coordinator.diagnostic(),
+        PlaybackDiagnostic::Starting
+    );
+    assert!(coordination.coordinator.recovery_episode().is_some());
+    let report = coordination
+        .take_participant_status_report(&session, true, 30.0)
+        .unwrap();
+    assert_eq!(
+        report.player_connection,
+        ParticipantPlayerConnection::Connected
+    );
+    assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
+    assert_eq!(report.position_seconds, Some(30.0));
+}
+
+#[test]
+fn participant_status_waits_for_active_output_before_reporting_playing() {
+    let mut session = participant_status_session();
+    session.apply_message_json_at(
+        r#"{"State":{"playstate":{"position":0.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+        0.0,
+    ).unwrap();
+    let (mut coordination, _) = participant_status_transport_fixture();
+    coordination.update_desired_from_session(&session, 0.0);
+
+    // mpv can release pause before its playback core starts producing output.
+    // A Playing phase alone must not claim the participant is already playing.
+    let mut starting = transport(1, 0.1, PlayerTransportPhase::Playing, 0.0);
+    starting.core_idle = Some(true);
+    coordination.observe_transport(starting, 0.1);
+    assert_eq!(
+        coordination.coordinator.diagnostic(),
+        PlaybackDiagnostic::Starting
+    );
+    let report = coordination
+        .take_participant_status_report(&session, true, 0.1)
+        .unwrap();
+    assert_eq!(report.phase, ParticipantPlaybackPhase::Loading);
+
+    coordination.observe_transport(transport(1, 0.3, PlayerTransportPhase::Playing, 0.2), 0.3);
+    let report = coordination
+        .take_participant_status_report(&session, true, 0.3)
+        .unwrap();
+    assert_eq!(report.phase, ParticipantPlaybackPhase::Playing);
+}
+
+#[test]
 fn participant_status_starting_seek_detection_accepts_each_independent_signal() {
     let (mut phase_signal, _) = participant_status_transport_fixture();
     let mut phase_update = transport(1, 1.0, PlayerTransportPhase::Seeking, 5.0);

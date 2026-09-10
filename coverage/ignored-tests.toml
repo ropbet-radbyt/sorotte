@@ -1,5 +1,63 @@
 schema_version = 1
 
+[[ignored_test]]
+id = "IGN-GUI-009"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server/two_players.rs"
+test = "real_mpv_two_plex_clients_resume_loaded_stream"
+source_reason = "requires SOROTTE_TEST_MPV_BIN and SOROTTE_TEST_REAL_PLEX; read-only direct Plex reproduction"
+tier = "manual"
+owner = "gui"
+rationale = "Reproduces remote resume with two physical players resolving the same direct Plex stream, with watch-history writes disabled. Both clients must resume within one second."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "explicit private SOROTTE_TEST_REAL_PLEX configuration", "read-only Plex stream access", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+# These four cases require a manually provisioned interactive Windows runner.
+# The shared windows-playback-qualification action requires every case to pass
+# for both native-required and the stable candidate; its policy test binds them.
+[[ignored_test]]
+id = "IGN-GUI-005"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server.rs"
+test = "real_mpv_current_server_local_file_append_select_then_edit"
+source_reason = "requires SOROTTE_TEST_MPV_BIN; headless real-player reproduction"
+tier = "manual"
+owner = "gui"
+rationale = "Required current-server regression holds the append acknowledgement across selection, verifies the physical successor file, and edits again."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-GUI-006"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server.rs"
+test = "real_mpv_current_server_playing_participant_status"
+source_reason = "requires SOROTTE_TEST_MPV_BIN; headless real-player reproduction"
+tier = "manual"
+owner = "gui"
+rationale = "Required current-server regression verifies physical advancement, fresh server Playing status and the second client's received status."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-GUI-007"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server.rs"
+test = "real_mpv_current_server_direct_http_resume_latency"
+source_reason = "requires SOROTTE_TEST_MPV_BIN; headless real-player reproduction"
+tier = "manual"
+owner = "gui"
+rationale = "Required current-server regression bounds physical resume latency for a loaded direct HTTP stream using a local range server."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-GUI-008"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server.rs"
+test = "real_mpv_current_server_direct_plex_resume_latency"
+source_reason = "requires SOROTTE_TEST_MPV_BIN; headless real-player reproduction"
+tier = "manual"
+owner = "gui"
+rationale = "Required current-server regression bounds physical resume latency with a Plex logical identity and local HTTP stream, without external credentials."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
 [policy]
 allowed_tiers = ["manual", "maintenance", "nightly", "pull-request", "quarantined", "subprocess-fixture"]
 allowed_owners = ["cli", "compatibility", "gui", "player-mpv", "simulation"]

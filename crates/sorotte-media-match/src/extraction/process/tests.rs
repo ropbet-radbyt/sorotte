@@ -264,7 +264,13 @@ fn media_tool_process_fixture() {
         std::process::id(),
         process_birth(std::process::id()).unwrap()
     );
-    fs::write(&marker, &identity).unwrap();
+    // Cancellation can kill this fixture between creating and writing a file.
+    // Expose the marker only once its complete process identity is readable.
+    let mut pending_name = marker.file_name().unwrap().to_os_string();
+    pending_name.push(".pending");
+    let pending_marker = marker.with_file_name(pending_name);
+    fs::write(&pending_marker, &identity).unwrap();
+    fs::rename(&pending_marker, &marker).unwrap();
     match mode.as_str() {
         "silent" => thread::sleep(FIXTURE_WATCHDOG),
         "duration" => {
