@@ -4323,8 +4323,8 @@ impl MpvAdapter {
                 }
                 #[cfg(test)]
                 if next_path.is_some() && self.active_load_attempt_id.is_none() {
-                    // Legacy scripted transports omit the authoritative playlist
-                    // query used in production. This compatibility projection is
+                    // Scripted fixture transports omit the authoritative playlist
+                    // query used in production. This fixture projection is
                     // test-only; production ownership is established by the
                     // reducer from playlist-entry evidence before metadata is
                     // correlated.
@@ -4704,7 +4704,7 @@ impl MpvAdapter {
             if has_unbound_candidate {
                 #[cfg(test)]
                 {
-                    // Legacy scripted unit transports do not expose an
+                    // Scripted unit transports do not expose an
                     // authoritative playlist. Matching path/file-loaded
                     // evidence performs the actual binding without mutating
                     // the physical projection before ownership is proven.

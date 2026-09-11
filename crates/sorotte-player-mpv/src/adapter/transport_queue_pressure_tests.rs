@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn legacy_snapshot_survives_eviction_of_rich_position_and_pause_fields() {
+fn playback_snapshot_survives_eviction_of_rich_position_and_pause_fields() {
     let generation = PlayerMediaGeneration::new(1);
     let mut adapter = MpvAdapter {
         active_media_generation: Some(generation),
@@ -37,9 +37,9 @@ fn legacy_snapshot_survives_eviction_of_rich_position_and_pause_fields() {
     }
     assert!(!rich_position_seen);
     assert!(!rich_pause_seen);
-    let legacy = adapter
+    let playback = adapter
         .take_playback_telemetry_update()
-        .expect("coalesced legacy telemetry remains available after rich queue pressure");
-    assert_eq!(legacy.position_seconds, Some(12.0));
-    assert_eq!(legacy.paused, Some(true));
+        .expect("coalesced playback telemetry remains available after rich queue pressure");
+    assert_eq!(playback.position_seconds, Some(12.0));
+    assert_eq!(playback.paused, Some(true));
 }

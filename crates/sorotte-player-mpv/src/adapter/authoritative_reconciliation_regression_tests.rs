@@ -511,7 +511,7 @@ fn polled_load_completion_finishes_the_corresponding_tracked_load() {
             .pending_command_progress_updates
             .iter()
             .any(|progress| progress.command_id == command_id && progress.is_terminal()),
-        "tracked completion should remain available to legacy progress consumers"
+        "tracked completion should remain available to typed progress consumers"
     );
 }
 
@@ -543,5 +543,29 @@ fn fatal_post_playlist_read_does_not_resolve_partial_authority_snapshot() {
     assert!(
         adapter.player_lifecycle.reconciliation_required,
         "fatal authority acquisition must remain scheduled for reconciliation"
+    );
+}
+
+#[test]
+fn network_hook_partial_application_requires_the_bundled_status_shape() {
+    assert_eq!(
+        MpvAdapter::parse_network_options_hook_status(&json!({
+            "status": "failed",
+            "applicationState": "partially-applied",
+        })),
+        Some(NetworkOptionsHookApplyStatus::PartiallyApplied)
+    );
+    assert_eq!(
+        MpvAdapter::parse_network_options_hook_status(&json!({
+            "status": "partially-applied",
+        })),
+        None
+    );
+    assert_eq!(
+        MpvAdapter::parse_network_options_hook_status(&json!({
+            "status": "network-updated",
+            "applicationState": "partially-applied",
+        })),
+        None
     );
 }

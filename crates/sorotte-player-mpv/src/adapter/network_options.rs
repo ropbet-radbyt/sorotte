@@ -1311,10 +1311,6 @@ impl MpvAdapter {
             "no-active" => Some(NetworkOptionsHookApplyStatus::NoActiveMedia),
             "local" => Some(NetworkOptionsHookApplyStatus::LocalMediaUnchanged),
             "network-updated" => Some(NetworkOptionsHookApplyStatus::NetworkMediaUpdated),
-            // Accepted for compatibility with short-lived development builds. The bundled v3
-            // hook uses legacy `failed` plus `applicationState=partially-applied`, so an older
-            // v3 adapter still fails closed instead of silently ignoring a new wire status.
-            "partially-applied" => Some(NetworkOptionsHookApplyStatus::PartiallyApplied),
             "failed" => Some(NetworkOptionsHookApplyStatus::Failed),
             _ => None,
         }

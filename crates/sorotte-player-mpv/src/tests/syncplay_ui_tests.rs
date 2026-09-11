@@ -284,7 +284,7 @@ fn disabled_bridge_configuration_never_disturbs_core_ipc() {
 }
 
 #[test]
-fn missing_legacy_bridge_loads_stable_resource_then_discovers_and_configures_it() {
+fn missing_syncplay_bridge_loads_stable_resource_then_discovers_and_configures_it() {
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"error running command"}"#,
         r#"{"request_id":2,"error":"success"}"#,
@@ -375,7 +375,7 @@ fn newly_loaded_bridge_gets_a_bounded_registration_window_before_failure() {
 }
 
 #[test]
-fn existing_legacy_bridge_is_pinged_and_reused_without_loading_a_duplicate() {
+fn existing_syncplay_bridge_is_pinged_and_reused_without_loading_a_duplicate() {
     let (transport, state) = fake_transport_with_reads(&[
         FAKE_SYNCPLAYINTF_PONG_EVENT,
         r#"{"request_id":1,"error":"success"}"#,
@@ -828,7 +828,7 @@ fn output_only_busy_guard_survives_maintenance_and_repeated_chat_polls() {
 }
 
 #[test]
-fn legacy_bridge_uses_typed_structured_settings_and_requires_an_exact_ack() {
+fn syncplay_bridge_uses_typed_structured_settings_and_requires_an_exact_ack() {
     let (transport, state) = fake_transport_with_reads(&[
         FAKE_SYNCPLAYINTF_PONG_EVENT,
         r#"{"request_id":1,"error":"success"}"#,
@@ -908,7 +908,7 @@ fn legacy_bridge_uses_typed_structured_settings_and_requires_an_exact_ack() {
 }
 
 #[test]
-fn pending_legacy_settings_retry_reuses_the_same_generation_until_acknowledged() {
+fn pending_syncplay_settings_retry_reuses_the_same_generation_until_acknowledged() {
     let (transport, state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"error running command"}"#,
         r#"{"request_id":2,"error":"success"}"#,
@@ -954,7 +954,7 @@ fn pending_legacy_settings_retry_reuses_the_same_generation_until_acknowledged()
 }
 
 #[test]
-fn stale_malformed_future_and_rejected_legacy_acks_never_set_readiness() {
+fn stale_malformed_future_and_rejected_syncplay_acks_never_set_readiness() {
     for (label, ack_marker) in [
         ("stale", FAKE_SYNCPLAYINTF_STALE_ACK_EVENT),
         ("malformed", FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT),
@@ -1146,7 +1146,7 @@ fn same_adapter_ipc_replacement_discards_old_health_and_reports_new_endpoint_hea
 }
 
 #[test]
-fn legacy_notification_and_chat_messages_target_the_stable_script_name() {
+fn syncplay_notification_and_chat_messages_target_the_stable_script_name() {
     let (transport, state) = fake_transport_with_reads(&[
         FAKE_SYNCPLAYINTF_PONG_EVENT,
         r#"{"request_id":1,"error":"success"}"#,
@@ -1200,7 +1200,7 @@ fn legacy_notification_and_chat_messages_target_the_stable_script_name() {
 }
 
 #[test]
-fn legacy_osd_falls_back_to_show_text_while_bridge_ack_is_pending() {
+fn syncplay_osd_falls_back_to_show_text_while_bridge_ack_is_pending() {
     let (transport, state) = fake_transport_with_reads(&[
         FAKE_SYNCPLAYINTF_PONG_EVENT,
         r#"{"request_id":1,"error":"success"}"#,
@@ -1247,7 +1247,7 @@ fn configure_syncplay_ui_settings_applies_osd_position_when_needed() {
 
     adapter
         .configure_syncplay_ui_settings(SyncplayUiSettings::default())
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     let writes = parsed_writes(&state);
     assert_eq!(writes.len(), 4);
@@ -1344,7 +1344,7 @@ fn configure_syncplay_ui_settings_skips_osd_position_when_disabled() {
 
     adapter
         .configure_syncplay_ui_settings(settings_without_osd_move())
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     assert!(state.writes().is_empty());
 }
@@ -1360,7 +1360,7 @@ fn show_syncplay_message_uses_notification_timeout_for_show_text() {
             notification_timeout_ms: 4_500,
             ..SyncplayUiSettings::default()
         })
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     adapter
         .show_syncplay_message("room updated", SyncplayOsdKind::Notification)
@@ -1383,7 +1383,7 @@ fn show_syncplay_message_uses_alert_timeout_for_show_text() {
             alert_timeout_ms: 6_000,
             ..SyncplayUiSettings::default()
         })
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     adapter
         .show_syncplay_message("autoplay", SyncplayOsdKind::Alert)
@@ -1406,7 +1406,7 @@ fn show_syncplay_chat_message_uses_chat_timeout_when_bridge_is_unavailable() {
             chat_timeout_ms: 8_000,
             ..SyncplayUiSettings::default()
         })
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     adapter
         .show_syncplay_chat_message("<alice> hi")
@@ -1429,7 +1429,7 @@ fn show_syncplay_chat_message_uses_notification_timeout_when_chat_output_is_disa
             notification_timeout_ms: 2_500,
             ..SyncplayUiSettings::default()
         })
-        .expect("legacy settings application should succeed");
+        .expect("syncplay settings application should succeed");
 
     adapter
         .show_syncplay_chat_message("<alice> hi")

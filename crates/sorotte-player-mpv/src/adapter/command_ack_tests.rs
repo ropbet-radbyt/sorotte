@@ -829,7 +829,7 @@ fn early_tracked_load_failure_survives_reacquisition_without_an_active_generatio
 }
 
 #[test]
-fn reacquisition_replays_more_terminal_commands_than_the_legacy_progress_queue() {
+fn reacquisition_replays_more_terminal_commands_than_the_typed_progress_queue() {
     let generation = PlayerMediaGeneration::new(1);
     let mut adapter = MpvAdapter {
         active_media_generation: Some(generation),

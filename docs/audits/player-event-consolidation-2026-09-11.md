@@ -1,7 +1,7 @@
 # Player adapter consolidation, 2026-09-11
 
 Follow-up to the compatibility and terminology cleanup, based on PR #62 at
-`042fdc43a24b82c0bf57c7f752dfbc9e14e2d416`.
+`dee5ce963923eb60e9d4832f107231bc2890eda6`.
 
 ## Completed
 
@@ -24,9 +24,16 @@ Follow-up to the compatibility and terminology cleanup, based on PR #62 at
 - Removed coverage-policy entries for the deleted wrapper module. The actual
   adapter remains within the existing critical player-runtime boundary.
 
+- Removed the bare `partially-applied` mpv hook status accepted only for
+  provisional development builds. The bundled hook's `failed` status plus
+  `applicationState=partially-applied` remains supported and covered by both the
+  adapter and Lua tests. Player test names now distinguish the Syncplay bridge,
+  typed command-progress queue, playback snapshot, and scripted fixtures.
+
 ## Validation
 
-Tests used Rust 1.98.1, the pinned Syncplay Python environment, and the required
+The adapter consolidation passed the full checks below before the additional
+hook-status cleanup. Tests used Rust 1.98.1, the pinned Syncplay Python environment, and the required
 live interoperability flags described in the preceding cleanup audit.
 
 | Check | Result | Local evidence |
@@ -36,6 +43,12 @@ live interoperability flags described in the preceding cleanup audit.
 | GUI semantic scenarios | 14 passed, including live Python peers | `target/player-cleanup-semantic-final.json` |
 | Static verification | All 16 checks passed | `target/player-cleanup-preflight-final.json` |
 | Formatting and whitespace | Passed | `cargo fmt --all`; `git diff --check` |
+
+The additional hook-status cleanup passed all 466 mpv tests (4 ignored),
+all-target/all-feature mpv Clippy, formatting, and whitespace checks. Logs:
+`target/player-cleanup-hook-tests.log` and `target/player-cleanup-hook-clippy.log`.
+The merged PR pipeline repairs also passed 41 workflow tests, recorded in
+`target/player-cleanup-integrated-workflow-tests.log`.
 
 These are local results for this follow-up. PR #62's hosted and native evidence
 belongs to its own source revision and does not qualify this change.
