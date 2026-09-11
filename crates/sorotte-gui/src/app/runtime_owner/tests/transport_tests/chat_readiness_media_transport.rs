@@ -6,7 +6,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
@@ -14,7 +14,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         // This test owns its in-memory transport and does not exercise startup
         // public-server hydration.
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -249,7 +249,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
@@ -257,7 +257,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_over_tcp_transport
         // public-server hydration. An explicit empty cache keeps unrelated
         // remote fetch completion out of the chat assertions below.
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -424,10 +424,10 @@ fn gui_persisted_config_runtime_owner_routes_local_readiness_over_tcp_transport(
         )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -588,11 +588,11 @@ fn gui_persisted_config_runtime_owner_marks_local_open_media_not_ready_over_tcp_
         .expect("client-core tcp chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

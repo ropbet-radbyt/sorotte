@@ -15,14 +15,14 @@ pub(in crate::tests) fn is_background_idle_state_message(message: &ProtocolMessa
     }
 }
 
-pub(in crate::tests) fn legacy_server_prerequisites_missing(error: &InteropError) -> bool {
+pub(in crate::tests) fn syncplay_server_prerequisites_missing(error: &InteropError) -> bool {
     if required_live_interop_enabled() {
         return false;
     }
     match error {
-        InteropError::LegacySyncplayCheckoutMissing(_) | InteropError::PythonSpawn { .. } => true,
-        InteropError::LegacyServerExited { stderr, .. }
-        | InteropError::LegacyServerStartTimeout { stderr, .. } => {
+        InteropError::SyncplayCheckoutMissing(_) | InteropError::PythonSpawn { .. } => true,
+        InteropError::SyncplayServerExited { stderr, .. }
+        | InteropError::SyncplayServerStartTimeout { stderr, .. } => {
             let lowered = stderr.to_ascii_lowercase();
             lowered.contains("no module named 'twisted'")
                 || lowered.contains("unable import twisted")
@@ -32,7 +32,7 @@ pub(in crate::tests) fn legacy_server_prerequisites_missing(error: &InteropError
     }
 }
 
-pub(in crate::tests) fn legacy_server_parity_assertions_enabled() -> bool {
+pub(in crate::tests) fn syncplay_server_parity_assertions_enabled() -> bool {
     required_live_interop_enabled()
         || std::env::var("SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY")
             .ok()

@@ -36,11 +36,11 @@ fn assert_playlist(adapter: &GuiClientCoreChatSessionRuntimeAdapter, files: &[&s
 #[test]
 fn current_server_append_select_edit_playlist_remains_authoritative() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1").unwrap();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".into()),
         room: Some("room1".into()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let mut server = sorotte_server::ServerRuntime::new();

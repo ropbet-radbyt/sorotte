@@ -107,7 +107,7 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn projected_local_position_at(
         &self,
         external_now_seconds: f64,
-        legacy_position_seconds: Option<f64>,
+        list_position_seconds: Option<f64>,
     ) -> Option<f64> {
         if self.awaiting_ordered_snapshot {
             return None;
@@ -128,11 +128,11 @@ impl RuntimePlaybackCoordination {
             // adapter-epoch fence must not resurrect that retired adapter's
             // cached position through the legacy model. A genuinely legacy
             // adapter may still use the long-standing session-model path.
-            return if participant_status_legacy_position_fallback(
+            return if participant_status_list_position_fallback(
                 self.external_player_availability,
                 self.transport_telemetry_ever_observed,
             ) {
-                legacy_position_seconds
+                list_position_seconds
             } else {
                 None
             };
@@ -188,7 +188,7 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn local_pause_mutation_position_at(
         &self,
         external_now_seconds: f64,
-        legacy_position_seconds: Option<f64>,
+        list_position_seconds: Option<f64>,
     ) -> Option<f64> {
         if self.awaiting_ordered_snapshot {
             return None;
@@ -204,11 +204,11 @@ impl RuntimePlaybackCoordination {
             return None;
         }
         if !self.transport_telemetry_observed {
-            return if participant_status_legacy_position_fallback(
+            return if participant_status_list_position_fallback(
                 self.external_player_availability,
                 self.transport_telemetry_ever_observed,
             ) {
-                legacy_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
+                list_position_seconds.filter(|position| position.is_finite() && *position >= 0.0)
             } else {
                 None
             };
@@ -345,9 +345,8 @@ impl RuntimePlaybackCoordination {
         paused: bool,
     ) -> bool {
         match authority {
-            RoomPlaystateAuthority::LegacyRemoteUser | RoomPlaystateAuthority::LegacyLocalEcho => {
-                true
-            }
+            RoomPlaystateAuthority::SyncplayRemoteUser
+            | RoomPlaystateAuthority::SyncplayLocalEcho => true,
             RoomPlaystateAuthority::ServerBarrier {
                 media_generation, ..
             } => {

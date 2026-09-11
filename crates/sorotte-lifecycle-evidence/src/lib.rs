@@ -291,35 +291,12 @@ pub enum EvidenceError {
     Io(#[from] std::io::Error),
     #[error("lifecycle evidence serialization failed: {0}")]
     Json(#[from] serde_json::Error),
-}
-
-/// Recorder failures carried through the existing `EvidenceError::Io` variant
-/// so callers that exhaustively match the 0.2.x error enum remain compatible.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum RecordingFailure {
     #[error("lifecycle evidence recorder failed earlier: {first_error}")]
     RecordingFailed { first_error: Arc<str> },
     #[error("lifecycle evidence record exceeds {MAX_RECORD_BYTES} bytes")]
     RecordTooLarge,
     #[error("lifecycle evidence exhausted its event sequence")]
     SequenceExhausted,
-}
-
-impl From<RecordingFailure> for EvidenceError {
-    fn from(failure: RecordingFailure) -> Self {
-        Self::Io(std::io::Error::other(failure))
-    }
-}
-
-impl EvidenceError {
-    /// Returns a typed recorder failure, when this error carries one.
-    pub fn recording_failure(&self) -> Option<&RecordingFailure> {
-        match self {
-            Self::Io(error) => error.get_ref()?.downcast_ref(),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -480,10 +457,9 @@ impl LifecycleEvidenceRecorder {
 impl RecorderState {
     fn ensure_healthy(&self) -> Result<(), EvidenceError> {
         match &self.first_error {
-            Some(first_error) => Err(RecordingFailure::RecordingFailed {
+            Some(first_error) => Err(EvidenceError::RecordingFailed {
                 first_error: Arc::clone(first_error),
-            }
-            .into()),
+            }),
             None => Ok(()),
         }
     }
@@ -493,7 +469,6 @@ impl RecorderState {
             // Writer-supplied diagnostics can contain arbitrary data. Preserve
             // the failure class, without retaining that data in recorder health.
             self.first_error.get_or_insert_with(|| match error {
-                _ if error.recording_failure().is_some() => error.to_string().into(),
                 EvidenceError::Io(error) => {
                     format!("lifecycle evidence I/O failed ({:?})", error.kind()).into()
                 }
@@ -510,7 +485,7 @@ impl RecorderState {
     ) -> Result<String, EvidenceError> {
         observation.validate(&self.declared_roles)?;
         if self.sequence > MAX_SEQUENCE {
-            return Err(RecordingFailure::SequenceExhausted.into());
+            return Err(EvidenceError::SequenceExhausted);
         }
         if !observation
             .causal_predecessors
@@ -673,7 +648,7 @@ fn write_record(writer: &mut impl Write, record: &impl Serialize) -> Result<(), 
     let mut encoded = RecordBuffer(Vec::new());
     let result = serde_json::to_writer(&mut encoded, record);
     if encoded.0.len() >= MAX_RECORD_BYTES {
-        return Err(RecordingFailure::RecordTooLarge.into());
+        return Err(EvidenceError::RecordTooLarge);
     }
     result?;
     encoded.0.push(b'\n');

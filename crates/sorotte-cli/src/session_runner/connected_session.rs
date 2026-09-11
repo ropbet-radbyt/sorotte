@@ -11,8 +11,8 @@ use std::{
 use self::execution::{
     ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
     planned_local_runtime_action_is_player_bound,
-    report_contained_connected_session_player_failure,
-    run_connected_session_event_plan_legacy_compatible, run_contained_planned_local_runtime_action,
+    report_contained_connected_session_player_failure, run_connected_session_event_plan,
+    run_contained_planned_local_runtime_action,
 };
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use sorotte_client_app::app_boundary::commands::PlannedLocalRuntimeAction;
@@ -39,7 +39,7 @@ struct PendingReadyAtStart {
 }
 
 pub(crate) fn client_runtime_now_seconds() -> f64 {
-    // Client-core also has legacy-compatible entry points whose default clock
+    // Client-core also has convenience entry points whose default clock
     // is Unix wall time. Keep this process-monotonic clock in the same numeric
     // domain so a local command cannot rebase fresh mpv observations from a
     // process-relative timestamp to epoch seconds. The Instant component keeps
@@ -158,9 +158,7 @@ fn report_cli_bridge_runtime_health_transitions(
 #[cfg(test)]
 mod bridge_runtime_health_reporter_tests {
     use super::*;
-    use sorotte_player_mpv::{
-        LegacySyncplayUiSettings, SorotteBridgeFailure, SorotteBridgeFailureKind,
-    };
+    use sorotte_player_mpv::{SorotteBridgeFailure, SorotteBridgeFailureKind, SyncplayUiSettings};
 
     fn degraded(reason: &str) -> SorotteBridgeHealth {
         SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
@@ -212,9 +210,9 @@ mod bridge_runtime_health_reporter_tests {
     #[test]
     fn cli_player_pump_consumes_runtime_degradation_transition_only_once() {
         let (mut player, _release_count) =
-            MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(LegacySyncplayUiSettings {
+            MpvAdapter::with_release_recording_sorotte_bridge_test_ipc(SyncplayUiSettings {
                 chat_move_osd: false,
-                ..LegacySyncplayUiSettings::default()
+                ..SyncplayUiSettings::default()
             });
         let mut reporter = CliBridgeRuntimeHealthReporter::new(&player.sorotte_bridge_health());
         player.mark_sorotte_bridge_degraded(
@@ -319,9 +317,7 @@ fn inferred_client_tls_policy(
     TlsPolicy::default_for_credentials(has_credentials)
 }
 
-fn decode_inbound_message_prefix_legacy_compatible(
-    line: &str,
-) -> (Vec<ProtocolMessage>, Option<ProtocolError>) {
+fn decode_inbound_message_prefix(line: &str) -> (Vec<ProtocolMessage>, Option<ProtocolError>) {
     let items = match decode_message_line_items(line) {
         Ok(items) => items,
         Err(error) => return (Vec::new(), Some(error)),
@@ -488,7 +484,7 @@ where
 }
 
 #[cfg(test)]
-async fn negotiate_start_tls_legacy_compatible(
+async fn negotiate_start_tls(
     stream: TcpStream,
     host: &str,
 ) -> anyhow::Result<Box<dyn ConnectedSessionAsyncStream>> {
@@ -518,7 +514,7 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     let mut no_playlist = None;
-    let exit = run_connected_client_session_with_legacy_startup_overrides(
+    let exit = run_connected_client_session_with_startup_overrides(
         stream,
         runtime,
         config,
@@ -551,7 +547,7 @@ where
     let mut no_playlist = None;
     let diagnostics_config = client_loop_diagnostics_config(None);
     let mut network_options_health_reporter = CliNetworkOptionsHealthReporter::default();
-    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+    run_connected_client_session_with_startup_overrides_and_diagnostics(
         stream,
         ConnectedSessionLaunchContext {
             runtime,
@@ -572,7 +568,7 @@ where
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides<F, G>(
+pub(crate) async fn run_connected_client_session_with_startup_overrides<F, G>(
     stream: TcpStream,
     runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
@@ -589,7 +585,7 @@ where
     let diagnostics_config = client_loop_diagnostics_config(None);
     let plex_config = cli_plex_config_from_env_and_stored_settings(None);
     let mut network_options_health_reporter = CliNetworkOptionsHealthReporter::default();
-    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+    run_connected_client_session_with_startup_overrides_and_diagnostics(
         stream,
         ConnectedSessionLaunchContext {
             runtime,
@@ -602,7 +598,7 @@ where
             diagnostics_config,
             plex_config: &plex_config,
             network_options_health_reporter: &mut network_options_health_reporter,
-            // The legacy connected-session tests use plaintext protocol fixtures. Keep that
+            // The connected-session tests use plaintext protocol fixtures. Keep that
             // test-only helper pinned to plaintext; production callers resolve the configured
             // TLS policy through the network-loop launch context below.
             tls_policy_override: Some(TlsPolicy::Plaintext),
@@ -629,10 +625,7 @@ where
     pub(crate) tls_policy_override: Option<TlsPolicy>,
 }
 
-pub(crate) async fn run_connected_client_session_with_legacy_startup_overrides_and_diagnostics<
-    F,
-    G,
->(
+pub(crate) async fn run_connected_client_session_with_startup_overrides_and_diagnostics<F, G>(
     stream: TcpStream,
     launch: ConnectedSessionLaunchContext<'_, F, G>,
 ) -> anyhow::Result<ConnectedSessionExit>
@@ -664,19 +657,19 @@ where
         config.room.clone(),
         config.version.clone(),
     )
-    .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY);
+    .with_realversion(SYNCPLAY_COMPAT_VERSION);
     if let Some(server_password) = config.server_password.as_ref()
         && !server_password.is_empty()
     {
         hello_payload.extra.insert(
             "password".to_owned(),
-            Value::String(legacy_server_password_token(
+            Value::String(syncplay_server_password_token(
                 server_password.expose_secret(),
             )),
         );
     }
     insert_readiness_reconnect_token(&mut hello_payload, runtime.session(), &config.room);
-    hello_payload.features = Some(client_hello_features_legacy_compatible(config));
+    hello_payload.features = Some(client_hello_features(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
     ensure_connected_application_command_succeeded(
         runtime.dispatch(ClientCommand::BeginConnecting),
@@ -789,7 +782,7 @@ where
         reconnect_correction_diagnostics_format: diagnostics_config
             .reconnect_correction_diagnostics_format,
     };
-    let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
+    let shared_playlists_enabled = shared_playlists_enabled_cli(config);
     let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
     let mut bridge_health_reporter =
         CliBridgeRuntimeHealthReporter::new(&runtime.player().sorotte_bridge_health());
@@ -832,7 +825,7 @@ where
                 match line? {
                     Some(line) => {
                         let (decoded_inbound_messages, predecoded_inbound_error) =
-                            decode_inbound_message_prefix_legacy_compatible(&line);
+                            decode_inbound_message_prefix(&line);
                         let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
                             && (decoded_inbound_messages
                                 .iter()
@@ -840,7 +833,7 @@ where
                                 || runtime.session().server_readiness_v2_supported());
                         let now_seconds = client_runtime_now_seconds();
                         let event_execution_plan =
-                            connected_session_inbound_message_event_execution_plan_legacy_compatible(
+                            connected_session_inbound_message_event_execution_plan(
                                 inbound_is_server_hello,
                                 pending_chat_message_on_connect.is_some(),
                                 decoded_inbound_messages
@@ -852,7 +845,7 @@ where
                                     outbound_state_sync_enabled,
                                 },
                             );
-                        let event_result = run_connected_session_event_plan_legacy_compatible(
+                        let event_result = run_connected_session_event_plan(
                             runtime,
                             Some(&line),
                             now_seconds,
@@ -897,14 +890,14 @@ where
             _ = autoplay_tick.tick() => {
                 let now_seconds = client_runtime_now_seconds();
                 let event_execution_plan =
-                    connected_session_autoplay_tick_event_execution_plan_legacy_compatible(
+                    connected_session_autoplay_tick_event_execution_plan(
                         ConnectedSessionSharedExecutionInputs {
                             shared_playlists_enabled,
                             diagnostics: branch_diagnostics_plan,
                             outbound_state_sync_enabled,
                         },
                     );
-                run_connected_session_event_plan_legacy_compatible(
+                run_connected_session_event_plan(
                     runtime,
                     None,
                     now_seconds,
@@ -945,17 +938,17 @@ where
                     runtime,
                     &mut bridge_health_reporter,
                 );
-                let _ = drain_player_chat_input_legacy_compatible(runtime)?;
+                let _ = drain_player_chat_input(runtime)?;
                 let now_seconds = client_runtime_now_seconds();
                 let event_execution_plan =
-                    connected_session_player_coordination_tick_event_execution_plan_legacy_compatible(
+                    connected_session_player_coordination_tick_event_execution_plan(
                         ConnectedSessionSharedExecutionInputs {
                             shared_playlists_enabled,
                             diagnostics: branch_diagnostics_plan,
                             outbound_state_sync_enabled,
                         },
                     );
-                run_connected_session_event_plan_legacy_compatible(
+                run_connected_session_event_plan(
                     runtime,
                     None,
                     now_seconds,
@@ -996,7 +989,7 @@ where
                 };
 
                 if let Some(command) = parse_local_input_command(&local_line) {
-                    let command = plan_local_input_command_legacy_compatible(
+                    let command = plan_local_input_command(
                         command,
                         &LocalInputCommandPlanningContext {
                             current_room: runtime.session().room(),
@@ -1004,7 +997,7 @@ where
                         },
                     );
                     let dispatch =
-                        plan_local_input_dispatch_legacy_compatible(command, shared_playlists_enabled);
+                        plan_local_input_dispatch(command, shared_playlists_enabled);
                     if player_input_fence_active
                         && matches!(
                             &dispatch,
@@ -1023,8 +1016,8 @@ where
                     }
                     let help_version = config.version.as_str();
                     let emitted = {
-                        let language = current_legacy_runtime_language_tag_legacy_compatible();
-                        if let Some(lines) = shared_render_local_input_display_lines_legacy_compatible(
+                        let language = current_runtime_language_tag();
+                        if let Some(lines) = shared_render_local_input_display_lines(
                             &dispatch,
                             runtime.session(),
                             language.as_deref(),
@@ -1057,7 +1050,7 @@ where
                                         // be ping-only; the core's generation-scoped local intent
                                         // then carries Play/Pause into the first canonical response.
                                         let _ = runtime
-                                            .run_state_sync_heartbeat_legacy_ping_compatible(
+                                            .run_state_sync_heartbeat_with_ping(
                                                 dont_slow_down_with_me,
                                             );
                                     }
@@ -1068,7 +1061,7 @@ where
                         }
                     };
                     let event_execution_plan =
-                        connected_session_local_input_event_execution_plan_legacy_compatible(
+                        connected_session_local_input_event_execution_plan(
                             emitted,
                             ConnectedSessionSharedExecutionInputs {
                                 shared_playlists_enabled,
@@ -1076,7 +1069,7 @@ where
                                 outbound_state_sync_enabled,
                             },
                         );
-                    run_connected_session_event_plan_legacy_compatible(
+                    run_connected_session_event_plan(
                         runtime,
                         None,
                         client_runtime_now_seconds(),
@@ -1255,7 +1248,7 @@ mod tests {
             Duration::from_secs(2),
             await_with_player_integration_maintenance(
                 &mut runtime,
-                negotiate_start_tls_legacy_compatible(stream, "127.0.0.1"),
+                negotiate_start_tls(stream, "127.0.0.1"),
             ),
         )
         .await

@@ -24,7 +24,7 @@ impl ServerClientCapabilities {
             // negotiate the larger common transport contract.
             DEFAULT_MAX_PROTOCOL_LINE_BYTES
         } else {
-            LEGACY_MAX_PROTOCOL_LINE_BYTES
+            SYNCPLAY_MAX_PROTOCOL_LINE_BYTES
         }
     }
 }
@@ -143,7 +143,7 @@ impl ServerRuntime {
             .sessions
             .get(client_id)
             .map(|session| session.capabilities.frame_limit())
-            .unwrap_or(LEGACY_MAX_PROTOCOL_LINE_BYTES);
+            .unwrap_or(SYNCPLAY_MAX_PROTOCOL_LINE_BYTES);
         negotiated.min(self.resource_limits.queued_bytes_per_peer.saturating_sub(2))
     }
 
@@ -259,7 +259,12 @@ impl ServerRuntime {
                             .values()
                             .map(|peer| peer.username.as_str()),
                     );
-                    cohort.extend(barrier.excluded_legacy_clients.iter().map(String::as_str));
+                    cohort.extend(
+                        barrier
+                            .excluded_unsupported_clients
+                            .iter()
+                            .map(String::as_str),
+                    );
                 }
                 let max_name = cohort
                     .iter()
@@ -320,10 +325,10 @@ impl ServerRuntime {
             if recipient.capabilities.is_gui_user() {
                 for (index, room) in known_rooms.iter().enumerate() {
                     if !projected.iter().any(|(_, session)| session.room == *room) {
-                        rooms
-                            .entry(room.clone())
-                            .or_default()
-                            .insert(empty_room_identity(index + 1), legacy_dummy_list_entry());
+                        rooms.entry(room.clone()).or_default().insert(
+                            empty_room_identity(index + 1),
+                            empty_persistent_room_list_entry(),
+                        );
                     }
                 }
             }

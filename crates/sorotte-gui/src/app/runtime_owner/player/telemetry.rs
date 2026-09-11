@@ -133,7 +133,7 @@ mod ordered_event_tests {
     }
 
     #[test]
-    fn legacy_event_comparator_is_antisymmetric_and_transitive() {
+    fn typed_queue_event_comparator_is_antisymmetric_and_transitive() {
         let timestamp = |seconds| {
             Some(PlayerObservationTimestamp::from_adapter_start(
                 Duration::from_secs(seconds),
@@ -1782,7 +1782,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    fn refresh_legacy_player_state_impl(&mut self) {
+    fn refresh_player_state_from_typed_queues(&mut self) {
         self.prune_attached_system_seek_ownership(Instant::now());
         self.attached_transport_telemetry_authority = Default::default();
         let user_offset_seconds = self.user_offset_seconds;
@@ -1852,7 +1852,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     }
                 }));
                 if dropped_events_through.is_none()
-                    && let Some(update) = batch.legacy_playback_telemetry
+                    && let Some(update) = batch.playback_telemetry
                 {
                     playback_updates.push(update);
                 }
@@ -2050,26 +2050,27 @@ impl GuiPersistedConfigRuntimeOwner {
             playback_updates.clear();
         }
         for update in playback_updates {
-            let legacy_paused_for_cache =
+            let unsequenced_paused_for_cache =
                 (!self.attached_transport_telemetry_authority.paused_for_cache)
                     .then_some(update.paused_for_cache)
                     .flatten();
-            let legacy_cache_buffering_percent = (!self
+            let unsequenced_cache_buffering_percent = (!self
                 .attached_transport_telemetry_authority
                 .cache_buffering_percent)
                 .then_some(update.cache_buffering_percent)
                 .flatten();
-            if let Some(paused_for_cache) = legacy_paused_for_cache {
+            if let Some(paused_for_cache) = unsequenced_paused_for_cache {
                 self.player_paused_for_cache = Some(paused_for_cache);
             }
-            if let Some(cache_buffering_percent) = legacy_cache_buffering_percent {
+            if let Some(cache_buffering_percent) = unsequenced_cache_buffering_percent {
                 self.player_cache_buffering_percent = Some(cache_buffering_percent);
             }
-            if (legacy_paused_for_cache.is_some() || legacy_cache_buffering_percent.is_some())
+            if (unsequenced_paused_for_cache.is_some()
+                || unsequenced_cache_buffering_percent.is_some())
                 && let Some(session) = self.session.as_mut()
                 && let Err(error) = session.sync_local_playback_cache_state(
-                    legacy_paused_for_cache,
-                    legacy_cache_buffering_percent,
+                    unsequenced_paused_for_cache,
+                    unsequenced_cache_buffering_percent,
                 )
             {
                 eprintln!(
@@ -2162,7 +2163,7 @@ impl GuiPersistedConfigRuntimeOwner {
             match action {
                 GuiShellAction::PushChatMessage { sender, message } => {
                     if let Err(error) =
-                        player.show_syncplay_legacy_chat_message(&format!("<{sender}> {message}"))
+                        player.show_syncplay_chat_message(&format!("<{sender}> {message}"))
                     {
                         eprintln!(
                             "warning: failed to display GUI chat notification via mpv OSD: {error}"
@@ -2173,13 +2174,11 @@ impl GuiPersistedConfigRuntimeOwner {
                     already_emitted_osd_messages.insert(message.clone());
                     let kind = match level {
                         GuiTransientNotificationLevel::Info
-                        | GuiTransientNotificationLevel::Success => {
-                            LegacySyncplayOsdKind::Notification
-                        }
+                        | GuiTransientNotificationLevel::Success => SyncplayOsdKind::Notification,
                         GuiTransientNotificationLevel::Warning
-                        | GuiTransientNotificationLevel::Error => LegacySyncplayOsdKind::Alert,
+                        | GuiTransientNotificationLevel::Error => SyncplayOsdKind::Alert,
                     };
-                    if let Err(error) = player.show_syncplay_legacy_message(message, kind) {
+                    if let Err(error) = player.show_syncplay_message(message, kind) {
                         eprintln!(
                             "warning: failed to display GUI notification via mpv OSD: {error}"
                         );
@@ -2188,8 +2187,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 GuiShellAction::AnnounceSystemChatEvent(message)
                     if already_emitted_osd_messages.insert(message.clone()) =>
                 {
-                    if let Err(error) = player
-                        .show_syncplay_legacy_message(message, LegacySyncplayOsdKind::Notification)
+                    if let Err(error) =
+                        player.show_syncplay_message(message, SyncplayOsdKind::Notification)
                     {
                         eprintln!(
                             "warning: failed to display GUI system-chat event via mpv OSD: {error}"
@@ -2421,7 +2420,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if delta.observed_at.is_none()
             && let Some(position_seconds) = delta.position_seconds
         {
-            // Ordered third-party adapters may omit a sample clock. The value is still valid
+            // An ordered observation may omit a sample clock. The value is still valid
             // for authoritative UI projection, but the native-seek classifier below refuses to
             // use it as motion evidence.
             self.player_position_seconds = Some(position_seconds - user_offset_seconds);
@@ -2863,7 +2862,7 @@ impl GuiPersistedConfigRuntimeOwner {
             player.player_event_delivery_mode()
                 != PlayerEventDeliveryMode::OrderedAcknowledgedBatches
         }) {
-            self.refresh_legacy_player_state_impl();
+            self.refresh_player_state_from_typed_queues();
             return;
         }
         let user_offset_seconds = self.user_offset_seconds;
@@ -4616,7 +4615,7 @@ mod ordered_delivery_tests {
     }
 
     #[test]
-    fn unacknowledged_replay_is_idempotent_and_legacy_queues_are_not_drained() {
+    fn unacknowledged_replay_is_idempotent_and_typed_queues_are_not_drained() {
         let attempt_id = LoadAttemptId::new(4);
         let media_generation = PlayerMediaGeneration::new(4);
         let acknowledgement_calls = Arc::new(AtomicUsize::new(0));
@@ -5190,7 +5189,7 @@ mod ordered_delivery_tests {
     }
 
     #[test]
-    fn generated_ordered_seek_histories_keep_reducer_and_gui_legacy_decisions_equal() {
+    fn generated_ordered_seek_histories_keep_reducer_and_gui_typed_queue_decisions_equal() {
         const SEEDS: [u64; 4] = [0x00dd_5eed, 0xc0ff_ee42, 0xdec0_de01, 0x51a7_e123];
         const GENERATION: PlayerMediaGeneration = PlayerMediaGeneration::new(7);
 

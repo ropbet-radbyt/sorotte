@@ -3,15 +3,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::paths::write_sorotte_ini_contents_atomically_with_injected_pre_commit;
 use super::{
-    clear_sorotte_ini_stored_client_settings_mvp_at_path,
-    load_sorotte_ini_stored_client_settings_mvp_from_path,
-    parse_sorotte_ini_stored_client_settings_mvp,
-    update_sorotte_ini_stored_client_settings_mvp_at_path,
-    upsert_sorotte_ini_stored_client_settings_mvp,
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path,
-    upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
+    clear_sorotte_ini_stored_client_settings_at_path,
+    load_sorotte_ini_stored_client_settings_from_path, parse_sorotte_ini_stored_client_settings,
+    update_sorotte_ini_stored_client_settings_at_path, upsert_sorotte_ini_stored_client_settings,
+    upsert_sorotte_ini_stored_client_settings_at_path,
+    upsert_sorotte_ini_stored_client_settings_clearing_plex_identity,
 };
-use crate::legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsMvp};
+use crate::stored_settings::{AutoplayThresholdOverride, StoredClientSettings};
 
 fn unique_temp_sorotte_ini_path(label: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -24,8 +22,8 @@ fn unique_temp_sorotte_ini_path(label: &str) -> PathBuf {
 }
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_sections() {
-    let settings = parse_sorotte_ini_stored_client_settings_mvp(
+fn parse_sorotte_ini_stored_client_settings_normalizes_and_reads_known_sections() {
+    let settings = parse_sorotte_ini_stored_client_settings(
         "[general]\n\
          language = PT-br\n\
          updateChannel = DEV\n\
@@ -86,9 +84,8 @@ fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_and_reads_known_secti
 }
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_leaves_missing_plugin_gates_unset() {
-    let settings =
-        parse_sorotte_ini_stored_client_settings_mvp("[client_settings]\nname = alice\n");
+fn parse_sorotte_ini_stored_client_settings_leaves_missing_plugin_gates_unset() {
+    let settings = parse_sorotte_ini_stored_client_settings("[client_settings]\nname = alice\n");
 
     assert_eq!(settings.stream_support_plugin_enabled, None);
     assert_eq!(settings.media_matching_plugin_enabled, None);
@@ -97,7 +94,7 @@ fn parse_sorotte_ini_stored_client_settings_mvp_leaves_missing_plugin_gates_unse
 
 #[test]
 fn streaming_controls_roundtrip_through_sorotte_ini() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         streaming_quality_preset: Some("720p".to_owned()),
         streaming_buffer_target_seconds: Some(8.0),
         streaming_read_ahead_seconds: Some(45.0),
@@ -118,11 +115,11 @@ fn streaming_controls_roundtrip_through_sorotte_ini() {
         streaming_start_timeout_seconds: Some(20.0),
         streaming_start_timeout_action: Some("remain-paused".to_owned()),
         streaming_quality_downgrade_suggestions: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
-    let reparsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
+    let rendered = upsert_sorotte_ini_stored_client_settings("", &settings);
+    let reparsed = parse_sorotte_ini_stored_client_settings(&rendered);
 
     assert_eq!(reparsed.streaming_quality_preset.as_deref(), Some("720p"));
     assert_eq!(reparsed.streaming_buffer_target_seconds, Some(8.0));
@@ -141,8 +138,8 @@ fn streaming_controls_roundtrip_through_sorotte_ini() {
 }
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_filters_blank_media_search_directories() {
-    let settings = parse_sorotte_ini_stored_client_settings_mvp(
+fn parse_sorotte_ini_stored_client_settings_filters_blank_media_search_directories() {
+    let settings = parse_sorotte_ini_stored_client_settings(
         "[client_settings]\n\
          mediaSearchDirectories = ['Z:/Anime/Seasonal', '', ' Z:/Anime/Temp ', '', 'Z:/Anime/Anime Shows', '']\n",
     );
@@ -158,8 +155,8 @@ fn parse_sorotte_ini_stored_client_settings_mvp_filters_blank_media_search_direc
 }
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_reads_media_match_settings() {
-    let settings = parse_sorotte_ini_stored_client_settings_mvp(
+fn parse_sorotte_ini_stored_client_settings_reads_media_match_settings() {
+    let settings = parse_sorotte_ini_stored_client_settings(
         "[client_settings]\n\
          mediaMatchFingerprintingEnabled = True\n\
          mediaMatchBackgroundWarmupEnabled = False\n\
@@ -179,13 +176,13 @@ fn parse_sorotte_ini_stored_client_settings_mvp_reads_media_match_settings() {
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_existing_entries() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+fn upsert_sorotte_ini_stored_client_settings_preserves_existing_entries() {
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "[misc]\nfoo = bar\n[client_settings]\nname = old\n",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             username: Some("alice".to_owned()),
             update_channel: Some("dev".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -195,16 +192,16 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_existing_entries() {
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+fn upsert_sorotte_ini_stored_client_settings_writes_media_match_settings() {
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_background_warmup_enabled: Some(false),
             media_match_wire_sharing_enabled: Some(false),
             media_match_runtime_tolerance_enabled: Some(false),
             media_match_autoplay_policy: Some("AllowStrongSameMedia".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -217,14 +214,14 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_media_match_settings() {
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plugin_enablement() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+fn upsert_sorotte_ini_stored_client_settings_writes_plugin_enablement() {
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             stream_support_plugin_enabled: Some(false),
             media_matching_plugin_enabled: Some(false),
             plex_plugin_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -236,7 +233,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plugin_enablement() {
 
 #[test]
 fn upsert_sorotte_ini_disabling_plugins_preserves_existing_plugin_data() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "[plugins]\n\
          streamSupportEnabled = True\n\
          mediaMatchingEnabled = True\n\
@@ -251,11 +248,11 @@ fn upsert_sorotte_ini_disabling_plugins_preserves_existing_plugin_data() {
          selectedServerId = old-machine\n\
          selectedServerUrl = http://old-plex.local:32400\n\
          selectedServerToken = old-server-token\n",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             stream_support_plugin_enabled: Some(false),
             media_matching_plugin_enabled: Some(false),
             plex_plugin_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -273,17 +270,17 @@ fn upsert_sorotte_ini_disabling_plugins_preserves_existing_plugin_data() {
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+fn upsert_sorotte_ini_stored_client_settings_writes_plex_settings() {
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             plex_sync_enabled: Some(true),
             plex_streaming_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine-id".to_owned()),
             plex_selected_server_url: Some("http://plex.local:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -298,7 +295,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_writes_plex_settings() {
 
 #[test]
 fn upsert_sorotte_ini_preserves_plex_identity_when_only_disabling_sync() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+    let updated = upsert_sorotte_ini_stored_client_settings(
         "[plex]\n\
          syncEnabled = True\n\
          userToken = old-user-token\n\
@@ -310,9 +307,9 @@ fn upsert_sorotte_ini_preserves_plex_identity_when_only_disabling_sync() {
          selectedServerId = duplicate-machine\n\
          selectedServerUrl = http://duplicate-plex.local:32400\n\
          selectedServerToken = duplicate-server-token\n",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             plex_sync_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -325,17 +322,17 @@ fn upsert_sorotte_ini_preserves_plex_identity_when_only_disabling_sync() {
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_removes_credentials() {
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity(
+fn upsert_sorotte_ini_stored_client_settings_clearing_plex_identity_removes_credentials() {
+    let updated = upsert_sorotte_ini_stored_client_settings_clearing_plex_identity(
         "[plex]\n\
          syncEnabled = True\n\
          userToken = old-user-token\n\
          selectedServerId = old-machine\n\
          selectedServerUrl = http://old-plex.local:32400\n\
          selectedServerToken = old-server-token\n",
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             plex_sync_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -350,7 +347,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_removes_
     assert!(!updated.contains("duplicate-plex.local"));
     assert!(!updated.contains("duplicate-server-token"));
 
-    let parsed = parse_sorotte_ini_stored_client_settings_mvp(&updated);
+    let parsed = parse_sorotte_ini_stored_client_settings(&updated);
     assert_eq!(parsed.plex_user_token, None);
     assert_eq!(parsed.plex_selected_server_id, None);
     assert_eq!(parsed.plex_selected_server_url, None);
@@ -359,10 +356,10 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_removes_
 
 #[test]
 fn stored_settings_debug_redacts_plex_tokens() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         plex_user_token: Some("secret-user-token".into()),
         plex_selected_server_token: Some("secret-server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let rendered = format!("{settings:?}");
@@ -375,16 +372,16 @@ fn stored_settings_debug_redacts_plex_tokens() {
 #[test]
 fn scalar_control_characters_roundtrip_without_injecting_ini_lines() {
     let malicious = "safe\n[general]\ncheckForUpdatesAutomatically = False\r\n\0tail";
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: Some(malicious.to_owned()),
         server_password: Some(malicious.into()),
         username: Some(malicious.to_owned()),
         room: Some(malicious.to_owned()),
         plex_user_token: Some(malicious.into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
+    let rendered = upsert_sorotte_ini_stored_client_settings("", &settings);
     assert!(
         rendered.lines().all(|line| line.trim() != "[general]"),
         "untrusted scalar text must not create a physical INI section header"
@@ -394,7 +391,7 @@ fn scalar_control_characters_roundtrip_without_injecting_ini_lines() {
     assert!(rendered.contains("%{D}"));
     assert!(rendered.contains("%{0}"));
 
-    let reparsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
+    let reparsed = parse_sorotte_ini_stored_client_settings(&rendered);
     assert_eq!(reparsed.host.as_deref(), Some(malicious));
     assert_eq!(
         reparsed
@@ -416,16 +413,16 @@ fn scalar_control_characters_roundtrip_without_injecting_ini_lines() {
 
 #[test]
 fn explicit_tls_policy_roundtrips_through_server_data() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         tls_policy: Some("RequireTls".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
+    let rendered = upsert_sorotte_ini_stored_client_settings("", &settings);
     assert!(rendered.contains("[server_data]\n"));
     assert!(rendered.contains("tlsPolicy = RequireTls\n"));
     assert_eq!(
-        parse_sorotte_ini_stored_client_settings_mvp(&rendered)
+        parse_sorotte_ini_stored_client_settings(&rendered)
             .tls_policy
             .as_deref(),
         Some("RequireTls")
@@ -477,15 +474,15 @@ fn atomic_settings_writes_enforce_owner_only_permissions() {
 #[test]
 fn path_helpers_roundtrip_settings_file_contents() {
     let path = unique_temp_sorotte_ini_path("roundtrip");
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("lobby".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&path, &settings)
         .expect("settings should write");
-    let loaded = load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+    let loaded = load_sorotte_ini_stored_client_settings_from_path(&path)
         .expect("settings should load")
         .expect("settings file should exist");
 
@@ -507,11 +504,11 @@ fn path_helper_atomically_replaces_existing_contents_without_temporary_files() {
     )
     .expect("initial settings should write");
 
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             username: Some("after".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("settings replacement should succeed");
@@ -562,10 +559,10 @@ fn injected_pre_commit_failure_preserves_original_and_cleans_temporary_file() {
 }
 
 #[test]
-fn load_sorotte_ini_stored_client_settings_mvp_from_path_returns_none_for_missing_file() {
+fn load_sorotte_ini_stored_client_settings_from_path_returns_none_for_missing_file() {
     let path = unique_temp_sorotte_ini_path("missing");
 
-    let loaded = load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+    let loaded = load_sorotte_ini_stored_client_settings_from_path(&path)
         .expect("missing path should not error");
 
     assert_eq!(loaded, None);
@@ -574,20 +571,20 @@ fn load_sorotte_ini_stored_client_settings_mvp_from_path_returns_none_for_missin
 #[test]
 fn update_helper_loads_mutates_and_rewrites_existing_settings() {
     let path = unique_temp_sorotte_ini_path("update");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             username: Some("alice".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("initial settings should write");
 
-    update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+    update_sorotte_ini_stored_client_settings_at_path(&path, |settings| {
         settings.room = Some("lobby".to_owned());
     })
     .expect("settings should update");
-    let loaded = load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+    let loaded = load_sorotte_ini_stored_client_settings_from_path(&path)
         .expect("settings should load")
         .expect("settings file should exist");
 
@@ -601,17 +598,17 @@ fn update_helper_loads_mutates_and_rewrites_existing_settings() {
 #[test]
 fn clear_helper_removes_existing_settings_file() {
     let path = unique_temp_sorotte_ini_path("clear");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             username: Some("alice".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("initial settings should write");
 
     let cleared =
-        clear_sorotte_ini_stored_client_settings_mvp_at_path(&path).expect("clear should succeed");
+        clear_sorotte_ini_stored_client_settings_at_path(&path).expect("clear should succeed");
 
     assert!(cleared);
     assert!(!path.exists());

@@ -160,9 +160,9 @@ impl PlaystatePayload {
     }
 
     /// Decodes the additive server-issued causal fence for the room transport
-    /// authority observed by this sample or mutation. Legacy peers omit it.
-    /// Keeping the extension in `extra` preserves source compatibility for
-    /// downstream code that constructs the long-standing public struct.
+    /// authority observed by this sample or mutation. Peers without transport
+    /// revision support omit it. Decode the extension explicitly so malformed
+    /// values are rejected instead of being treated as an absent fence.
     pub fn transport_revision(&self) -> serde_json::Result<Option<u64>> {
         match self.extra.get(SOROTTE_TRANSPORT_REVISION) {
             None | Some(Value::Null) => Ok(None),

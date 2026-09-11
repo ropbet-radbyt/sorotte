@@ -268,7 +268,7 @@ fn generated_json_framing_matches_pinned_python_oracle() {
 
     let stdout = match run_python_probe_raw(&["--json-framing-oracle-batch"], &request) {
         Ok(stdout) => stdout,
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "generated JSON framing differential skipped due to missing local prerequisites"
             );
@@ -452,8 +452,7 @@ fn live_python_peer_probe_advertises_the_playlist_behavior_it_exercises() {
 fn python_interop_roundtrip_returns_server_hello() {
     let transcript = match run_python_handshake_roundtrip() {
         Ok(transcript) => transcript,
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python interop handshake test skipped due to missing local prerequisites");
             return;
         }
@@ -495,8 +494,7 @@ fn python_interop_sequence_supports_list_set_and_state() {
 
     let transcript = match run_python_protocol_roundtrip(&requests) {
         Ok(transcript) => transcript,
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python interop sequence test skipped due to missing local prerequisites");
             return;
         }

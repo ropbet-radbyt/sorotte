@@ -107,7 +107,7 @@ fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn legacy_syncplay_root() -> PathBuf {
+fn syncplay_root() -> PathBuf {
     if let Some(path) = std::env::var_os("SYNCPLAY_LEGACY_ROOT").filter(|value| !value.is_empty()) {
         return PathBuf::from(path);
     }
@@ -264,8 +264,8 @@ fn sorotte_server_binary_handles_legacy_password_motd_hello_and_list() {
 }
 
 #[test]
-fn sorotte_server_binary_accepts_legacy_python_client_hello() {
-    let legacy_root = legacy_syncplay_root();
+fn sorotte_server_binary_accepts_syncplay_python_client_hello() {
+    let legacy_root = syncplay_root();
     if !legacy_root.join("syncplayServer.py").is_file() {
         eprintln!(
             "legacy Python client smoke test skipped; missing {}",

@@ -26,22 +26,21 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::{
-    language::normalized_legacy_runtime_language_tag_legacy_compatible,
+    language::normalized_runtime_language_tag,
     persistence::{
-        clear_sorotte_ini_stored_client_settings_mvp_at_path,
-        load_sorotte_ini_stored_client_settings_mvp_from_path,
+        clear_sorotte_ini_stored_client_settings_at_path,
+        load_sorotte_ini_stored_client_settings_from_path,
     },
     state::{
-        ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
-        StoredClientSettingsRuntimeSnapshot, TlsPolicy,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
+        ClientConfig, EffectiveMpvStreamingOption, StoredClientSettings,
+        StoredClientSettingsRuntimeSnapshot, TlsPolicy, stored_client_settings_runtime_snapshot,
     },
 };
 use sorotte_client_core::{CoordinatorCommandId, ExternalPlayerAvailability, PlayerCommandCause};
 use sorotte_player_api::{
     LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerEventSequence, PlayerTransportPhase,
 };
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeHealth};
+use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth, SyncplayUiSettings};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
     auth::{PlexAuthPollResult, PlexAuthService, PlexAuthSession},
@@ -88,8 +87,8 @@ use super::shell_state::{
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
-    gui_startup_public_server_outcome_with_fetcher,
-    resolve_sorotte_gui_config_path_legacy_compatible, should_hydrate_startup_public_servers,
+    gui_startup_public_server_outcome_with_fetcher, resolve_sorotte_gui_config_path,
+    should_hydrate_startup_public_servers,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,7 +155,7 @@ use super::stream_support::{
     probe_stream_helper_startup_snapshot,
 };
 use super::support::system_time_seconds;
-use super::ui_state::clear_legacy_gui_qsettings_files_at_root;
+use super::ui_state::clear_syncplay_qsettings_files_at_root;
 
 const STARTUP_PUBLIC_SERVER_MAX_ATTEMPTS: u8 = 3;
 const STARTUP_PUBLIC_SERVER_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
@@ -167,14 +166,14 @@ pub(super) struct StartupPublicServerHydrationContext {
 }
 
 impl StartupPublicServerHydrationContext {
-    fn from_settings(settings: &StoredClientSettingsMvp) -> Option<Self> {
+    fn from_settings(settings: &StoredClientSettings) -> Option<Self> {
         if !should_hydrate_startup_public_servers(settings) {
             return None;
         }
         let language = settings
             .language
             .as_deref()
-            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .and_then(normalized_runtime_language_tag)
             .unwrap_or("en")
             .to_owned();
         Some(Self { language })
@@ -275,9 +274,9 @@ pub(super) struct GuiPlayerApplyState {
     /// The effective streaming options last accepted by the active mpv runtime.
     pub(super) applied_streaming_options: Option<Vec<EffectiveMpvStreamingOption>>,
     /// The mpv UI properties last accepted by the attached mpv process.
-    pub(super) applied_mpv_ui_settings: Option<LegacySyncplayUiSettings>,
+    pub(super) applied_mpv_ui_settings: Option<SyncplayUiSettings>,
     /// The Lua bridge settings last acknowledged independently of mpv UI-property application.
-    pub(super) acknowledged_bridge_settings: Option<LegacySyncplayUiSettings>,
+    pub(super) acknowledged_bridge_settings: Option<SyncplayUiSettings>,
     /// The exact Lua settings generation acknowledged for `acknowledged_bridge_settings`.
     pub(super) acknowledged_bridge_generation: Option<u64>,
     /// A process or streaming apply failed and still needs a core player retry/restart.
@@ -606,7 +605,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn runtime_operation_settings(
         &self,
         state: &SorotteGuiShellAppState,
-    ) -> StoredClientSettingsMvp {
+    ) -> StoredClientSettings {
         self.active_session_settings
             .as_ref()
             .map(|runtime_settings| runtime_settings.settings.clone())
@@ -617,12 +616,10 @@ impl GuiPersistedConfigRuntimeOwner {
         &self,
         state: &SorotteGuiShellAppState,
     ) -> bool {
-        stored_client_settings_runtime_snapshot_legacy_compatible(
-            &self.runtime_operation_settings(state),
-        )
-        .config
-        .playback
-        .shared_playlist_enabled
+        stored_client_settings_runtime_snapshot(&self.runtime_operation_settings(state))
+            .config
+            .playback
+            .shared_playlist_enabled
     }
 
     pub(in crate::app::runtime_owner) fn apply_patch_to_active_session_settings(
@@ -651,7 +648,7 @@ impl GuiPersistedConfigRuntimeOwner {
     /// stronger lifecycle boundary is crossed.
     pub(in crate::app) fn promote_on_save_runtime_fields(
         &mut self,
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
     ) {
         for active_settings in [
             self.active_session_settings.as_mut(),
@@ -678,7 +675,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn promote_restart_player_runtime_fields(
         &mut self,
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
     ) {
         for active_settings in [
             self.active_session_settings.as_mut(),
@@ -701,7 +698,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn adopt_saved_player_launch_state_when_inactive(
         &mut self,
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
     ) {
         if self.player_apply_state.applied_process_target.is_some() || self.player.is_some() {
             return;
@@ -716,7 +713,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn replace_active_runtime_settings_preserving_controlled_room_password(
         active_settings: &mut StoredClientSettingsRuntimeSnapshot,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) {
         let controlled_room_password = active_settings
             .controlled_room_password_override
@@ -728,7 +725,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .controlled_room_password
                     .clone()
             });
-        let mut replacement = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+        let mut replacement = stored_client_settings_runtime_snapshot(settings);
         if let Some(password) = controlled_room_password {
             replacement.controlled_room_password_override = Some(password.clone());
             replacement.config.connection.controlled_room_password = Some(password);
@@ -738,7 +735,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn comparable_settings_for_runtime_snapshot(
         snapshot: &StoredClientSettingsRuntimeSnapshot,
-    ) -> StoredClientSettingsMvp {
+    ) -> StoredClientSettings {
         let mut settings = snapshot.settings.clone();
         if let (Some(room), Some(password)) = (
             snapshot.config.connection.room.as_ref(),
@@ -753,12 +750,11 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn settings_differ_for_apply_requirement(
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
         active_settings: &StoredClientSettingsRuntimeSnapshot,
         requirement: GuiSettingApplyRequirement,
     ) -> bool {
-        let saved_snapshot =
-            stored_client_settings_runtime_snapshot_legacy_compatible(saved_settings);
+        let saved_snapshot = stored_client_settings_runtime_snapshot(saved_settings);
         let saved_settings = Self::comparable_settings_for_runtime_snapshot(&saved_snapshot);
         let active_settings = Self::comparable_settings_for_runtime_snapshot(active_settings);
         let saved = FirstRunConfigurationDialogDraft::from_stored_settings(&saved_settings);
@@ -778,7 +774,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn pending_apply_requirements_for_settings(
         &self,
         projected_state: &SorotteGuiShellAppState,
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
     ) -> Vec<GuiSettingApplyRequirement> {
         let mut requirements = BTreeSet::new();
         if self.session_projects_to_shell
@@ -852,12 +848,12 @@ impl GuiPersistedConfigRuntimeOwner {
         let saved_language = saved_settings
             .language
             .as_deref()
-            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .and_then(normalized_runtime_language_tag)
             .unwrap_or("en");
         let active_language = projected_state
             .active_application_language
             .as_deref()
-            .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+            .and_then(normalized_runtime_language_tag)
             .unwrap_or("en");
         if saved_language != active_language
             || saved_settings.force_gui_prompt.unwrap_or(false)
@@ -874,7 +870,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn pending_apply_requirements_action(
         &self,
         projected_state: &SorotteGuiShellAppState,
-        saved_settings: &StoredClientSettingsMvp,
+        saved_settings: &StoredClientSettings,
     ) -> GuiShellAction {
         GuiShellAction::ApplyPendingApplyRequirementsSnapshot(
             self.pending_apply_requirements_for_settings(projected_state, saved_settings),

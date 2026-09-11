@@ -25,12 +25,12 @@ pub(super) fn verify_detached_missing_media_contract<D: NativeGuiDriver>(
     let config_path = temp_root.join("sorotte-native-smoke-detached-missing-media.ini");
     let _ = fs::remove_file(&config_path);
     seed_native_smoke_config_with_saved_server(&config_path, None, None)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             shared_playlist_enabled: Some(true),
             media_search_directories: Some(vec![detached_search_path.display().to_string()]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {
@@ -196,12 +196,12 @@ pub(super) fn verify_missing_media_continue_session_contract<D: NativeGuiDriver>
     let continue_config_path = temp_root.join("sorotte-native-smoke-missing-media.ini");
     let _ = fs::remove_file(&continue_config_path);
     seed_native_smoke_config(&continue_config_path)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &continue_config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             shared_playlist_enabled: Some(false),
             media_search_directories: Some(vec![continue_media_search_path.display().to_string()]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {

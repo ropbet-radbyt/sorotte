@@ -10,7 +10,7 @@ use sorotte_player_api::{
     PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
-use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+use sorotte_player_mpv::{MpvAdapter, SyncplayUiSettings};
 
 pub(in super::super) struct GuiNoopClientRuntimePlayer;
 
@@ -568,7 +568,7 @@ pub(in super::super) enum GuiPlayerLaunchRuntimeState {
     TestPlayer,
     ExplicitMpvIpc {
         ipc_path: String,
-        ui_settings: Box<LegacySyncplayUiSettings>,
+        ui_settings: Box<SyncplayUiSettings>,
         effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     },
     ManagedMpv(Box<ManagedMpvLaunchConfig>),
@@ -596,7 +596,7 @@ impl GuiPlayerLaunchRuntimeState {
         )
     }
 
-    pub(in super::super) fn mpv_ui_settings(&self) -> Option<&LegacySyncplayUiSettings> {
+    pub(in super::super) fn mpv_ui_settings(&self) -> Option<&SyncplayUiSettings> {
         match self {
             Self::ExplicitMpvIpc { ui_settings, .. } => Some(ui_settings),
             Self::ManagedMpv(config) => Some(&config.ui_settings),

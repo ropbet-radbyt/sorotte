@@ -9,9 +9,9 @@ use sorotte_plex::{
 };
 
 fn disabled_shared_playlist_state_with_two_rows() -> SorotteGuiShellAppState {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec!["old-a.mkv".to_owned(), "old-b.mkv".to_owned()],
@@ -234,12 +234,12 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
         // This test asserts exact player-projection actions. Keep unrelated
         // asynchronous public-server hydration out of that action stream.
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -546,7 +546,7 @@ fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_contex
                 ),
             ),
         ],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(ReacquiredFailurePlayer {
@@ -798,11 +798,11 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
         logical_file: logical_file.clone(),
         playback_url: SecretPlexPlaybackUrl::new(playback_url),
     };
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
     state.apply_shared_playlist_entries(vec![sparse_logical_uri.to_owned()], Some(0), false);
@@ -985,11 +985,11 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     };
     let player_state =
         std::sync::Arc::new(std::sync::Mutex::new(PlexStreamTelemetryState::default()));
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
@@ -1246,11 +1246,11 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         logical_file: logical_file.clone(),
         playback_url: SecretPlexPlaybackUrl::new(playback_url),
     };
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
     state.apply_shared_playlist_entries(vec![logical_uri.clone()], Some(0), false);
@@ -1465,10 +1465,10 @@ fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_repo
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .ensure_detached_client_core_chat_session(&state)

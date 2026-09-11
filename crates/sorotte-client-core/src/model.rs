@@ -54,7 +54,7 @@ pub struct RoomState {
     pub(crate) domain: SyncDomain,
     pub(crate) users: BTreeMap<String, ClientUserView>,
     pub(crate) participant_status_capabilities: BTreeMap<String, bool>,
-    pub(crate) legacy_list_position_snapshots: BTreeMap<String, f64>,
+    pub(crate) list_position_snapshots: BTreeMap<String, f64>,
     pub(crate) media_match_peer_tiers: BTreeMap<String, MediaMatchTier>,
     pub(crate) known_rooms: BTreeSet<String>,
     pub(crate) playstates: BTreeMap<String, RoomPlaystateView>,

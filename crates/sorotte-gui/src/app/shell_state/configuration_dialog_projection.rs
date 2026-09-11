@@ -1,7 +1,7 @@
 use super::*;
 
 impl FirstRunConfigurationDialogState {
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let config = ClientConfig::resolve(settings).config;
         let advanced_player_arguments = settings
             .player_path
@@ -26,14 +26,14 @@ impl FirstRunConfigurationDialogState {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        let startup_entries = legacy_configuration_getter_startup_compat_entries();
+        let startup_entries = syncplay_configuration_getter_startup_compat_entries();
         let ignored_startup_exception_count = startup_entries
             .iter()
-            .filter(|entry| entry.status == LegacyConfigurationGetterCompatibilityStatus::Ignored)
+            .filter(|entry| entry.status == SyncplayConfigurationGetterCompatibilityStatus::Ignored)
             .count();
 
         Self {
-            launch_mode: if settings == &StoredClientSettingsMvp::default() {
+            launch_mode: if settings == &StoredClientSettings::default() {
                 GuiLaunchMode::FirstRun
             } else {
                 GuiLaunchMode::ExistingConfig
@@ -72,9 +72,9 @@ impl FirstRunConfigurationDialogState {
                     stored_override: settings
                         .unpause_action
                         .clone()
-                        .map(unpause_action_mode_legacy_name_compatible)
+                        .map(unpause_action_mode_syncplay_name)
                         .map(str::to_owned),
-                    effective: unpause_action_mode_legacy_name_compatible(
+                    effective: unpause_action_mode_syncplay_name(
                         config.readiness.unpause_action.clone(),
                     )
                     .to_owned(),
@@ -83,18 +83,18 @@ impl FirstRunConfigurationDialogState {
                     stored_override: settings
                         .autoplay_min_users
                         .as_ref()
-                        .map(autoplay_threshold_override_legacy_value_compatible),
-                    effective: autoplay_threshold_override_legacy_value_compatible(
+                        .map(autoplay_threshold_override_setting_value),
+                    effective: autoplay_threshold_override_setting_value(
                         &config.readiness.autoplay_min_users,
                     ),
                 },
             },
             privacy: GuiPrivacySection {
-                filename_privacy_mode_label: privacy_mode_legacy_name_compatible(
+                filename_privacy_mode_label: privacy_mode_syncplay_name(
                     config.playback.filename_privacy_mode,
                 )
                 .to_owned(),
-                filesize_privacy_mode_label: privacy_mode_legacy_name_compatible(
+                filesize_privacy_mode_label: privacy_mode_syncplay_name(
                     config.playback.filesize_privacy_mode,
                 )
                 .to_owned(),
@@ -872,7 +872,7 @@ impl FirstRunConfigurationDialogState {
                         id: SettingId::DiagnosticsSupportedLanguages,
                         label: SettingId::DiagnosticsSupportedLanguages.label(),
                         kind: GuiDialogControlKind::ReadOnly,
-                        value: SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY.to_owned(),
+                        value: SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY.to_owned(),
                     },
                 ],
             },

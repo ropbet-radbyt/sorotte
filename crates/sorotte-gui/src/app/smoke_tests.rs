@@ -4,8 +4,8 @@ use super::testing::support::{
     pump_and_apply_runtime_owner_actions, pump_and_apply_runtime_owner_actions_until,
 };
 use sorotte_client_app::app_boundary::{
-    persistence::load_sorotte_ini_stored_client_settings_mvp_from_path,
-    state::{AutoplayThresholdOverride, StoredClientSettingsMvp, TlsPolicy},
+    persistence::load_sorotte_ini_stored_client_settings_from_path,
+    state::{AutoplayThresholdOverride, StoredClientSettings, TlsPolicy},
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 
@@ -19,7 +19,7 @@ use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::shell_state::{
     GuiPendingOperationKind, GuiShellAction, GuiShellView, SettingId, SorotteGuiShellAppState,
 };
-use super::{GuiPreviewRuntimeBridge, upsert_sorotte_ini_stored_client_settings_mvp_at_path};
+use super::{GuiPreviewRuntimeBridge, upsert_sorotte_ini_stored_client_settings_at_path};
 
 fn read_client_hello_after_optional_start_tls<R, W>(
     reader: &mut R,

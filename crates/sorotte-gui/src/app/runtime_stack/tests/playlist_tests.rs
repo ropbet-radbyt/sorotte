@@ -297,11 +297,11 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_server_feature_is_false()
  {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.main_window.shared_playlist_enabled);
 
@@ -349,11 +349,11 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_when_session_has_none()
 {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_snapshot.shared_playlist_enabled = true;
@@ -452,11 +452,11 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_before_server_echo()
 {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -504,10 +504,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_over_existing_room_playlist_before_server_echo()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -566,11 +566,11 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when_session_has_no_playstate()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_snapshot.playback_paused = true;
@@ -625,11 +625,11 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when_session_has_no_override()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_snapshot.autoplay_active = true;

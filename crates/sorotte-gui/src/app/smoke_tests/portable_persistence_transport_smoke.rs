@@ -18,12 +18,12 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
     let mut persisted_owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let persisted_handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut persisted_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("portable-save.example".to_owned()),
         room: Some("portable-room-a".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
@@ -43,21 +43,21 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
         assert!(persisted_state.apply(action));
     }
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+        load_sorotte_ini_stored_client_settings_from_path(&path)
             .expect("portable smoke save should leave a readable config"),
         Some(saved_settings.clone())
     );
 
-    let reloaded_settings = StoredClientSettingsMvp {
+    let reloaded_settings = StoredClientSettings {
         host: Some("portable-reload.example".to_owned()),
         room: Some("portable-room-b".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&path, &reloaded_settings)
         .expect("portable smoke reload seed should write config");
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationReload));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettings::default()),
     ));
     GuiQueuedRuntimeOwner::pump(&mut persisted_owner, &persisted_handle, &persisted_state);
     let reload_actions = persisted_handle.drain_actions();
@@ -83,11 +83,10 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
         .with_client_core_chat_loopback_session_runtime("portable-user", "portable-room")
         .expect("portable smoke loopback runtime owner should bootstrap");
     let loopback_handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut loopback_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-            chat_input_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
-        });
+    let mut loopback_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        chat_input_enabled: Some(true),
+        ..StoredClientSettings::default()
+    });
     assert!(loopback_state.apply(GuiShellAction::BeginLocalChatSend(
         "portable-loopback".to_owned()
     )));
@@ -186,11 +185,11 @@ fn gui_portable_smoke_regression_sequences_persistence_and_transport_flows() {
         )
         .expect("portable smoke tcp runtime owner should bootstrap");
     let tcp_handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut tcp_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut tcp_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("portable-user".to_owned()),
         room: Some("portable-room".to_owned()),
         public_servers: Some(vec![("Reconnect".to_owned(), second_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut tcp_owner, &tcp_handle, &tcp_state);

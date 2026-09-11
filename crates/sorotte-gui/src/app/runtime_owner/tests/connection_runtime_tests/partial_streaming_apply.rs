@@ -40,7 +40,7 @@ fn assert_gui_failure_text_is_sanitized(
 
 fn align_attached_test_player_with_unconfigured_settings(
     owner: &mut GuiPersistedConfigRuntimeOwner,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) {
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
@@ -59,7 +59,7 @@ fn partial_active_option_apply_preserves_baseline_until_same_adapter_retry_compl
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-partial-streaming-retry-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -181,7 +181,7 @@ fn explicit_retry_defers_a_to_b_supersession_and_clears_degradation_after_b_appl
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-explicit-supersession-retry-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -279,7 +279,7 @@ fn same_pump_hook_recovery_survives_explicit_retry_and_later_degradation_reappea
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-hook-degradation-rearm-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -423,7 +423,7 @@ fn queued_hook_degradation_remains_observable_when_same_pump_explicit_retry_fail
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-queued-hook-degradation-failed-retry-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -543,7 +543,7 @@ fn superseded_retry_keeps_baseline_issue_and_footer_until_authoritative_result()
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-superseded-awaiting-hook-result-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -620,7 +620,7 @@ fn same_map_retry_does_not_report_success_while_authoritative_result_is_pending(
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-superseded-retry-notification-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -705,7 +705,7 @@ fn superseded_launch_completion_reports_pending_and_refreshes_footer() {
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-superseded-launch-notification-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &crate::app::startup_support::env_trimmed,
@@ -790,7 +790,7 @@ fn hook_degradation_survives_idle_and_local_media_until_positive_hook_recovery()
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-hook-health-media-policy-separation-test";
     let lookup = |name: &str| (name == "SOROTTE_CLIENT_MPV_IPC_PATH").then(|| ipc_path.to_owned());
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &lookup,
@@ -982,7 +982,7 @@ fn overlapping_hook_and_media_policy_failures_recover_independently() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-overlapping-streaming-failures-test";
     let lookup = |name: &str| (name == "SOROTTE_CLIENT_MPV_IPC_PATH").then(|| ipc_path.to_owned());
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &lookup,
@@ -1090,7 +1090,7 @@ fn credential_bearing_media_targets_never_reach_gui_issue_notification_or_chat_s
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-streaming-failure-redaction-test";
     let lookup = |name: &str| (name == "SOROTTE_CLIENT_MPV_IPC_PATH").then(|| ipc_path.to_owned());
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &lookup,

@@ -1,6 +1,6 @@
 use super::*;
 
-impl LegacyServerPythonPeerHarness {
+impl SyncplayServerPythonPeerHarness {
     pub(super) fn parse_peer_status_line(&self, status_line: &str) -> Result<Value, InteropError> {
         let parsed: Value = serde_json::from_str(status_line).map_err(|error| {
             InteropError::InvalidPythonBatchResponse(format!(
@@ -35,7 +35,7 @@ impl LegacyServerPythonPeerHarness {
 
     pub(super) fn parse_peer_snapshot(
         status: &Value,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         let username = status
             .get("username")
             .and_then(Value::as_str)
@@ -163,7 +163,7 @@ impl LegacyServerPythonPeerHarness {
                                     "python live peer status included a malformed chat message: {message}"
                                 ))
                             })?;
-                        Ok(LegacyPythonPeerChatMessage {
+                        Ok(SyncplayPythonPeerChatMessage {
                             sender,
                             message: message_text,
                         })
@@ -172,7 +172,7 @@ impl LegacyServerPythonPeerHarness {
             })
             .transpose()?
             .unwrap_or_default();
-        Ok(LegacyPythonPeerSnapshot {
+        Ok(SyncplayPythonPeerSnapshot {
             username,
             room,
             local_ready,

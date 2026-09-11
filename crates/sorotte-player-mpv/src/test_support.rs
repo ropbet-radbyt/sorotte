@@ -10,7 +10,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::constants::{LEGACY_SYNCPLAYINTF_PING_MESSAGE, LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE};
+use crate::constants::{SYNCPLAYINTF_PING_MESSAGE, SYNCPLAYINTF_RELEASE_MESSAGE};
 use crate::ipc::{MpvJsonIpcClient, MpvJsonIpcTransport};
 
 pub(crate) fn unacknowledging_syncplayintf_client() -> MpvJsonIpcClient {
@@ -530,7 +530,7 @@ impl MpvJsonIpcTransport for DiscoveryRejectingTransport {
             )
         })?;
         let rejects_discovery = request.pointer("/command/2").and_then(Value::as_str)
-            == Some(LEGACY_SYNCPLAYINTF_PING_MESSAGE);
+            == Some(SYNCPLAYINTF_PING_MESSAGE);
         let response = if rejects_discovery {
             json!({"request_id": request_id, "error": "invalid parameter"})
         } else if request.pointer("/command/0").and_then(Value::as_str) == Some("get_property") {
@@ -572,7 +572,7 @@ impl MpvJsonIpcTransport for ReleaseRecordingTransport {
                 .push(request["command"].clone());
         }
         if request.pointer("/command/2").and_then(Value::as_str)
-            == Some(LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE)
+            == Some(SYNCPLAYINTF_RELEASE_MESSAGE)
         {
             self.release_count.fetch_add(1, Ordering::Release);
         }

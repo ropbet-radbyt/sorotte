@@ -1,15 +1,12 @@
 use super::localization::{
-    localized_compatibility_field_label_legacy_compatible,
-    localized_compatibility_input_label_legacy_compatible,
-    localized_compatibility_note_label_legacy_compatible,
-    localized_compatibility_status_label_legacy_compatible,
-    localized_legacy_ini_compatibility_heading_legacy_compatible,
-    localized_legacy_startup_compatibility_heading_legacy_compatible,
+    localized_compatibility_field_label, localized_compatibility_input_label,
+    localized_compatibility_note_label, localized_compatibility_status_label,
+    localized_startup_compatibility_heading, localized_syncplay_ini_compatibility_heading,
 };
 use super::*;
 
-pub(crate) fn print_legacy_client_help(language: Option<&str>) {
-    if let Some(line) = legacy_runtime_language_selection_line_legacy_compatible(language) {
+pub(crate) fn print_syncplay_client_help(language: Option<&str>) {
+    if let Some(line) = runtime_language_selection_line(language) {
         println!("{line}");
         println!();
     }
@@ -89,7 +86,7 @@ pub(crate) fn print_legacy_client_help(language: Option<&str>) {
         "  SOROTTE_CLIENT_RECONNECT_RESTORE_AUTOCORRECT=0|1",
         "    Control reconnect mismatch policy (default auto-correct on; set 0 for warning-only).",
         "  SOROTTE_CLIENT_RECONNECT_RESTORE_CORRECTION_POLICY=auto|notify-only|warn-only-on-exhaustion",
-        "    Explicit reconnect correction policy mode (overrides legacy AUTOCORRECT flag when set).",
+        "    Explicit reconnect correction policy mode (overrides AUTOCORRECT flag when set).",
         "  SOROTTE_CLIENT_RECONNECT_RESTORE_POSITION_TOLERANCE_SECONDS=<seconds>",
         "    Position mismatch tolerance for reconnect validation/correction (default 1.0).",
         "  SOROTTE_CLIENT_RECONNECT_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS=<count>",
@@ -117,17 +114,14 @@ pub(crate) fn print_legacy_client_help(language: Option<&str>) {
         println!("{line}");
     }
     println!();
-    println!(
-        "{}",
-        localized_legacy_startup_compatibility_heading_legacy_compatible(language)
-    );
+    println!("{}", localized_startup_compatibility_heading(language));
     println!(
         "  {:<26} {:<10} {}",
-        localized_compatibility_input_label_legacy_compatible(language),
-        localized_compatibility_status_label_legacy_compatible(language),
-        localized_compatibility_note_label_legacy_compatible(language),
+        localized_compatibility_input_label(language),
+        localized_compatibility_status_label(language),
+        localized_compatibility_note_label(language),
     );
-    for entry in legacy_configuration_getter_startup_compat_entries() {
+    for entry in syncplay_configuration_getter_startup_compat_entries() {
         println!(
             "  {:<26} {:<10} {}",
             entry.input,
@@ -136,17 +130,14 @@ pub(crate) fn print_legacy_client_help(language: Option<&str>) {
         );
     }
     println!();
-    println!(
-        "{}",
-        localized_legacy_ini_compatibility_heading_legacy_compatible(language)
-    );
+    println!("{}", localized_syncplay_ini_compatibility_heading(language));
     println!(
         "  {:<66} {:<10} {}",
-        localized_compatibility_field_label_legacy_compatible(language),
-        localized_compatibility_status_label_legacy_compatible(language),
-        localized_compatibility_note_label_legacy_compatible(language),
+        localized_compatibility_field_label(language),
+        localized_compatibility_status_label(language),
+        localized_compatibility_note_label(language),
     );
-    for entry in legacy_configuration_getter_ini_compat_entries() {
+    for entry in syncplay_configuration_getter_ini_compat_entries() {
         println!(
             "  {:<66} {:<10} {}",
             entry.key,

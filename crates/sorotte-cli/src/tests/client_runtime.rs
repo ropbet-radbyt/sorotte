@@ -14,32 +14,23 @@ fn normalize_controlled_room_input_extracts_canonical_room_and_password() {
 }
 
 #[test]
-fn controlled_room_base_name_legacy_compatible_strips_managed_suffix() {
+fn controlled_room_base_name_strips_managed_suffix() {
     assert_eq!(
-        controlled_room_base_name_legacy_compatible("+base-room:ABCDEF123456"),
+        controlled_room_base_name("+base-room:ABCDEF123456"),
         "base-room"
     );
     assert_eq!(
-        controlled_room_base_name_legacy_compatible("+room_name:ABCDEF12345_"),
+        controlled_room_base_name("+room_name:ABCDEF12345_"),
         "room_name"
     );
-    assert_eq!(
-        controlled_room_base_name_legacy_compatible("room1"),
-        "room1"
-    );
-    assert_eq!(
-        controlled_room_base_name_legacy_compatible(" room1 "),
-        " room1 "
-    );
-    assert_eq!(
-        controlled_room_base_name_legacy_compatible("+room:SHORT"),
-        "+room:SHORT"
-    );
+    assert_eq!(controlled_room_base_name("room1"), "room1");
+    assert_eq!(controlled_room_base_name(" room1 "), " room1 ");
+    assert_eq!(controlled_room_base_name("+room:SHORT"), "+room:SHORT");
 }
 
 #[test]
-fn generate_room_password_legacy_compatible_matches_expected_shape() {
-    let password = generate_room_password_legacy_compatible();
+fn generate_room_password_matches_expected_shape() {
+    let password = generate_room_password();
     assert!(
         is_legacy_generated_room_password_shape(&password),
         "generated password should match legacy shape AA-999-999"
@@ -47,41 +38,40 @@ fn generate_room_password_legacy_compatible_matches_expected_shape() {
 }
 
 #[test]
-fn legacy_syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_supported_overrides() {
+fn syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_supported_overrides() {
     assert_eq!(
-        legacy_syncplay_ui_settings_from_stored_settings(None),
-        LegacySyncplayUiSettings::default()
+        syncplay_ui_settings_from_stored_settings(None),
+        SyncplayUiSettings::default()
     );
 
-    let resolved =
-        legacy_syncplay_ui_settings_from_stored_settings(Some(&StoredClientSettingsMvp {
-            show_osd: Some(false),
-            chat_input_enabled: Some(false),
-            chat_input_font_family: Some("serif".to_owned()),
-            chat_input_relative_font_size: Some(18),
-            chat_input_font_weight: Some(50),
-            chat_input_font_color: Some("#abcdef".to_owned()),
-            chat_input_position: Some("Bottom".to_owned()),
-            chat_output_enabled: Some(false),
-            chat_output_font_family: Some("monospace".to_owned()),
-            chat_output_relative_font_size: Some(30),
-            chat_output_font_weight: Some(75),
-            chat_output_mode: Some("Scrolling".to_owned()),
-            chat_move_osd: Some(false),
-            chat_max_lines: Some(9),
-            chat_top_margin: Some(40),
-            chat_left_margin: Some(35),
-            chat_bottom_margin: Some(45),
-            chat_osd_margin: Some(220),
-            notification_timeout_seconds: Some(4),
-            alert_timeout_seconds: Some(6),
-            chat_timeout_seconds: Some(9),
-            ..StoredClientSettingsMvp::default()
-        }));
+    let resolved = syncplay_ui_settings_from_stored_settings(Some(&StoredClientSettings {
+        show_osd: Some(false),
+        chat_input_enabled: Some(false),
+        chat_input_font_family: Some("serif".to_owned()),
+        chat_input_relative_font_size: Some(18),
+        chat_input_font_weight: Some(50),
+        chat_input_font_color: Some("#abcdef".to_owned()),
+        chat_input_position: Some("Bottom".to_owned()),
+        chat_output_enabled: Some(false),
+        chat_output_font_family: Some("monospace".to_owned()),
+        chat_output_relative_font_size: Some(30),
+        chat_output_font_weight: Some(75),
+        chat_output_mode: Some("Scrolling".to_owned()),
+        chat_move_osd: Some(false),
+        chat_max_lines: Some(9),
+        chat_top_margin: Some(40),
+        chat_left_margin: Some(35),
+        chat_bottom_margin: Some(45),
+        chat_osd_margin: Some(220),
+        notification_timeout_seconds: Some(4),
+        alert_timeout_seconds: Some(6),
+        chat_timeout_seconds: Some(9),
+        ..StoredClientSettings::default()
+    }));
 
     assert_eq!(
         resolved,
-        LegacySyncplayUiSettings {
+        SyncplayUiSettings {
             show_osd: false,
             chat_output_enabled: false,
             chat_input_enabled: false,
@@ -103,15 +93,15 @@ fn legacy_syncplay_ui_settings_from_stored_settings_uses_python_defaults_and_sup
             notification_timeout_ms: 4_000,
             alert_timeout_ms: 6_000,
             chat_timeout_ms: 9_000,
-            ..LegacySyncplayUiSettings::default()
+            ..SyncplayUiSettings::default()
         }
     );
 }
 
 #[test]
-fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_settings() {
+fn create_client_runtime_with_managed_mpv_support_applies_syncplay_ui_settings() {
     let config = test_client_loop_config();
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         show_osd: Some(false),
         chat_output_enabled: Some(false),
         chat_input_enabled: Some(false),
@@ -122,7 +112,7 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
         notification_timeout_seconds: Some(2),
         alert_timeout_seconds: Some(4),
         chat_timeout_seconds: Some(8),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let (runtime, _managed_guard) =
@@ -130,8 +120,8 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
             .expect("runtime creation should succeed");
 
     assert_eq!(
-        runtime.player().legacy_syncplay_ui_settings(),
-        &LegacySyncplayUiSettings {
+        runtime.player().syncplay_ui_settings(),
+        &SyncplayUiSettings {
             show_osd: false,
             chat_output_enabled: false,
             chat_input_enabled: false,
@@ -142,7 +132,7 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
             notification_timeout_ms: 2_000,
             alert_timeout_ms: 4_000,
             chat_timeout_ms: 8_000,
-            ..LegacySyncplayUiSettings::default()
+            ..SyncplayUiSettings::default()
         }
     );
 }
@@ -150,16 +140,16 @@ fn create_client_runtime_with_managed_mpv_support_applies_legacy_syncplay_ui_set
 #[test]
 fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
     let config = test_client_loop_config();
-    let baseline = LegacySyncplayUiSettings {
+    let baseline = SyncplayUiSettings {
         chat_move_osd: false,
         notification_timeout_ms: 3_000,
-        ..LegacySyncplayUiSettings::default()
+        ..SyncplayUiSettings::default()
     };
     let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         chat_move_osd: Some(false),
         notification_timeout_seconds: Some(9),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let (mut runtime, bridge_health) =
@@ -177,7 +167,7 @@ fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
     assert_eq!(
         runtime
             .player()
-            .legacy_syncplay_ui_settings()
+            .syncplay_ui_settings()
             .notification_timeout_ms,
         9_000
     );
@@ -202,10 +192,10 @@ fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
 #[test]
 fn cli_production_finish_seam_retains_connected_player_on_script_load_degradation() {
     let config = test_client_loop_config();
-    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(LegacySyncplayUiSettings {
+    let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(SyncplayUiSettings {
         chat_move_osd: false,
         notification_timeout_ms: 7_777,
-        ..LegacySyncplayUiSettings::default()
+        ..SyncplayUiSettings::default()
     });
     let expected_health = SorotteBridgeHealth::Degraded(SorotteBridgeFailure {
         kind: SorotteBridgeFailureKind::ScriptLoad,
@@ -225,7 +215,7 @@ fn cli_production_finish_seam_retains_connected_player_on_script_load_degradatio
     assert_eq!(
         runtime
             .player()
-            .legacy_syncplay_ui_settings()
+            .syncplay_ui_settings()
             .notification_timeout_ms,
         7_777,
         "the connected player passed into the production finish seam must be retained"
@@ -240,18 +230,18 @@ fn cli_production_finish_seam_retains_connected_player_on_script_load_degradatio
 
 #[test]
 fn cli_optional_osd_setup_failure_clears_bridge_readiness_and_player_chat_state() {
-    let baseline = LegacySyncplayUiSettings {
+    let baseline = SyncplayUiSettings {
         chat_move_osd: false,
-        ..LegacySyncplayUiSettings::default()
+        ..SyncplayUiSettings::default()
     };
     let mut player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
-    assert!(player.legacy_syncplayintf_options_ready());
+    assert!(player.syncplayintf_options_ready());
 
-    let health = apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+    let health = apply_syncplay_ui_settings_to_mpv_adapter(
         &mut player,
-        Some(&StoredClientSettingsMvp {
+        Some(&StoredClientSettings {
             chat_move_osd: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }),
     );
 
@@ -266,7 +256,7 @@ fn cli_optional_osd_setup_failure_clears_bridge_readiness_and_player_chat_state(
         "the fake IPC transport remains healthy"
     );
     assert!(
-        !player.legacy_syncplayintf_options_ready(),
+        !player.syncplayintf_options_ready(),
         "degraded integration must stop player-originated chat polling immediately"
     );
 }
@@ -274,9 +264,9 @@ fn cli_optional_osd_setup_failure_clears_bridge_readiness_and_player_chat_state(
 #[test]
 fn cli_runtime_rejects_transport_loss_during_optional_bridge_setup() {
     let config = test_client_loop_config();
-    let baseline = LegacySyncplayUiSettings {
+    let baseline = SyncplayUiSettings {
         chat_move_osd: false,
-        ..LegacySyncplayUiSettings::default()
+        ..SyncplayUiSettings::default()
     };
     let player = MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(baseline);
 
@@ -305,11 +295,11 @@ fn cli_runtime_rejects_transport_loss_during_optional_bridge_setup() {
 fn cli_runtime_contains_healthy_active_network_option_rejection() {
     let config = test_client_loop_config();
     let player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
-        LegacySyncplayUiSettings::default(),
+        SyncplayUiSettings::default(),
     );
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         streaming_read_ahead_seconds: Some(91.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut bridge_setup_called = false;
 
@@ -355,7 +345,7 @@ fn cli_runtime_contains_healthy_active_network_option_rejection() {
 }
 
 fn effective_streaming_option_map(
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
     player_args: &[String],
 ) -> std::collections::BTreeMap<String, String> {
     ClientConfig::resolve(settings)
@@ -396,11 +386,11 @@ fn logged_file_local_option_map(commands: &[Value]) -> std::collections::BTreeMa
 #[test]
 fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_network_media() {
     let config = test_client_loop_config();
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         streaming_read_ahead_seconds: Some(31.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         player_args: vec![
             "--script-opts".to_owned(),
             "integration-source=https://example.test/value".to_owned(),
@@ -408,13 +398,11 @@ fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_netw
             "https://media.example.test/main-stream.m3u8".to_owned(),
             "--cache-secs=91".to_owned(),
         ],
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
     let expected_options = effective_streaming_option_map(&settings, &overrides.player_args);
     let (player, commands, transition_trigger) =
-        MpvAdapter::with_external_network_media_transition_test_ipc(
-            LegacySyncplayUiSettings::default(),
-        );
+        MpvAdapter::with_external_network_media_transition_test_ipc(SyncplayUiSettings::default());
 
     let (mut runtime, bridge_health, startup_warning) =
         create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
@@ -467,20 +455,20 @@ fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_netw
 #[test]
 fn cli_runtime_contains_external_network_option_rejection_during_file_update_pump() {
     let config = test_client_loop_config();
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         streaming_read_ahead_seconds: Some(31.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         player_args: vec![
             "C:/media/local-intro.mkv".to_owned(),
             "https://media.example.test/main-stream.m3u8".to_owned(),
         ],
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
     let (player, commands, transition_trigger) =
         MpvAdapter::with_rejected_external_network_media_transition_test_ipc(
-            LegacySyncplayUiSettings::default(),
+            SyncplayUiSettings::default(),
         );
     let (mut runtime, _bridge_health, startup_warning) =
         create_client_runtime_with_prepared_mpv_and_startup_health_for_test(
@@ -523,7 +511,7 @@ fn cli_runtime_contains_external_network_option_rejection_during_file_update_pum
 fn cli_runtime_keeps_unhealthy_transport_during_initial_streaming_apply_fatal() {
     let config = test_client_loop_config();
     let mut player = MpvAdapter::with_first_active_network_option_rejection_test_ipc(
-        LegacySyncplayUiSettings::default(),
+        SyncplayUiSettings::default(),
     );
     player.mark_test_ipc_unhealthy("test transport unavailable before streaming setup");
     let mut bridge_setup_called = false;

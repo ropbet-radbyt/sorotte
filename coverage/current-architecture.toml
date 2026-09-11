@@ -271,7 +271,7 @@ catalog = [
 ]
 environment = ["Windows and Linux", "Python for actual Rust-producer-to-consumer fault proof"]
 capability = "implemented"
-local_evidence = "Sticky validation/I/O/privacy/concurrency and Rust-to-Python fault cases passed. All 15 public crates passed the 0.2.8 semver comparison after RecordingFailure was carried through the existing Io variant."
+local_evidence = "Sticky validation/I/O/privacy/concurrency and Rust-to-Python fault cases passed. Recorder failure classes are represented directly by EvidenceError; Io carries actual writer errors."
 remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
 
 [[boundary]]

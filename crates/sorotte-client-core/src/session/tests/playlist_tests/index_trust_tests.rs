@@ -29,7 +29,7 @@ fn client_runtime_set_playlist_index_dispatches_protocol_message() {
     assert!(
         runtime
             .session()
-            .recently_advanced(unix_wall_clock_time_seconds_legacy_compatible()),
+            .recently_advanced(unix_wall_clock_time_seconds()),
         "local playlist changes should immediately enter the recently-advanced grace window"
     );
     assert_eq!(
@@ -311,19 +311,15 @@ fn client_runtime_trusted_url_matching_supports_wildcard_and_path_prefix() {
     let mut session = ClientSession::default();
     session.behavior_config_mut().trusted_domains = vec!["*.example.com/videos".to_owned()];
 
-    assert!(session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos/a.mp4"));
-    assert!(session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com/clips/a.mp4"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos-evil/a.mp4"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.example.com//videos/a.mp4"));
-    assert!(
-        !session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos/../clips/a.mp4")
-    );
-    assert!(
-        !session.uri_is_trusted_legacy_compatible("https://cdn.example.com/videos%2Fevil/a.mp4")
-    );
-    assert!(!session.uri_is_trusted_legacy_compatible("ftp://cdn.example.com/videos/a.mp4"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://a.b.example.com/videos/a.mp4"));
+    assert!(session.uri_is_trusted("https://cdn.example.com/videos/a.mp4"));
+    assert!(session.uri_is_trusted("https://cdn.example.com/videos"));
+    assert!(!session.uri_is_trusted("https://cdn.example.com/clips/a.mp4"));
+    assert!(!session.uri_is_trusted("https://cdn.example.com/videos-evil/a.mp4"));
+    assert!(!session.uri_is_trusted("https://cdn.example.com//videos/a.mp4"));
+    assert!(!session.uri_is_trusted("https://cdn.example.com/videos/../clips/a.mp4"));
+    assert!(!session.uri_is_trusted("https://cdn.example.com/videos%2Fevil/a.mp4"));
+    assert!(!session.uri_is_trusted("ftp://cdn.example.com/videos/a.mp4"));
+    assert!(!session.uri_is_trusted("https://a.b.example.com/videos/a.mp4"));
 }
 
 #[test]
@@ -335,12 +331,12 @@ fn client_runtime_trusted_url_matching_canonicalizes_host_port_and_ipv6() {
         "[2001:db8::1]/video".to_owned(),
     ];
 
-    assert!(session.uri_is_trusted_legacy_compatible("https://xn--bcher-kva.example/safe/item"));
-    assert!(session.uri_is_trusted_legacy_compatible("https://example.test:8443/media/item"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://example.test:9443/media/item"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://example.test/media/item"));
-    assert!(session.uri_is_trusted_legacy_compatible("https://[2001:db8::1]/video/item"));
-    assert!(!session.uri_is_trusted_legacy_compatible("https://[2001:db8::2]/video/item"));
+    assert!(session.uri_is_trusted("https://xn--bcher-kva.example/safe/item"));
+    assert!(session.uri_is_trusted("https://example.test:8443/media/item"));
+    assert!(!session.uri_is_trusted("https://example.test:9443/media/item"));
+    assert!(!session.uri_is_trusted("https://example.test/media/item"));
+    assert!(session.uri_is_trusted("https://[2001:db8::1]/video/item"));
+    assert!(!session.uri_is_trusted("https://[2001:db8::2]/video/item"));
 }
 
 #[test]
@@ -348,11 +344,11 @@ fn client_runtime_trusted_url_matching_preserves_scheme_less_default_ports() {
     let mut session = ClientSession::default();
     session.behavior_config_mut().trusted_domains = vec!["example.com:443".to_owned()];
 
-    assert!(session.uri_is_trusted_legacy_compatible("https://example.com/video"));
-    assert!(session.uri_is_trusted_legacy_compatible("https://example.com:443/video"));
-    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com/video"));
-    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com:80/video"));
-    assert!(!session.uri_is_trusted_legacy_compatible("http://example.com:443/video"));
+    assert!(session.uri_is_trusted("https://example.com/video"));
+    assert!(session.uri_is_trusted("https://example.com:443/video"));
+    assert!(!session.uri_is_trusted("http://example.com/video"));
+    assert!(!session.uri_is_trusted("http://example.com:80/video"));
+    assert!(!session.uri_is_trusted("http://example.com:443/video"));
 }
 
 #[test]
@@ -363,17 +359,10 @@ fn client_runtime_trusted_url_matching_preserves_literal_placeholder_labels() {
         "*.sorotte-wildcard-placeholder.test".to_owned(),
     ];
 
-    assert!(
-        session
-            .uri_is_trusted_legacy_compatible("https://sorotte-wildcard-placeholder.example/video")
-    );
-    assert!(!session.uri_is_trusted_legacy_compatible("https://attacker.example/video"));
-    assert!(
-        session.uri_is_trusted_legacy_compatible(
-            "https://cdn.sorotte-wildcard-placeholder.test/video"
-        )
-    );
-    assert!(!session.uri_is_trusted_legacy_compatible("https://cdn.attacker.test/video"));
+    assert!(session.uri_is_trusted("https://sorotte-wildcard-placeholder.example/video"));
+    assert!(!session.uri_is_trusted("https://attacker.example/video"));
+    assert!(session.uri_is_trusted("https://cdn.sorotte-wildcard-placeholder.test/video"));
+    assert!(!session.uri_is_trusted("https://cdn.attacker.test/video"));
 }
 
 #[test]
@@ -382,7 +371,7 @@ fn client_runtime_trusted_url_matching_respects_only_switch_toggle() {
     session.behavior_config_mut().only_switch_to_trusted_domains = false;
     session.behavior_config_mut().trusted_domains.clear();
 
-    assert!(session.uri_is_trusted_legacy_compatible("http://example.com/video.mp4"));
-    assert!(session.uri_is_trusted_legacy_compatible("https://example.com/video.mp4"));
-    assert!(!session.uri_is_trusted_legacy_compatible("ftp://example.com/video.mp4"));
+    assert!(session.uri_is_trusted("http://example.com/video.mp4"));
+    assert!(session.uri_is_trusted("https://example.com/video.mp4"));
+    assert!(!session.uri_is_trusted("ftp://example.com/video.mp4"));
 }

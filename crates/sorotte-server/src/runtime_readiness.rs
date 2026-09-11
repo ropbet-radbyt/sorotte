@@ -205,7 +205,7 @@ impl ServerRuntime {
         client_id: &str,
         presented_reconnect_token: Option<&SecretValue>,
         issue_reconnect_token: bool,
-        seed_legacy_intent: bool,
+        seed_syncplay_ready_intent: bool,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         self.pending_user_transport_by_client.remove(client_id);
         let Some(session) = self.sessions.get(client_id).cloned() else {
@@ -218,7 +218,7 @@ impl ServerRuntime {
         let participation_role = if session.capabilities.playback_barrier_v1 {
             StartParticipationRole::Required
         } else {
-            StartParticipationRole::ExcludedLegacy
+            StartParticipationRole::ExcludedUnsupported
         };
 
         self.prune_readiness_reconnect_cache();
@@ -264,7 +264,7 @@ impl ServerRuntime {
             .as_ref()
             .map(|membership| membership.room_readiness_revision)
             .unwrap_or_default();
-        let initialized_user_intent = if seed_legacy_intent
+        let initialized_user_intent = if seed_syncplay_ready_intent
             && self.stored_user_ready(&session.username, &session.room) == Some(true)
         {
             UserReadinessIntent::Ready
@@ -305,11 +305,11 @@ impl ServerRuntime {
                 record: ParticipantReadiness {
                     membership_epoch,
                     last_technical_report_sequence: 0,
-                    // A live legacy-to-V2 capability upgrade is still the same
+                    // A live Syncplay-ready to V2 capability upgrade is still the same
                     // authenticated room membership. Seed its acknowledged
                     // room-facing intent instead of silently forcing Ready
                     // back to NotReady. Fresh joins and V2 room switches have
-                    // no true legacy projection and therefore remain NotReady.
+                    // no true Syncplay Ready projection and therefore remain NotReady.
                     user_intent: initialized_user_intent,
                     user_intent_revision: 0,
                     last_user_mutation: None,
@@ -386,7 +386,7 @@ impl ServerRuntime {
         self.domain
             .set_ready(&session.username, &session.room, room_ready)?;
 
-        let mut outbound = self.legacy_readiness_projection_fanout(
+        let mut outbound = self.syncplay_readiness_projection_fanout(
             &session.room,
             &session.username,
             room_ready,
@@ -523,7 +523,7 @@ impl ServerRuntime {
         self.apply_technical_readiness_report(client_id, report)
     }
 
-    pub(crate) fn apply_legacy_readiness_to_v2(
+    pub(crate) fn apply_syncplay_ready_to_readiness_v2(
         &mut self,
         client_id: &str,
         target_username: &str,
@@ -541,10 +541,10 @@ impl ServerRuntime {
             .is_some();
         if session.capabilities.readiness_v2 {
             // A V2 actor must use the operation-, nonce-, and membership-scoped
-            // readiness command for every V2 target. Treating a raw legacy
+            // readiness command for every V2 target. Treating a raw Syncplay Ready
             // Set.ready as initialization would let reconnect projections and
             // stale compatibility bytes bypass those fences. A genuinely
-            // legacy target still falls through to the authenticated legacy
+            // Syncplay-ready target still falls through to the authenticated Syncplay
             // controller path below the bridge.
             return Ok(if target_has_v2_membership {
                 Some(Vec::new())
@@ -591,7 +591,7 @@ impl ServerRuntime {
             .set_ready(target_username, &session.room, room_ready)?;
         self.refresh_readiness_gate_phase(&session.room);
 
-        let mut outbound = self.legacy_readiness_projection_fanout(
+        let mut outbound = self.syncplay_readiness_projection_fanout(
             &session.room,
             target_username,
             room_ready,
@@ -650,7 +650,7 @@ impl ServerRuntime {
                 .is_some_and(|record| record.room_ready);
             self.domain.set_ready(&username, room_name, room_ready)?;
             if previous_projection.get(&username).copied() != Some(room_ready) {
-                outbound.extend(self.legacy_readiness_projection_fanout(
+                outbound.extend(self.syncplay_readiness_projection_fanout(
                     room_name, &username, room_ready, false, None,
                 ));
             }
@@ -793,7 +793,7 @@ impl ServerRuntime {
     }
 
     fn readiness_mixed_room_blocks_start(&self, room_name: &str) -> bool {
-        if self.mixed_readiness_policy == MixedReadinessPolicy::ExcludeLegacy
+        if self.mixed_readiness_policy == MixedReadinessPolicy::ExcludeUnsupported
             || !self.room_readiness.contains_key(room_name)
         {
             return false;
@@ -865,7 +865,7 @@ impl ServerRuntime {
                     if required {
                         StartParticipationRole::Required
                     } else {
-                        StartParticipationRole::ExcludedLegacy
+                        StartParticipationRole::ExcludedUnsupported
                     },
                 )
             })
@@ -877,7 +877,7 @@ impl ServerRuntime {
                 let desired = desired_roles
                     .get(username)
                     .copied()
-                    .unwrap_or(StartParticipationRole::ExcludedLegacy);
+                    .unwrap_or(StartParticipationRole::ExcludedUnsupported);
                 if participant.record.participation_role != desired {
                     participant.record.participation_role = desired;
                     recompute_participant_readiness(&mut participant.record, media_generation);
@@ -917,7 +917,7 @@ impl ServerRuntime {
             .filter(|barrier| barrier.phase == PlaybackBarrierPhase::Preparing)
         {
             let previous_participants = barrier.participants.clone();
-            let previous_excluded = barrier.excluded_legacy_clients.clone();
+            let previous_excluded = barrier.excluded_unsupported_clients.clone();
             barrier
                 .participants
                 .retain(|client_id, _| required_clients.contains_key(client_id));
@@ -930,9 +930,9 @@ impl ServerRuntime {
                         status: PlaybackBarrierParticipantStatus::pending(),
                     });
             }
-            barrier.excluded_legacy_clients = excluded_clients;
+            barrier.excluded_unsupported_clients = excluded_clients;
             barrier_changed = barrier.participants != previous_participants
-                || barrier.excluded_legacy_clients != previous_excluded;
+                || barrier.excluded_unsupported_clients != previous_excluded;
         }
 
         (changed_usernames, barrier_changed)
@@ -1510,7 +1510,7 @@ impl ServerRuntime {
         self.refresh_readiness_gate_phase(&session.room);
 
         let manually_initiated = !is_initialization;
-        let mut outbound = self.legacy_readiness_projection_fanout(
+        let mut outbound = self.syncplay_readiness_projection_fanout(
             &session.room,
             &target_username,
             room_ready,
@@ -1681,7 +1681,7 @@ impl ServerRuntime {
         self.refresh_readiness_gate_phase(&session.room);
         let mut outbound = Vec::new();
         if changed && before_room_ready != room_ready {
-            outbound.extend(self.legacy_readiness_projection_fanout(
+            outbound.extend(self.syncplay_readiness_projection_fanout(
                 &session.room,
                 &session.username,
                 room_ready,
@@ -1821,7 +1821,7 @@ impl ServerRuntime {
                 if self.readiness_mixed_room_blocks_start(room_name) {
                     RoomStartGatePhase::Degraded {
                         media_generation,
-                        reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+                        reason: StartGateDegradedReason::UnsupportedParticipant,
                     }
                 } else if required.is_empty() {
                     RoomStartGatePhase::Degraded {
@@ -2009,7 +2009,7 @@ impl ServerRuntime {
             .collect()
     }
 
-    fn legacy_readiness_projection_fanout(
+    fn syncplay_readiness_projection_fanout(
         &self,
         room_name: &str,
         username: &str,

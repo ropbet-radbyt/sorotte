@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use sorotte_client_app::app_boundary::{
-    commands::LocalOffsetCommand, state::StoredClientSettingsMvp,
-};
+use sorotte_client_app::app_boundary::{commands::LocalOffsetCommand, state::StoredClientSettings};
 use sorotte_secret::SecretValue;
 
 use super::render_io::GuiDroppedFilesRequest;

@@ -151,7 +151,7 @@ function Test-LegacyOracleReady {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath (Join-Path $Path "syncplayServer.py") -PathType Leaf)) { return $false }
-    & python scripts/release_qualification.py verify-legacy --legacy-root $Path
+    & python scripts/release_qualification.py verify---legacy-root $Path
     if ($LASTEXITCODE -ne 0) { throw "Legacy oracle must be clean and pinned to $LegacySha" }
     return $true
 }
@@ -309,7 +309,7 @@ try {
     }
     Invoke-CargoStep `
         "strict live legacy compatibility" `
-        @("test", "--locked", "-p", "sorotte-compat", "--all-features", "legacy_server_", "--", "--nocapture") `
+        @("test", "--locked", "-p", "sorotte-compat", "--all-features", "syncplay_server_", "--", "--nocapture") `
         @{
             SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
             SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"

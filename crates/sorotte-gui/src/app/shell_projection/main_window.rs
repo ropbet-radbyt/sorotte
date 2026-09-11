@@ -21,8 +21,8 @@ impl MainWindowShellState {
         "Not granted by server: room controls are locked.".to_owned()
     }
 
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
+        let runtime_settings = stored_client_settings_runtime_snapshot(settings);
         let room_name = runtime_settings
             .config
             .connection

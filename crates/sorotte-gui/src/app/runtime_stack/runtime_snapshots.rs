@@ -92,7 +92,6 @@ fn emit_gui_participant_status_projection(
         ParticipantStatusAvailability::Unsupported | ParticipantStatusAvailability::Unavailable => {
             ("STATUS-UNAVAILABLE-001", Disposition::Observed)
         }
-        _ => ("STATUS-UNAVAILABLE-001", Disposition::Observed),
     };
     let mut observation = TransitionObservation::new(
         ProcessRole::Gui,
@@ -129,8 +128,8 @@ fn playback_barrier_phase_label(phase: PlaybackBarrierPhase) -> &'static str {
 
 fn room_playstate_authority_label(authority: RoomPlaystateAuthority) -> String {
     match authority {
-        RoomPlaystateAuthority::LegacyRemoteUser => "remote user (legacy playstate)".to_owned(),
-        RoomPlaystateAuthority::LegacyLocalEcho => "local echo (legacy playstate)".to_owned(),
+        RoomPlaystateAuthority::SyncplayRemoteUser => "remote user (Syncplay playstate)".to_owned(),
+        RoomPlaystateAuthority::SyncplayLocalEcho => "local echo (Syncplay playstate)".to_owned(),
         RoomPlaystateAuthority::ServerBarrier {
             media_generation,
             state_revision,
@@ -175,7 +174,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                             .map(PendingReadinessIntentPresentation::from);
                         ParticipantReadinessPresentation::from_v2(canonical, pending)
                     } else {
-                        ParticipantReadinessPresentation::from_legacy(
+                        ParticipantReadinessPresentation::from_syncplay_ready(
                             user.username.clone(),
                             user.is_ready,
                         )
@@ -288,7 +287,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                     );
                     match status.status.availability {
                         ParticipantStatusAvailability::Unsupported => {
-                            MainWindowParticipantStatusPresentation::LegacyClient
+                            MainWindowParticipantStatusPresentation::StatusUnsupported
                         }
                         ParticipantStatusAvailability::AwaitingReport => {
                             MainWindowParticipantStatusPresentation::WaitingForFirstReport
@@ -332,13 +331,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                                 ),
                             )
                         }
-                        _ => MainWindowParticipantStatusPresentation::Unavailable,
                     }
                 } else if !in_current_room || !server_participant_status_supported {
                     MainWindowParticipantStatusPresentation::Unavailable
                 } else {
                     match session.user_participant_status_v1_supported(&username) {
-                        Some(false) => MainWindowParticipantStatusPresentation::LegacyClient,
+                        Some(false) => MainWindowParticipantStatusPresentation::StatusUnsupported,
                         Some(true) => {
                             MainWindowParticipantStatusPresentation::WaitingForFirstReport
                         }
@@ -354,9 +352,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                         })
                         .or_else(|| {
                             status
-                                .excluded_legacy_clients
+                                .excluded_unsupported_clients
                                 .contains(&username)
-                                .then(|| "excluded legacy participant".to_owned())
+                                .then(|| "participant without coordinated start support".to_owned())
                         })
                 });
                 users.push(MainWindowRuntimeUserSnapshot {

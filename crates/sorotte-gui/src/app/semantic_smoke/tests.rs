@@ -528,7 +528,7 @@ assert-value\tsettings.connection.host\toverride.example\n",
     assert!(described.contains("\"script\":\"# Configuration save and follow-on cross-surface workflow\\nsetting\\thost\\tpersisted.example\\nsetting\\tserver-password\\tsemantic-password\\nsetting\\tpublic-server\\tPrimary\\tsyncplay.pl:8999"));
     assert!(described.contains("\"name\":\"core-shell-smoke-flow\""));
     assert!(described.contains("\"description\":\"Ports the non-transport Windows smoke path into a platform-neutral shell scenario.\""));
-    assert!(described.contains("\"script\":\"# Core shell smoke flow ported from the legacy non-transport Windows smoke path\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
+    assert!(described.contains("\"script\":\"# Core shell smoke flow without a live transport\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
     assert!(described.contains("\"name\":\"localized-runtime-flow\""));
     assert!(described.contains("\"description\":\"Selects a non-English GUI language, then verifies localized public-server refresh and update-check runtime text.\""));
     assert!(described.contains("\"script\":\"# Localized runtime and service-call flow\\nsetting\\tpublic-server\\tAlpha\\talpha.example:8999"));
@@ -539,14 +539,14 @@ assert-value\tsettings.connection.host\toverride.example\n",
     assert!(described.contains("\"description\":\"Applies first-run and recovery mpv setup runtime issues, verifies blocking modal behavior, then exercises Retry mpv through the semantic runtime dispatch path.\""));
     assert!(described.contains("\"script\":\"# First-run and recovery player-setup flow\\napply-player-setup-runtime\\tnot-configured"));
     assert!(described.contains("\"name\":\"live-python-peer-connect-flow\""));
-    assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server that already has a Python reference peer attached, switches the GUI between rooms and back, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
-    assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
+    assert!(described.contains("\"description\":\"Connects the GUI runtime to a live Syncplay server that already has a Python reference peer attached, switches the GUI between rooms and back, verifies shared-room projection plus bidirectional readiness, chat, and playlist propagation, then forces a transient peer disconnect/reconnect and re-validates post-reconnect chat.\""));
+    assert!(described.contains("\"script\":\"# Live Python reference-peer connect, readiness, chat, playlist, and reconnect flow against the Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\tinterop-room\\nsetting\\tshared-playlist-enabled\\ttrue"));
     assert!(described.contains("\"name\":\"live-python-peer-controlled-room-flow\""));
-    assert!(described.contains("\"description\":\"Connects the GUI runtime to a live legacy Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
-    assert!(described.contains("\"script\":\"# Live Python reference-peer controlled-room flow against the legacy Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\t+interop-room:447CE7E3548D:AB-123-456\\nsetting\\tshared-playlist-enabled\\ttrue"));
+    assert!(described.contains("\"description\":\"Connects the GUI runtime to a live Syncplay server in a controlled room, auto-authenticates the GUI as controller from the stored room password, and verifies controller-state projection plus controller-only playlist enablement against the Python reference peer.\""));
+    assert!(described.contains("\"script\":\"# Live Python reference-peer controlled-room flow against the Syncplay server\\n# Peer: interop-py-peer\\n# Executed by a code-driven semantic runner; append-script is not supported for this scenario.\\nsetting\\tusername\\tinterop-gui-user\\nsetting\\troom\\t+interop-room:447CE7E3548D:AB-123-456\\nsetting\\tshared-playlist-enabled\\ttrue"));
     assert!(described.contains("\"name\":\"readiness-v2-flow\""));
-    assert!(described.contains("\"description\":\"Separates user readiness intent, technical playability, room readiness, start eligibility, membership revisions, and operation-correlated pending state while retaining the legacy fallback.\""));
-    assert!(described.contains("\"script\":\"# Readiness V2 presentation and legacy fallback\\nsetting\\tusername\\talice\\nsetting\\troom\\troom1"));
+    assert!(described.contains("\"description\":\"Separates user readiness intent, technical playability, room readiness, start eligibility, membership revisions, and operation-correlated pending state while retaining Syncplay readiness.\""));
+    assert!(described.contains("\"script\":\"# Readiness V2 presentation and Syncplay readiness\\nsetting\\tusername\\talice\\nsetting\\troom\\troom1"));
 }
 
 #[test]

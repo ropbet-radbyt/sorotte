@@ -1,12 +1,12 @@
 use sorotte_client_app::app_boundary::{
     compatibility::{
-        LegacyConfigurationGetterCompatibilityStatus,
-        legacy_configuration_getter_startup_compat_entries,
+        SyncplayConfigurationGetterCompatibilityStatus,
+        syncplay_configuration_getter_startup_compat_entries,
     },
-    language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
+    language::SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY,
     state::{
-        ClientConfig, StoredClientSettingsMvp, autoplay_threshold_override_legacy_value_compatible,
-        privacy_mode_legacy_name_compatible, unpause_action_mode_legacy_name_compatible,
+        ClientConfig, StoredClientSettings, autoplay_threshold_override_setting_value,
+        privacy_mode_syncplay_name, unpause_action_mode_syncplay_name,
     },
     storage::SorotteClientStoragePaths,
 };
@@ -410,7 +410,7 @@ pub(super) struct GuiMediaMatchState {
 }
 
 impl GuiMediaMatchState {
-    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         Self {
             settings: media_match_settings_from_stored_settings(settings),
             ..Self::default()
@@ -611,7 +611,7 @@ impl std::fmt::Debug for GuiPlexState {
 }
 
 impl GuiPlexState {
-    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let plex = ClientConfig::resolve(settings).config.plex;
         let authenticated = plex.user_token.is_some();
         let selected_server_id = plex.selected_server_id;
@@ -720,7 +720,7 @@ impl From<&GuiPlexState> for GuiPlexRuntimeSnapshot {
 impl Default for GuiPlexRuntimeSnapshot {
     fn default() -> Self {
         Self::from(&GuiPlexState::from_stored_settings(
-            &StoredClientSettingsMvp::default(),
+            &StoredClientSettings::default(),
         ))
     }
 }
@@ -919,7 +919,7 @@ impl std::fmt::Debug for GuiPersistedSettingsPatch {
 }
 
 impl GuiPersistedSettingsPatch {
-    pub(super) fn apply_to(&self, settings: &mut StoredClientSettingsMvp) {
+    pub(super) fn apply_to(&self, settings: &mut StoredClientSettings) {
         match self {
             Self::PluginEnabled { plugin, enabled } => match plugin {
                 GuiPluginSelection::StreamSupport => {
@@ -1004,7 +1004,7 @@ impl Default for GuiPluginEnablementState {
 }
 
 impl GuiPluginEnablementState {
-    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let plugins = ClientConfig::resolve(settings).config.plugins;
         Self {
             stream_support_enabled: plugins.stream_support_enabled,
@@ -1013,7 +1013,7 @@ impl GuiPluginEnablementState {
         }
     }
 
-    pub(super) fn apply_to_stored_settings(self, settings: &mut StoredClientSettingsMvp) {
+    pub(super) fn apply_to_stored_settings(self, settings: &mut StoredClientSettings) {
         settings.stream_support_plugin_enabled = Some(self.stream_support_enabled);
         settings.media_matching_plugin_enabled = Some(self.media_matching_enabled);
         settings.plex_plugin_enabled = Some(self.plex_enabled);
@@ -1100,7 +1100,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) media_match: GuiMediaMatchState,
     pub(super) media_match_remediation: GuiMediaMatchRemediationState,
     pub(super) plex: GuiPlexState,
-    pub(super) saved_configuration: StoredClientSettingsMvp,
+    pub(super) saved_configuration: StoredClientSettings,
     pub(super) configuration: FirstRunConfigurationDialogDraft,
     pub(super) main_window: MainWindowShellState,
     pub(super) menus: MenuDialogShellState,
@@ -1109,7 +1109,7 @@ pub(super) struct SorotteGuiShellAppState {
 }
 
 pub(super) fn media_match_settings_from_stored_settings(
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> MediaMatchSettings {
     let mut media_match_settings = MediaMatchSettings::default();
     let resolved = ClientConfig::resolve(settings).config.media_match;
@@ -1124,7 +1124,7 @@ pub(super) fn media_match_settings_from_stored_settings(
 }
 
 pub(super) fn apply_media_match_settings_to_stored_settings(
-    settings: &mut StoredClientSettingsMvp,
+    settings: &mut StoredClientSettings,
     media_match_settings: &MediaMatchSettings,
 ) {
     settings.media_match_fingerprinting_enabled = Some(media_match_settings.fingerprinting_enabled);
@@ -1366,18 +1366,18 @@ pub(super) struct GuiDraftRuntimeSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct GuiConfigurationDraftRuntimeSnapshot {
-    pub(super) settings: StoredClientSettingsMvp,
+    pub(super) settings: StoredClientSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct GuiSavedConfigurationRuntimeSnapshot {
-    pub(super) settings: StoredClientSettingsMvp,
+    pub(super) settings: StoredClientSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct GuiConfigurationRuntimeSnapshot {
-    pub(super) draft_settings: StoredClientSettingsMvp,
-    pub(super) saved_settings: StoredClientSettingsMvp,
+    pub(super) draft_settings: StoredClientSettings,
+    pub(super) saved_settings: StoredClientSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

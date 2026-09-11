@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn managed_mpv_launch_base_args_preserve_local_cache_defaults() {
-    let args = managed_mpv_launch_base_args_legacy_compatible(r"\\.\pipe\sorotte-cli-mpv-test");
+    let args = managed_mpv_launch_base_args(r"\\.\pipe\sorotte-cli-mpv-test");
 
     assert_eq!(
         args,
@@ -83,14 +83,14 @@ fn managed_mpv_launch_env_config_from_env_parses_values() {
 #[test]
 fn managed_mpv_startup_keeps_initial_network_url_for_post_attach_load() {
     let mut config = ManagedMpvLaunchEnvConfig::default();
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         player_path: Some("mpv".to_owned()),
         file: Some("https://media.example/video.m3u8".to_owned()),
         player_args: vec!["--cache-secs=75".to_owned()],
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
 
-    apply_legacy_client_arg_managed_mpv_overrides(&mut config, Some(&overrides));
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut config, Some(&overrides));
 
     assert!(config.enabled);
     assert_eq!(

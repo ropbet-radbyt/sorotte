@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn connected_client_session_applies_legacy_fallback_for_room_command_with_single_trailing_space()
+async fn connected_client_session_applies_default_room_fallback_for_room_command_with_single_trailing_space()
  {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -270,7 +270,7 @@ async fn connected_client_session_sets_room_from_local_input_channel_even_when_u
 }
 
 #[tokio::test]
-async fn connected_client_session_sets_room_with_legacy_fallback_from_local_input_channel() {
+async fn connected_client_session_sets_room_with_default_fallback_from_local_input_channel() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");

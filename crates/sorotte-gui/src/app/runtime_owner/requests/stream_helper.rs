@@ -90,7 +90,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.syncplay_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -130,7 +130,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .map(std::path::PathBuf::from)
             .or_else(|| {
-                self.legacy_gui_qsettings_root()
+                self.syncplay_qsettings_root()
                     .map(|root| managed_stream_helper_bin_dir(&root))
             });
         let Some(install_location) = install_location else {
@@ -174,7 +174,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.syncplay_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,
@@ -224,7 +224,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let Some(root) = self.legacy_gui_qsettings_root() else {
+        let Some(root) = self.syncplay_qsettings_root() else {
             Self::push_runtime_error_notification(
                 handle,
                 projected_state,

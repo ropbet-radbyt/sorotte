@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn gui_widget_egui_renderer_maps_playlist_source_menu_options_to_shell_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

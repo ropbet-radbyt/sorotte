@@ -201,18 +201,14 @@ async fn connected_client_session_real_mpv_explicit_ipc_smoke_borderline_fastfor
         create_client_runtime_with_managed_mpv_support(&config, None, None)
             .expect("runtime creation with explicit mpv IPC should succeed");
 
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_paused(true)
-    })
-    .expect("real mpv pause seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_paused(true))
+        .expect("real mpv pause seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| {
         runtime.player_mut().set_playback_rate(0.01)
     })
     .expect("real mpv slow playback-rate seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_position(0.2)
-    })
-    .expect("real mpv position seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_position(0.2))
+        .expect("real mpv position seed should succeed");
 
     let stream = TcpStream::connect(addr)
         .await

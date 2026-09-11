@@ -25,9 +25,9 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     let mut persisted_owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let persisted_handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut persisted_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("smoke-user".to_owned()),
@@ -75,7 +75,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         show_contact_info: Some(true),
         language: Some("pt_BR".to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
@@ -95,7 +95,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         assert!(persisted_state.apply(action));
     }
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+        load_sorotte_ini_stored_client_settings_from_path(&path)
             .expect("portable nontransport smoke save should leave a readable config"),
         Some(saved_settings.clone())
     );
@@ -116,7 +116,7 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         );
     }
 
-    let reloaded_settings = StoredClientSettingsMvp {
+    let reloaded_settings = StoredClientSettings {
         host: Some("syncplay.reload.example".to_owned()),
         port: Some(8998),
         username: Some("smoke-reloaded".to_owned()),
@@ -164,13 +164,13 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         show_contact_info: Some(true),
         language: Some("es".to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&path, &reloaded_settings)
         .expect("portable nontransport smoke reload seed should write config");
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationReload));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettings::default()),
     ));
     GuiQueuedRuntimeOwner::pump(&mut persisted_owner, &persisted_handle, &persisted_state);
     let reload_actions = persisted_handle.drain_actions();
@@ -233,13 +233,13 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     let mut no_runtime_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let no_runtime_handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut no_runtime_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
             public_servers: Some(vec![
                 ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
                 ("Beta".to_owned(), "beta.example:9000".to_owned()),
             ]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
 
     assert!(no_runtime_state.apply(GuiShellAction::SelectPublicServer(0)));

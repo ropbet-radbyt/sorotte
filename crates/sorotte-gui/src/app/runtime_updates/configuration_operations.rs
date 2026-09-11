@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 use super::super::shell_state::{
     GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
@@ -28,7 +28,7 @@ impl SorotteGuiShellAppState {
 
     pub(in crate::app) fn settle_persisted_configuration(
         &mut self,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
         preserve_pending_storage_target: bool,
     ) {
         let pending_storage_target = preserve_pending_storage_target
@@ -128,7 +128,7 @@ impl SorotteGuiShellAppState {
 
     pub(in crate::app) fn complete_configuration_save(
         &mut self,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
     ) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
             return self.record_action_error("No configuration save is currently in progress.");
@@ -168,7 +168,7 @@ impl SorotteGuiShellAppState {
 
     pub(in crate::app) fn complete_discard_configuration_changes(
         &mut self,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
     ) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
             return self
@@ -218,7 +218,7 @@ impl SorotteGuiShellAppState {
 
     pub(in crate::app) fn complete_configuration_reload(
         &mut self,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
     ) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
             return self.record_action_error("No configuration reload is currently in progress.");
@@ -317,7 +317,7 @@ impl SorotteGuiShellAppState {
     pub(in crate::app) fn complete_config_storage_root_change(
         &mut self,
         snapshot: GuiConfigStorageRuntimeSnapshot,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
     ) -> bool {
         let Some(pending) = self.pending_operation.as_ref() else {
             return self.record_action_error("No config-location change is currently in progress.");
@@ -366,7 +366,7 @@ impl SorotteGuiShellAppState {
                 .record_action_error("The active GUI operation is not a clear-GUI-data request.");
         }
 
-        self.reset_to_first_run_state(StoredClientSettingsMvp::default());
+        self.reset_to_first_run_state(StoredClientSettings::default());
         self.pending_saved_server_connect_intent = None;
         self.clear_action_error_and_refresh();
         true

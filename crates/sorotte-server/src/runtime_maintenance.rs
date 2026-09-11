@@ -840,7 +840,7 @@ impl ServerRuntime {
                     view.report_age_ms = Some(report_age_ms);
                     if availability != ParticipantStatusAvailability::Stale {
                         // Connection and coarse phase remain useful while a
-                        // player is applying a newer scope. A legacy or
+                        // player is applying a newer scope. An uncorrelated or
                         // partially fenced report may retain its own local
                         // media evidence, but only exact correlation can
                         // produce a room-derived offset.
@@ -989,7 +989,7 @@ impl ServerRuntime {
             let position = persisted_room.position;
             let owner_bucket = persisted_room
                 .owner_bucket
-                .unwrap_or_else(|| LEGACY_PERSISTENT_ROOM_OWNER_BUCKET.to_owned());
+                .unwrap_or_else(|| UNATTRIBUTED_PERSISTENT_ROOM_OWNER_BUCKET.to_owned());
             let mut playlist = RoomPlaylistState {
                 files: persisted_room.files,
                 index: persisted_room.index,
@@ -999,7 +999,7 @@ impl ServerRuntime {
             self.room_playlists.insert(room_name.clone(), playlist);
             // Historical rows used zero as a placeholder. Treat missing,
             // non-finite, or future timestamps as activity at startup so a
-            // legacy database is never purged immediately after upgrading.
+            // database without retention timestamps is never purged immediately after upgrading.
             let has_valid_persisted_activity = persisted_last_activity_at_seconds.is_finite()
                 && persisted_last_activity_at_seconds > 0.0
                 && persisted_last_activity_at_seconds <= now_seconds;
@@ -1039,7 +1039,7 @@ impl ServerRuntime {
                 .or_default();
             if !has_valid_persisted_activity && self.room_persistence.is_some() {
                 // Make the startup-time fallback a one-time migration. Without
-                // this write-back, repeatedly restarting a legacy database
+                // this write-back, repeatedly restarting a database without retention timestamps
                 // whose placeholder is zero would renew its grace forever.
                 let playlist = self.room_playlist_state(&room_name).clone();
                 let version = self.next_room_persistence_version();
@@ -1951,12 +1951,12 @@ impl ServerRuntime {
             .any(|session| session.room == room_name && session.capabilities.playback_barrier_v1)
     }
 
-    pub(crate) fn legacy_readiness_chat_clients_in_room(&self, room_name: &str) -> Vec<String> {
+    pub(crate) fn syncplay_readiness_chat_clients_in_room(&self, room_name: &str) -> Vec<String> {
         self.sessions
             .iter()
             .filter(|(_, session)| {
                 session.room == room_name
-                    && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
+                    && client_version_meets_minimum(&session.version, SYNCPLAY_CHAT_MIN_VERSION)
                     && !session.capabilities.remote_readiness
             })
             .map(|(client_id, _)| client_id.clone())
@@ -1968,7 +1968,7 @@ impl ServerRuntime {
             .iter()
             .filter(|(_, session)| {
                 session.room == room_name
-                    && client_version_meets_minimum(&session.version, LEGACY_CHAT_MIN_VERSION)
+                    && client_version_meets_minimum(&session.version, SYNCPLAY_CHAT_MIN_VERSION)
             })
             .map(|(client_id, _)| client_id.clone())
             .collect()
@@ -2190,7 +2190,7 @@ impl ServerRuntime {
             dummy_count = dummy_count.saturating_add(1);
             rooms.entry(room_name).or_default().insert(
                 frame_limits::empty_room_identity(dummy_count),
-                legacy_dummy_list_entry(),
+                empty_persistent_room_list_entry(),
             );
         }
     }

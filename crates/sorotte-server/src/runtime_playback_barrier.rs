@@ -1883,7 +1883,7 @@ impl ServerRuntime {
         let readiness_governed =
             self.readiness_enabled && self.room_readiness.contains_key(&session.room);
         let mut participants = BTreeMap::new();
-        let mut excluded_legacy_clients = BTreeSet::new();
+        let mut excluded_unsupported_clients = BTreeSet::new();
         for (peer_client_id, peer_session) in &self.sessions {
             if peer_session.room != session.room
                 || self
@@ -1903,7 +1903,7 @@ impl ServerRuntime {
                     },
                 );
             } else {
-                excluded_legacy_clients.insert(peer_session.username.clone());
+                excluded_unsupported_clients.insert(peer_session.username.clone());
             }
         }
         if participants.is_empty() {
@@ -1964,7 +1964,7 @@ impl ServerRuntime {
                 initiator_session_sequence,
                 initiator_username: session.username.clone(),
                 participants,
-                excluded_legacy_clients,
+                excluded_unsupported_clients,
                 phase: PlaybackBarrierPhase::Preparing,
                 state_revision: None,
                 readiness_revision: None,
@@ -2572,7 +2572,7 @@ impl ServerRuntime {
                 .or(barrier.prepare.deadline)
                 .unwrap_or_default(),
             participants,
-            excluded_legacy_clients: barrier.excluded_legacy_clients.clone(),
+            excluded_unsupported_clients: barrier.excluded_unsupported_clients.clone(),
         })
     }
 

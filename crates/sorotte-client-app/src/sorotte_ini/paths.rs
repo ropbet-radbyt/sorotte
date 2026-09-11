@@ -9,12 +9,12 @@ use std::{
 
 use anyhow::anyhow;
 
-use crate::legacy_settings::StoredClientSettingsMvp;
+use crate::stored_settings::StoredClientSettings;
 
-use super::parser::parse_sorotte_ini_stored_client_settings_mvp;
+use super::parser::parse_sorotte_ini_stored_client_settings;
 use super::writer::{
-    upsert_sorotte_ini_stored_client_settings_mvp,
-    upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
+    upsert_sorotte_ini_stored_client_settings,
+    upsert_sorotte_ini_stored_client_settings_clearing_plex_identity,
 };
 use super::{merge::merge_settings_contents, transaction::SettingsTransaction};
 
@@ -43,11 +43,11 @@ pub fn create_private_directory(_path: &Path) -> io::Result<()> {
     }
 }
 
-pub fn load_sorotte_ini_stored_client_settings_mvp_from_path(
+pub fn load_sorotte_ini_stored_client_settings_from_path(
     path: &Path,
-) -> anyhow::Result<Option<StoredClientSettingsMvp>> {
+) -> anyhow::Result<Option<StoredClientSettings>> {
     read_sorotte_ini_contents_consistently_at_path(path).map(|contents| {
-        contents.map(|contents| parse_sorotte_ini_stored_client_settings_mvp(&contents))
+        contents.map(|contents| parse_sorotte_ini_stored_client_settings(&contents))
     })
 }
 
@@ -106,34 +106,34 @@ pub(crate) fn ensure_sorotte_ini_contents_at_path(
 }
 
 /// Apply an explicit field patch: `Some` assigns a field; `None` leaves it alone.
-/// For an edited snapshot, use `merge_sorotte_ini_stored_client_settings_mvp_at_path`
+/// For an edited snapshot, use `merge_sorotte_ini_stored_client_settings_at_path`
 /// with its original baseline to avoid restoring unrelated stale values.
-pub fn upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+pub fn upsert_sorotte_ini_stored_client_settings_at_path(
     path: &Path,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> anyhow::Result<()> {
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path_with_writer(
+    upsert_sorotte_ini_stored_client_settings_at_path_with_writer(
         path,
         settings,
-        upsert_sorotte_ini_stored_client_settings_mvp,
+        upsert_sorotte_ini_stored_client_settings,
     )
 }
 
-pub fn upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path(
+pub fn upsert_sorotte_ini_stored_client_settings_clearing_plex_identity_at_path(
     path: &Path,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> anyhow::Result<()> {
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path_with_writer(
+    upsert_sorotte_ini_stored_client_settings_at_path_with_writer(
         path,
         settings,
-        upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
+        upsert_sorotte_ini_stored_client_settings_clearing_plex_identity,
     )
 }
 
-fn upsert_sorotte_ini_stored_client_settings_mvp_at_path_with_writer(
+fn upsert_sorotte_ini_stored_client_settings_at_path_with_writer(
     path: &Path,
-    settings: &StoredClientSettingsMvp,
-    writer: fn(&str, &StoredClientSettingsMvp) -> String,
+    settings: &StoredClientSettings,
+    writer: fn(&str, &StoredClientSettings) -> String,
 ) -> anyhow::Result<()> {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
@@ -396,17 +396,17 @@ where
     write_sorotte_ini_contents_atomically_with_pre_commit_hook(path, contents, before_replace)
 }
 
-pub fn update_sorotte_ini_stored_client_settings_mvp_at_path<F>(
+pub fn update_sorotte_ini_stored_client_settings_at_path<F>(
     path: &Path,
     update: F,
 ) -> anyhow::Result<()>
 where
-    F: FnOnce(&mut StoredClientSettingsMvp),
+    F: FnOnce(&mut StoredClientSettings),
 {
-    edit_sorotte_ini_stored_client_settings_mvp_at_path(path, update).map(|_| ())
+    edit_sorotte_ini_stored_client_settings_at_path(path, update).map(|_| ())
 }
 
-pub fn clear_sorotte_ini_stored_client_settings_mvp_at_path(path: &Path) -> anyhow::Result<bool> {
+pub fn clear_sorotte_ini_stored_client_settings_at_path(path: &Path) -> anyhow::Result<bool> {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
     transaction.mark_cleared()?;
@@ -423,17 +423,17 @@ pub fn clear_sorotte_ini_stored_client_settings_mvp_at_path(path: &Path) -> anyh
 /// Invoke `update` exactly once while holding the path's transaction lock.
 /// Assigning `None` removes a recognized field, including all duplicate secrets.
 /// Returns the actual committed settings for the caller's next baseline.
-pub fn edit_sorotte_ini_stored_client_settings_mvp_at_path<F>(
+pub fn edit_sorotte_ini_stored_client_settings_at_path<F>(
     path: &Path,
     update: F,
-) -> anyhow::Result<StoredClientSettingsMvp>
+) -> anyhow::Result<StoredClientSettings>
 where
-    F: FnOnce(&mut StoredClientSettingsMvp),
+    F: FnOnce(&mut StoredClientSettings),
 {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
     let contents = read_contents_under_transaction(path)?.unwrap_or_default();
-    let baseline = parse_sorotte_ini_stored_client_settings_mvp(&contents);
+    let baseline = parse_sorotte_ini_stored_client_settings(&contents);
     let mut settings = baseline.clone();
     update(&mut settings);
     commit_merged_settings(path, &contents, &baseline, &settings)
@@ -443,15 +443,15 @@ where
 /// Concurrent edits to the same field follow commit order (last transaction wins).
 /// An initial missing file saves the whole snapshot; a durable Clear tombstone
 /// prevents this initialization fallback after a file was deliberately cleared.
-pub fn merge_sorotte_ini_stored_client_settings_mvp_at_path(
+pub fn merge_sorotte_ini_stored_client_settings_at_path(
     path: &Path,
-    baseline: &StoredClientSettingsMvp,
-    desired: &StoredClientSettingsMvp,
-) -> anyhow::Result<StoredClientSettingsMvp> {
+    baseline: &StoredClientSettings,
+    desired: &StoredClientSettings,
+) -> anyhow::Result<StoredClientSettings> {
     let transaction = SettingsTransaction::acquire(path)?;
     let path = transaction.path();
     let contents = read_contents_under_transaction(path)?;
-    let initial = StoredClientSettingsMvp::default();
+    let initial = StoredClientSettings::default();
     let baseline = if contents.is_none() && !transaction.was_cleared()? {
         &initial
     } else {
@@ -468,26 +468,26 @@ pub fn merge_sorotte_ini_stored_client_settings_mvp_at_path(
 fn commit_merged_settings(
     path: &Path,
     contents: &str,
-    baseline: &StoredClientSettingsMvp,
-    desired: &StoredClientSettingsMvp,
-) -> anyhow::Result<StoredClientSettingsMvp> {
+    baseline: &StoredClientSettings,
+    desired: &StoredClientSettings,
+) -> anyhow::Result<StoredClientSettings> {
     let updated = merge_settings_contents(contents, baseline, desired);
     write_sorotte_ini_contents_atomically_with_pre_commit_hook(path, updated.as_bytes(), |_| {
         Ok(())
     })?;
-    Ok(parse_sorotte_ini_stored_client_settings_mvp(&updated))
+    Ok(parse_sorotte_ini_stored_client_settings(&updated))
 }
 
 /// Relocate a snapshot while locking source and destination in canonical order.
 /// `publish_location` runs once with both locks held. A publication failure rolls
 /// back the destination before another settings writer can observe its commit.
-pub fn relocate_sorotte_ini_stored_client_settings_mvp_at_path<F>(
+pub fn relocate_sorotte_ini_stored_client_settings_at_path<F>(
     source: Option<&Path>,
     destination: &Path,
-    baseline: &StoredClientSettingsMvp,
-    desired: &StoredClientSettingsMvp,
+    baseline: &StoredClientSettings,
+    desired: &StoredClientSettings,
     publish_location: F,
-) -> anyhow::Result<StoredClientSettingsMvp>
+) -> anyhow::Result<StoredClientSettings>
 where
     F: FnOnce() -> anyhow::Result<()>,
 {
@@ -519,19 +519,19 @@ where
         .map(|transaction| transaction.was_cleared())
         .transpose()?
         .unwrap_or(false);
-    let initial = StoredClientSettingsMvp::default();
+    let initial = StoredClientSettings::default();
     let baseline = if source_contents.is_none() && !source_was_cleared {
         &initial
     } else {
         baseline
     };
-    let settings = parse_sorotte_ini_stored_client_settings_mvp(&merge_settings_contents(
+    let settings = parse_sorotte_ini_stored_client_settings(&merge_settings_contents(
         source_contents.as_deref().unwrap_or_default(),
         baseline,
         desired,
     ));
     let previous_settings =
-        parse_sorotte_ini_stored_client_settings_mvp(previous.as_deref().unwrap_or_default());
+        parse_sorotte_ini_stored_client_settings(previous.as_deref().unwrap_or_default());
     let committed = commit_merged_settings(
         &destination,
         previous.as_deref().unwrap_or_default(),

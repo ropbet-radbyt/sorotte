@@ -169,7 +169,7 @@ impl ClientSession {
     }
 
     /// Applies an explicit room-entry readiness policy. V2 preserves the
-    /// initialization provenance; legacy peers receive the established
+    /// initialization provenance; Syncplay-ready peers receive the established
     /// non-manual Ready payload.
     pub fn runtime_actions_for_initial_readiness_intent(
         &mut self,

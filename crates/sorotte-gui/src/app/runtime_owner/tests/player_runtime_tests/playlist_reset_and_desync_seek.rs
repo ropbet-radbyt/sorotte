@@ -47,10 +47,10 @@ fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_atta
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -137,15 +137,15 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
         state: player_state.clone(),
     })));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration),
-    );
+    owner.active_session_settings = Some(stored_client_settings_runtime_snapshot(
+        &state.saved_configuration,
+    ));
     state.main_window.shared_playlist_enabled = true;
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -290,15 +290,15 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
         state: player_state.clone(),
     })));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration),
-    );
+    owner.active_session_settings = Some(stored_client_settings_runtime_snapshot(
+        &state.saved_configuration,
+    ));
     state.main_window.shared_playlist_enabled = true;
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -413,10 +413,10 @@ fn gui_persisted_config_runtime_owner_applies_desync_seek_when_room_playstate_is
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -521,10 +521,10 @@ fn gui_persisted_config_runtime_owner_retries_attached_player_seek_after_transie
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner

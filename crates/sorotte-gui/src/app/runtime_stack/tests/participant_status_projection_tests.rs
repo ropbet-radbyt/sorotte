@@ -60,10 +60,10 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
 
 #[test]
 fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_intent() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
@@ -109,7 +109,7 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
             .room_playback_intent
             .authority
             .as_deref()
-            .is_some_and(|authority| authority.contains("legacy playstate"))
+            .is_some_and(|authority| authority.contains("Syncplay playstate"))
     );
     assert_eq!(snapshot.room_playback_intent.participant_count, 5);
     assert_eq!(
@@ -175,7 +175,7 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
 
     assert!(matches!(
         user("carol").participant_status,
-        MainWindowParticipantStatusPresentation::LegacyClient
+        MainWindowParticipantStatusPresentation::StatusUnsupported
     ));
     assert!(matches!(
         user("dave").participant_status,
@@ -185,10 +185,10 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
 
 #[test]
 fn compact_and_stale_exact_statuses_do_not_invent_scope_mismatches() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
@@ -243,10 +243,10 @@ fn compact_and_stale_exact_statuses_do_not_invent_scope_mismatches() {
 
 #[test]
 fn legacy_uncorrelated_wire_rows_never_project_precise_room_offsets() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");

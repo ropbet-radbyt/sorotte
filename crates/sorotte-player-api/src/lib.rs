@@ -388,10 +388,9 @@ impl LocalFileUpdate {
 
 /// One local-file identity observation tied to the adapter event stream.
 ///
-/// The legacy [`LocalFileUpdate`] channel remains available for source
-/// compatibility. Adapters that can identify their media generation and
-/// observation time should expose this richer additive form so consumers can
-/// order the media boundary against transport and command observations.
+/// [`LocalFileUpdate`] carries unsequenced file metadata. This observation
+/// adds the media generation and observation time so consumers can order the
+/// media boundary against transport and command observations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerLocalFileObservation {
     pub update: LocalFileUpdate,
@@ -764,9 +763,9 @@ impl PlayerSeekableRange {
 /// One complete, generation-aware observation of a player's demuxer cache state.
 ///
 /// Every metric is authoritative for the observation: `None` means the player omitted the value,
-/// so a consumer must clear any older value retained for the same media generation. This is a
-/// separate additive channel so the long-standing [`PlayerTransportTelemetryUpdate`] public
-/// shape remains source-compatible for external adapters and consumers.
+/// so a consumer must clear any older value retained for the same media generation.
+/// This complete cache snapshot is separate from the sparse
+/// [`PlayerTransportTelemetryUpdate`] channel so missing values have one clear meaning.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerCacheTelemetryUpdate {
     pub media_generation: Option<PlayerMediaGeneration>,
@@ -782,10 +781,9 @@ pub struct PlayerCacheTelemetryUpdate {
 
 /// Generation-aware observations used for transport readiness and recovery.
 ///
-/// This is intentionally separate from [`PlayerPlaybackTelemetryUpdate`]. The
-/// older type remains source-compatible for existing clients while this richer
-/// stream can evolve around observed player behavior instead of command
-/// acceptance. Fields are sparse: `None` means that observation was not part
+/// This stream records generation-scoped observations rather than the unsequenced
+/// values in [`PlayerPlaybackTelemetryUpdate`]. Fields are sparse: `None` means
+/// that observation was not part
 /// of this update, not that the player necessarily lacks the capability.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerTransportTelemetryUpdate {
@@ -1231,7 +1229,7 @@ impl PlayerOrderedEvent {
 
 /// Atomic adapter snapshot used by owners that consume the ordered event stream.
 ///
-/// Legacy playback telemetry remains available in the same batch for field-level fallback, so
+/// Unsequenced playback telemetry remains available in the same batch for field-level fallback, so
 /// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlayerObservationBatch {
@@ -1243,7 +1241,7 @@ pub struct PlayerObservationBatch {
     /// evidence that the media or player attachment changed.
     pub dropped_events_through: Option<PlayerEventSequence>,
     pub ordered_events: Vec<PlayerOrderedEvent>,
-    pub legacy_playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
+    pub playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
 }
 
 /// Terminal state of one physical player load attempt.
@@ -1542,7 +1540,7 @@ pub struct LifecycleVerificationProjection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerEventDeliveryMode {
-    LegacyTypedQueues,
+    TypedQueues,
     OrderedAcknowledgedBatches,
 }
 
@@ -1604,9 +1602,8 @@ pub trait PlayerAdapter: Send + Sync {
     /// Executes a command whose effect must be acknowledged by player
     /// observations.
     ///
-    /// The compatibility command methods remain available. Adapters that do
-    /// not implement tracked execution reject this additive operation rather
-    /// than manufacturing an ID with no completion semantics.
+    /// Adapters without tracked execution reject the command because they
+    /// cannot report its completion.
     fn execute_tracked(&mut self, _command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
         Err(PlayerError::Unsupported("execute_tracked"))
     }
@@ -1693,8 +1690,8 @@ pub trait PlayerAdapter: Send + Sync {
     /// Returns a generation-aware local-file identity observation when the
     /// adapter can preserve its media boundary.
     ///
-    /// The default consumes the legacy update and marks it unsequenced, which
-    /// keeps existing external adapters source-compatible.
+    /// The default consumes an unsequenced file update without inventing a
+    /// media generation or an observation timestamp.
     fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
         self.take_local_file_update()
             .map(PlayerLocalFileObservation::unsequenced)
@@ -1707,8 +1704,7 @@ pub trait PlayerAdapter: Send + Sync {
     }
     /// Returns one complete cache observation.
     ///
-    /// The default keeps existing third-party adapters source-compatible while adapters with
-    /// authoritative cache-state support can opt into the additive channel.
+    /// Adapters without complete cache observations return `None`.
     fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
         None
     }
@@ -1721,15 +1717,14 @@ pub trait PlayerAdapter: Send + Sync {
     /// Returns a generation-aware media-load result when the adapter can
     /// preserve its position in the player event stream.
     ///
-    /// The default keeps legacy adapters source-compatible and marks their
-    /// result unsequenced.
+    /// The default marks an outcome from the independent queue unsequenced.
     fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
         self.take_media_load_outcome()
             .map(PlayerMediaLoadObservation::unsequenced)
     }
     /// Takes one atomic, causally ordered player-event snapshot.
     ///
-    /// Returning `None` advertises legacy independent getter semantics. Adapters that return a
+    /// Returning `None` advertises independent typed-queue semantics. Adapters that return a
     /// batch must perform maintenance and event polling exactly once before draining the batch.
     fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         None
@@ -1737,7 +1732,7 @@ pub trait PlayerAdapter: Send + Sync {
     /// Requests a fresh authoritative ordered snapshot after the consumer detects an unannounced
     /// sequence gap.
     ///
-    /// Legacy adapters may ignore this request. Ordered adapters should make the next batch carry
+    /// Typed-queue adapters may ignore this request. Ordered adapters should make the next batch carry
     /// `dropped_events_through` and current file/transport observations.
     fn request_ordered_event_reacquisition(&mut self) {}
 
@@ -1746,7 +1741,7 @@ pub trait PlayerAdapter: Send + Sync {
     /// Repeated calls before acknowledgement may return the same batch.
     /// Event identities, observation times and semantic outcomes remain stable;
     /// observation delivery references may advance to include redelivery delay.
-    /// The default keeps adapters that expose only the legacy getters compatible.
+    /// Adapters with independent typed queues return `None`.
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         None
     }
@@ -1758,7 +1753,7 @@ pub trait PlayerAdapter: Send + Sync {
     /// equivalent explicit consumer reset. Within one attachment, an adapter
     /// must not expose lifecycle ownership through both delivery modes.
     fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        PlayerEventDeliveryMode::LegacyTypedQueues
+        PlayerEventDeliveryMode::TypedQueues
     }
     /// Acknowledges a batch only after the consumer has successfully applied
     /// it.
@@ -1810,11 +1805,11 @@ mod tests {
         }
     }
 
-    struct LegacyLocalFilePlayer(Option<LocalFileUpdate>);
+    struct UnsequencedLocalFilePlayer(Option<LocalFileUpdate>);
 
-    impl PlayerAdapter for LegacyLocalFilePlayer {
+    impl PlayerAdapter for UnsequencedLocalFilePlayer {
         fn name(&self) -> &'static str {
-            "legacy-local-file"
+            "unsequenced-local-file"
         }
 
         fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
@@ -1822,11 +1817,11 @@ mod tests {
         }
     }
 
-    struct LegacyMediaLoadPlayer(Option<PlayerMediaLoadOutcome>);
+    struct UnsequencedMediaLoadPlayer(Option<PlayerMediaLoadOutcome>);
 
-    impl PlayerAdapter for LegacyMediaLoadPlayer {
+    impl PlayerAdapter for UnsequencedMediaLoadPlayer {
         fn name(&self) -> &'static str {
-            "legacy-media-load"
+            "unsequenced-media-load"
         }
 
         fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
@@ -1968,13 +1963,14 @@ mod tests {
     }
 
     #[test]
-    fn local_file_observation_wraps_legacy_unsequenced_adapters() {
-        let mut player =
-            LegacyLocalFilePlayer(Some(LocalFileUpdate::new("movie.mkv").with_size_bytes(123)));
+    fn local_file_observation_marks_unsequenced_updates() {
+        let mut player = UnsequencedLocalFilePlayer(Some(
+            LocalFileUpdate::new("movie.mkv").with_size_bytes(123),
+        ));
 
         let observation = player
             .take_local_file_observation()
-            .expect("legacy local-file update");
+            .expect("unsequenced local-file update");
 
         assert_eq!(observation.update.name, "movie.mkv");
         assert_eq!(observation.update.size_bytes, Some(123));
@@ -1984,13 +1980,13 @@ mod tests {
     }
 
     #[test]
-    fn media_load_observation_wraps_legacy_unsequenced_adapters() {
+    fn media_load_observation_marks_unsequenced_results() {
         let outcome = PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()));
-        let mut player = LegacyMediaLoadPlayer(Some(outcome.clone()));
+        let mut player = UnsequencedMediaLoadPlayer(Some(outcome.clone()));
 
         let observation = player
             .take_media_load_observation()
-            .expect("legacy media-load outcome");
+            .expect("unsequenced media-load outcome");
 
         assert_eq!(observation.outcome, outcome);
         assert_eq!(observation.media_generation, None);

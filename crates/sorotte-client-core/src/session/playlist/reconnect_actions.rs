@@ -162,7 +162,7 @@ impl ClientSession {
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
         self.runtime_actions_for_reconnect_state_restore_validation_if_needed_at(
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         )
     }
 

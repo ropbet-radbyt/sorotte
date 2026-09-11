@@ -3,8 +3,7 @@ use super::*;
 #[test]
 fn gui_shell_app_state_updates_dialog_expectations_from_configuration_edits_without_runtime_overrides()
  {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
         id: SettingId::PrivacyTrustedDomainsOnly,
@@ -22,8 +21,7 @@ fn gui_shell_app_state_updates_dialog_expectations_from_configuration_edits_with
 #[test]
 fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuration_runtime_snapshots()
  {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
@@ -50,8 +48,7 @@ fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuratio
 
 #[test]
 fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_trip() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(
         state
@@ -80,20 +77,19 @@ fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_t
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_configuration_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginConfigurationReload));
     assert!(
         !state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
             GuiConfigurationRuntimeSnapshot {
-                draft_settings: StoredClientSettingsMvp {
+                draft_settings: StoredClientSettings {
                     host: Some("draft.example".to_owned()),
-                    ..StoredClientSettingsMvp::default()
+                    ..StoredClientSettings::default()
                 },
-                saved_settings: StoredClientSettingsMvp {
+                saved_settings: StoredClientSettings {
                     host: Some("saved.example".to_owned()),
-                    ..StoredClientSettingsMvp::default()
+                    ..StoredClientSettings::default()
                 },
             }
         ))

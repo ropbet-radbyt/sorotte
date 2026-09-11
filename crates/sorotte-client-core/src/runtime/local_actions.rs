@@ -136,15 +136,6 @@ where
         }
     }
 
-    pub fn run_local_media_opened_not_ready(&mut self) -> Result<bool, PlayerError> {
-        let actions = self
-            .session
-            .runtime_actions_for_local_media_opened_not_ready();
-        let sent = !actions.is_empty();
-        ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
-            .map(|_| sent)
-    }
-
     pub fn run_request_controller_auth(
         &mut self,
         room: impl Into<String>,
@@ -189,14 +180,14 @@ where
             .map(|_| sent)
     }
 
-    pub fn run_set_room_with_legacy_fallback(
+    pub fn run_set_room_with_default_fallback(
         &mut self,
         default_room: impl Into<String>,
     ) -> Result<bool, PlayerError> {
         let default_room = default_room.into();
         let room = self
             .session
-            .local_room_command_target_with_legacy_fallback(&default_room);
+            .local_room_command_target_with_default_fallback(&default_room);
         self.run_set_room(room)
     }
 
@@ -237,8 +228,7 @@ where
         if planned_paused == Some(true) {
             // A user pause owns the transport immediately; do not wait for
             // the reflected room state before restoring a catch-up rate.
-            let _ =
-                self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+            let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds());
         }
         let effects = Self::local_pause_effects(&actions)?;
         let result = self.run_model_event(ClientEvent::LocalPauseChangeRequested {
@@ -265,8 +255,7 @@ where
         }
         self.refresh_player_projection_before_local_transport_intent()?;
         if paused {
-            let _ =
-                self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+            let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds());
         }
         let original_paused = self.session.model.playback.local_paused;
         let original_ready = self
@@ -527,8 +516,7 @@ where
             PlayerCommandCause::PlaylistTransition,
             expected_playlist_state,
         )?;
-        self.session
-            .apply_local_playlist_runtime_actions_legacy_compatible(&actions);
+        self.session.apply_local_playlist_runtime_actions(&actions);
 
         // Do not use the attached-file fallback after applying the batch: an
         // empty or index-less playlist has no selectable target and therefore
@@ -580,7 +568,7 @@ where
             logical_id,
             kind,
             MediaLoadIntent::Replay,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         );
     }
 
@@ -637,7 +625,7 @@ where
         self.refresh_player_projection_before_local_transport_intent()?;
         // Cleanup is retried from subsequent observations if the adapter
         // rejects it; a failed rate reset must not swallow the user's seek.
-        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek(target_position);
         let causal_state = self.causal_state_for_local_seek_actions(&actions);
@@ -649,7 +637,7 @@ where
     pub fn run_seek_by_offset(&mut self, offset_seconds: f64) -> Result<bool, PlayerError> {
         self.playback_coordination.clear_local_transport_echo();
         self.refresh_player_projection_before_local_transport_intent()?;
-        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self
             .session
@@ -663,7 +651,7 @@ where
     pub fn run_undo_seek(&mut self) -> Result<bool, PlayerError> {
         self.playback_coordination.clear_local_transport_echo();
         self.refresh_player_projection_before_local_transport_intent()?;
-        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds_legacy_compatible());
+        let _ = self.interrupt_playback_recovery(unix_wall_clock_time_seconds());
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.runtime_actions_for_local_seek_undo();
         let causal_state = self.causal_state_for_local_seek_actions(&actions);
@@ -686,31 +674,29 @@ where
         )
     }
 
-    pub fn publish_local_file_legacy_compatible(
+    pub fn publish_local_file(
         &mut self,
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<(), PlayerError> {
-        let actions = self
-            .session
-            .runtime_actions_for_local_file_publish_legacy_compatible(
-                file_payload,
-                filename_privacy_mode,
-                filesize_privacy_mode,
-            );
+        let actions = self.session.runtime_actions_for_local_file_publish(
+            file_payload,
+            filename_privacy_mode,
+            filesize_privacy_mode,
+        );
         ClientSession::dispatch_runtime_actions(&actions, &mut self.player, &mut self.control)
     }
 
-    pub fn publish_pending_local_file_update_legacy_compatible(
+    pub fn publish_pending_local_file_update(
         &mut self,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<bool, PlayerError> {
-        self.publish_pending_local_file_update_legacy_compatible_at(
+        self.publish_pending_local_file_update_at(
             filename_privacy_mode,
             filesize_privacy_mode,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         )
     }
 
@@ -718,7 +704,7 @@ where
     /// clock. Runtime owners that use a monotonic clock must call this variant
     /// so startup evidence and later transport/status heartbeats remain in the
     /// same clock domain.
-    pub fn publish_pending_local_file_update_legacy_compatible_at(
+    pub fn publish_pending_local_file_update_at(
         &mut self,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
@@ -755,11 +741,7 @@ where
         };
         let file_payload = Self::local_file_update_payload(&local_file_update);
         self.last_local_file_update = Some(local_file_update.clone());
-        self.publish_local_file_legacy_compatible(
-            &file_payload,
-            filename_privacy_mode,
-            filesize_privacy_mode,
-        )?;
+        self.publish_local_file(&file_payload, filename_privacy_mode, filesize_privacy_mode)?;
         // Queue the compatible file announcement before an optional Sorotte
         // start barrier so peers learn the source before their preparation
         // deadline begins.
@@ -828,9 +810,7 @@ where
             // tick drains mpv's acknowledged batch. Deriving Seek or Toggle
             // from the old projection can then pair a fresh intent with the
             // previous pause state and overwrite newer room authority.
-            return self.drain_player_transport_coordination(
-                unix_wall_clock_time_seconds_legacy_compatible(),
-            );
+            return self.drain_player_transport_coordination(unix_wall_clock_time_seconds());
         }
         self.sync_player_playback_telemetry_into_session_and_buffer();
         Ok(())

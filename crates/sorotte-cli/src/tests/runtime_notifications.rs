@@ -90,25 +90,18 @@ fn flush_autoplay_notifications_to_sink_dispatches_notifications() {
 }
 
 #[test]
-fn autoplay_countdown_notification_message_localized_legacy_compatible_localizes_user_visible_message()
- {
+fn autoplay_countdown_notification_message_localized_localizes_user_visible_message() {
     let notification = AutoplayCountdownNotification {
         ready_user_count: 2,
         seconds_left: 3,
     };
 
     assert_eq!(
-        crate::autoplay_countdown_notification_message_localized_legacy_compatible(
-            &notification,
-            Some("fr"),
-        ),
+        crate::autoplay_countdown_notification_message_localized(&notification, Some("fr"),),
         "Compte a rebours autoplay : utilisateurs_prets=2 secondes_restantes=3"
     );
     assert_eq!(
-        crate::autoplay_countdown_notification_message_localized_legacy_compatible(
-            &notification,
-            None,
-        ),
+        crate::autoplay_countdown_notification_message_localized(&notification, None,),
         "autoplay countdown: ready_users=2 seconds_left=3"
     );
 }
@@ -136,16 +129,13 @@ fn player_playback_telemetry_update_message_formats_present_fields() {
 }
 
 #[test]
-fn player_playback_telemetry_update_message_localized_legacy_compatible_localizes_prefix() {
+fn player_playback_telemetry_update_message_localized_localizes_prefix() {
     let update = PlayerPlaybackTelemetryUpdate::default()
         .with_paused(true)
         .with_position_seconds(12.5);
 
-    let message = crate::player_playback_telemetry_update_message_localized_legacy_compatible(
-        &update,
-        Some("fr"),
-    )
-    .expect("expected telemetry message for populated update");
+    let message = crate::player_playback_telemetry_update_message_localized(&update, Some("fr"))
+        .expect("expected telemetry message for populated update");
     assert_eq!(
         message,
         "Telemetrie du lecteur: paused=true position=12.500"
@@ -153,7 +143,7 @@ fn player_playback_telemetry_update_message_localized_legacy_compatible_localize
 }
 
 #[test]
-fn player_playback_drift_diagnostic_messages_localized_legacy_compatible_localize_labels() {
+fn player_playback_drift_diagnostic_messages_localized_localize_labels() {
     let update = PlayerPlaybackTelemetryUpdate::default()
         .with_paused(true)
         .with_position_seconds(12.5);
@@ -163,7 +153,7 @@ fn player_playback_drift_diagnostic_messages_localized_legacy_compatible_localiz
         ..sorotte_client_core::RoomPlaystateView::default()
     };
 
-    let messages = crate::player_playback_drift_diagnostic_messages_localized_legacy_compatible(
+    let messages = crate::player_playback_drift_diagnostic_messages_localized(
         &update,
         Some(&room),
         Some("de"),

@@ -9,9 +9,9 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     std::fs::write(&movie_path, b"movie").expect("movie fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     handle.push_request(GuiRuntimeRequest::OpenMediaFiles {
@@ -71,10 +71,10 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     )));
 
     let mut cancel_chat_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             chat_input_enabled: Some(true),
             shared_playlist_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     cancel_chat_state.outgoing_chat_message = Some("cancel me".to_owned());
     assert!(
@@ -94,11 +94,10 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
     assert!(cancel_chat_state.pending_operation.is_none());
     assert!(cancel_chat_state.outgoing_chat_message.is_none());
 
-    let mut toggle_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-            shared_playlist_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
-        });
+    let mut toggle_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettings::default()
+    });
     toggle_state.main_window.playback.can_toggle_pause = true;
     toggle_state.main_window.playlist =
         vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
@@ -171,9 +170,9 @@ fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
         })
     )));
 
-    let mut chat_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut chat_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(chat_state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
@@ -283,7 +282,7 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
             .expect("connect-once test should release the server");
     });
 
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         port: Some(8999),
         username: Some("saved-alice".to_owned()),
@@ -295,9 +294,9 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
         chat_input_enabled: Some(false),
         rewind_on_desync: Some(false),
         player_path: Some("C:/Program Files/VideoLAN/VLC/vlc.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &stored_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &stored_settings)
         .expect("initial connect-once config should be written");
     let config_before_connect =
         std::fs::read(&config_path).expect("initial connect-once config should remain readable");
@@ -457,7 +456,7 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
     assert!(hello_line.contains("\"username\":\"draft-alice\""));
     assert!(hello_line.contains(canonical_room));
     assert!(
-        hello_line.contains(&sorotte_client_core::legacy_server_password_token(
+        hello_line.contains(&sorotte_client_core::syncplay_server_password_token(
             "draft-secret"
         ))
     );
@@ -558,16 +557,16 @@ fn threaded_connect_requests_use_submitted_settings_before_the_latest_input_arri
                 .expect("stale listener should report the initial connection");
         });
 
-        let original = StoredClientSettingsMvp {
+        let original = StoredClientSettings {
             host: Some(dead_address.ip().to_string()),
             port: Some(dead_address.port()),
             username: Some("saved-user".to_owned()),
             room: Some("saved-room".to_owned()),
             shared_playlist_enabled: Some(false),
             player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &original)
+        upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &original)
             .expect("threaded submitted-settings fixture should persist initial settings");
 
         let (hello_tx, hello_rx) = mpsc::channel();
@@ -658,7 +657,7 @@ fn threaded_connect_requests_use_submitted_settings_before_the_latest_input_arri
         }
         assert_eq!(state.active_view, GuiShellView::Room);
 
-        let persisted = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        let persisted = load_sorotte_ini_stored_client_settings_from_path(&config_path)
             .expect("threaded connect should leave a readable config")
             .expect("threaded connect fixture should retain stored settings");
         if intent == GuiSavedServerConnectIntent::SaveAndConnect {
@@ -725,12 +724,12 @@ fn threaded_public_connect_uses_submitted_server_and_identity_before_latest_inpu
             .expect("submitted public server should report the client Hello");
     });
 
-    let original = StoredClientSettingsMvp {
+    let original = StoredClientSettings {
         username: Some("saved-user".to_owned()),
         room: Some("saved-room".to_owned()),
         shared_playlist_enabled: Some(false),
         public_servers: Some(vec![("Stale".to_owned(), dead_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let (mut runtime, handle) = GuiQueuedRuntimeBridge::new();
@@ -796,14 +795,14 @@ fn gui_persisted_config_runtime_owner_saves_configuration_for_save_and_connect()
 
     let root = test_temp_root("config-connect-saves-before-connect");
     let config_path = root.join("sorotte.ini");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             host: Some("old.example".to_owned()),
             port: Some(8999),
             username: Some("alice".to_owned()),
             room: Some("old-room".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("initial syncplay config should be written");
@@ -852,14 +851,14 @@ fn gui_persisted_config_runtime_owner_saves_configuration_for_save_and_connect()
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("old.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
         player_path: Some("C:/Program Files/VideoLAN/VLC/vlc.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -934,7 +933,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_for_save_and_connect()
     );
     assert_eq!(state.saved_configuration.port, Some(connect_port));
 
-    let persisted_settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let persisted_settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("config connect should leave a readable sorotte.ini")
         .expect("config connect should persist settings");
     assert_eq!(persisted_settings.room.as_deref(), Some("room2"));
@@ -972,7 +971,7 @@ fn gui_persisted_config_runtime_owner_saves_configuration_for_save_and_connect()
 fn ordinary_save_promotes_media_library_fields_without_unpinning_session_settings() {
     let root = test_temp_root("ordinary-save-active-media-settings");
     let config_path = root.join("sorotte.ini");
-    let original = StoredClientSettingsMvp {
+    let original = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         port: Some(8999),
         language: Some("en".to_owned()),
@@ -984,18 +983,16 @@ fn ordinary_save_promotes_media_library_fields_without_unpinning_session_setting
         folder_search_timeout_seconds: Some(5.0),
         folder_search_double_check_interval_seconds: Some(1.0),
         folder_search_warning_threshold_seconds: Some(3.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &original)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &original)
         .expect("ordinary-save fixture should persist initial settings");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     owner.startup_saved_connect_attempted = true;
     owner.session_projects_to_shell = true;
     owner.active_session_settings = Some(
-        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible(
-            &original,
-        ),
+        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(&original),
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&original);
@@ -1068,7 +1065,7 @@ fn ordinary_save_promotes_media_library_fields_without_unpinning_session_setting
         "connected runtime operations must consume the promoted, still-pinned snapshot",
     );
 
-    let persisted = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let persisted = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("ordinary save should leave a readable config")
         .expect("ordinary save should persist submitted settings");
     assert_eq!(persisted, submitted_settings);
@@ -1127,14 +1124,14 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
         language: Some("en".to_owned()),
         shared_playlist_enabled: Some(false),
         chat_input_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(0)));
@@ -1253,7 +1250,7 @@ fn gui_persisted_config_runtime_owner_bootstraps_detached_public_server_connect(
 fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_public_servers() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             (
                 "Cached Primary".to_owned(),
@@ -1261,7 +1258,7 @@ fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_p
             ),
             ("Cached Backup".to_owned(), "backup.example:9000".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let requested_servers = state
         .public_servers
@@ -1329,9 +1326,9 @@ fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_p
 fn gui_persisted_config_runtime_owner_manual_refresh_populates_explicitly_empty_public_servers() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.public_servers.servers.is_empty());
@@ -1363,7 +1360,7 @@ fn gui_persisted_config_runtime_owner_manual_refresh_populates_explicitly_empty_
 fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_clears_pending() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             (
                 "Cached Primary".to_owned(),
@@ -1371,7 +1368,7 @@ fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_c
             ),
             ("Cached Backup".to_owned(), "backup.example:9000".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
     let original_rows = state.public_servers.servers.clone();
@@ -1407,12 +1404,12 @@ fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_c
 fn gui_persisted_config_runtime_owner_manual_refresh_retains_selection_by_address() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Primary".to_owned(), "primary.example:8999".to_owned()),
             ("Keep Me".to_owned(), "keep.example:9000".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
 
@@ -1451,10 +1448,10 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -1542,10 +1539,10 @@ fn gui_persisted_config_runtime_owner_searches_missing_media_without_session() {
 fn gui_persisted_config_runtime_owner_clears_detached_missing_media_search_without_target() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginMissingMediaSearch));

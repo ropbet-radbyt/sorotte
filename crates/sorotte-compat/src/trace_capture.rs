@@ -1,26 +1,26 @@
 use super::*;
-use crate::legacy_server::run_legacy_server_fanout_roundtrip_with_full_overrides;
 use crate::scenario_replay::run_python_fanout_roundtrip_with_full_overrides;
+use crate::syncplay_server::run_syncplay_server_fanout_roundtrip_with_full_overrides;
 
 #[cfg(feature = "trace-capture")]
-pub fn capture_legacy_server_trace_fixture(
+pub fn capture_syncplay_server_trace_fixture(
     scenario_name: &str,
     trace_fixture_name: &str,
 ) -> Result<(), InteropError> {
-    capture_legacy_server_trace_fixture_with_salt(
+    capture_syncplay_server_trace_fixture_with_salt(
         scenario_name,
         trace_fixture_name,
-        DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
     )
 }
 
 #[cfg(feature = "trace-capture")]
-pub fn capture_legacy_server_trace_fixture_with_salt(
+pub fn capture_syncplay_server_trace_fixture_with_salt(
     scenario_name: &str,
     trace_fixture_name: &str,
     controlled_room_salt: &str,
 ) -> Result<(), InteropError> {
-    capture_legacy_server_trace_fixture_with_salt_and_motd_template(
+    capture_syncplay_server_trace_fixture_with_salt_and_motd_template(
         scenario_name,
         trace_fixture_name,
         controlled_room_salt,
@@ -29,13 +29,13 @@ pub fn capture_legacy_server_trace_fixture_with_salt(
 }
 
 #[cfg(feature = "trace-capture")]
-pub fn capture_legacy_server_trace_fixture_with_salt_and_motd_template(
+pub fn capture_syncplay_server_trace_fixture_with_salt_and_motd_template(
     scenario_name: &str,
     trace_fixture_name: &str,
     controlled_room_salt: &str,
     motd_template: Option<&str>,
 ) -> Result<(), InteropError> {
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         scenario_name,
         trace_fixture_name,
         controlled_room_salt,
@@ -45,14 +45,14 @@ pub fn capture_legacy_server_trace_fixture_with_salt_and_motd_template(
 }
 
 #[cfg(feature = "trace-capture")]
-pub fn capture_legacy_server_trace_fixture_with_overrides(
+pub fn capture_syncplay_server_trace_fixture_with_overrides(
     scenario_name: &str,
     trace_fixture_name: &str,
     controlled_room_salt: &str,
     motd_template: Option<&str>,
     persistent_rooms_enabled: bool,
 ) -> Result<(), InteropError> {
-    capture_legacy_server_trace_fixture_with_full_overrides(
+    capture_syncplay_server_trace_fixture_with_full_overrides(
         scenario_name,
         trace_fixture_name,
         controlled_room_salt,
@@ -63,7 +63,7 @@ pub fn capture_legacy_server_trace_fixture_with_overrides(
 }
 
 #[cfg(feature = "trace-capture")]
-pub(crate) fn capture_legacy_server_trace_fixture_with_full_overrides(
+pub(crate) fn capture_syncplay_server_trace_fixture_with_full_overrides(
     scenario_name: &str,
     trace_fixture_name: &str,
     controlled_room_salt: &str,
@@ -72,7 +72,7 @@ pub(crate) fn capture_legacy_server_trace_fixture_with_full_overrides(
     permanent_rooms: &[&str],
 ) -> Result<(), InteropError> {
     let steps = load_server_runtime_scenario_fixture(scenario_name)?;
-    let events = run_legacy_server_fanout_roundtrip_with_full_overrides(
+    let events = run_syncplay_server_fanout_roundtrip_with_full_overrides(
         &steps,
         controlled_room_salt,
         motd_template,

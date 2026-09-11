@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -48,14 +48,14 @@ fn gui_shell_app_state_projects_menu_dialog_widget_trees() {
 
 #[test]
 fn gui_shell_app_state_projects_public_server_and_media_search_widget_trees() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         folder_search_first_file_timeout_seconds: Some(3.0),
         folder_search_timeout_seconds: Some(30.0),
         folder_search_double_check_interval_seconds: Some(2.5),
         folder_search_warning_threshold_seconds: Some(7.5),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginAddPublicServer));
@@ -133,14 +133,14 @@ fn gui_shell_app_state_projects_public_server_and_media_search_widget_trees() {
 
 #[test]
 fn gui_shell_app_state_projects_responsive_layout_metadata_for_major_surfaces() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         shared_playlist_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
         chat_input_enabled: Some(true),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

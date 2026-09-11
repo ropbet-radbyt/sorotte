@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn legacy_configuration_getter_startup_compat_matrix_covers_python_startup_inputs() {
-    let entries = legacy_configuration_getter_startup_compat_entries();
+fn syncplay_configuration_getter_startup_compat_matrix_covers_python_startup_inputs() {
+    let entries = syncplay_configuration_getter_startup_compat_entries();
     let expected_inputs = [
         "--no-gui",
         "--host",
@@ -40,9 +40,9 @@ fn legacy_configuration_getter_startup_compat_matrix_covers_python_startup_input
 }
 
 #[test]
-fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ignored_inputs() {
-    fn entry_for(input: &str) -> LegacyConfigurationGetterStartupCompatEntry {
-        *legacy_configuration_getter_startup_compat_entries()
+fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_ignored_inputs() {
+    fn entry_for(input: &str) -> SyncplayConfigurationGetterStartupCompatEntry {
+        *syncplay_configuration_getter_startup_compat_entries()
             .iter()
             .find(|entry| entry.input == input)
             .unwrap_or_else(|| panic!("missing compatibility entry for {input}"))
@@ -50,20 +50,20 @@ fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ig
 
     assert_eq!(
         entry_for("--load-playlist-from-file").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("--debug").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("--player-path").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert!(
         entry_for("--player-path")
             .note
-            .contains("legacy mpv paths auto-select managed mpv integration")
+            .contains("mpv paths auto-select managed mpv integration")
     );
     assert!(
         entry_for("--player-path")
@@ -72,11 +72,11 @@ fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ig
     );
     assert_eq!(
         entry_for("file").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("--language").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert!(
         entry_for("--language")
@@ -85,15 +85,15 @@ fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ig
     );
     assert_eq!(
         entry_for("_args").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("--clear-gui-data").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("--force-gui-prompt").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert!(
         entry_for("--force-gui-prompt")
@@ -103,8 +103,8 @@ fn legacy_configuration_getter_startup_compat_matrix_classifies_supported_and_ig
 }
 
 #[test]
-fn legacy_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields() {
-    let entries = legacy_configuration_getter_ini_compat_entries();
+fn syncplay_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields() {
+    let entries = syncplay_configuration_getter_ini_compat_entries();
     let expected_keys = [
         "server_data.host",
         "server_data.port",
@@ -155,9 +155,9 @@ fn legacy_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields() 
 }
 
 #[test]
-fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_ignored_fields() {
-    fn entry_for(key: &str) -> LegacyConfigurationGetterIniCompatEntry {
-        *legacy_configuration_getter_ini_compat_entries()
+fn syncplay_configuration_getter_ini_compat_matrix_classifies_supported_and_ignored_fields() {
+    fn entry_for(key: &str) -> SyncplayConfigurationGetterIniCompatEntry {
+        *syncplay_configuration_getter_ini_compat_entries()
             .iter()
             .find(|entry| entry.key == key)
             .unwrap_or_else(|| panic!("missing ini compatibility entry for {key}"))
@@ -165,51 +165,51 @@ fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_ignore
 
     assert_eq!(
         entry_for("server_data.password").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.autoplayInitialState").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.readyAtStart").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.sharedPlaylistEnabled").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.unpauseAction").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.playerPath").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.perPlayerArguments").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.roomList").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.mediaSearchDirectories").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.publicServers").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
             entry_for("client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Supported
+            SyncplayConfigurationGetterCompatibilityStatus::Supported
         );
     assert_eq!(
         entry_for("client_settings.forceGuiPrompt").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert!(
         entry_for("client_settings.forceGuiPrompt")
@@ -218,39 +218,39 @@ fn legacy_configuration_getter_ini_compat_matrix_classifies_supported_and_ignore
     );
     assert_eq!(
         entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}")
             .status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.dontSlowDownWithMe").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
         entry_for("gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
     assert_eq!(
             entry_for("gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Supported
+            SyncplayConfigurationGetterCompatibilityStatus::Supported
         );
     assert_eq!(
             entry_for("gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}").status,
-            LegacyConfigurationGetterCompatibilityStatus::Supported
+            SyncplayConfigurationGetterCompatibilityStatus::Supported
         );
     assert_eq!(
         entry_for("gui.* (remaining unenumerated GUI keys / QSettings visual state)").status,
-        LegacyConfigurationGetterCompatibilityStatus::Ignored
+        SyncplayConfigurationGetterCompatibilityStatus::Ignored
     );
     assert_eq!(
         entry_for("general.{checkForUpdatesAutomatically,lastCheckedForUpdates}").status,
-        LegacyConfigurationGetterCompatibilityStatus::Supported
+        SyncplayConfigurationGetterCompatibilityStatus::Supported
     );
 }

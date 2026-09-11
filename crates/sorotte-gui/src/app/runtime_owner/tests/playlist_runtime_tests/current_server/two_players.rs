@@ -123,13 +123,13 @@ fn real_mpv_two_plex_clients_resume_loaded_stream() {
             .complete_mpv_attachment_after_core_configuration(
                 player,
                 None,
-                &sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+                &sorotte_player_mpv::SyncplayUiSettings::default(),
             )
             .unwrap();
         owner.report_external_player_availability(
             sorotte_client_core::ExternalPlayerAvailability::Connecting,
         );
-        let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some(username.into()),
             room: Some("room1".into()),
             player_path: Some("mpv".into()),
@@ -144,7 +144,7 @@ fn real_mpv_two_plex_clients_resume_loaded_stream() {
             plex_selected_server_id: Some(config["server_id"].as_str().unwrap().into()),
             plex_selected_server_url: Some(config["server_url"].as_str().unwrap().into()),
             plex_selected_server_token: Some(config["token"].as_str().unwrap().into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         clients.push(RealClient {
             owner,

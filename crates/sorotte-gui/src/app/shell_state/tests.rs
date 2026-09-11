@@ -71,9 +71,9 @@ use crate::app::widget_tree::GuiWidgetTextPreviewRenderer;
 fn projected_media_and_plex_debug_redacts_tokenized_urls() {
     let marker = "gui-projection-token-canary";
     let target = format!("https://media.example/video?X-Plex-Token={marker}");
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         plex_selected_server_url: Some(target.clone()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let mut shell = MainWindowShellState::from_stored_settings(&settings);
@@ -149,7 +149,7 @@ fn playlist_source_debug_redacts_target_bearing_details() {
         is_selected: true,
         source_state: source_state.clone(),
     };
-    let mut shell = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut shell = MainWindowShellState::from_stored_settings(&StoredClientSettings::default());
     shell.playlist = vec![row.clone()];
     let runtime = MainWindowRuntimeSnapshot::from_shell_state(&shell);
 
@@ -176,10 +176,10 @@ fn playlist_source_debug_redacts_target_bearing_details() {
 }
 use crate::app::{
     GuiDroppedFilesTarget, GuiLaunchMode, GuiWidgetEguiRenderer,
-    remote_services::{LegacyUpdateCheckResult, LegacyUpdateCheckStatus},
+    remote_services::{UpdateCheckResult, UpdateCheckStatus},
     testing::support::{TEST_USERNAME, test_temp_root},
 };
-use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettingsMvp};
+use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettings};
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
 use sorotte_plex::PlexMediaType;
 
@@ -197,7 +197,7 @@ fn assert_chat_pane_ready(chat: &[super::MainWindowChatRow]) {
 #[test]
 fn configuration_surface_defaults_to_first_run_mode() {
     let state =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp::default());
+        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(state.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.system.language_tag, "en");
@@ -305,7 +305,7 @@ fn browser_stream_target_kind_uses_hardened_room_url_trust_matching() {
 
 #[test]
 fn gui_shell_app_state_defaults_to_setup_connection() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(state.active_view, GuiShellView::Setup);
     assert_eq!(
@@ -316,10 +316,10 @@ fn gui_shell_app_state_defaults_to_setup_connection() {
 
 #[test]
 fn configuration_surface_preserves_explicit_false_chat_settings() {
-    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(!state.chat.chat_input_enabled);
@@ -328,10 +328,10 @@ fn configuration_surface_preserves_explicit_false_chat_settings() {
 
 #[test]
 fn gui_shell_app_state_opens_room_for_room_workflows_and_preserves_hidden_sessions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("+room:ABCDEF123456".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
@@ -368,7 +368,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         "C:/Program Files/mpv/mpv.exe".to_owned(),
         vec!["--profile=fast".to_owned(), "--no-border".to_owned()],
     );
-    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings {
         language: Some("pt-br".to_owned()),
         check_for_updates_automatically: Some(true),
         update_channel: Some("dev".to_owned()),
@@ -437,7 +437,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         show_noncontroller_osd: Some(true),
         show_different_room_osd: Some(true),
         show_contact_info: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(state.launch_mode, GuiLaunchMode::ExistingConfig);
@@ -513,7 +513,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
 #[test]
 fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
     let state =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettingsMvp::default());
+        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings::default());
     let sections = state.dialog_sections();
 
     let connection = sections
@@ -558,14 +558,14 @@ fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
 
 #[test]
 fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
-    let state = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = MainWindowShellState::from_stored_settings(&StoredClientSettings {
         room: Some("+room:ABCDEF123456".to_owned()),
         username: Some(TEST_USERNAME.to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
         ready_at_start: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(state.room_name, "+room:ABCDEF123456");
@@ -584,27 +584,27 @@ fn main_window_shell_state_uses_settings_for_room_user_and_controls() {
 
 #[test]
 fn main_window_shell_state_uses_legacy_chat_output_default() {
-    let state = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = MainWindowShellState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(state.chat.len(), 1);
     assert_eq!(state.chat[0].message, "Chat pane ready");
 
-    let explicit_false = MainWindowShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let explicit_false = MainWindowShellState::from_stored_settings(&StoredClientSettings {
         chat_output_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(explicit_false.chat.is_empty());
 }
 
 #[test]
 fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
-    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
         chat_output_enabled: Some(true),
         only_switch_to_trusted_domains: Some(true),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let file = state
@@ -641,7 +641,7 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
 
 #[test]
 fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() {
-    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.action(MenuActionId::TogglePlaybackButtons).is_some());
     assert!(state.action(MenuActionId::ToggleAutoplayControls).is_some());
     assert!(state.action(MenuActionId::ToggleHideEmptyRooms).is_some());
@@ -653,22 +653,22 @@ fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() 
             .all(|action| action.label != "Show Chat")
     );
 
-    let explicit_false = MenuDialogShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let explicit_false = MenuDialogShellState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert_eq!(state.sections, explicit_false.sections);
 }
 
 #[test]
 fn public_server_browser_shell_state_uses_stored_server_entries() {
-    let state = PublicServerBrowserShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = PublicServerBrowserShellState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
             ("Backup".to_owned(), "syncplay.example:8995".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(state.servers.len(), 2);
@@ -682,13 +682,13 @@ fn public_server_browser_shell_state_uses_stored_server_entries() {
 
 #[test]
 fn media_search_workflow_shell_state_uses_stored_directories_and_timing() {
-    let state = MediaSearchWorkflowShellState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = MediaSearchWorkflowShellState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
         folder_search_first_file_timeout_seconds: Some(1.5),
         folder_search_timeout_seconds: Some(5.0),
         folder_search_double_check_interval_seconds: Some(0.25),
         folder_search_warning_threshold_seconds: Some(2.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(state.directories.len(), 2);
@@ -702,7 +702,7 @@ fn media_search_workflow_shell_state_uses_stored_directories_and_timing() {
 
 #[test]
 fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         rewind_threshold_seconds: Some(1.25),
         fastforward_threshold_seconds: Some(3.5),
         slowdown_threshold_seconds: Some(2.25),
@@ -713,7 +713,7 @@ fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
         chat_input_relative_font_size: Some(24),
         chat_output_relative_font_size: Some(26),
         notification_timeout_seconds: Some(3),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -770,8 +770,7 @@ fn configuration_dialog_uses_parseable_numeric_text_for_loaded_thresholds() {
 
 #[test]
 fn configuration_validation_flags_invalid_chat_mode_controls() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ChatInputPosition,
@@ -878,9 +877,9 @@ fn controlled_room_secret_stays_redacted_in_actions_and_chat_state_debug() {
     let actions = vec![action.clone()];
     assert!(!format!("{actions:?}").contains(secret));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(action));
     let chat = state

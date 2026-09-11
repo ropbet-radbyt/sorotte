@@ -2600,7 +2600,7 @@ impl GuiPersistedConfigRuntimeOwner {
 mod plex_cache_coordination_tests {
     use std::{collections::BTreeMap, sync::mpsc};
 
-    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_client_app::app_boundary::state::StoredClientSettings;
     use sorotte_plex::{PlexCachedMatch, PlexMediaType, PlexSyncStatus};
 
     use super::*;
@@ -2619,7 +2619,7 @@ mod plex_cache_coordination_tests {
             media_type: None,
         });
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         state.apply_shared_playlist_entries(vec![target.clone()], Some(0), false);
         state.main_window.active_playlist_index = Some(0);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -2700,8 +2700,8 @@ mod plex_cache_coordination_tests {
         );
     }
 
-    fn streaming_settings() -> StoredClientSettingsMvp {
-        StoredClientSettingsMvp {
+    fn streaming_settings() -> StoredClientSettings {
+        StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_streaming_enabled: Some(true),
             plex_sync_enabled: Some(true),
@@ -2709,7 +2709,7 @@ mod plex_cache_coordination_tests {
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }
     }
 

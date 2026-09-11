@@ -1,34 +1,32 @@
 use super::*;
 
-pub(crate) fn legacy_force_gui_prompt_compatibility_line_legacy_compatible(
-    overrides: &LegacyClientArgOverrides,
+pub(crate) fn syncplay_force_gui_prompt_compatibility_line(
+    overrides: &SyncplayClientArgOverrides,
 ) -> Option<&'static str> {
     if !overrides.force_gui_prompt_requested {
         return None;
     }
     if overrides.no_gui_requested {
-        Some(
-            "note: legacy --force-gui-prompt was overridden by --no-gui; continuing in headless mode",
-        )
+        Some("note: --force-gui-prompt was overridden by --no-gui; continuing in headless mode")
     } else {
         Some(
-            "note: legacy --force-gui-prompt requested GUI configuration flow; sorotte-cli has no GUI, so startup is halted. Re-run with --no-gui to continue headless.",
+            "note: --force-gui-prompt requested GUI configuration flow; sorotte-cli has no GUI, so startup is halted. Re-run with --no-gui to continue headless.",
         )
     }
 }
 
-pub(crate) fn should_halt_for_stored_force_gui_prompt_legacy_compatible(
-    overrides: &LegacyClientArgOverrides,
-    settings: &StoredClientSettingsMvp,
+pub(crate) fn should_halt_for_stored_force_gui_prompt(
+    overrides: &SyncplayClientArgOverrides,
+    settings: &StoredClientSettings,
 ) -> bool {
     !overrides.force_gui_prompt_requested
         && settings.force_gui_prompt == Some(true)
         && !overrides.no_gui_requested
 }
 
-pub(crate) fn stored_force_gui_prompt_compatibility_line_legacy_compatible(
-    overrides: &LegacyClientArgOverrides,
-    settings: &StoredClientSettingsMvp,
+pub(crate) fn stored_force_gui_prompt_compatibility_line(
+    overrides: &SyncplayClientArgOverrides,
+    settings: &StoredClientSettings,
 ) -> Option<&'static str> {
     if overrides.force_gui_prompt_requested || settings.force_gui_prompt != Some(true) {
         return None;

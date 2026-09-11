@@ -172,7 +172,7 @@ fn fixture_entrypoint() {
         Duration::from_millis(300),
     )
     .unwrap();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     pump.pump(&state);
     wait_marker(&root, "owner-blocked");
     wait_marker(&root, "exit-parent");

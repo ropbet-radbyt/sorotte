@@ -1,7 +1,7 @@
 use super::*;
 
 impl MenuDialogShellState {
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         Self {
             sections: vec![
                 MenuSectionShellState {

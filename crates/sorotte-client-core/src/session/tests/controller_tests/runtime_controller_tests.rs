@@ -552,8 +552,7 @@ fn client_runtime_noncontroller_play_intent_survives_recent_rewind_suppression()
             )
             .expect("hello should apply");
     session.model.playback.local_paused = Some(true);
-    session.model.playback.last_rewound_at_seconds =
-        Some(unix_wall_clock_time_seconds_legacy_compatible());
+    session.model.playback.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds());
     session
             .apply_message_json(
                 r#"{"State":{"playstate":{"position":5.0,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,

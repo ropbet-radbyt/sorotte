@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::GuiPersistedSettingsPatch;
 use crate::app::runtime_owner::{GuiActivePlexPlaylistResolveJob, GuiActivePlexPlaylistSearchJob};
-use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
 
 mod concurrent_writers;
@@ -37,13 +37,12 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("persisted.example".to_owned()),
         room: Some("Cinema".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     state.resync_from_settings(saved_settings.clone());
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
@@ -63,21 +62,21 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
         assert!(state.apply(action));
     }
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+        load_sorotte_ini_stored_client_settings_from_path(&path)
             .expect("save should leave a readable config file"),
         Some(saved_settings.clone())
     );
 
-    let reloaded_settings = StoredClientSettingsMvp {
+    let reloaded_settings = StoredClientSettings {
         host: Some("reloaded.example".to_owned()),
         room: Some("Rewatch".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &reloaded_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&path, &reloaded_settings)
         .expect("updating the config file should succeed");
     assert!(state.apply(GuiShellAction::BeginConfigurationReload));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettingsMvp::default()),
+        GuiPendingCompletionRequest::ReloadConfiguration(StoredClientSettings::default()),
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let reload_actions = handle.drain_actions();
@@ -113,7 +112,7 @@ fn gui_persisted_config_runtime_owner_plex_cache_uses_sorotte_cache_directory() 
 fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials_or_subsettings() {
     let root = test_temp_root("plugin-disable-plex-preserves-settings");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_user_token: Some("user-token".into()),
@@ -122,21 +121,21 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
         plex_selected_server_token: Some("server-token".into()),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Plex settings should be persisted");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
+    owner.active_session_settings = Some(stored_client_settings_runtime_snapshot(
+        &StoredClientSettings {
             host: Some("active-session.example".to_owned()),
             room: Some("+Room:CB39A19549E8:ab-123-456".to_owned()),
             server_password: Some("active-session-secret".into()),
             ..saved_settings.clone()
-        }),
-    );
+        },
+    ));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionHost,
         value: "unsaved-draft.example".to_owned().into(),
@@ -234,7 +233,7 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
             .map(|password| password.expose_secret()),
         Some("AB-123-456")
     );
-    owner.promote_on_save_runtime_fields(&StoredClientSettingsMvp {
+    owner.promote_on_save_runtime_fields(&StoredClientSettings {
         media_search_directories: Some(vec!["D:/Saved Media".to_owned()]),
         ..saved_settings.clone()
     });
@@ -248,7 +247,7 @@ fn gui_persisted_config_runtime_owner_disables_plex_without_clearing_credentials
         "ordinary OnSave promotion must preserve active controlled-room credentials"
     );
 
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex plugin setting config should be readable")
         .expect("Plex plugin setting config should exist");
     assert_eq!(settings.plex_plugin_enabled, Some(false));
@@ -291,7 +290,7 @@ fn gui_persisted_config_runtime_owner_preserves_plex_jobs_when_plugin_disable_pe
     std::fs::create_dir_all(&root).expect("test directory should be created");
     let sentinel_path = root.join("unchanged.txt");
     std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
@@ -300,7 +299,7 @@ fn gui_persisted_config_runtime_owner_preserves_plex_jobs_when_plugin_disable_pe
         plex_selected_server_id: Some("machine-id".to_owned()),
         plex_selected_server_url: Some("https://plex.example.invalid:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -392,16 +391,16 @@ fn gui_persisted_config_runtime_owner_preserves_plex_jobs_when_plugin_disable_pe
 fn gui_configuration_save_invalidates_plex_jobs_against_saved_settings() {
     let root = test_temp_root("configuration-save-plex-context");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         plex_plugin_enabled: Some(true),
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("old-machine".to_owned()),
         plex_selected_server_url: Some("https://old.example:32400".to_owned()),
         plex_selected_server_token: Some("old-server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -455,15 +454,15 @@ fn gui_configuration_save_invalidates_plex_jobs_against_saved_settings() {
 fn gui_persisted_config_runtime_owner_disables_media_matching_and_cancels_background_work() {
     let root = test_temp_root("plugin-disable-media-match-cancels");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         media_match_fingerprinting_enabled: Some(true),
         media_match_background_warmup_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
         media_match_runtime_tolerance_enabled: Some(true),
         media_match_autoplay_policy: Some("AllowExact".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Media Matching settings should be persisted");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -501,7 +500,7 @@ fn gui_persisted_config_runtime_owner_disables_media_matching_and_cancels_backgr
     assert!(state.media_match.settings.fingerprinting_enabled);
     assert!(state.media_match.settings.background_warmup_enabled);
 
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Media Matching plugin setting config should be readable")
         .expect("Media Matching plugin setting config should exist");
     assert_eq!(settings.media_matching_plugin_enabled, Some(false));
@@ -521,12 +520,12 @@ fn gui_persisted_config_runtime_owner_disables_media_matching_and_cancels_backgr
 fn gui_persisted_config_runtime_owner_reenables_media_matching_and_refreshes_snapshot() {
     let root = test_temp_root("plugin-reenable-media-match-refreshes");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         media_matching_plugin_enabled: Some(false),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Media Matching plugin setting should be persisted");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     owner.media_match_runtime_snapshot.remote_status = Some("disabled: plugin off".to_owned());
@@ -572,7 +571,7 @@ fn gui_persisted_config_runtime_owner_reenables_media_matching_and_refreshes_sna
         state.media_match.install_location.as_deref(),
         Some(expected_install_location.as_str())
     );
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Media Matching plugin setting config should be readable")
         .expect("Media Matching plugin setting config should exist");
     assert_eq!(settings.media_matching_plugin_enabled, Some(true));
@@ -584,13 +583,13 @@ fn gui_persisted_config_runtime_owner_reenables_media_matching_and_refreshes_sna
 fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_helper_details() {
     let root = test_temp_root("plugin-disable-stream-support-clears-work");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         server_password: Some("saved-secret".into()),
         trusted_domains: Some(vec!["example.invalid".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Stream Support settings should be persisted");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -658,7 +657,7 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
             .enabled_for(GuiPluginSelection::StreamSupport)
     );
 
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Stream Support plugin setting config should be readable")
         .expect("Stream Support plugin setting config should exist");
     assert_eq!(settings.stream_support_plugin_enabled, Some(false));
@@ -702,13 +701,13 @@ fn gui_persisted_config_runtime_owner_disables_stream_support_without_deleting_h
 fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
     let root = test_temp_root("media-match-settings-owner");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         media_match_fingerprinting_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Media Matching settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -751,7 +750,7 @@ fn gui_persisted_config_runtime_owner_persists_media_match_settings() {
     ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("media-match settings config should be readable")
         .expect("media-match settings config should exist");
     assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
@@ -894,11 +893,11 @@ fn gui_persisted_config_runtime_owner_preserves_media_match_and_draft_when_persi
     std::fs::create_dir_all(&root).expect("test directory should be created");
     let sentinel_path = root.join("unchanged.txt");
     std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
     owner
@@ -981,16 +980,16 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
             );
             let root = test_temp_root(&format!("secret-baseline-{case}"));
             let config_path = root.join("sorotte.ini");
-            let saved_settings = StoredClientSettingsMvp {
+            let saved_settings = StoredClientSettings {
                 language: Some("en".to_owned()),
                 server_password: Some("original-secret".into()),
                 plex_plugin_enabled: Some(true),
                 plex_streaming_enabled: Some(false),
                 // Keep this persistence fixture independent of startup HTTP work.
                 public_servers: Some(Vec::new()),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             };
-            upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+            upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
                 .expect("secret baseline fixture should persist");
             let mut owner =
                 GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
@@ -1067,7 +1066,7 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
                 "{case}: settings persistence must not retain a public-server worker",
             );
 
-            let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+            let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
                 .expect("secret baseline config should remain readable")
                 .expect("secret baseline config should remain present");
             for (layer, settings) in [
@@ -1094,13 +1093,13 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
 fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
     let root = test_temp_root("plex-streaming-four-layer-success");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Plex streaming settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -1108,7 +1107,7 @@ fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
 
     assert!(owner.handle_toggle_plex_streaming_request(&handle, &mut state, true));
 
-    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex streaming config should be readable")
         .expect("Plex streaming config should exist");
     assert_eq!(disk.plex_streaming_enabled, Some(true));
@@ -1133,14 +1132,14 @@ fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
 fn plex_sync_persistence_patch_preserves_unrelated_draft_and_secret_intent() {
     let root = test_temp_root("plex-sync-field-patch");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
         plex_sync_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Plex settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -1151,7 +1150,7 @@ fn plex_sync_persistence_patch_preserves_unrelated_draft_and_secret_intent() {
 
     assert!(owner.handle_toggle_plex_sync_request(&handle, &mut state, true));
 
-    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
         .expect("Plex config should exist");
     assert_eq!(disk.plex_sync_enabled, Some(true));
@@ -1179,14 +1178,14 @@ fn plex_sync_persistence_patch_preserves_unrelated_draft_and_secret_intent() {
 fn plex_server_selection_patch_preserves_unrelated_draft_and_secret_intent() {
     let root = test_temp_root("plex-server-field-patch");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Plex settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     owner.plex_servers.push(PlexServerConnection {
@@ -1211,7 +1210,7 @@ fn plex_server_selection_patch_preserves_unrelated_draft_and_secret_intent() {
         "https://raptor.example:32400".to_owned(),
     ));
 
-    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
         .expect("Plex config should exist");
     assert_eq!(
@@ -1301,7 +1300,7 @@ fn plex_server_selection_patch_preserves_unrelated_draft_and_secret_intent() {
 fn plex_disconnect_patch_preserves_unrelated_draft_and_secret_intent() {
     let root = test_temp_root("plex-disconnect-field-patch");
     let config_path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
@@ -1311,9 +1310,9 @@ fn plex_disconnect_patch_preserves_unrelated_draft_and_secret_intent() {
         plex_selected_server_id: Some("raptor-machine".to_owned()),
         plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("initial Plex settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     owner.plex_servers.push(PlexServerConnection {
@@ -1333,7 +1332,7 @@ fn plex_disconnect_patch_preserves_unrelated_draft_and_secret_intent() {
 
     assert!(owner.handle_disconnect_plex_request(&handle, &mut state));
 
-    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
         .expect("Plex config should exist");
     assert_eq!(disk.plex_sync_enabled, Some(false));
@@ -1370,12 +1369,12 @@ fn plex_persistence_failure_preserves_disk_saved_draft_and_runtime_state() {
     std::fs::create_dir_all(&root).expect("test directory should be created");
     let sentinel_path = root.join("unchanged.txt");
     std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         language: Some("en".to_owned()),
         server_password: Some("saved-secret".into()),
         plex_plugin_enabled: Some(true),
         plex_sync_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
     owner.plex_sync_next_tick_due_at = Some(std::time::Instant::now());
@@ -1422,8 +1421,7 @@ fn gui_persisted_config_runtime_owner_recovers_media_match_config_path_from_stor
     let config_path = root.join("sorotte.ini");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
             GuiConfigStorageRuntimeSnapshot {
@@ -1440,7 +1438,7 @@ fn gui_persisted_config_runtime_owner_recovers_media_match_config_path_from_stor
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     assert_eq!(owner.config_path, Some(config_path.clone()));
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("media-match settings config should be readable")
         .expect("media-match settings config should exist");
     assert_eq!(settings.media_match_fingerprinting_enabled, Some(true));
@@ -1522,15 +1520,15 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
     let new_root = test_temp_root("config-storage-new-root");
     let _ = std::fs::remove_dir_all(&new_root);
     let old_config_path = old_root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("portable.example".to_owned()),
         room: Some("Portable".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&old_config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&old_config_path, &saved_settings)
         .expect("old config should be written");
     std::fs::write(
-        legacy_gui_qsettings_store_path(&old_root, "MainWindow"),
+        syncplay_qsettings_store_path(&old_root, "MainWindow"),
         "[MainWindow]\nactiveView = setup\n",
     )
     .expect("old GUI state should be written");
@@ -1595,12 +1593,12 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
         "changing storage roots should preserve the old config file"
     );
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&new_root.join("sorotte.ini"))
+        load_sorotte_ini_stored_client_settings_from_path(&new_root.join("sorotte.ini"))
             .expect("new config should be readable"),
         Some(saved_settings)
     );
     assert!(
-        legacy_gui_qsettings_store_path(&new_root, "MainWindow").exists(),
+        syncplay_qsettings_store_path(&new_root, "MainWindow").exists(),
         "known GUI state should be copied to the new root"
     );
     assert!(
@@ -1691,17 +1689,17 @@ fn config_storage_root_change_restores_target_config_when_locator_commit_fails()
     std::fs::create_dir_all(sorotte_client_install_locator_path(&install_root))
         .expect("a directory at the locator path should force locator persistence to fail");
 
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("Saved".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let attempted_settings = StoredClientSettingsMvp {
+    let attempted_settings = StoredClientSettings {
         host: Some("attempted.example".to_owned()),
         room: Some("Attempted".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&old_config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&old_config_path, &saved_settings)
         .expect("old config should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(old_config_path.clone()));
@@ -1766,14 +1764,14 @@ fn config_storage_root_change_restores_target_config_when_locator_commit_fails()
 fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_run_state() {
     let root = test_temp_root("clear-gui-data-owner");
     let path = root.join("sorotte.ini");
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         host: Some("persisted.example".to_owned()),
         room: Some("Cinema".to_owned()),
         public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&path, &saved_settings)
         .expect("saved configuration should be written");
     persist_gui_ui_state_at_root(
         &root,
@@ -1873,8 +1871,8 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     assert!(!path.exists(), "clear-GUI-data should remove sorotte.ini");
     for store_name in ["MainWindow", "Interface", "MediaBrowseDialog"] {
         assert!(
-            !legacy_gui_qsettings_store_path(&root, store_name).exists(),
-            "clear-GUI-data should remove legacy GUI state store {store_name}"
+            !syncplay_qsettings_store_path(&root, store_name).exists(),
+            "clear-GUI-data should remove Syncplay GUI state store {store_name}"
         );
     }
     assert!(
@@ -1887,10 +1885,7 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     );
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert_eq!(
-        state.saved_configuration,
-        StoredClientSettingsMvp::default()
-    );
+    assert_eq!(state.saved_configuration, StoredClientSettings::default());
     assert_eq!(state.last_media_dialog_directory, None);
     assert!(state.public_servers.servers.is_empty());
     assert!(state.media_search.directories.is_empty());

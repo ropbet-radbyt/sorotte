@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stateful Python protocol probe used by sorotte compatibility tests.
 
-The probe intentionally mirrors key legacy Syncplay server message shapes
+The probe intentionally mirrors key Syncplay server message shapes
 for a focused subset of protocol behavior: Hello, List, Set, State, TLS.
 """
 

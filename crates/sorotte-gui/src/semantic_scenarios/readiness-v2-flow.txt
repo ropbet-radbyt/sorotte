@@ -1,13 +1,13 @@
-# Readiness V2 presentation and legacy fallback
+# Readiness V2 presentation and Syncplay readiness
 setting	username	alice
 setting	room	room1
 apply-main-window-runtime	room1	false	true	false	true	true	true	false	alice,true,false,false	placeholder.mkv	system>connected
 
-# A legacy participant remains usable without claiming technical guarantees.
+# A participant without coordinated start support remains usable.
 assert-value	main-window:user:0:readiness	Not Ready
-assert-value	main-window:user:0:readiness-technical	unavailable (legacy readiness)
+assert-value	main-window:user:0:readiness-technical	unavailable (Syncplay readiness)
 assert-value	main-window:user:0:readiness-eligibility	room_ready=no, start_eligible=unknown
-assert-value	main-window:user:0:readiness-participation	legacy participant; technical start guarantees unavailable
+assert-value	main-window:user:0:readiness-participation	coordinated start unsupported; technical start guarantees unavailable
 
 # Direct Ready and Not Ready controls operate on displayed intent.
 activate	main-window:control:set-ready
@@ -91,9 +91,9 @@ apply-main-window-participant-status	carol	waiting	ready
 assert-value	main-window:user:2:participant-status	Waiting for first status report
 assert-value	main-window:user:2:member-freshness	Waiting for first heartbeat
 assert-tone	main-window:user:2:participant-status	warning
-apply-main-window-participant-status	dave	legacy	excluded legacy participant
-assert-value	main-window:user:3:participant-status	Status unavailable · legacy client
-assert-value	main-window:user:3:member-player	unavailable (legacy client)
+apply-main-window-participant-status	dave	unsupported	participant without coordinated start support
+assert-value	main-window:user:3:participant-status	Status reporting unsupported
+assert-value	main-window:user:3:member-player	unavailable (status reporting unsupported)
 assert-tone	main-window:user:3:participant-status	muted
 apply-main-window-participant-status	eve	report	unavailable	unknown	none	none	none	none	none	none	7	19	exact	none	none	2	false	none	unknown
 assert-value	main-window:user:4:participant-status	Player unavailable · fresh

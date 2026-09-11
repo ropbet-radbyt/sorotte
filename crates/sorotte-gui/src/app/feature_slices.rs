@@ -2,8 +2,7 @@
 //!
 //! The shell intentionally contains transient UI details such as navigation,
 //! modal and edit state.  The runtime must not receive that entire aggregate.
-//! These views are the compatibility boundary while the remaining shell
-//! actions are moved into feature reducers.
+//! These views carry feature state between the shell and runtime.
 
 use super::remote_services;
 #[cfg(test)]
@@ -21,9 +20,7 @@ use super::shell_state::{
     PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 use super::ui_state::GuiUpdateCheckState;
-use sorotte_client_app::app_boundary::{
-    commands::LocalOffsetCommand, state::StoredClientSettingsMvp,
-};
+use sorotte_client_app::app_boundary::{commands::LocalOffsetCommand, state::StoredClientSettings};
 
 /// Feature routing for commands sent from the shell to the application layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,20 +35,20 @@ pub(super) enum GuiFeature {
 
 /// Typed application command used by the runtime queue.
 ///
-/// `GuiRuntimeRequest` remains the compatibility action façade at call sites;
+/// `GuiRuntimeRequest` remains the shell action façade at call sites;
 /// requests are classified once when they cross into the application layer.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum GuiClientCommand {
     Player(player::Command),
     Updates(Box<updates::Command>),
-    Legacy {
+    Routed {
         feature: GuiFeature,
         request: Box<GuiRuntimeRequest>,
     },
 }
 
 impl GuiClientCommand {
-    pub(super) fn from_compatibility_request(request: GuiRuntimeRequest) -> Self {
+    pub(super) fn from_runtime_request(request: GuiRuntimeRequest) -> Self {
         use GuiRuntimeRequest as Request;
 
         match request {
@@ -101,14 +98,14 @@ impl GuiClientCommand {
             Request::ApplyStagedUpdate(staged_update) => {
                 Self::Updates(Box::new(updates::Command::ApplyStaged(staged_update)))
             }
-            request => Self::Legacy {
-                feature: Self::legacy_feature(&request),
+            request => Self::Routed {
+                feature: Self::request_feature(&request),
                 request: Box::new(request),
             },
         }
     }
 
-    fn legacy_feature(request: &GuiRuntimeRequest) -> GuiFeature {
+    fn request_feature(request: &GuiRuntimeRequest) -> GuiFeature {
         use GuiRuntimeRequest as Request;
 
         match request {
@@ -188,11 +185,11 @@ impl GuiClientCommand {
         }
     }
 
-    pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
+    pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
         match self {
-            Self::Player(command) => command.into_compatibility_request(),
-            Self::Updates(command) => (*command).into_compatibility_request(),
-            Self::Legacy { request, .. } => *request,
+            Self::Player(command) => command.into_runtime_request(),
+            Self::Updates(command) => (*command).into_runtime_request(),
+            Self::Routed { request, .. } => *request,
         }
     }
 }
@@ -236,7 +233,7 @@ pub(super) mod player {
     }
 
     impl Command {
-        pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
+        pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
             match self {
                 Self::UndoSeek => GuiRuntimeRequest::UndoSeek,
                 Self::SetOffset(command) => GuiRuntimeRequest::SetOffset(command),
@@ -332,7 +329,7 @@ pub(super) mod settings {
         pub(super) plugin_enablement: GuiPluginEnablementState,
         pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
         pub(super) pending_storage_target: Option<GuiConfigStorageChangeTarget>,
-        pub(super) saved: StoredClientSettingsMvp,
+        pub(super) saved: StoredClientSettings,
         pub(super) draft: FirstRunConfigurationDialogDraft,
         pub(super) validation: GuiValidationState,
         pub(super) runtime_validation_issues: Vec<GuiValidationIssue>,
@@ -384,7 +381,7 @@ pub(super) mod updates {
     }
 
     impl Command {
-        pub(super) fn into_compatibility_request(self) -> GuiRuntimeRequest {
+        pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
             match self {
                 Self::CheckForUpdates {
                     language,
@@ -622,8 +619,7 @@ mod tests {
 
     #[test]
     fn runtime_input_ignores_ui_only_navigation_modal_and_edit_state() {
-        let state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         let expected = GuiRuntimeInput::from_shell(&state);
         let mut ui_only_change = state;
         ui_only_change.active_view = GuiShellView::Room;
@@ -638,7 +634,7 @@ mod tests {
     #[test]
     fn compatibility_projection_preserves_runtime_feature_views() {
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         state.pending_local_ready_target = Some(true);
         state.playlist_shuffle_nonce = 42;
         state.last_media_dialog_directory = Some("C:/media".to_owned());
@@ -652,41 +648,37 @@ mod tests {
     #[test]
     fn compatibility_commands_are_routed_to_feature_owners() {
         assert!(matches!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::SetRoom(
-                "room".to_owned(),
-            )),
-            GuiClientCommand::Legacy {
+            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::SetRoom("room".to_owned(),)),
+            GuiClientCommand::Routed {
                 feature: GuiFeature::Session,
                 ..
             }
         ));
         assert!(matches!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::ShuffleEntirePlaylist,),
-            GuiClientCommand::Legacy {
+            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::ShuffleEntirePlaylist,),
+            GuiClientCommand::Routed {
                 feature: GuiFeature::Playlist,
                 ..
             }
         ));
         assert!(matches!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::StartPlexAuth),
-            GuiClientCommand::Legacy {
+            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::StartPlexAuth),
+            GuiClientCommand::Routed {
                 feature: GuiFeature::Plex,
                 ..
             }
         ));
         assert!(matches!(
-            GuiClientCommand::from_compatibility_request(
-                GuiRuntimeRequest::CancelPlexPlaylistJobs {
-                    reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
-                },
-            ),
-            GuiClientCommand::Legacy {
+            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::CancelPlexPlaylistJobs {
+                reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
+            },),
+            GuiClientCommand::Routed {
                 feature: GuiFeature::Plex,
                 ..
             }
         ));
         assert!(matches!(
-            GuiClientCommand::from_compatibility_request(GuiRuntimeRequest::CheckForUpdates {
+            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::CheckForUpdates {
                 language: "en".to_owned(),
                 update_channel: None,
                 user_initiated: true,
@@ -740,9 +732,9 @@ mod tests {
         ];
 
         for request in requests {
-            let command = GuiClientCommand::from_compatibility_request(request.clone());
+            let command = GuiClientCommand::from_runtime_request(request.clone());
             assert!(matches!(command, GuiClientCommand::Updates(_)));
-            assert_eq!(command.into_compatibility_request(), request);
+            assert_eq!(command.into_runtime_request(), request);
         }
     }
 
@@ -765,9 +757,9 @@ mod tests {
         ];
 
         for request in requests {
-            let command = GuiClientCommand::from_compatibility_request(request.clone());
+            let command = GuiClientCommand::from_runtime_request(request.clone());
             assert!(matches!(command, GuiClientCommand::Player(_)));
-            assert_eq!(command.into_compatibility_request(), request);
+            assert_eq!(command.into_runtime_request(), request);
         }
     }
 

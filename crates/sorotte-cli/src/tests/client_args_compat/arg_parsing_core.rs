@@ -1,28 +1,28 @@
 use super::*;
 
 #[test]
-fn parse_host_and_optional_port_from_host_arg_legacy_compatible_parses_expected_shapes() {
+fn parse_host_and_optional_port_from_host_arg_parses_expected_shapes() {
     assert_eq!(
-        parse_host_and_optional_port_from_host_arg_legacy_compatible("example.org:8999"),
+        parse_host_and_optional_port_from_host_arg("example.org:8999"),
         ("example.org".to_owned(), Some(8999))
     );
     assert_eq!(
-        parse_host_and_optional_port_from_host_arg_legacy_compatible("example.org:notaport"),
+        parse_host_and_optional_port_from_host_arg("example.org:notaport"),
         ("example.org".to_owned(), None)
     );
     assert_eq!(
-        parse_host_and_optional_port_from_host_arg_legacy_compatible("[2001:db8::1]:8999"),
+        parse_host_and_optional_port_from_host_arg("[2001:db8::1]:8999"),
         ("[2001:db8::1]".to_owned(), Some(8999))
     );
     assert_eq!(
-        parse_host_and_optional_port_from_host_arg_legacy_compatible("2001:db8::1"),
+        parse_host_and_optional_port_from_host_arg("2001:db8::1"),
         ("[2001:db8::1]".to_owned(), None)
     );
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
-    let overrides = parse_legacy_client_arg_overrides([
+fn parse_syncplay_client_arg_overrides_parses_syncplay_client_flags() {
+    let overrides = parse_syncplay_client_arg_overrides([
         "--no-gui",
         "-a",
         "example.org:12345",
@@ -36,7 +36,7 @@ fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
 
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -64,12 +64,12 @@ fn parse_legacy_client_arg_overrides_parses_legacy_client_flags() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_handles_optional_room_and_ipv6_host() {
-    let overrides = parse_legacy_client_arg_overrides(["-r", "-n", "alice", "--host", "[::1]"]);
+fn parse_syncplay_client_arg_overrides_handles_optional_room_and_ipv6_host() {
+    let overrides = parse_syncplay_client_arg_overrides(["-r", "-n", "alice", "--host", "[::1]"]);
 
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -96,11 +96,11 @@ fn parse_legacy_client_arg_overrides_handles_optional_room_and_ipv6_host() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_parses_help_and_version_switches() {
-    let overrides = parse_legacy_client_arg_overrides(["--help", "-v"]);
+fn parse_syncplay_client_arg_overrides_parses_help_and_version_switches() {
+    let overrides = parse_syncplay_client_arg_overrides(["--help", "-v"]);
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: false,
             no_store: false,
             debug_requested: false,
@@ -128,8 +128,8 @@ fn parse_legacy_client_arg_overrides_parses_help_and_version_switches() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash() {
-    let overrides = parse_legacy_client_arg_overrides([
+fn parse_syncplay_client_arg_overrides_stops_parsing_at_double_dash() {
+    let overrides = parse_syncplay_client_arg_overrides([
         "--no-gui",
         "--",
         "--host",
@@ -140,7 +140,7 @@ fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash() {
 
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -172,9 +172,9 @@ fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash_preserves_launch_only_args_verbatim()
+fn parse_syncplay_client_arg_overrides_stops_parsing_at_double_dash_preserves_launch_only_args_verbatim()
  {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "--no-gui",
         "--",
         "--profile=fast",
@@ -191,11 +191,11 @@ fn parse_legacy_client_arg_overrides_stops_parsing_at_double_dash_preserves_laun
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
-    let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--wat", "-x", "value"]);
+fn parse_syncplay_client_arg_overrides_collects_unknown_flags() {
+    let overrides = parse_syncplay_client_arg_overrides(["--no-gui", "--wat", "-x", "value"]);
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -217,19 +217,19 @@ fn parse_legacy_client_arg_overrides_collects_unknown_flags() {
             show_help: false,
             show_version: false,
             unknown_options: vec![
-                LegacyClientArgumentIssue::unknown_option("--wat"),
-                LegacyClientArgumentIssue::unknown_option("-x"),
+                SyncplayClientArgumentIssue::unknown_option("--wat"),
+                SyncplayClientArgumentIssue::unknown_option("-x"),
             ],
         }
     );
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_ignores_legacy_psn_arg() {
-    let overrides = parse_legacy_client_arg_overrides(["-psn", "0_12345", "--no-gui"]);
+fn parse_syncplay_client_arg_overrides_ignores_legacy_psn_arg() {
+    let overrides = parse_syncplay_client_arg_overrides(["-psn", "0_12345", "--no-gui"]);
     assert_eq!(
         overrides,
-        LegacyClientArgOverrides {
+        SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -256,8 +256,8 @@ fn parse_legacy_client_arg_overrides_ignores_legacy_psn_arg() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_parses_no_store_flag() {
-    let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--no-store"]);
+fn parse_syncplay_client_arg_overrides_parses_no_store_flag() {
+    let overrides = parse_syncplay_client_arg_overrides(["--no-gui", "--no-store"]);
     assert!(overrides.connect_requested);
     assert!(overrides.no_gui_requested);
     assert!(overrides.no_store);
@@ -265,8 +265,8 @@ fn parse_legacy_client_arg_overrides_parses_no_store_flag() {
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_parses_legacy_compatibility_flags_without_error() {
-    let overrides = parse_legacy_client_arg_overrides([
+fn parse_syncplay_client_arg_overrides_parses_legacy_compatibility_flags_without_error() {
+    let overrides = parse_syncplay_client_arg_overrides([
         "--debug",
         "--force-gui-prompt",
         "--clear-gui-data",

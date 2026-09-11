@@ -1,10 +1,10 @@
 use super::*;
-use crate::legacy_settings::StoredClientSettingsMvp;
+use crate::stored_settings::StoredClientSettings;
 use proptest::prelude::*;
 
 #[test]
 fn missing_key_is_inserted_inside_the_final_matching_section() {
-    let desired = StoredClientSettingsMvp {
+    let desired = StoredClientSettings {
         username: Some("Alice".into()),
         ..Default::default()
     };
@@ -13,14 +13,11 @@ fn missing_key_is_inserted_inside_the_final_matching_section() {
         "[unknown]\nkeep=yes\n[client_settings]\n; retain\n[other]\nx=y\n",
         "[client_settings]\n; first\n[unknown]\nkeep=yes\n[ CLIENT_SETTINGS ]\n; last\n[other]\nx=y\n",
     ] {
-        let saved = upsert_sorotte_ini_stored_client_settings_mvp(original, &desired);
-        assert_eq!(
-            parse_sorotte_ini_stored_client_settings_mvp(&saved),
-            desired
-        );
+        let saved = upsert_sorotte_ini_stored_client_settings(original, &desired);
+        assert_eq!(parse_sorotte_ini_stored_client_settings(&saved), desired);
         assert!(saved.contains("keep=yes"));
         assert_eq!(
-            upsert_sorotte_ini_stored_client_settings_mvp(&saved, &desired),
+            upsert_sorotte_ini_stored_client_settings(&saved, &desired),
             saved
         );
         let expected = if original.contains("; last") {
@@ -39,7 +36,7 @@ fn missing_key_is_inserted_inside_the_final_matching_section() {
 
 #[test]
 fn adding_a_missing_section_preserves_exact_existing_spacing() {
-    let desired = StoredClientSettingsMvp {
+    let desired = StoredClientSettings {
         username: Some("Alice".into()),
         ..Default::default()
     };
@@ -55,7 +52,7 @@ fn adding_a_missing_section_preserves_exact_existing_spacing() {
         ),
     ] {
         assert_eq!(
-            upsert_sorotte_ini_stored_client_settings_mvp(original, &desired),
+            upsert_sorotte_ini_stored_client_settings(original, &desired),
             expected
         );
     }
@@ -77,10 +74,10 @@ fn clearing_nullable_keys_removes_all_copies_and_retains_other_sections() {
     ]
     .map(str::to_owned)
     .to_vec();
-    super::helpers::remove_ini_value_legacy_compatible(&mut lines, "server_data", "password");
+    super::helpers::remove_ini_value(&mut lines, "server_data", "password");
     let saved = lines.join("\n");
     assert!(
-        parse_sorotte_ini_stored_client_settings_mvp(&saved)
+        parse_sorotte_ini_stored_client_settings(&saved)
             .server_password
             .is_none()
     );
@@ -98,35 +95,32 @@ fn public_writer_replaces_every_effective_duplicate_including_credentials() {
         "\u{feff}; comment\n[ CLIENT_Settings ]\n NaMe = first\n[ SERVER_DATA ]\n Password = first\n[ PLEX ]\n UserToken = first\n[ client_SETTINGS ]\n NAME = last\n[ server_DATA ]\n PASSWORD = last\n[ plex ]\n USERTOKEN = last\n",
     ] {
         let contents = format!("{contents}[unknown]\nkeep=100%%\n; retain me\n");
-        let desired = StoredClientSettingsMvp {
+        let desired = StoredClientSettings {
             username: Some("new%\nname".into()),
             server_password: Some("new%\rpassword".into()),
             plex_user_token: Some("new%\ttoken".into()),
             ..Default::default()
         };
-        let saved = upsert_sorotte_ini_stored_client_settings_mvp(&contents, &desired);
-        assert_eq!(
-            parse_sorotte_ini_stored_client_settings_mvp(&saved),
-            desired
-        );
+        let saved = upsert_sorotte_ini_stored_client_settings(&contents, &desired);
+        assert_eq!(parse_sorotte_ini_stored_client_settings(&saved), desired);
         assert!(saved.contains("[unknown]\nkeep=100%%\n; retain me\n"));
         assert_eq!(
             saved.starts_with('\u{feff}'),
             contents.starts_with('\u{feff}')
         );
         assert_eq!(
-            upsert_sorotte_ini_stored_client_settings_mvp(&saved, &desired),
+            upsert_sorotte_ini_stored_client_settings(&saved, &desired),
             saved
         );
 
-        let cleared = upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity(
+        let cleared = upsert_sorotte_ini_stored_client_settings_clearing_plex_identity(
             &saved,
-            &StoredClientSettingsMvp {
+            &StoredClientSettings {
                 server_password: Some("".into()),
                 ..Default::default()
             },
         );
-        let parsed = parse_sorotte_ini_stored_client_settings_mvp(&cleared);
+        let parsed = parse_sorotte_ini_stored_client_settings(&cleared);
         assert!(parsed.server_password.is_none());
         assert!(parsed.plex_user_token.is_none());
         assert!(!cleared.to_ascii_lowercase().contains("usertoken"));
@@ -148,10 +142,10 @@ proptest! {
             let section = if mixed_case && index % 2 == 0 { " PLEX " } else { "plex" };
             contents.push_str(&format!("[{section}]\nuserToken={old}\nUSERtoken = {old}\n; keep {index}\nunknown_{index}=yes\n"));
         }
-        let desired = StoredClientSettingsMvp { plex_user_token: Some(value.into()), ..Default::default() };
-        let saved = upsert_sorotte_ini_stored_client_settings_mvp(&contents, &desired);
-        prop_assert_eq!(parse_sorotte_ini_stored_client_settings_mvp(&saved), desired.clone());
-        prop_assert_eq!(upsert_sorotte_ini_stored_client_settings_mvp(&saved, &desired), saved.clone());
+        let desired = StoredClientSettings { plex_user_token: Some(value.into()), ..Default::default() };
+        let saved = upsert_sorotte_ini_stored_client_settings(&contents, &desired);
+        prop_assert_eq!(parse_sorotte_ini_stored_client_settings(&saved), desired.clone());
+        prop_assert_eq!(upsert_sorotte_ini_stored_client_settings(&saved, &desired), saved.clone());
         for index in 0..duplicates {
             let expected = format!("; keep {index}\nunknown_{index}=yes");
             prop_assert!(saved.contains(&expected));

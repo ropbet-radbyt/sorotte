@@ -2698,7 +2698,7 @@ fn active_network_option_reapply_treats_property_unavailable_as_healthy_idle_pla
 #[test]
 fn delayed_active_network_media_fixture_reports_idle_then_applies_network_options() {
     let (mut adapter, commands) =
-        MpvAdapter::with_delayed_active_network_media_test_ipc(LegacySyncplayUiSettings::default());
+        MpvAdapter::with_delayed_active_network_media_test_ipc(SyncplayUiSettings::default());
     adapter.configure_network_media_options([("cache-secs", "75"), ("cache-pause-wait", "5")]);
 
     assert_eq!(
@@ -4108,7 +4108,7 @@ fn continuous_hook_degradation_is_emitted_only_once() {
 #[test]
 fn queued_hook_recovery_survives_successful_explicit_policy_apply() {
     let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
-        LegacySyncplayUiSettings::default(),
+        SyncplayUiSettings::default(),
         usize::MAX,
     );
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4143,7 +4143,7 @@ fn queued_hook_recovery_survives_successful_explicit_policy_apply() {
 #[test]
 fn queued_hook_degradation_survives_failed_explicit_policy_apply() {
     let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
-        LegacySyncplayUiSettings::default(),
+        SyncplayUiSettings::default(),
         1,
     );
     adapter.configure_network_media_options([("cache-secs", "75")]);
@@ -4175,7 +4175,7 @@ fn queued_hook_degradation_survives_failed_explicit_policy_apply() {
 #[test]
 fn explicit_apply_preserves_pending_hook_recovery_and_authoritative_policy_failure() {
     let (mut adapter, _) = MpvAdapter::with_nth_active_network_option_rejection_test_ipc(
-        LegacySyncplayUiSettings::default(),
+        SyncplayUiSettings::default(),
         usize::MAX,
     );
     adapter.configure_network_media_options([("cache-secs", "75")]);

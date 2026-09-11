@@ -19,11 +19,11 @@ fn gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config(
         .as_nanos();
     let config_path =
         std::env::temp_dir().join(format!("sorotte-gui-real-mpv-startup-{unique_suffix}.ini"));
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             player_path: Some(mpv_path.to_string_lossy().into_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("real-mpv startup seed should write sorotte.ini");
@@ -36,10 +36,10 @@ fn gui_persisted_config_runtime_owner_starts_real_managed_mpv_from_saved_config(
         .with_client_core_chat_session_runtime("smoke-user", "smoke-room")
         .expect("managed-mpv smoke should bootstrap an active session");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("smoke-user".to_owned()),
         room: Some("smoke-room".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     assert_eq!(

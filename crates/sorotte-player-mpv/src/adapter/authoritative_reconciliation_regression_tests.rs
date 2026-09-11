@@ -318,8 +318,8 @@ fn authoritative_playlist_binding_preserves_earlier_verified_hook_result() {
             verified_transition_before_playlist_response: true,
             ..InterleavedAuthorityTransport::default()
         });
-    adapter.legacy_syncplayintf_owner_id = "causal-test-owner".to_owned();
-    adapter.legacy_syncplayintf_attachment_id = "causal-test-attachment".to_owned();
+    adapter.syncplayintf_owner_id = "causal-test-owner".to_owned();
+    adapter.syncplayintf_attachment_id = "causal-test-attachment".to_owned();
     adapter.configure_network_media_options([("cache-secs", "60")]);
     adapter.prepare_test_network_options_hook_v3_reducer();
     let attempt_id = adapter.submit_lifecycle_load(None, generation, target, BTreeSet::new());

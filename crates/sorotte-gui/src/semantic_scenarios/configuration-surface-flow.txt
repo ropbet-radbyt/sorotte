@@ -55,7 +55,7 @@ enter-text	settings.playback.autoplay_min_users	false	3
 enter-text	settings.privacy.filename	false	SendHashed
 enter-text	settings.privacy.filesize	false	DoNotSend
 enter-text	settings.privacy.trusted_domains	false	youtube.com\n*.example.com/videos
-# The resolved legacy default is enabled; exercise false -> true so the draft
+# The resolved default is enabled; exercise false -> true so the draft
 # records the explicit enabled value and the derived TLS prompt follows it.
 activate	settings.privacy.trusted_domains_only
 activate	settings.privacy.trusted_domains_only

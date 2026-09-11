@@ -1,10 +1,10 @@
 use super::*;
 
-pub(crate) fn apply_stored_client_settings_mvp_if_env_absent(
+pub(crate) fn apply_stored_client_settings_if_env_absent(
     config: &mut ClientLoopConfig,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) {
-    let config_plan = stored_client_settings_config_plan_legacy_compatible(
+    let config_plan = stored_client_settings_config_plan(
         settings,
         &StoredClientSettingsEnvPresence {
             host: env_trimmed("SOROTTE_CLIENT_HOST").is_some(),

@@ -5,9 +5,7 @@ use super::*;
 
 impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
-        Self::with_config_path_and_startup_player(
-            resolve_sorotte_gui_config_path_legacy_compatible(),
-        )
+        Self::with_config_path_and_startup_player(resolve_sorotte_gui_config_path())
     }
 }
 
@@ -89,7 +87,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.update_runtime.handle_command(handle, *command);
                     true
                 }
-                GuiClientCommand::Legacy { request, .. } => {
+                GuiClientCommand::Routed { request, .. } => {
                     self.handle_runtime_request(handle, &mut projected_state, *request)
                 }
             };
@@ -159,7 +157,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     ))
                 .then(|| {
                     (
-                        player.legacy_syncplay_ui_settings().clone(),
+                        player.syncplay_ui_settings().clone(),
                         player.sorotte_bridge_acknowledged_generation(),
                     )
                 });
@@ -403,7 +401,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.startup_stream_helper_probe_completed = true;
                 return;
             }
-            let root = self.legacy_gui_qsettings_root();
+            let root = self.syncplay_qsettings_root();
             let attach_mode = self.player_stream_helper_attach_mode();
             let (tx, rx) = mpsc::channel();
             match std::thread::Builder::new()

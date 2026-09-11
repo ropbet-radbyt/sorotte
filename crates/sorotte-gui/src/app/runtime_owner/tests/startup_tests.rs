@@ -115,9 +115,9 @@ fn assert_original_osd_restored_before_bridge_release(commands: &[serde_json::Va
 
 #[test]
 fn explicit_mpv_discovery_failure_uses_shared_completion_and_retains_core_playback() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        ..sorotte_player_mpv::SyncplayUiSettings::default()
     };
     let launch_state = GuiPlayerLaunchRuntimeState::ExplicitMpvIpc {
         ipc_path: r"\\.\pipe\sorotte-degraded-test".to_owned(),
@@ -165,7 +165,7 @@ fn explicit_mpv_discovery_failure_uses_shared_completion_and_retains_core_playba
 #[test]
 fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_optional_setup() {
     let ipc_path = r"\\.\pipe\sorotte-streaming-degraded-test";
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -265,7 +265,7 @@ fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_op
         crate::app::shell_state::GuiPlayerSetupIssueKind::IpcAttachFailed
     );
     let mut projected_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     projected_state.player_setup_issue = Some(issue);
     assert_eq!(
         projected_state.player_setup_retry_action(),
@@ -318,7 +318,7 @@ fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_op
 #[test]
 fn initial_explicit_mpv_streaming_failure_remains_fatal_when_ipc_is_unhealthy() {
     let ipc_path = r"\\.\pipe\sorotte-streaming-disconnect-test";
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -383,7 +383,7 @@ fn player_settings_retry_request_reuses_attached_adapter_and_clears_streaming_de
     let env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
     let ipc_path = r"\\.\pipe\sorotte-streaming-in-place-retry-test";
     env_guard.set_var("SOROTTE_CLIENT_MPV_IPC_PATH", ipc_path);
-    let settings = StoredClientSettingsMvp::default();
+    let settings = StoredClientSettings::default();
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
             &|name| match name {
@@ -480,11 +480,11 @@ fn managed_mpv_option_value_url_does_not_create_spurious_streaming_degradation()
             "integration-source=https://example.test/value".to_owned(),
         ],
     );
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         player_path: Some(player_path.to_owned()),
         per_player_arguments: Some(per_player_arguments),
         streaming_read_ahead_seconds: Some(9.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let launch_state =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
@@ -534,7 +534,7 @@ fn managed_mpv_option_value_url_does_not_create_spurious_streaming_degradation()
 
 #[test]
 fn managed_mpv_applies_streaming_options_when_local_launch_item_advances_to_queued_network_item() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![
         EffectiveMpvStreamingOption {
             name: "cache-secs".to_owned(),
@@ -621,7 +621,7 @@ fn managed_mpv_applies_streaming_options_when_local_launch_item_advances_to_queu
 
 #[test]
 fn managed_mpv_surfaces_retryable_degradation_when_network_transition_option_is_rejected() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -695,7 +695,7 @@ fn managed_mpv_surfaces_retryable_degradation_when_network_transition_option_is_
 
 #[test]
 fn later_successful_network_transition_clears_only_transition_origin_degradation() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -764,7 +764,7 @@ fn later_successful_network_transition_clears_only_transition_origin_degradation
 
 #[test]
 fn managed_mpv_positional_network_media_rejection_retains_player_guard_and_optional_setup() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -883,7 +883,7 @@ fn managed_mpv_positional_network_media_rejection_retains_player_guard_and_optio
 
 #[test]
 fn managed_mpv_active_streaming_success_promotes_baseline_after_process_attachment() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -939,7 +939,7 @@ fn managed_mpv_active_streaming_success_promotes_baseline_after_process_attachme
 
 #[test]
 fn managed_mpv_streaming_failure_drops_guard_when_ipc_is_unhealthy() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let desired_streaming_options = vec![EffectiveMpvStreamingOption {
         name: "cache-secs".to_owned(),
         configured_value: "30".to_owned(),
@@ -995,9 +995,9 @@ fn managed_mpv_streaming_failure_drops_guard_when_ipc_is_unhealthy() {
 
 #[test]
 fn optional_bridge_degradation_is_fatal_only_when_core_ipc_becomes_unhealthy() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        ..sorotte_player_mpv::SyncplayUiSettings::default()
     };
     let prepare = || {
         let mut adapter =
@@ -1048,9 +1048,9 @@ fn optional_bridge_degradation_is_fatal_only_when_core_ipc_becomes_unhealthy() {
 
 #[test]
 fn osd_configuration_failure_transitions_ready_adapter_and_disables_player_chat() {
-    let initial_ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let initial_ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        ..sorotte_player_mpv::SyncplayUiSettings::default()
     };
     let mut adapter = sorotte_player_mpv::MpvAdapter::with_unacknowledging_syncplayintf_test_ipc(
         initial_ui_settings.clone(),
@@ -1059,7 +1059,7 @@ fn osd_configuration_failure_transitions_ready_adapter_and_disables_player_chat(
         adapter.configure_bundled_sorotte_bridge(),
         sorotte_player_mpv::SorotteBridgeHealth::Ready
     ));
-    let target_ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let target_ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         chat_move_osd: true,
         ..initial_ui_settings
     };
@@ -1081,13 +1081,13 @@ fn osd_configuration_failure_transitions_ready_adapter_and_disables_player_chat(
         )
     ));
     assert_eq!(adapter.sorotte_bridge_health(), health);
-    assert!(!adapter.legacy_syncplayintf_options_ready());
+    assert!(!adapter.syncplayintf_options_ready());
     assert_eq!(adapter.take_pending_chat_request(), None);
 }
 
 #[test]
 fn graceful_explicit_gui_detach_restores_osd_before_terminal_bridge_release() {
-    let ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings::default();
+    let ui_settings = sorotte_player_mpv::SyncplayUiSettings::default();
     let (adapter, commands) =
         sorotte_player_mpv::MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
             ui_settings.clone(),
@@ -1112,7 +1112,7 @@ fn graceful_explicit_gui_detach_restores_osd_before_terminal_bridge_release() {
 fn gui_runtime_owner_drop_restores_osd_before_terminal_bridge_release() {
     let (adapter, commands) =
         sorotte_player_mpv::MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
-            sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            sorotte_player_mpv::SyncplayUiSettings::default(),
             Some(("top".to_owned(), 16)),
         );
     {
@@ -1137,8 +1137,7 @@ fn gui_player_pump_projects_runtime_bridge_degradation_and_recovery() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let degraded_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1219,17 +1218,16 @@ fn gui_player_pump_does_not_promote_historical_ready_after_current_degradation()
         sorotte_player_mpv::SorotteBridgeHealth::Degraded(_)
     ));
 
-    let acknowledged_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let acknowledged_settings = sorotte_player_mpv::SyncplayUiSettings {
         notification_timeout_ms: 1_234,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        ..sorotte_player_mpv::SyncplayUiSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_apply_state.acknowledged_bridge_settings = Some(acknowledged_settings.clone());
     owner.player_apply_state.acknowledged_bridge_generation = Some(77);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(adapter)));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1275,10 +1273,10 @@ fn degraded_gui_notifications_still_reach_the_attached_mpv_osd() {
         panic!("degraded mpv fixture should remain attached");
     };
     assert_eq!(
-        player.last_simulated_legacy_syncplay_osd_message(),
+        player.last_simulated_syncplay_osd_message(),
         Some(&(
             "bridge warning".to_owned(),
-            sorotte_player_mpv::LegacySyncplayOsdKind::Alert,
+            sorotte_player_mpv::SyncplayOsdKind::Alert,
         ))
     );
 }
@@ -1306,11 +1304,11 @@ fn managed_mpv_bridge_ack_failure_retains_process_guard() {
         .spawn()
         .expect("test child should spawn");
     let guard = crate::app::mpv_launch::ManagedMpvProcessGuard::from_test_child(child);
-    let initial_ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let initial_ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         chat_move_osd: false,
-        ..sorotte_player_mpv::LegacySyncplayUiSettings::default()
+        ..sorotte_player_mpv::SyncplayUiSettings::default()
     };
-    let target_ui_settings = sorotte_player_mpv::LegacySyncplayUiSettings {
+    let target_ui_settings = sorotte_player_mpv::SyncplayUiSettings {
         notification_timeout_ms: 9_000,
         ..initial_ui_settings.clone()
     };
@@ -1344,16 +1342,16 @@ fn managed_mpv_bridge_ack_failure_retains_process_guard() {
 
 #[test]
 fn bridge_retry_runs_in_place_and_clears_degraded_health() {
-    let initial_settings = StoredClientSettingsMvp {
+    let initial_settings = StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         notification_timeout_seconds: Some(3),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let desired_settings = StoredClientSettingsMvp {
+    let desired_settings = StoredClientSettings {
         notification_timeout_seconds: Some(9),
         ..initial_settings.clone()
     };
-    let launch_state_for = |settings: &StoredClientSettingsMvp| {
+    let launch_state_for = |settings: &StoredClientSettings| {
         GuiPlayerLaunchRuntimeState::ManagedMpv(Box::new(
             match crate::app::mpv_launch::managed_mpv_settings_decision_from_settings(Some(
                 settings,
@@ -1386,10 +1384,7 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("fixture mpv should exist");
     };
-    assert_eq!(
-        player.legacy_syncplay_ui_settings().notification_timeout_ms,
-        3_000
-    );
+    assert_eq!(player.syncplay_ui_settings().notification_timeout_ms, 3_000);
 
     handle.push_request(GuiRuntimeRequest::RetryChatOsdIntegration);
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1413,7 +1408,7 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
         panic!("retried mpv should remain attached");
     };
     assert_eq!(
-        player.legacy_syncplay_ui_settings().notification_timeout_ms,
+        player.syncplay_ui_settings().notification_timeout_ms,
         9_000,
         "retry must apply the desired bridge settings rather than the old baseline"
     );
@@ -1490,14 +1485,14 @@ fn gui_persisted_config_runtime_owner_uses_saved_player_path_for_managed_mpv_lau
             "--keep-open=yes".to_owned(),
         ],
     );
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             player_path: Some("C:/missing/mpv.exe".to_owned()),
             per_player_arguments: Some(per_player_arguments),
             chat_input_enabled: Some(true),
             show_osd: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .expect("startup-player seed should write sorotte.ini");
@@ -1540,10 +1535,10 @@ fn explicit_mpv_ipc_launch_state_honors_selected_players_saved_streaming_overrid
     let player_path = "C:/Program Files/mpv/mpv.exe";
     let mut per_player_arguments = std::collections::BTreeMap::new();
     per_player_arguments.insert(player_path.to_owned(), vec!["--cache-secs=75".to_owned()]);
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         player_path: Some(player_path.to_owned()),
         per_player_arguments: Some(per_player_arguments),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let launch_state =
@@ -1588,10 +1583,10 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner.player = None;
@@ -1608,8 +1603,7 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
 fn gui_persisted_config_runtime_owner_applies_deferred_startup_remote_actions_once() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let action = GuiShellAction::ApplyStartupPublicServerCache(vec![(
         "Deferred Primary".to_owned(),
         "deferred.example:8999".to_owned(),
@@ -1627,11 +1621,11 @@ fn gui_persisted_config_runtime_owner_applies_deferred_startup_remote_actions_on
 }
 
 fn startup_public_server_test_state() -> SorotteGuiShellAppState {
-    SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(true),
         last_checked_for_updates: Some("2099-01-01 00:00:00.000".to_owned()),
         public_servers: None,
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     })
 }
 
@@ -1639,10 +1633,10 @@ fn startup_public_server_test_state() -> SorotteGuiShellAppState {
 fn startup_public_server_hydration_preserves_explicit_empty_cache_without_fetching() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(false),
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
@@ -1691,11 +1685,11 @@ fn pump_startup_public_server_results_until(
 fn startup_public_server_hydration_runs_without_starting_disabled_automatic_updates() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(false),
         last_checked_for_updates: None,
         public_servers: None,
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let results = Arc::new(Mutex::new(std::collections::VecDeque::from([Ok(vec![(
         "Hydrated".to_owned(),
@@ -2150,8 +2144,7 @@ fn startup_public_server_hydration_keeps_saved_language_worker_when_draft_change
 fn gui_persisted_config_runtime_owner_applies_deferred_stream_helper_snapshot_once() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let snapshot = crate::app::GuiStreamHelperRuntimeSnapshot {
         downloader_status: Some("yt-dlp checked after startup".to_owned()),
         js_runtime_status: Some("Deno checked after startup".to_owned()),
@@ -2194,7 +2187,7 @@ fn gui_persisted_config_runtime_owner_retry_without_player_path_keeps_setup_guid
 
     owner.sync_player_from_lookup_and_settings(
         &|_name| None,
-        Some(&StoredClientSettingsMvp::default()),
+        Some(&StoredClientSettings::default()),
         true,
     );
 

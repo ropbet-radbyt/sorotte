@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
@@ -14,7 +14,7 @@ fn legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_sam
     fs::create_dir_all(&tls_cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&tls_cert_path);
 
-    let result = run_legacy_server_tls_upgrade_roundtrip_with_cert_path(&tls_cert_path);
+    let result = run_syncplay_server_tls_upgrade_roundtrip_with_cert_path(&tls_cert_path);
     let _ = fs::remove_dir_all(&tls_cert_path);
 
     match result {
@@ -38,7 +38,7 @@ fn legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_sam
             assert_eq!(hello.username, "interop-client");
             assert_eq!(hello.room.name, "interop-room");
         }
-        Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_tls_prerequisites_missing(&err) => {
             if legacy_tls_parity_prerequisites_strict_enabled() {
                 panic!(
                     "legacy live TLS roundtrip prerequisites should be satisfied in strict mode, got: {err}"
@@ -53,8 +53,8 @@ fn legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_sam
 }
 
 #[test]
-fn legacy_server_live_tls_send_is_denied_for_logged_client() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_live_tls_send_is_denied_for_logged_client() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
@@ -67,7 +67,7 @@ fn legacy_server_live_tls_send_is_denied_for_logged_client() {
     write_valid_tls_bundle(&tls_cert_path);
 
     let result =
-        run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(&tls_cert_path);
+        run_syncplay_server_tls_logged_client_send_denied_roundtrip_with_cert_path(&tls_cert_path);
     let _ = fs::remove_dir_all(&tls_cert_path);
 
     match result {
@@ -84,7 +84,7 @@ fn legacy_server_live_tls_send_is_denied_for_logged_client() {
                 ),
             }
         }
-        Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_tls_prerequisites_missing(&err) => {
             if legacy_tls_parity_prerequisites_strict_enabled() {
                 panic!(
                     "legacy logged-client TLS denial prerequisites should be satisfied in strict mode, got: {err}"
@@ -101,8 +101,8 @@ fn legacy_server_live_tls_send_is_denied_for_logged_client() {
 }
 
 #[test]
-fn legacy_server_live_tls_rotation_invalidates_subsequent_send() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_live_tls_rotation_invalidates_subsequent_send() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
@@ -115,7 +115,7 @@ fn legacy_server_live_tls_rotation_invalidates_subsequent_send() {
     write_valid_tls_bundle(&tls_cert_path);
 
     let result =
-        run_legacy_server_tls_rotation_invalidates_subsequent_send_with_cert_path(&tls_cert_path);
+        run_syncplay_server_tls_rotation_invalidates_subsequent_send_with_cert_path(&tls_cert_path);
     let _ = fs::remove_dir_all(&tls_cert_path);
 
     match result {
@@ -134,7 +134,7 @@ fn legacy_server_live_tls_rotation_invalidates_subsequent_send() {
             };
             assert_eq!(rotated_payload.tls.start_tls, "false");
         }
-        Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_tls_prerequisites_missing(&err) => {
             if legacy_tls_parity_prerequisites_strict_enabled() {
                 panic!(
                     "legacy TLS rotation invalidation prerequisites should be satisfied in strict mode, got: {err}"
@@ -151,8 +151,8 @@ fn legacy_server_live_tls_rotation_invalidates_subsequent_send() {
 }
 
 #[test]
-fn legacy_server_live_tls_rotation_recovers_after_bundle_restored() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_live_tls_rotation_recovers_after_bundle_restored() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server TLS parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
@@ -164,7 +164,7 @@ fn legacy_server_live_tls_rotation_recovers_after_bundle_restored() {
     fs::create_dir_all(&tls_cert_path).expect("tls cert temp directory should be creatable");
     write_valid_tls_bundle(&tls_cert_path);
 
-    let result = run_legacy_server_tls_rotation_recovers_after_bundle_restored_with_cert_path(
+    let result = run_syncplay_server_tls_rotation_recovers_after_bundle_restored_with_cert_path(
         &tls_cert_path,
     );
     let _ = fs::remove_dir_all(&tls_cert_path);
@@ -192,7 +192,7 @@ fn legacy_server_live_tls_rotation_recovers_after_bundle_restored() {
             };
             assert_eq!(recovered_payload.tls.start_tls, "true");
         }
-        Err(err) if legacy_server_tls_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_tls_prerequisites_missing(&err) => {
             if legacy_tls_parity_prerequisites_strict_enabled() {
                 panic!(
                     "legacy TLS rotation recovery prerequisites should be satisfied in strict mode, got: {err}"

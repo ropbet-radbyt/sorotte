@@ -13,47 +13,48 @@ use std::{
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use serde_json::{Value, json};
 
-use super::legacy_server::run_legacy_server_fanout_roundtrip_with_full_overrides;
 use super::scenario_replay::{
     replay_server_runtime_scenario_steps_with_full_overrides,
     run_python_fanout_roundtrip_with_full_overrides,
 };
+use super::syncplay_server::run_syncplay_server_fanout_roundtrip_with_full_overrides;
 #[cfg(feature = "trace-capture")]
 use super::trace_capture::{
-    capture_legacy_server_trace_fixture_with_full_overrides,
     capture_python_trace_fixture_with_full_overrides,
+    capture_syncplay_server_trace_fixture_with_full_overrides,
 };
 use super::{
-    DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT, InteropError, LEGACY_SERVER_STEP_IDLE_WAIT,
-    LEGACY_SERVER_STEP_MAX_WAIT, LEGACY_SERVER_STEP_MIN_WAIT, LegacyClientChatSendContractCase,
-    LegacyServerClientConnection, ServerRuntimeScenarioEvent, ServerRuntimeScenarioStep,
-    all_protocol_fixture_names, collect_legacy_server_step_outputs, connect_legacy_client_stream,
-    decode_fixture, decode_protocol_file, default_rust_client_hello_for_interop,
-    default_rust_client_hello_for_legacy_live_tls, ensure_legacy_server_is_running,
-    ensure_legacy_syncplay_checkout_available, ensure_repo_local_legacy_syncplay_checkout_with,
-    fixture_decodes, fixture_path, legacy_server_step_collection_is_complete,
-    legacy_syncplay_checkout_dir, legacy_syncplay_server_entry_script_path,
+    DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT, InteropError, SYNCPLAY_SERVER_STEP_IDLE_WAIT,
+    SYNCPLAY_SERVER_STEP_MAX_WAIT, SYNCPLAY_SERVER_STEP_MIN_WAIT, ServerRuntimeScenarioEvent,
+    ServerRuntimeScenarioStep, SyncplayClientChatSendContractCase, SyncplayServerClientConnection,
+    all_protocol_fixture_names, collect_syncplay_server_step_outputs,
+    connect_syncplay_client_stream, decode_fixture, decode_protocol_file,
+    default_rust_client_hello_for_interop, default_rust_client_hello_for_syncplay_live_tls,
+    ensure_repo_local_syncplay_checkout_with, ensure_syncplay_checkout_available,
+    ensure_syncplay_server_is_running, fixture_decodes, fixture_path,
     load_server_runtime_scenario_fixture, parse_server_runtime_scenario_steps,
-    prepare_legacy_server_request_line, python_bin_from_env, python_live_peer_probe_script_path,
+    prepare_syncplay_server_request_line, python_bin_from_env, python_live_peer_probe_script_path,
     replay_server_runtime_scenario_fixture, replay_server_runtime_scenario_steps,
     replay_server_runtime_scenario_steps_with_motd_template,
     replay_server_runtime_scenario_steps_with_overrides, required_live_interop_enabled,
-    reserve_legacy_server_port, reserve_legacy_server_port_with_lock,
-    run_legacy_server_fanout_roundtrip, run_python_fanout_roundtrip,
-    run_python_fanout_roundtrip_with_tls_available, run_python_handshake_roundtrip,
-    run_python_legacy_client_chat_send_contract_batch,
-    run_python_legacy_client_set_file_contract_probe,
-    run_python_legacy_client_user_file_metadata_probe, run_python_privacy_file_payload_batch,
+    reserve_syncplay_server_port, reserve_syncplay_server_port_with_lock,
+    run_python_fanout_roundtrip, run_python_fanout_roundtrip_with_tls_available,
+    run_python_handshake_roundtrip, run_python_privacy_file_payload_batch,
     run_python_protocol_roundtrip, run_python_same_fileduration_batch,
     run_python_same_fileduration_batch_with_overrides, run_python_same_filename_batch,
-    run_python_same_filesize_batch, scenario_fixture_path, terminate_legacy_server_process,
-    wait_for_legacy_server_startup,
+    run_python_same_filesize_batch, run_python_syncplay_client_chat_send_contract_batch,
+    run_python_syncplay_client_set_file_contract_probe,
+    run_python_syncplay_client_user_file_metadata_probe, run_syncplay_server_fanout_roundtrip,
+    scenario_fixture_path, syncplay_checkout_dir, syncplay_server_entry_script_path,
+    syncplay_server_step_collection_is_complete, terminate_syncplay_server_process,
+    wait_for_syncplay_server_startup,
 };
 #[cfg(feature = "trace-capture")]
 use super::{
-    capture_legacy_server_trace_fixture, capture_legacy_server_trace_fixture_with_overrides,
-    capture_legacy_server_trace_fixture_with_salt_and_motd_template, capture_python_trace_fixture,
-    capture_python_trace_fixture_with_motd_template, capture_python_trace_fixture_with_overrides,
+    capture_python_trace_fixture, capture_python_trace_fixture_with_motd_template,
+    capture_python_trace_fixture_with_overrides, capture_syncplay_server_trace_fixture,
+    capture_syncplay_server_trace_fixture_with_overrides,
+    capture_syncplay_server_trace_fixture_with_salt_and_motd_template,
 };
 use sorotte_client_core::{ClientRuntimeAction, ClientSession, PrivacyMode};
 use sorotte_protocol::{
@@ -72,10 +73,10 @@ mod assertions;
 use self::assertions::*;
 
 #[test]
-fn legacy_server_port_lease_serializes_startup_allocation() {
+fn syncplay_server_port_lease_serializes_startup_allocation() {
     const ROLE_ENV: &str = "SOROTTE_COMPAT_SERVER_PORT_LOCK_ROLE";
     const ROOT_ENV: &str = "SOROTTE_COMPAT_SERVER_PORT_LOCK_ROOT";
-    const TEST_NAME: &str = "tests::legacy_server_port_lease_serializes_startup_allocation";
+    const TEST_NAME: &str = "tests::syncplay_server_port_lease_serializes_startup_allocation";
     const FIXTURE_TIMEOUT: Duration = Duration::from_secs(15);
 
     if let Some(role) = std::env::var_os(ROLE_ENV) {
@@ -86,7 +87,7 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
         match role.to_string_lossy().as_ref() {
             "holder" => {
                 let lease =
-                    reserve_legacy_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {})
+                    reserve_syncplay_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {})
                         .expect("holder should acquire the startup lease");
                 fs::write(root.join("holder-entered"), b"held")
                     .expect("holder should publish lock acquisition");
@@ -104,7 +105,7 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
             "contender" => {
                 let contention_marker = root.join("contender-contended");
                 let lease =
-                    reserve_legacy_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {
+                    reserve_syncplay_server_port_with_lock(&lock_path, FIXTURE_TIMEOUT, || {
                         fs::write(&contention_marker, b"contended")
                             .expect("contender should publish actual process-lock contention");
                     })
@@ -117,7 +118,7 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
         return;
     }
 
-    let first = reserve_legacy_server_port().expect("first startup lease should be available");
+    let first = reserve_syncplay_server_port().expect("first startup lease should be available");
     assert!(
         TcpListener::bind(("127.0.0.1", first.port())).is_err(),
         "the lease must retain the socket reservation until child spawn"
@@ -125,8 +126,8 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
 
     let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
     let contender = thread::spawn(move || {
-        let second =
-            reserve_legacy_server_port().expect("contending startup lease should become available");
+        let second = reserve_syncplay_server_port()
+            .expect("contending startup lease should become available");
         acquired_tx
             .send(second.port())
             .expect("contending lease result should be observed");
@@ -214,29 +215,29 @@ fn legacy_server_port_lease_serializes_startup_allocation() {
 #[test]
 fn step_collector_waits_for_a_delayed_required_first_frame() {
     assert!(
-        !legacy_server_step_collection_is_complete(
+        !syncplay_server_step_collection_is_complete(
             true,
             false,
-            LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
-            LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
+            SYNCPLAY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
+            SYNCPLAY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(1),
         ),
         "required first output must not be declared idle before any frame"
     );
     assert!(
-        legacy_server_step_collection_is_complete(
+        syncplay_server_step_collection_is_complete(
             false,
             false,
-            LEGACY_SERVER_STEP_MIN_WAIT + LEGACY_SERVER_STEP_IDLE_WAIT,
-            LEGACY_SERVER_STEP_IDLE_WAIT,
+            SYNCPLAY_SERVER_STEP_MIN_WAIT + SYNCPLAY_SERVER_STEP_IDLE_WAIT,
+            SYNCPLAY_SERVER_STEP_IDLE_WAIT,
         ),
         "an intentionally silent step must retain its short quiescence boundary"
     );
     assert!(
-        legacy_server_step_collection_is_complete(
+        syncplay_server_step_collection_is_complete(
             true,
             false,
-            LEGACY_SERVER_STEP_MAX_WAIT,
-            LEGACY_SERVER_STEP_MAX_WAIT,
+            SYNCPLAY_SERVER_STEP_MAX_WAIT,
+            SYNCPLAY_SERVER_STEP_MAX_WAIT,
         ),
         "missing required output must remain bounded by the hard deadline"
     );
@@ -261,14 +262,14 @@ fn step_collector_waits_for_a_delayed_required_first_frame() {
     let mut clients = BTreeMap::from([
         (
             "late-client".to_owned(),
-            LegacyServerClientConnection {
+            SyncplayServerClientConnection {
                 stream: required_reader,
                 pending_bytes: Vec::new(),
             },
         ),
         (
             "other-client".to_owned(),
-            LegacyServerClientConnection {
+            SyncplayServerClientConnection {
                 stream: unrelated_reader,
                 pending_bytes: Vec::new(),
             },
@@ -279,12 +280,12 @@ fn step_collector_waits_for_a_delayed_required_first_frame() {
         .expect("unrelated immediate framed output should be written");
 
     let delayed_writer = thread::spawn(move || {
-        thread::sleep(LEGACY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(40));
+        thread::sleep(SYNCPLAY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(40));
         required_writer
             .write_all(b"{\"List\":null}\n")
             .expect("delayed framed output should be written");
     });
-    let outputs = collect_legacy_server_step_outputs(&mut clients, Some("late-client"))
+    let outputs = collect_syncplay_server_step_outputs(&mut clients, Some("late-client"))
         .expect("the delayed first frame should be collected");
     delayed_writer
         .join()
@@ -360,7 +361,7 @@ fn legacy_checkout_bootstrap_lock_serializes_processes() {
         let checkout = root.join("checkout");
         match role.to_string_lossy().as_ref() {
             "holder" => {
-                let resolved = ensure_repo_local_legacy_syncplay_checkout_with(
+                let resolved = ensure_repo_local_syncplay_checkout_with(
                     &checkout,
                     FIXTURE_TIMEOUT,
                     || {},
@@ -388,7 +389,7 @@ fn legacy_checkout_bootstrap_lock_serializes_processes() {
             "contender" => {
                 let contention_marker = root.join("contender-contended");
                 let duplicate_marker = root.join("duplicate-bootstrap");
-                let resolved = ensure_repo_local_legacy_syncplay_checkout_with(
+                let resolved = ensure_repo_local_syncplay_checkout_with(
                     &checkout,
                     FIXTURE_TIMEOUT,
                     || {
@@ -515,8 +516,8 @@ fn compatibility_scenario_parses_distinct_runtime_and_legacy_time_advances() {
 }
 
 #[test]
-fn legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features() {
-    let prepared = prepare_legacy_server_request_line(
+fn syncplay_server_request_shim_synthesizes_python_version_defaults_for_omitted_features() {
+    let prepared = prepare_syncplay_server_request_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","realversion":"1.5.0"}}"#,
     )
     .expect("omitted-feature Hello should be prepared");
@@ -538,10 +539,10 @@ fn legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_fe
 }
 
 #[test]
-fn legacy_server_request_shim_preserves_explicit_features() {
+fn syncplay_server_request_shim_preserves_explicit_features() {
     let request = r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"9.9.9","features":{"uiMode":"CLI","chat":false}}}"#;
-    let prepared =
-        prepare_legacy_server_request_line(request).expect("explicit-feature Hello should prepare");
+    let prepared = prepare_syncplay_server_request_line(request)
+        .expect("explicit-feature Hello should prepare");
 
     assert_eq!(
         serde_json::from_str::<Value>(&prepared).expect("prepared Hello should decode"),
@@ -552,7 +553,6 @@ fn legacy_server_request_shim_preserves_explicit_features() {
 mod chat_fanout_tests;
 mod controlled_room_fanout_tests;
 mod fixture_tests;
-mod legacy_client_contract_tests;
 mod legacy_tls_tests;
 mod normalization_tests;
 mod playlist_fanout_tests;
@@ -560,4 +560,5 @@ mod python_protocol_tests;
 mod rooms_motd_fanout_tests;
 mod scenario_replay_tests;
 mod state_fanout_tests;
+mod syncplay_client_contract_tests;
 mod trace_shape_tests;

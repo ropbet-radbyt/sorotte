@@ -6,100 +6,84 @@ pub mod application {
 }
 
 pub mod commands {
-    pub use crate::legacy_local_commands::{
+    pub use crate::local_commands::{
         LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,
         LocalOffsetCommand, PlannedLocalInputCommand, PlannedLocalInputDispatch,
-        PlannedLocalRuntimeAction, PlannedLocalRuntimeDispatch,
-        controlled_room_base_name_legacy_compatible, generate_room_password_legacy_compatible,
-        local_input_error_output_line_legacy_compatible,
-        localized_current_offset_message_legacy_compatible,
-        localized_local_input_error_message_legacy_compatible, parse_local_input_chat_message,
-        parse_local_input_command, parse_seek_time_seconds_legacy_like,
-        plan_local_input_command_legacy_compatible, plan_local_input_dispatch_legacy_compatible,
-        plan_local_offset_runtime_dispatch_legacy_compatible,
-        plan_local_playlist_delete_runtime_dispatch_legacy_compatible,
-        plan_local_playlist_select_runtime_dispatch_legacy_compatible,
-        plan_local_runtime_dispatch_legacy_compatible, playlist_index_in_bounds_legacy_compatible,
-        playlist_listing_message_legacy_compatible,
-        playlist_listing_message_localized_legacy_compatible,
-        render_local_input_display_lines_legacy_compatible,
-        resolved_local_user_offset_seconds_legacy_compatible,
+        PlannedLocalRuntimeAction, PlannedLocalRuntimeDispatch, controlled_room_base_name,
+        generate_room_password, local_input_error_output_line, localized_current_offset_message,
+        localized_local_input_error_message, parse_local_input_chat_message,
+        parse_local_input_command, parse_seek_time_seconds, plan_local_input_command,
+        plan_local_input_dispatch, plan_local_offset_runtime_dispatch,
+        plan_local_playlist_delete_runtime_dispatch, plan_local_playlist_select_runtime_dispatch,
+        plan_local_runtime_dispatch, playlist_index_in_bounds, playlist_listing_message,
+        playlist_listing_message_localized, render_local_input_display_lines,
+        resolved_local_user_offset_seconds,
     };
 }
 
 pub mod compatibility {
-    pub use crate::legacy_compat::{
-        LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
-        LegacyConfigurationGetterStartupCompatEntry,
-        legacy_configuration_getter_ini_compat_entries,
-        legacy_configuration_getter_startup_compat_entries,
+    pub use crate::syncplay_config_contract::{
+        SyncplayConfigurationGetterCompatibilityStatus, SyncplayConfigurationGetterIniCompatEntry,
+        SyncplayConfigurationGetterStartupCompatEntry,
+        syncplay_configuration_getter_ini_compat_entries,
+        syncplay_configuration_getter_startup_compat_entries,
     };
 }
 
 pub mod diagnostics {
-    pub use crate::legacy_reconnect_diagnostics::{
+    pub use crate::reconnect_diagnostics::{
         ReconnectCorrectionDiagnosticsAlertThresholds, ReconnectCorrectionDiagnosticsFormat,
-        ReconnectCorrectionDiagnosticsState,
-        next_reconnect_correction_diagnostic_lines_legacy_compatible,
+        ReconnectCorrectionDiagnosticsState, next_reconnect_correction_diagnostic_lines,
         reconnect_correction_metrics_delta_alert_lines,
-        reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible,
+        reconnect_correction_metrics_delta_alert_lines_localized,
         reconnect_correction_metrics_delta_json_line, reconnect_correction_metrics_delta_message,
-        reconnect_correction_metrics_delta_message_localized_legacy_compatible,
+        reconnect_correction_metrics_delta_message_localized,
         reconnect_correction_state_snapshot_json_line, reconnect_correction_state_snapshot_message,
-        reconnect_correction_state_snapshot_message_localized_legacy_compatible,
+        reconnect_correction_state_snapshot_message_localized,
         reconnect_correction_state_threshold_alert_lines,
     };
 }
 
 pub mod language {
-    pub use crate::legacy_language::{
-        SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
-        legacy_runtime_language_acknowledgement_line_legacy_compatible,
-        legacy_runtime_language_selection_line_legacy_compatible,
-        normalized_legacy_runtime_language_tag_legacy_compatible,
-        resolve_legacy_runtime_language_tag_legacy_compatible,
+    pub use crate::language::{
+        SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY, normalized_runtime_language_tag,
+        resolve_runtime_language_tag, runtime_language_acknowledgement_line,
+        runtime_language_selection_line,
     };
 }
 
 pub mod notifications {
-    pub use crate::legacy_notifications::{
+    pub use crate::notifications::{
         FileDifferenceNotificationState, controller_auth_notification_hidden_from_osd,
         controller_auth_transition_notification_message,
-        controller_auth_transition_notification_message_localized_legacy_compatible,
-        format_duration_legacy, format_file_difference_summary,
-        localized_file_difference_notification_line_legacy_compatible,
-        localized_file_difference_summary_legacy_compatible,
-        localized_file_differences_prefix_legacy_compatible,
-        next_file_difference_notification_summary_legacy_compatible,
-        reconnect_transition_notification_message,
-        reconnect_transition_notification_message_localized_legacy_compatible,
+        controller_auth_transition_notification_message_localized, format_duration,
+        format_file_difference_summary, localized_file_difference_notification_line,
+        localized_file_difference_summary, localized_file_differences_prefix,
+        next_file_difference_notification_summary, reconnect_transition_notification_message,
+        reconnect_transition_notification_message_localized,
         user_change_notification_hidden_from_osd, user_change_notification_message,
-        user_change_notification_message_localized_legacy_compatible,
+        user_change_notification_message_localized,
     };
 }
 
 pub mod persistence {
-    pub use crate::legacy_ini_serde::{
-        format_serialized_per_player_arguments_map_legacy_compatible,
-        format_serialized_public_servers_list_legacy_compatible,
-        format_serialized_string_list_legacy_compatible,
-        parse_serialized_per_player_arguments_map_legacy_compatible,
-        parse_serialized_public_servers_list_legacy_compatible,
-        parse_serialized_string_list_legacy_compatible,
-    };
     pub use crate::sorotte_ini::{
-        clear_sorotte_ini_stored_client_settings_mvp_at_path, create_private_directory,
-        edit_sorotte_ini_stored_client_settings_mvp_at_path,
-        load_sorotte_ini_stored_client_settings_mvp_from_path,
-        merge_sorotte_ini_stored_client_settings_mvp_at_path,
-        parse_sorotte_ini_stored_client_settings_mvp,
-        relocate_sorotte_ini_stored_client_settings_mvp_at_path,
-        update_sorotte_ini_stored_client_settings_mvp_at_path,
-        upsert_sorotte_ini_stored_client_settings_mvp,
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path,
-        upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
-        upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
+        clear_sorotte_ini_stored_client_settings_at_path, create_private_directory,
+        edit_sorotte_ini_stored_client_settings_at_path,
+        load_sorotte_ini_stored_client_settings_from_path,
+        merge_sorotte_ini_stored_client_settings_at_path, parse_sorotte_ini_stored_client_settings,
+        relocate_sorotte_ini_stored_client_settings_at_path,
+        update_sorotte_ini_stored_client_settings_at_path,
+        upsert_sorotte_ini_stored_client_settings,
+        upsert_sorotte_ini_stored_client_settings_at_path,
+        upsert_sorotte_ini_stored_client_settings_clearing_plex_identity,
+        upsert_sorotte_ini_stored_client_settings_clearing_plex_identity_at_path,
         write_sorotte_ini_contents_atomically_at_path,
+    };
+    pub use crate::syncplay_ini_values::{
+        format_serialized_per_player_arguments_map, format_serialized_public_servers_list,
+        format_serialized_string_list, parse_serialized_per_player_arguments_map,
+        parse_serialized_public_servers_list, parse_serialized_string_list,
     };
 }
 
@@ -129,7 +113,7 @@ pub mod storage {
         load_sorotte_client_config_root_pointer_from_path, normalize_path,
         parse_sorotte_client_install_locator_config_root, paths_equivalent,
         persist_sorotte_client_config_root_pointer, persist_sorotte_client_install_locator,
-        resolve_sorotte_client_storage_paths, resolve_sorotte_client_storage_paths_from_lookup,
+        resolve_sorotte_client_storage_paths_from_lookup,
         resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
         sorotte_client_config_root_pointer_path, sorotte_client_install_locator_contents,
         sorotte_client_install_locator_path, sorotte_client_install_root_from_lookup,
@@ -139,7 +123,7 @@ pub mod storage {
 }
 
 pub mod session {
-    pub use crate::legacy_session_loop::{
+    pub use crate::session_loop::{
         ClientNetworkLoopAttemptDisposition, ClientNetworkLoopAttemptExecutionPlan,
         ClientNetworkLoopAttemptPlan, ClientNetworkLoopEventPlan,
         ClientNetworkLoopExecutionOutcome, ClientNetworkLoopReconnectExhaustedErrorAction,
@@ -151,38 +135,21 @@ pub mod session {
         ConnectedSessionOuterLoopExitKind, ConnectedSessionProtocolPlan,
         ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
         ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible,
-        client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible,
-        client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible,
-        client_network_loop_execution_outcome_legacy_compatible,
-        client_network_loop_reconnect_exhausted_error_action_legacy_compatible,
-        client_network_loop_startup_plan_legacy_compatible,
-        client_reconnect_backoff_plan_legacy_compatible,
-        connected_session_autoplay_tick_event_execution_plan_legacy_compatible,
-        connected_session_drain_actions_legacy_compatible,
-        connected_session_inbound_message_event_execution_plan_legacy_compatible,
-        connected_session_inbound_post_apply_actions_legacy_compatible,
-        connected_session_local_input_event_execution_plan_legacy_compatible,
-        connected_session_player_coordination_tick_event_execution_plan_legacy_compatible,
-        connected_session_runtime_step_actions_legacy_compatible,
+        client_network_loop_attempt_disposition_for_execution_plan,
+        client_network_loop_attempt_execution_plan_for_connect_failure,
+        client_network_loop_attempt_execution_plan_for_connected_session_exit,
+        client_network_loop_execution_outcome,
+        client_network_loop_reconnect_exhausted_error_action, client_network_loop_startup_plan,
+        client_reconnect_backoff_plan, connected_session_autoplay_tick_event_execution_plan,
+        connected_session_drain_actions, connected_session_inbound_message_event_execution_plan,
+        connected_session_inbound_post_apply_actions,
+        connected_session_local_input_event_execution_plan,
+        connected_session_player_coordination_tick_event_execution_plan,
+        connected_session_runtime_step_actions,
     };
 }
 
 pub mod state {
-    pub use crate::legacy_runtime_config::{
-        StoredClientSettingsConfigPlan, StoredClientSettingsEnvPresence,
-        StoredClientSettingsRuntimeSnapshot, normalize_controlled_room_input_legacy_compatible,
-        parse_host_and_optional_port_from_host_arg_legacy_compatible,
-        stored_client_settings_config_plan_legacy_compatible,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
-    };
-    pub use crate::legacy_settings::{
-        AutoplayThresholdOverride, StoredClientSettingsMvp, StoredClientSettingsV1,
-        autoplay_threshold_override_legacy_value_compatible,
-        parse_autoplay_min_users_override_legacy_compatible,
-        parse_unpause_action_mode_legacy_compatible, privacy_mode_legacy_name_compatible,
-        unpause_action_mode_legacy_name_compatible,
-    };
     pub use crate::runtime_config::{
         ClientConfig, ClientConfigErrors, ClientConfigIssue, ClientConfigResolution,
         ConnectionConfig, EffectiveMpvStreamingOption, InterfaceConfig, MediaMatchConfig, Percent,
@@ -192,6 +159,17 @@ pub mod state {
         StreamingBufferConfig, StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
         StreamingQualityPreset, StreamingQualitySuggestionReason, StreamingRecoveryConfig,
         StreamingRecoveryPolicy, SyncConfig, TlsPolicy, Username, resolve_client_config,
+    };
+    pub use crate::stored_config::{
+        StoredClientSettingsConfigPlan, StoredClientSettingsEnvPresence,
+        StoredClientSettingsRuntimeSnapshot, normalize_controlled_room_input,
+        parse_host_and_optional_port_from_host_arg, stored_client_settings_config_plan,
+        stored_client_settings_runtime_snapshot,
+    };
+    pub use crate::stored_settings::{
+        AutoplayThresholdOverride, StoredClientSettings, autoplay_threshold_override_setting_value,
+        parse_autoplay_min_users_override, parse_unpause_action_mode, privacy_mode_syncplay_name,
+        unpause_action_mode_syncplay_name,
     };
 }
 
@@ -204,9 +182,9 @@ mod tests {
 
     #[test]
     fn app_boundary_commands_compatibility_and_language_surface_remain_available() {
-        assert!(!compatibility::legacy_configuration_getter_startup_compat_entries().is_empty());
-        assert!(!compatibility::legacy_configuration_getter_ini_compat_entries().is_empty());
-        assert!(language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY.contains("de/en/es"));
+        assert!(!compatibility::syncplay_configuration_getter_startup_compat_entries().is_empty());
+        assert!(!compatibility::syncplay_configuration_getter_ini_compat_entries().is_empty());
+        assert!(language::SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY.contains("de/en/es"));
         assert!(commands::parse_local_input_command("list").is_some());
         assert_eq!(storage::SOROTTE_CONFIG_FILE_NAME, "sorotte.ini");
     }
@@ -225,14 +203,14 @@ mod tests {
             session::ConnectedSessionOuterLoopExitKind::TransportClosed,
             session::ConnectedSessionOuterLoopExitKind::TransportClosed
         ));
-        assert!(!notifications::format_duration_legacy(65.0).is_empty());
+        assert!(!notifications::format_duration(65.0).is_empty());
     }
 
     #[test]
     fn app_boundary_state_and_persistence_surface_round_trip_basic_values() {
-        let settings = state::StoredClientSettingsV1 {
+        let settings = state::StoredClientSettings {
             host: Some("example.com:8998".to_string()),
-            ..state::StoredClientSettingsV1::default()
+            ..state::StoredClientSettings::default()
         };
         let runtime_config = state::ClientConfig::try_from_stored(&settings)
             .expect("valid stored settings should resolve");
@@ -241,22 +219,20 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(runtime_config.connection.port.get(), 8998);
-        let config_plan = state::stored_client_settings_config_plan_legacy_compatible(
+        let config_plan = state::stored_client_settings_config_plan(
             &settings,
             &state::StoredClientSettingsEnvPresence::default(),
         );
         assert_eq!(config_plan.host.as_deref(), Some("example.com"));
         assert_eq!(config_plan.port, Some(8998));
 
-        let parsed = persistence::parse_sorotte_ini_stored_client_settings_mvp(
+        let parsed = persistence::parse_sorotte_ini_stored_client_settings(
             "[server_data]\nhost = syncplay.test\n",
         );
         assert_eq!(parsed.host.as_deref(), Some("syncplay.test"));
 
-        let serialized = persistence::format_serialized_string_list_legacy_compatible(&[
-            "alpha".to_string(),
-            "beta".to_string(),
-        ]);
+        let serialized =
+            persistence::format_serialized_string_list(&["alpha".to_string(), "beta".to_string()]);
         assert!(serialized.contains("alpha"));
     }
 }

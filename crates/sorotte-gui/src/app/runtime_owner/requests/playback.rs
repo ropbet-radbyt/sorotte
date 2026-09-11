@@ -5,7 +5,7 @@ use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
 use crate::app::runtime_stack::GuiOwnedPlayer;
 use crate::app::support::system_time_seconds;
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_player_mpv::SorotteBridgeHealth;
 
 impl GuiPersistedConfigRuntimeOwner {
@@ -131,7 +131,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) -> bool {
         self.refresh_player_state();
         let stream_helper_snapshot = self.recheck_stream_helper_runtime_snapshot(projected_state);
@@ -378,7 +378,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
         let previous_position_seconds = self.player_position_seconds.unwrap_or(0.0);
-        let dispatch = plan_local_offset_runtime_dispatch_legacy_compatible(
+        let dispatch = plan_local_offset_runtime_dispatch(
             self.user_offset_seconds,
             previous_position_seconds,
             &command,
@@ -403,9 +403,9 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             Self::push_player_error(handle, error);
         }
-        let message = dispatch.line_to_emit.unwrap_or_else(|| {
-            localized_current_offset_message_legacy_compatible(self.user_offset_seconds, None)
-        });
+        let message = dispatch
+            .line_to_emit
+            .unwrap_or_else(|| localized_current_offset_message(self.user_offset_seconds, None));
         let _ = self.interrupt_attached_playback_recovery_impl("local offset change");
         if let Some(player) = self.player.as_mut() {
             let player_name = player.name();

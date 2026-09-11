@@ -17,7 +17,6 @@ pub const PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS: u64 = 60_000;
 
 /// Whether a participant's Sorotte client can currently reach its player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantPlayerConnection {
     Unavailable,
@@ -29,7 +28,6 @@ pub enum ParticipantPlayerConnection {
 
 /// Stable, privacy-safe projection of the participant's coarse playback phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantPlaybackPhase {
     Empty,
@@ -78,7 +76,6 @@ pub fn participant_status_buffer_evidence_is_eligible(
 
 /// Timeline class used to prevent misleading VOD-style drift for live media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantTimelineKind {
     Vod,
@@ -88,7 +85,6 @@ pub enum ParticipantTimelineKind {
 
 /// Optional authoritative scope that correlates a report to the room media.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantPlaybackScope {
     pub media_generation: u64,
@@ -123,7 +119,6 @@ impl ParticipantPlaybackScope {
 /// Connection-scoped status observation. Identity and room are deliberately
 /// absent: the server derives both from the authenticated session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantStatusReport {
     /// Strictly increasing and non-zero within one protocol connection.
@@ -255,7 +250,6 @@ impl ParticipantStatusReport {
 
 /// Server-derived freshness or capability state for one room participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantStatusAvailability {
     Fresh,
@@ -270,7 +264,6 @@ pub enum ParticipantStatusAvailability {
 
 /// Correlation of one retained report to the server's current room scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantStatusCorrelation {
     Exact,
@@ -281,7 +274,6 @@ pub enum ParticipantStatusCorrelation {
 /// Server-owned projection of one participant's latest accepted report.
 /// `room_offset_seconds` is never supplied by the reporting client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantStatusView {
     pub availability: ParticipantStatusAvailability,
@@ -346,7 +338,7 @@ impl ParticipantStatusView {
         if self.correlation == Some(ParticipantStatusCorrelation::Superseded) {
             // Superseded rows may retain report freshness, player connection,
             // and coarse phase, but no field derived from the retired playback
-            // epoch. This is deliberately stronger than the legacy
+            // epoch. This is deliberately stronger than the uncorrelated
             // Uncorrelated case, which may still carry a coarse timestamp.
             self.playback_scope = None;
             self.timeline_kind = None;
@@ -364,7 +356,7 @@ impl ParticipantStatusView {
         if self.correlation != Some(ParticipantStatusCorrelation::Exact) {
             // A precise ahead/behind value is server-authored only when the
             // report is explicitly correlated to the current authoritative
-            // scope. Missing/legacy correlation may keep a timestamp, never
+            // scope. Missing or uncorrelated scope may keep a timestamp, never
             // an offset.
             self.room_offset_seconds = None;
         }
@@ -408,7 +400,6 @@ impl ParticipantStatusView {
 /// Completeness level used to keep complete snapshot semantics within the
 /// smallest advertised client framing limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub enum ParticipantStatusSnapshotMode {
     #[default]
@@ -419,7 +410,6 @@ pub enum ParticipantStatusSnapshotMode {
 
 /// Complete current-room snapshot sent on the coalescible periodic State path.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantStatusSnapshot {
     pub revision: u64,
@@ -450,7 +440,6 @@ impl ParticipantStatusSnapshot {
 /// Bidirectional State extension. Clients send only `report`; servers send
 /// only `snapshot`. The opposite-direction field is ignored by each receiver.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[non_exhaustive]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantStatusStateExtension {
     #[serde(default, skip_serializing_if = "Option::is_none")]

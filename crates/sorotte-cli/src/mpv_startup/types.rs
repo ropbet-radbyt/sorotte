@@ -30,7 +30,7 @@ impl std::fmt::Debug for ManagedMpvLaunchEnvConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LegacyExplicitMpvIpcStartupPlayerArgs {
+pub(crate) struct ExplicitMpvIpcStartupPlayerArgs {
     pub(crate) paused: Option<bool>,
     pub(crate) start_position_seconds: Option<f64>,
     pub(crate) playback_rate: Option<f64>,
@@ -54,16 +54,16 @@ pub(crate) struct LegacyExplicitMpvIpcStartupPlayerArgs {
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
-pub(crate) struct LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+pub(crate) struct ExplicitMpvIpcStartupPlayerArgDiagnostics {
     pub(crate) supported_tokens: Vec<String>,
     pub(crate) malformed_tokens: Vec<String>,
     pub(crate) unsupported_tokens: Vec<String>,
 }
 
-impl std::fmt::Debug for LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+impl std::fmt::Debug for ExplicitMpvIpcStartupPlayerArgDiagnostics {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("LegacyExplicitMpvIpcStartupPlayerArgDiagnostics")
+            .debug_struct("ExplicitMpvIpcStartupPlayerArgDiagnostics")
             .field(
                 "supported_tokens",
                 &RedactedCommandArgs::from_args(&self.supported_tokens),
@@ -81,12 +81,12 @@ impl std::fmt::Debug for LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) enum LegacyExplicitMpvIpcStartupPlayerCommand {
+pub(crate) enum ExplicitMpvIpcStartupPlayerCommand {
     SetOptionString { name: String, value: String },
     ApplyProfile { profile: String },
 }
 
-impl std::fmt::Debug for LegacyExplicitMpvIpcStartupPlayerCommand {
+impl std::fmt::Debug for ExplicitMpvIpcStartupPlayerCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SetOptionString { name, .. } => formatter
@@ -105,22 +105,22 @@ impl std::fmt::Debug for LegacyExplicitMpvIpcStartupPlayerCommand {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct LegacyExplicitMpvIpcStartupPlayerArgAnalysis {
-    pub(crate) parsed: LegacyExplicitMpvIpcStartupPlayerArgs,
-    pub(crate) runtime_commands: Vec<LegacyExplicitMpvIpcStartupPlayerCommand>,
-    pub(crate) diagnostics: LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
+pub(crate) struct ExplicitMpvIpcStartupPlayerArgAnalysis {
+    pub(crate) parsed: ExplicitMpvIpcStartupPlayerArgs,
+    pub(crate) runtime_commands: Vec<ExplicitMpvIpcStartupPlayerCommand>,
+    pub(crate) diagnostics: ExplicitMpvIpcStartupPlayerArgDiagnostics,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct LegacyExternalPlayerLaunchSpec {
+pub(crate) struct ExternalPlayerLaunchSpec {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,
 }
 
-impl std::fmt::Debug for LegacyExternalPlayerLaunchSpec {
+impl std::fmt::Debug for ExternalPlayerLaunchSpec {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("LegacyExternalPlayerLaunchSpec")
+            .debug_struct("ExternalPlayerLaunchSpec")
             .field("program", &self.program)
             .field("args", &RedactedCommandArgs::from_args(&self.args))
             .finish()

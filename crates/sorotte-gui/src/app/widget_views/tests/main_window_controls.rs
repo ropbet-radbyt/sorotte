@@ -9,9 +9,9 @@ use sorotte_protocol::{
 
 #[test]
 fn main_window_contact_info_follows_the_saved_gui_preference() {
-    let hidden = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let hidden = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         show_contact_info: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         hidden
@@ -20,9 +20,9 @@ fn main_window_contact_info_follows_the_saved_gui_preference() {
             .is_none()
     );
 
-    let shown = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let shown = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         show_contact_info: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let shown_tree = shown.main_window_widget_tree();
     let contact = shown_tree
@@ -37,13 +37,13 @@ fn main_window_contact_info_follows_the_saved_gui_preference() {
 
 #[test]
 fn gui_shell_app_state_projects_main_window_widget_trees() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(true),
         username: Some("Alice".to_owned()),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
@@ -218,16 +218,16 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
 
 #[test]
 fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("Alice".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
-    let mut readiness = ParticipantReadinessPresentation::from_legacy("Alice", false);
+    let mut readiness = ParticipantReadinessPresentation::from_syncplay_ready("Alice", false);
     readiness.mixed_readiness_policy = Some(MixedReadinessPolicy::RequireAllMembers);
     readiness.start_gate_phase = Some(RoomStartGatePhase::Degraded {
         media_generation: 7,
-        reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+        reason: StartGateDegradedReason::UnsupportedParticipant,
     });
     state
         .main_window
@@ -238,9 +238,7 @@ fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
     assert_eq!(
         tree.find("main-window:user:0:readiness-participation")
             .and_then(|node| node.value.as_deref()),
-        Some(
-            "legacy participant; automatic start unavailable until every member supports readiness V2"
-        )
+        Some("coordinated start unsupported; automatic start requires support from every member")
     );
     assert_eq!(
         tree.find("main-window:user:0:readiness-gate")
@@ -251,10 +249,10 @@ fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
 
 #[test]
 fn room_intent_and_member_observation_remain_explicit_and_separate() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("Alice".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.room_playback_intent.position_seconds = Some(755.03);
     state.main_window.room_playback_intent.paused = Some(false);
@@ -370,10 +368,10 @@ fn room_intent_and_member_observation_remain_explicit_and_separate() {
 
 #[test]
 fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("Alice".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let report = |player_connection, logical_paused, playback_rate, playback_scope| {
@@ -453,9 +451,9 @@ fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() 
         ),
         (
             "legacy client",
-            MainWindowParticipantStatusPresentation::LegacyClient,
+            MainWindowParticipantStatusPresentation::StatusUnsupported,
             [
-                "unavailable (legacy client)",
+                "unavailable (status reporting unsupported)",
                 "unavailable",
                 "unavailable",
                 "unavailable",
@@ -607,10 +605,10 @@ fn participant_status_diagnostic_widgets_project_exact_member_evidence_labels() 
 
 #[test]
 fn participant_status_tones_are_derived_from_typed_status_not_display_text() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("Alice".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let report = |player_connection, phase, freshness, timeline_mismatch| {
@@ -647,7 +645,7 @@ fn participant_status_tones_are_derived_from_typed_status_not_display_text() {
             GuiStatusTone::Warning,
         ),
         (
-            MainWindowParticipantStatusPresentation::LegacyClient,
+            MainWindowParticipantStatusPresentation::StatusUnsupported,
             GuiStatusTone::Muted,
         ),
         (
@@ -746,9 +744,9 @@ fn participant_status_tones_are_derived_from_typed_status_not_display_text() {
 
 #[test]
 fn gui_shell_app_state_displays_plex_playlist_rows_by_media_name() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let media_name = "[EG]Gurren_Lagann_03_BD(720p_10bit)[BB5590A5].mkv";
     let playlist_entry = format_plex_playlist_uri(&PlexPlaylistUri {
@@ -780,11 +778,11 @@ fn gui_shell_app_state_displays_plex_playlist_rows_by_media_name() {
 
 #[test]
 fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     snapshot.can_toggle_pause = true;
@@ -857,12 +855,12 @@ fn gui_shell_app_state_projects_compact_playback_controls_and_ready_button_text(
 
 #[test]
 fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.commands.can_toggle_pause = true;
     let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -930,11 +928,11 @@ fn gui_shell_app_state_disables_playback_controls_when_playlist_is_empty() {
 
 #[test]
 fn gui_shell_app_state_projects_player_setup_into_main_window_widgets() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         player_path: Some("C:/missing/mpv.exe".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -981,10 +979,10 @@ fn gui_shell_app_state_projects_player_setup_into_main_window_widgets() {
 
 #[test]
 fn gui_shell_app_state_projects_runtime_room_control_status_into_main_window_widget_tree() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("+room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     snapshot.room_name = "+room1".to_owned();
@@ -1003,10 +1001,10 @@ fn gui_shell_app_state_projects_runtime_room_control_status_into_main_window_wid
 
 #[test]
 fn gui_shell_app_state_projects_stream_seek_refill_without_changing_local_file_surface() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(

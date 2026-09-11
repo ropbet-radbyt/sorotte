@@ -117,14 +117,14 @@ def validate_pin_projections(root: Path = ROOT) -> dict:
     equal(tomllib.loads(read("coverage/mutation-policy.toml"))["cargo_mutants_version"], tools["cargo-mutants"], "mutation policy")
     projections = {
         "scripts/compat_live_interop.py": {
-            "PINNED_LEGACY_SYNCPLAY_SHA": references["legacy-sha"],
+            "PINNED_SYNCPLAY_SHA": references["legacy-sha"],
             "PINNED_LEGACY_SYNCPLAY_REPOSITORY": references["legacy-url"].removeprefix("https://github.com/"),
             "SUPPORTED_PYTHON_MINIMUM": tuple(map(int, tools["python-min"].split("."))),
             "SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE": tuple(map(int, tools["python-max-exclusive"].split("."))),
         },
         "scripts/coverage_profile_lanes.py": {
             "PINNED_CARGO_LLVM_COV_VERSION": tools["cargo-llvm-cov"],
-            "PINNED_LEGACY_SYNCPLAY_SHA": references["legacy-sha"],
+            "PINNED_SYNCPLAY_SHA": references["legacy-sha"],
         },
         "scripts/coverage_windows_process_lanes.py": {
             "PINNED_CARGO_LLVM_COV_VERSION": tools["cargo-llvm-cov"],

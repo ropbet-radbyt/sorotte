@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_adds_media_directory_and_pushes_chat_messages() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AddMediaSearchDirectory(
         "C:/Media".to_owned(),
@@ -29,9 +28,9 @@ fn gui_shell_app_state_adds_media_directory_and_pushes_chat_messages() {
 
 #[test]
 fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello world".to_owned(),)));
@@ -85,9 +84,9 @@ fn gui_shell_app_state_tracks_local_and_remote_chat_event_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(!state.apply(GuiShellAction::BeginLocalChatSend("hello".to_owned())));
@@ -96,9 +95,9 @@ fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
         Some("Chat input is disabled in Chat settings. The message was not sent.")
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(!state.apply(GuiShellAction::BeginLocalChatSend("   ".to_owned())));
@@ -135,8 +134,7 @@ fn gui_shell_app_state_rejects_invalid_chat_event_actions() {
 
 #[test]
 fn gui_shell_app_state_handles_text_edits_and_room_switches() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionUsername,
@@ -156,8 +154,7 @@ fn gui_shell_app_state_handles_text_edits_and_room_switches() {
 
 #[test]
 fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_joins() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionRoom,
@@ -173,9 +170,9 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_text_edits_and_room_jo
 
 #[test]
 fn gui_shell_app_state_normalizes_bare_controlled_room_names_from_saved_settings() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("Test:77F8DA30FB3E".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -192,12 +189,12 @@ fn gui_shell_app_state_normalizes_bare_controlled_room_names_from_saved_settings
 
 #[test]
 fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("+Test:77F8DA30FB3E:RH-273-303".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -225,12 +222,12 @@ fn gui_shell_app_state_preserves_controlled_room_auth_for_saved_connect_target()
 
 #[test]
 fn connect_once_target_ignores_unsaved_room_history_when_room_is_empty() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room_list: Some(vec!["saved-room".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -262,9 +259,9 @@ fn connect_once_target_ignores_unsaved_room_history_when_room_is_empty() {
 
 #[test]
 fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("+room:ABCDEF123456".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let baseline_chat_len = state.main_window.chat.len();
     let baseline_notification_len = state.notifications.len();
@@ -296,8 +293,7 @@ fn gui_shell_app_state_defers_room_join_and_leave_to_runtime_confirmation() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_room_status_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::JoinMainWindowRoom(String::new())));
     assert_eq!(

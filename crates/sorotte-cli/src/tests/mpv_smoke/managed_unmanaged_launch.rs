@@ -63,10 +63,7 @@ fn managed_mpv_cli_smoke_publishes_local_file_metadata_without_external_ipc_setu
             }
 
             let published = runtime
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw)
                 .expect("publishing pending local file update should not fail");
 
             if published {
@@ -178,7 +175,7 @@ fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args
         std::process::id()
     );
 
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -209,7 +206,7 @@ fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args
         unknown_options: vec![],
     };
 
-    let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+    let spec = external_player_launch_spec_from_overrides(&overrides)
         .expect("player-path should produce unmanaged external launch spec");
     assert_eq!(
         spec.program, mpv_bin,
@@ -222,7 +219,7 @@ fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args
     );
 
     let mut child = MpvChildGuard(
-        spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+        spawn_external_player_from_spec(&spec)
             .expect("legacy unmanaged external spawn should start real mpv"),
     );
 

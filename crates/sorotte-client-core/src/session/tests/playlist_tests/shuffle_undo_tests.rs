@@ -413,10 +413,10 @@ fn playlist_undo_snapshot_capture_obeys_change_deduplication_and_room_isolation(
         .undo_snapshots
         .insert("other-room".to_owned(), vec!["other-room.mkv".to_owned()]);
 
-    session.capture_playlist_undo_snapshot_legacy_compatible("room1", &original, &original);
+    session.capture_playlist_undo_snapshot("room1", &original, &original);
     assert_eq!(session.model.playlist.undo_snapshots.get("room1"), None);
 
-    session.capture_playlist_undo_snapshot_legacy_compatible(
+    session.capture_playlist_undo_snapshot(
         "room1",
         &original,
         &["episode2.mkv".to_owned(), "episode1.mkv".to_owned()],
@@ -426,11 +426,7 @@ fn playlist_undo_snapshot_capture_obeys_change_deduplication_and_room_isolation(
         Some(&original)
     );
 
-    session.capture_playlist_undo_snapshot_legacy_compatible(
-        "room1",
-        &original,
-        &["replacement.mkv".to_owned()],
-    );
+    session.capture_playlist_undo_snapshot("room1", &original, &["replacement.mkv".to_owned()]);
     assert_eq!(
         session.model.playlist.undo_snapshots.get("room1"),
         Some(&original),
@@ -438,11 +434,7 @@ fn playlist_undo_snapshot_capture_obeys_change_deduplication_and_room_isolation(
     );
 
     let replacement = vec!["replacement.mkv".to_owned()];
-    session.capture_playlist_undo_snapshot_legacy_compatible(
-        "room1",
-        &replacement,
-        &["next.mkv".to_owned()],
-    );
+    session.capture_playlist_undo_snapshot("room1", &replacement, &["next.mkv".to_owned()]);
     assert_eq!(
         session.model.playlist.undo_snapshots.get("room1"),
         Some(&replacement)
@@ -514,7 +506,7 @@ fn playlist_target_index_selection_covers_forward_backward_and_boundary_rules() 
             .map(|entry| (*entry).to_owned())
             .collect::<Vec<_>>();
         assert_eq!(
-            ClientSession::local_playlist_target_index_from_changed_playlist_legacy_compatible(
+            ClientSession::local_playlist_target_index_from_changed_playlist(
                 &current_files,
                 case.current_index,
                 &new_files,
@@ -605,11 +597,7 @@ fn playlist_shuffle_seed_has_stable_scope_index_nonce_and_filename_framing() {
             .map(|entry| (*entry).to_owned())
             .collect::<Vec<_>>();
         assert_eq!(
-            session.next_playlist_shuffle_seed_legacy_compatible(
-                &files,
-                case.current_index,
-                case.remaining,
-            ),
+            session.next_playlist_shuffle_seed(&files, case.current_index, case.remaining,),
             case.expected,
             "{}",
             case.label
@@ -634,7 +622,7 @@ fn playlist_shuffle_prng_transition_matches_independent_golden_vectors() {
 
     for (initial, expected) in cases {
         let mut state = initial;
-        let returned = ClientSession::next_shuffle_state_legacy_compatible(&mut state);
+        let returned = ClientSession::next_shuffle_state(&mut state);
         assert_eq!(
             returned, expected,
             "return value for initial {initial:#018x}"
@@ -654,7 +642,7 @@ fn playlist_fisher_yates_shuffle_matches_golden_permutations_and_preserves_membe
 
     for (seed, expected) in cases {
         let mut files = ["A", "B", "C", "D", "E"].map(str::to_owned);
-        ClientSession::shuffle_playlist_slice_in_place_legacy_compatible(&mut files, seed);
+        ClientSession::shuffle_playlist_slice_in_place(&mut files, seed);
         assert_eq!(
             files,
             expected.map(str::to_owned),
@@ -666,10 +654,10 @@ fn playlist_fisher_yates_shuffle_matches_golden_permutations_and_preserves_membe
     }
 
     let mut empty: [String; 0] = [];
-    ClientSession::shuffle_playlist_slice_in_place_legacy_compatible(&mut empty, 7);
+    ClientSession::shuffle_playlist_slice_in_place(&mut empty, 7);
     assert!(empty.is_empty());
     let mut singleton = ["only".to_owned()];
-    ClientSession::shuffle_playlist_slice_in_place_legacy_compatible(&mut singleton, 7);
+    ClientSession::shuffle_playlist_slice_in_place(&mut singleton, 7);
     assert_eq!(singleton, ["only".to_owned()]);
 }
 
@@ -680,7 +668,7 @@ fn playlist_fisher_yates_shuffle_is_a_permutation_across_fixed_seed_stress() {
         .collect::<Vec<_>>();
     for seed in 0..512_u64 {
         let mut shuffled = expected.clone();
-        ClientSession::shuffle_playlist_slice_in_place_legacy_compatible(&mut shuffled, seed);
+        ClientSession::shuffle_playlist_slice_in_place(&mut shuffled, seed);
         shuffled.sort();
         assert_eq!(shuffled, expected, "permutation invariant for seed {seed}");
     }

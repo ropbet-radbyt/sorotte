@@ -4,22 +4,6 @@ pub const PARTICIPANT_STATUS_FRESH_SECONDS: f64 = 3.0;
 pub const PARTICIPANT_STATUS_DELAYED_SECONDS: f64 = 10.0;
 
 /// Client-side freshness classification for advisory participant status.
-///
-/// Downstream matches must retain a fallback for future additive states.
-///
-/// ```compile_fail
-/// use sorotte_client_core::ClientParticipantStatusFreshness;
-///
-/// fn label(value: ClientParticipantStatusFreshness) -> &'static str {
-///     match value {
-///         ClientParticipantStatusFreshness::Unknown => "unknown",
-///         ClientParticipantStatusFreshness::Fresh => "fresh",
-///         ClientParticipantStatusFreshness::Delayed => "delayed",
-///         ClientParticipantStatusFreshness::Stale => "stale",
-///     }
-/// }
-/// ```
-#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum ClientParticipantStatusFreshness {
     #[default]
@@ -42,8 +26,8 @@ impl ClientParticipantStatusFreshness {
 
 /// Sanitized client projection of one server-authored participant-status row.
 ///
-/// Construct values through [`Self::from_wire`] so additive fields can be
-/// normalized without requiring downstream struct literals.
+/// Construct values through [`Self::from_wire`] so invalid or uncorrelated
+/// wire evidence is sanitized before consumers display it.
 ///
 /// ```compile_fail
 /// use sorotte_client_core::{
@@ -93,7 +77,7 @@ impl ClientParticipantStatusView {
             value.room_offset_seconds = None;
         }
         // The public protocol sanitizer owns the shared correlation contract:
-        // legacy uncorrelated rows may retain coarse media evidence but never
+        // uncorrelated rows may retain coarse media evidence but never
         // an offset, while superseded rows lose all retired-epoch precision.
         value.redact_ineligible_media_evidence();
         // Report freshness and player-evidence freshness are independent.
@@ -363,8 +347,8 @@ pub struct RoomPlaystateView {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoomPlaystateAuthority {
-    LegacyRemoteUser,
-    LegacyLocalEcho,
+    SyncplayRemoteUser,
+    SyncplayLocalEcho,
     ServerBarrier {
         media_generation: u64,
         state_revision: Option<u64>,

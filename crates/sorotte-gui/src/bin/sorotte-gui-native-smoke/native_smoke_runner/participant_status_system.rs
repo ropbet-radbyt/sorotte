@@ -149,9 +149,9 @@ fn run_participant_status_system(
         "--ao=null".to_owned(),
         "--idle=yes".to_owned(),
     ];
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             host: Some(options.host.clone()),
             port: Some(options.port),
             tls_policy: Some("Plaintext".to_owned()),
@@ -164,7 +164,7 @@ fn run_participant_status_system(
             show_osd: Some(false),
             chat_input_enabled: Some(false),
             chat_output_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {

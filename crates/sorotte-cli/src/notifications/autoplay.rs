@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn autoplay_countdown_notification_message_localized_legacy_compatible(
+pub(crate) fn autoplay_countdown_notification_message_localized(
     notification: &AutoplayCountdownNotification,
     language: Option<&str>,
 ) -> String {
@@ -59,30 +59,25 @@ pub(crate) fn autoplay_countdown_notification_message_localized_legacy_compatibl
 pub(crate) fn emit_autoplay_countdown_notification(
     notification: &AutoplayCountdownNotification,
 ) -> anyhow::Result<()> {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let language = current_runtime_language_tag();
     println!(
         "{}",
-        autoplay_countdown_notification_message_localized_legacy_compatible(
-            notification,
-            language.as_deref(),
-        )
+        autoplay_countdown_notification_message_localized(notification, language.as_deref(),)
     );
     Ok(())
 }
 
-fn emit_autoplay_countdown_notification_to_player_legacy_compatible(
+fn emit_autoplay_countdown_notification_to_player(
     player: &mut MpvAdapter,
     notification: &AutoplayCountdownNotification,
 ) {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let message = autoplay_countdown_notification_message_localized_legacy_compatible(
-        notification,
-        language.as_deref(),
-    );
-    emit_sorotte_player_osd_notification_legacy_compatible(
+    let language = current_runtime_language_tag();
+    let message =
+        autoplay_countdown_notification_message_localized(notification, language.as_deref());
+    emit_sorotte_player_osd_notification(
         player,
         &message,
-        LegacySyncplayOsdKind::Alert,
+        SyncplayOsdKind::Alert,
         "autoplay notification",
     );
 }
@@ -98,7 +93,7 @@ where
     runtime.drain_autoplay_notifications_to_sink(|notification| notify(notification))
 }
 
-pub(crate) fn flush_autoplay_notifications_legacy_compatible<F>(
+pub(crate) fn flush_autoplay_notifications<F>(
     runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
@@ -107,7 +102,7 @@ where
 {
     while let Some(notification) = runtime.pending_autoplay_notification().cloned() {
         runtime.with_player_io(|player| {
-            emit_autoplay_countdown_notification_to_player_legacy_compatible(player, &notification);
+            emit_autoplay_countdown_notification_to_player(player, &notification);
         });
         notify(&notification)?;
         let acknowledged = runtime.acknowledge_autoplay_notification();

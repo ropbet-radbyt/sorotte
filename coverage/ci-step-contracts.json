@@ -879,30 +879,6 @@
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "semver",
-      "step_id": "ci_checkout_2858a3e2",
-      "display_name": "Checkout"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "semver",
-      "step_id": "ci_setup_rust_dd1a8f55",
-      "display_name": "Setup Rust"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "semver",
-      "step_id": "ci_install_pinned_cargo_semver_checks_712626c6",
-      "display_name": "Install pinned cargo-semver-checks"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "semver",
-      "step_id": "ci_enforce_public_rust_api_compatibility_cc4e4e07",
-      "display_name": "Enforce public Rust API compatibility"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
       "job_id": "checks",
       "step_id": "ci_checkout_d90905a1",
       "display_name": "Checkout"
@@ -1254,12 +1230,6 @@
       "job_id": "rust_windows_tests",
       "step_id": "ci_verify_cached_archives_and_reconstruct_ec66cc47",
       "display_name": "Verify cached archives and reconstruct corrupt inputs"
-    },
-    {
-      "workflow": ".github/workflows/rust-ci.yml",
-      "job_id": "rust_windows_tests",
-      "step_id": "ci_validate_windows_semver_wrapper_6ba0767b",
-      "display_name": "Validate Windows semver wrapper"
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",

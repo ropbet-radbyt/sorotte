@@ -157,10 +157,10 @@ impl ClientSession {
             .room
             .participant_status_capabilities
             .remove(&provisional_username);
-        let provisional_legacy_position = self
+        let provisional_list_position = self
             .model
             .room
-            .legacy_list_position_snapshots
+            .list_position_snapshots
             .remove(&provisional_username);
         let provisional_room = provisional_user
             .as_ref()
@@ -210,10 +210,10 @@ impl ClientSession {
                 .entry(assigned_username.to_owned())
                 .or_insert(capability);
         }
-        if let Some(position) = provisional_legacy_position {
+        if let Some(position) = provisional_list_position {
             self.model
                 .room
-                .legacy_list_position_snapshots
+                .list_position_snapshots
                 .entry(assigned_username.to_owned())
                 .or_insert(position);
         }
@@ -321,7 +321,7 @@ impl ClientSession {
         self.model.connection.phase = ConnectionPhase::Active(hello.capabilities);
         if readiness_v2 {
             // V2 start commits are server-owned. Retain the preference for
-            // legacy rooms, but never run a competing local countdown here.
+            // Syncplay-ready rooms, but never run a competing local countdown here.
             self.stop_autoplay_countdown();
         } else {
             self.reset_readiness_v2_for_new_room();
@@ -555,10 +555,8 @@ impl ClientSession {
                             && let (Some(target_username), Some(target_room)) =
                                 (target_username, target_room)
                         {
-                            let hide_from_osd = self
-                                .noncontroller_event_hide_from_osd_legacy_compatible(
-                                    &target_username,
-                                );
+                            let hide_from_osd =
+                                self.noncontroller_event_hide_from_osd(&target_username);
                             self.pending_controller_auth_notifications.push(
                                 ControllerAuthTransitionNotification::Failed {
                                     username: target_username,
@@ -576,9 +574,8 @@ impl ClientSession {
                 && let (Some(room_name), Some(password)) =
                     (new_controlled_room.room_name, new_controlled_room.password)
             {
-                let normalized_password = SecretValue::new(
-                    Self::normalize_control_password_legacy_compatible(password.expose_secret()),
-                );
+                let normalized_password =
+                    SecretValue::new(Self::normalize_control_password(password.expose_secret()));
                 self.model.readiness.autoplay_enabled = false;
                 self.stop_autoplay_countdown();
                 self.remember_normalized_control_password_for_room(
@@ -685,7 +682,7 @@ impl ClientSession {
                             .unwrap_or_default();
                         let current_room_media_changed = current_files != playlist_change_files
                             && self.model.room.name.as_deref() == Some(room_name.as_str());
-                        self.capture_playlist_undo_snapshot_legacy_compatible(
+                        self.capture_playlist_undo_snapshot(
                             &room_name,
                             &current_files,
                             &playlist_change_files,
@@ -814,7 +811,7 @@ impl ClientSession {
                 };
                 if should_queue_playlist_reset {
                     self.note_recent_rewind(
-                        now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+                        now_seconds.unwrap_or_else(unix_wall_clock_time_seconds),
                     );
                     self.queue_playlist_index_reset_intent(false);
                 }
@@ -873,7 +870,7 @@ impl ClientSession {
     pub(super) fn apply_list(&mut self, rooms: BTreeMap<String, BTreeMap<String, ClientListUser>>) {
         self.model.room.users.clear();
         self.model.room.participant_status_capabilities.clear();
-        self.model.room.legacy_list_position_snapshots.clear();
+        self.model.room.list_position_snapshots.clear();
         self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
@@ -897,7 +894,7 @@ impl ClientSession {
                     user_entry.capabilities,
                     user_entry.participant_status_v1,
                 );
-                self.set_user_legacy_list_position_snapshot(&username, user_entry.position);
+                self.set_user_list_position_snapshot(&username, user_entry.position);
                 if current_username.as_deref() == Some(username.as_str()) {
                     resolved_self_room = Some(room_name.clone());
                 }
@@ -918,7 +915,7 @@ impl ClientSession {
             state_payload.participant_status_scope.take(),
             state_payload.participant_status_snapshot.take(),
             std::mem::take(&mut state_payload.participant_status_scope_invalid),
-            now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+            now_seconds.unwrap_or_else(unix_wall_clock_time_seconds),
         );
         let Some(playstate) = state_payload.playstate else {
             return;
@@ -934,7 +931,7 @@ impl ClientSession {
             self.merge_room_playstate(
                 room_name,
                 playstate,
-                now_seconds.unwrap_or_else(unix_wall_clock_time_seconds_legacy_compatible),
+                now_seconds.unwrap_or_else(unix_wall_clock_time_seconds),
             );
         }
     }
@@ -943,17 +940,14 @@ impl ClientSession {
         self.pending_chat_notifications.push(notification);
     }
 
-    pub(super) fn sanitize_chat_message_legacy_compatible(message: &str) -> String {
+    pub(super) fn sanitize_chat_message(message: &str) -> String {
         message
             .chars()
             .filter(|character| *character != '\n' && *character != '\r')
             .collect()
     }
 
-    pub(super) fn truncate_chat_message_legacy_compatible(
-        message: &str,
-        max_length: usize,
-    ) -> String {
+    pub(super) fn truncate_chat_message(message: &str, max_length: usize) -> String {
         message.chars().take(max_length).collect()
     }
 
@@ -973,7 +967,7 @@ impl ClientSession {
         Some(components)
     }
 
-    pub(crate) fn meets_min_version_legacy_compatible(version: &str, min_version: &str) -> bool {
+    pub(crate) fn meets_min_version(version: &str, min_version: &str) -> bool {
         let Some(mut version_components) = Self::parse_numeric_version_components(version) else {
             return false;
         };

@@ -286,10 +286,10 @@ impl ClientSession {
     /// Returns the infrequent List snapshot position for compatibility UIs.
     /// It is intentionally named as a snapshot so callers do not treat it as
     /// live desynchronization evidence.
-    pub fn user_legacy_list_position_snapshot_seconds(&self, username: &str) -> Option<f64> {
+    pub fn user_list_position_snapshot_seconds(&self, username: &str) -> Option<f64> {
         self.model
             .room
-            .legacy_list_position_snapshots
+            .list_position_snapshots
             .get(username)
             .copied()
     }

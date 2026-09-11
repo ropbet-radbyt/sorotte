@@ -168,7 +168,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let active_room = self
             .runtime
             .session()
-            .local_room_command_target_with_legacy_fallback(&next_baseline_room);
+            .local_room_command_target_with_default_fallback(&next_baseline_room);
         Self::dispatch_command_to_application(
             &mut self.runtime,
             ClientCommand::update_settings(Self::application_settings(
@@ -214,9 +214,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn client_hello_features_legacy_compatible(
-        runtime_settings: &StoredClientSettingsRuntimeSnapshot,
-    ) -> Value {
+    fn client_hello_features(runtime_settings: &StoredClientSettingsRuntimeSnapshot) -> Value {
         let mut features = Map::new();
         features.insert(
             "sharedPlaylists".to_owned(),
@@ -247,11 +245,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
         readiness_reconnect_token: Option<&str>,
     ) -> String {
-        let mut hello = HelloPayload::new(username, room, SYNCPLAY_WIRE_VERSION_LEGACY)
-            .with_realversion(SYNCPLAY_COMPAT_VERSION_LEGACY)
-            .with_features(Self::client_hello_features_legacy_compatible(
-                runtime_settings,
-            ));
+        let mut hello = HelloPayload::new(username, room, SYNCPLAY_WIRE_VERSION)
+            .with_realversion(SYNCPLAY_COMPAT_VERSION)
+            .with_features(Self::client_hello_features(runtime_settings));
         if let Some(server_password) = runtime_settings
             .config
             .connection
@@ -262,7 +258,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         {
             hello.extra.insert(
                 "password".to_owned(),
-                Value::String(legacy_server_password_token(server_password)),
+                Value::String(syncplay_server_password_token(server_password)),
             );
         }
         if let Some(reconnect_token) = readiness_reconnect_token.filter(|token| !token.is_empty()) {
@@ -511,7 +507,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
         let _ = self
             .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me);
+            .run_state_sync_heartbeat_with_ping(self.dont_slow_down_with_me);
         self.next_state_sync_heartbeat_at = Some(now + Self::STATE_SYNC_HEARTBEAT_INTERVAL);
     }
 
@@ -740,7 +736,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 let response_at_seconds = system_time_seconds();
                 let _ = self
                     .runtime
-                    .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                    .run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
                         state_message.state,
                         self.dont_slow_down_with_me,
                         received_at_seconds,

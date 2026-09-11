@@ -25,7 +25,7 @@ impl GuiWidgetEguiRenderer {
             ],
             GuiShellModal::UpdateNotice => state
                 .update_check
-                .body_lines(Some(state.runtime_language_tag_legacy_compatible())),
+                .body_lines(Some(state.runtime_language_tag())),
             GuiShellModal::About => vec![
                 "The reducer reports that the About dialog is open.".to_owned(),
                 "This modal now routes into the existing help and update actions.".to_owned(),

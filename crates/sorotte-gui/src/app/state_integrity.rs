@@ -1,16 +1,14 @@
 use sorotte_client_app::app_boundary::{
-    language::normalized_legacy_runtime_language_tag_legacy_compatible,
+    language::normalized_runtime_language_tag,
     state::{
         RoomBufferingPolicy, StartSynchronizationPolicy, StartTimeoutAction,
-        StreamingQualityPreset, StreamingRecoveryPolicy,
-        parse_autoplay_min_users_override_legacy_compatible,
-        parse_host_and_optional_port_from_host_arg_legacy_compatible,
-        parse_unpause_action_mode_legacy_compatible,
+        StreamingQualityPreset, StreamingRecoveryPolicy, parse_autoplay_min_users_override,
+        parse_host_and_optional_port_from_host_arg, parse_unpause_action_mode,
     },
 };
 use sorotte_client_core::PrivacyMode;
 
-use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
+use super::runtime_localization::localize_gui_runtime_message;
 use super::shell_state::{
     GuiDialogControlKind, GuiFocusedConfigurationControlState, GuiPendingOperationKind,
     GuiValidationIssue, GuiValidationState, SettingId, SorotteGuiShellAppState,
@@ -247,9 +245,9 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn record_action_error(&mut self, message: impl Into<String>) -> bool {
         let message = message.into();
-        self.validation.last_action_error = Some(localize_gui_runtime_message_legacy_compatible(
+        self.validation.last_action_error = Some(localize_gui_runtime_message(
             &message,
-            Some(self.runtime_language_tag_legacy_compatible()),
+            Some(self.runtime_language_tag()),
         ));
         self.refresh_validation();
         false
@@ -300,35 +298,32 @@ impl SorotteGuiShellAppState {
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::PlaybackUnpauseAction,
-            |value| parse_unpause_action_mode_legacy_compatible(value).is_some(),
+            |value| parse_unpause_action_mode(value).is_some(),
             "must be a supported unpause action mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::PlaybackAutoplayMinUsers,
-            |value| {
-                value == "app-default"
-                    || parse_autoplay_min_users_override_legacy_compatible(value).is_some()
-            },
+            |value| value == "app-default" || parse_autoplay_min_users_override(value).is_some(),
             "must be a supported autoplay threshold or 'app-default'.",
         );
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::PrivacyFilename,
-            |value| PrivacyMode::from_legacy_name(value).is_some(),
+            |value| PrivacyMode::from_syncplay_name(value).is_some(),
             "must be a supported privacy mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::PrivacyFilesize,
-            |value| PrivacyMode::from_legacy_name(value).is_some(),
+            |value| PrivacyMode::from_syncplay_name(value).is_some(),
             "must be a supported privacy mode.",
         );
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::PrivacyTrustedDomains,
             |value| parse_trusted_domains_text(value).is_some(),
-            "must be a comma/semicolon-separated list or legacy bracketed list.",
+            "must be a comma/semicolon-separated list or Python bracketed list.",
         );
         self.push_parse_validation_issue(
             &mut issues,
@@ -512,8 +507,8 @@ impl SorotteGuiShellAppState {
         self.push_parse_validation_issue(
             &mut issues,
             SettingId::GeneralLanguage,
-            |value| normalized_legacy_runtime_language_tag_legacy_compatible(value).is_some(),
-            "must be one of the supported legacy language tags.",
+            |value| normalized_runtime_language_tag(value).is_some(),
+            "must be one of the supported language tags.",
         );
         self.push_parse_validation_issue(
             &mut issues,
@@ -534,8 +529,7 @@ impl SorotteGuiShellAppState {
         }
 
         for row in &self.public_servers.servers {
-            let (host, _) =
-                parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
+            let (host, _) = parse_host_and_optional_port_from_host_arg(&row.address);
             if host.trim().is_empty() {
                 issues.push(GuiValidationIssue::external(
                     "Public Servers",

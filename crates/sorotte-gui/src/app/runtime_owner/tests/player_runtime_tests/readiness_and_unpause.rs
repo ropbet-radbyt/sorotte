@@ -108,7 +108,7 @@ fn configure_v2_waiting_gate(owner: &mut GuiPersistedConfigRuntimeOwner, logical
         ]
         .into_iter()
         .collect(),
-        excluded_legacy_clients: Default::default(),
+        excluded_unsupported_clients: Default::default(),
     };
     let prepare = sorotte_protocol::PrepareMediaPayload::new(
         V2_GATE_MEDIA_GENERATION,
@@ -272,10 +272,10 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
     owner.player_position_seconds = Some(10.0);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -377,10 +377,10 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -504,10 +504,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_fo
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -617,10 +617,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -735,10 +735,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_host_unpauses_controlled_
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -832,10 +832,10 @@ fn gui_persisted_config_runtime_owner_keeps_not_ready_when_host_unpauses_control
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -929,10 +929,10 @@ fn gui_persisted_config_runtime_owner_keeps_not_ready_when_host_unpauses_uncontr
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1026,10 +1026,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_host_pauses_uncontrolled_
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1126,10 +1126,10 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
     owner.player_position_seconds = Some(10.0);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1223,10 +1223,10 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
     );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     configure_v2_waiting_gate(&mut owner, "v2-native-play-media");
@@ -1314,10 +1314,10 @@ fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
     );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     configure_v2_waiting_gate(&mut owner, "v2-gui-play-media");
@@ -1467,10 +1467,10 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     owner.player_position_seconds = Some(10.0);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1785,7 +1785,7 @@ fn assert_housekeeping_failure_does_not_suppress_playback_publication(
     )));
     owner.player_paused = Some(previous_paused);
     owner.player_position_seconds = Some(10.0);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let (effective_paused, sync_error) = owner
         .apply_playback_pause_change_with_detached_session_impl(
@@ -1930,10 +1930,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .session
@@ -2081,12 +2081,11 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     );
     controlled_owner.player_paused = Some(true);
     controlled_owner.player_position_seconds = Some(10.0);
-    let controlled_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("+room:ABCDEF123456".to_owned()),
-            ..StoredClientSettingsMvp::default()
-        });
+    let controlled_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("+room:ABCDEF123456".to_owned()),
+        ..StoredClientSettings::default()
+    });
     controlled_owner
         .session
         .as_mut()
@@ -2248,10 +2247,10 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(10.0);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let session = owner.session.as_mut().expect("session should exist");
@@ -2358,10 +2357,10 @@ fn gui_persisted_config_runtime_owner_preserves_play_intent_when_player_resume_f
     owner.player_position_seconds = Some(10.0);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -2472,10 +2471,10 @@ fn gui_persisted_config_runtime_owner_preserves_pause_intent_when_player_pause_f
     owner.player_position_seconds = Some(10.0);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

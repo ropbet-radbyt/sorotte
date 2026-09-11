@@ -21,23 +21,17 @@ fn format_file_difference_summary_uses_legacy_difference_order() {
 }
 
 #[test]
-fn localized_file_difference_summary_legacy_compatible_localizes_user_visible_tokens() {
+fn localized_file_difference_summary_localizes_user_visible_tokens() {
     assert_eq!(
-        crate::localized_file_difference_summary_legacy_compatible(
-            "filename, filesize, duration",
-            Some("de"),
-        ),
+        crate::localized_file_difference_summary("filename, filesize, duration", Some("de"),),
         "Dateiname, Dateigroesse, Dauer"
     );
     assert_eq!(
-        crate::localized_file_difference_summary_legacy_compatible(
-            "filename, filesize",
-            Some("fr"),
-        ),
+        crate::localized_file_difference_summary("filename, filesize", Some("fr"),),
         "nom du fichier, taille du fichier"
     );
     assert_eq!(
-        crate::localized_file_difference_summary_legacy_compatible("filename, duration", None,),
+        crate::localized_file_difference_summary("filename, duration", None,),
         "filename, duration"
     );
 }

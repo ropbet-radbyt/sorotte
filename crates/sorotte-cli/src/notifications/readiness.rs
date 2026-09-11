@@ -59,11 +59,11 @@ pub(crate) fn next_readiness_status_lines(
     if matches!(
         &snapshot.start_gate_phase,
         RoomStartGatePhase::Degraded {
-            reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+            reason: StartGateDegradedReason::UnsupportedParticipant,
             ..
         }
     ) {
-        let gate = ParticipantReadinessPresentation::from_legacy("room gate", false)
+        let gate = ParticipantReadinessPresentation::from_syncplay_ready("room gate", false)
             .with_room_snapshot(snapshot);
         current_lines.insert(
             "\0room-gate".to_owned(),
@@ -182,7 +182,7 @@ mod tests {
             next_readiness_status_lines(&mut ReadinessNotificationState::default(), &session);
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().any(|line| line.contains(
-            "cohort: legacy participant; automatic start unavailable until every member supports readiness V2"
+            "cohort: coordinated start unsupported; automatic start requires support from every member"
         )));
         assert!(lines.iter().any(|line| line ==
             "readiness gate: automatic start unavailable: a room member does not support readiness V2"

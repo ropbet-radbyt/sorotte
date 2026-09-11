@@ -1,17 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::legacy_settings::StoredClientSettingsMvp;
+use crate::stored_settings::StoredClientSettings;
 
 use super::{
-    helpers::{
-        ini_section_name, remove_ini_value_legacy_compatible,
-        unescape_sorotte_ini_value_legacy_compatible, upsert_ini_value_legacy_compatible,
-    },
-    writer::upsert_sorotte_ini_stored_client_settings_mvp,
+    helpers::{ini_section_name, remove_ini_value, unescape_sorotte_ini_value, upsert_ini_value},
+    writer::upsert_sorotte_ini_stored_client_settings,
 };
 
-fn recognized_values(settings: &StoredClientSettingsMvp) -> BTreeMap<(String, String), String> {
-    let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", settings);
+fn recognized_values(settings: &StoredClientSettings) -> BTreeMap<(String, String), String> {
+    let rendered = upsert_sorotte_ini_stored_client_settings("", settings);
     let mut section = String::new();
     let mut values = BTreeMap::new();
     for line in rendered.lines() {
@@ -20,7 +17,7 @@ fn recognized_values(settings: &StoredClientSettingsMvp) -> BTreeMap<(String, St
         } else if let Some((key, value)) = line.split_once('=') {
             values.insert(
                 (section.clone(), key.trim().to_owned()),
-                unescape_sorotte_ini_value_legacy_compatible(value.trim()),
+                unescape_sorotte_ini_value(value.trim()),
             );
         }
     }
@@ -31,8 +28,8 @@ fn recognized_values(settings: &StoredClientSettingsMvp) -> BTreeMap<(String, St
 /// baseline must never overwrite a newer value (especially a cleared secret).
 pub(super) fn merge_settings_contents(
     contents: &str,
-    baseline: &StoredClientSettingsMvp,
-    desired: &StoredClientSettingsMvp,
+    baseline: &StoredClientSettings,
+    desired: &StoredClientSettings,
 ) -> String {
     let before = recognized_values(baseline);
     let after = recognized_values(desired);
@@ -51,8 +48,8 @@ pub(super) fn merge_settings_contents(
         }
         changed = true;
         match after.get(&(section.clone(), key.clone())) {
-            Some(value) => upsert_ini_value_legacy_compatible(&mut lines, section, key, value),
-            None => remove_ini_value_legacy_compatible(&mut lines, section, key),
+            Some(value) => upsert_ini_value(&mut lines, section, key, value),
+            None => remove_ini_value(&mut lines, section, key),
         }
     }
     if !changed {

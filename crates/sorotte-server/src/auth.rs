@@ -74,13 +74,13 @@ impl RoomPasswordProvider {
     }
 }
 
-pub(crate) fn generate_server_salt_legacy_compatible() -> String {
+pub(crate) fn generate_server_salt() -> String {
     let mut bytes = [0_u8; GENERATED_SERVER_SALT_LENGTH];
     getrandom::fill(&mut bytes).expect("operating system random source should be available");
-    bytes.iter().copied().map(legacy_salt_character).collect()
+    bytes.iter().copied().map(syncplay_salt_character).collect()
 }
 
-fn legacy_salt_character(byte: u8) -> char {
+fn syncplay_salt_character(byte: u8) -> char {
     char::from(b'A' + (byte % 26))
 }
 
@@ -169,15 +169,15 @@ mod tests {
 
     #[test]
     fn legacy_salt_character_wraps_the_complete_uppercase_alphabet() {
-        assert_eq!(legacy_salt_character(0), 'A');
-        assert_eq!(legacy_salt_character(25), 'Z');
-        assert_eq!(legacy_salt_character(26), 'A');
-        assert_eq!(legacy_salt_character(u8::MAX), 'V');
+        assert_eq!(syncplay_salt_character(0), 'A');
+        assert_eq!(syncplay_salt_character(25), 'Z');
+        assert_eq!(syncplay_salt_character(26), 'A');
+        assert_eq!(syncplay_salt_character(u8::MAX), 'V');
     }
 
     #[test]
     fn generated_server_salt_matches_legacy_shape() {
-        let salt = generate_server_salt_legacy_compatible();
+        let salt = generate_server_salt();
 
         assert_eq!(salt.len(), 10);
         assert!(salt.chars().all(|character| character.is_ascii_uppercase()));

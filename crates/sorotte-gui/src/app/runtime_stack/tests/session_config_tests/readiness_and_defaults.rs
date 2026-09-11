@@ -3,13 +3,12 @@ use super::*;
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_before_first_hello()
  {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            ready_at_start: Some(true),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ready_at_start: Some(true),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -44,13 +43,12 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_after_hello_before_ready_echo()
  {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            ready_at_start: Some(true),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ready_at_start: Some(true),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -127,25 +125,23 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whites
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_settings_to_defaults() {
-    let configured_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            trusted_domains: Some(vec!["*.example.com/videos".to_owned()]),
-            rewind_threshold_seconds: Some(1.5),
-            fastforward_threshold_seconds: Some(4.0),
-            slowdown_threshold_seconds: Some(0.75),
-            unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
-            autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
-            show_duration_notification: Some(false),
-            ..StoredClientSettingsMvp::default()
-        });
-    let cleared_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            ..StoredClientSettingsMvp::default()
-        });
+    let configured_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        trusted_domains: Some(vec!["*.example.com/videos".to_owned()]),
+        rewind_threshold_seconds: Some(1.5),
+        fastforward_threshold_seconds: Some(4.0),
+        slowdown_threshold_seconds: Some(0.75),
+        unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+        autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+        show_duration_notification: Some(false),
+        ..StoredClientSettings::default()
+    });
+    let cleared_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 

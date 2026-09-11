@@ -54,8 +54,8 @@ pub fn run_python_privacy_file_payload_batch(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub fn run_python_legacy_client_set_file_contract_probe()
--> Result<LegacyClientSetFileContractProbe, InteropError> {
+pub fn run_python_syncplay_client_set_file_contract_probe()
+-> Result<SyncplayClientSetFileContractProbe, InteropError> {
     let stdout = run_python_probe_raw(&["--client-set-file-contract"], b"")?;
     let stdout_line =
         first_non_empty_stdout_line(&stdout).ok_or(InteropError::EmptyPythonResponse)?;
@@ -100,7 +100,7 @@ pub fn run_python_legacy_client_set_file_contract_probe()
             )
         })?;
 
-    Ok(LegacyClientSetFileContractProbe {
+    Ok(SyncplayClientSetFileContractProbe {
         file_payload_ignored,
         empty_payload_ignored,
         file_payload_calls: parse_string_array("filePayloadCalls")?,
@@ -108,8 +108,8 @@ pub fn run_python_legacy_client_set_file_contract_probe()
     })
 }
 
-pub fn run_python_legacy_client_user_file_metadata_probe()
--> Result<LegacyClientUserFileMetadataProbe, InteropError> {
+pub fn run_python_syncplay_client_user_file_metadata_probe()
+-> Result<SyncplayClientUserFileMetadataProbe, InteropError> {
     let stdout = run_python_probe_raw(&["--client-user-file-metadata-contract"], b"")?;
     let stdout_line =
         first_non_empty_stdout_line(&stdout).ok_or(InteropError::EmptyPythonResponse)?;
@@ -143,7 +143,7 @@ pub fn run_python_legacy_client_user_file_metadata_probe()
                 .collect::<Result<BTreeMap<_, _>, _>>()
         };
 
-    Ok(LegacyClientUserFileMetadataProbe {
+    Ok(SyncplayClientUserFileMetadataProbe {
         after_set_mixed: parse_snapshot_map("afterSetMixed")?,
         after_set_empty: parse_snapshot_map("afterSetEmpty")?,
         after_list_mixed: parse_snapshot_map("afterListMixed")?,
@@ -151,9 +151,9 @@ pub fn run_python_legacy_client_user_file_metadata_probe()
     })
 }
 
-pub fn run_python_legacy_client_chat_send_contract_batch(
-    cases: &[LegacyClientChatSendContractCase],
-) -> Result<Vec<LegacyClientChatSendContractResult>, InteropError> {
+pub fn run_python_syncplay_client_chat_send_contract_batch(
+    cases: &[SyncplayClientChatSendContractCase],
+) -> Result<Vec<SyncplayClientChatSendContractResult>, InteropError> {
     if cases.is_empty() {
         return Ok(Vec::new());
     }
@@ -225,7 +225,7 @@ pub fn run_python_legacy_client_chat_send_contract_batch(
                     "client chat send contract output should be an object".to_owned(),
                 ));
             }
-            Ok(LegacyClientChatSendContractResult {
+            Ok(SyncplayClientChatSendContractResult {
                 sent_messages: parse_string_array(output, "sentMessages")?,
                 error_messages: parse_string_array(output, "errorMessages")?,
                 debug_messages: parse_string_array(output, "debugMessages")?,

@@ -1761,7 +1761,7 @@ async fn server_network_loop_sends_error_for_invalid_utf8_line() {
     let ProtocolMessage::Error(payload) = error_response else {
         panic!("invalid utf8 should receive protocol Error");
     };
-    assert_eq!(payload.error.message, LEGACY_SERVER_LINE_DECODE_ERROR);
+    assert_eq!(payload.error.message, SYNCPLAY_SERVER_LINE_DECODE_ERROR);
 
     shutdown_tx
         .send(true)

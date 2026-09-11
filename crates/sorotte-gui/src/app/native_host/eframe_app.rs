@@ -400,7 +400,7 @@ impl Drop for GuiNativeApp {
         if let Some(root) = self.gui_state_root.as_deref() {
             let persisted_state = GuiPersistedUiState::from_shell_state(&self.state);
             if let Err(error) = persist_gui_ui_state_at_root(root, &persisted_state) {
-                eprintln!("sorotte-gui failed to persist legacy GUI state: {error}");
+                eprintln!("sorotte-gui failed to persist Syncplay GUI state: {error}");
             }
         }
         super::super::test_lifecycle::record(super::super::test_lifecycle::APP_DROP_COMPLETE);

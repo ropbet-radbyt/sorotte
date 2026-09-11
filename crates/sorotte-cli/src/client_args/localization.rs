@@ -1,48 +1,40 @@
-pub(crate) fn localized_legacy_startup_compatibility_heading_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_startup_compatibility_heading(language: Option<&str>) -> &'static str {
     match language {
-        Some("de") => "Legacy-Python-ConfigurationGetter Startkompatibilitaet:",
-        Some("es") => "Compatibilidad de inicio de Legacy Python ConfigurationGetter:",
-        Some("eo") => "Ekfunkcia kongrueco de Legacy Python ConfigurationGetter:",
-        Some("fi") => "Legacy Python ConfigurationGetterin kaynnistysyhteensopivuus:",
-        Some("fr") => "Compatibilite de demarrage de Legacy Python ConfigurationGetter :",
-        Some("it") => "Compatibilita di avvio di Legacy Python ConfigurationGetter:",
+        Some("de") => "Syncplay-ConfigurationGetter Startkompatibilitaet:",
+        Some("es") => "Compatibilidad de inicio de Syncplay ConfigurationGetter:",
+        Some("eo") => "Ekfunkcia kongrueco de Syncplay ConfigurationGetter:",
+        Some("fi") => "Syncplay ConfigurationGetterin kaynnistysyhteensopivuus:",
+        Some("fr") => "Compatibilite de demarrage de Syncplay ConfigurationGetter :",
+        Some("it") => "Compatibilita di avvio di Syncplay ConfigurationGetter:",
         Some("pt_PT" | "pt_BR") => {
-            "Compatibilidade de inicializacao do Legacy Python ConfigurationGetter:"
+            "Compatibilidade de inicializacao do Syncplay ConfigurationGetter:"
         }
-        Some("tr") => "Legacy Python ConfigurationGetter baslangic uyumlulugu:",
-        Some("ru") => "Sovmestimost zapuska Legacy Python ConfigurationGetter:",
-        Some("zh_CN") => "Legacy Python ConfigurationGetter qidong jianrongxing:",
-        Some("ko") => "Legacy Python ConfigurationGetter sijak hohwanseong:",
-        _ => "Legacy Python ConfigurationGetter Startup Compatibility:",
+        Some("tr") => "Syncplay ConfigurationGetter baslangic uyumlulugu:",
+        Some("ru") => "Sovmestimost zapuska Syncplay ConfigurationGetter:",
+        Some("zh_CN") => "Syncplay ConfigurationGetter qidong jianrongxing:",
+        Some("ko") => "Syncplay ConfigurationGetter sijak hohwanseong:",
+        _ => "Syncplay ConfigurationGetter Startup Compatibility:",
     }
 }
 
-pub(crate) fn localized_legacy_ini_compatibility_heading_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_syncplay_ini_compatibility_heading(language: Option<&str>) -> &'static str {
     match language {
-        Some("de") => "Legacy-Python-ConfigurationGetter sorotte.ini-Kompatibilitaet:",
-        Some("es") => "Compatibilidad sorotte.ini de Legacy Python ConfigurationGetter:",
-        Some("eo") => "sorotte.ini-kongrueco de Legacy Python ConfigurationGetter:",
-        Some("fi") => "Legacy Python ConfigurationGetterin sorotte.ini-yhteensopivuus:",
-        Some("fr") => "Compatibilite sorotte.ini de Legacy Python ConfigurationGetter :",
-        Some("it") => "Compatibilita sorotte.ini di Legacy Python ConfigurationGetter:",
-        Some("pt_PT" | "pt_BR") => {
-            "Compatibilidade sorotte.ini do Legacy Python ConfigurationGetter:"
-        }
-        Some("tr") => "Legacy Python ConfigurationGetter sorotte.ini uyumlulugu:",
-        Some("ru") => "Sovmestimost sorotte.ini Legacy Python ConfigurationGetter:",
-        Some("zh_CN") => "Legacy Python ConfigurationGetter sorotte.ini jianrongxing:",
-        Some("ko") => "Legacy Python ConfigurationGetter sorotte.ini hohwanseong:",
-        _ => "Legacy Python ConfigurationGetter sorotte.ini Compatibility:",
+        Some("de") => "Syncplay-ConfigurationGetter sorotte.ini-Kompatibilitaet:",
+        Some("es") => "Compatibilidad sorotte.ini de Syncplay ConfigurationGetter:",
+        Some("eo") => "sorotte.ini-kongrueco de Syncplay ConfigurationGetter:",
+        Some("fi") => "Syncplay ConfigurationGetterin sorotte.ini-yhteensopivuus:",
+        Some("fr") => "Compatibilite sorotte.ini de Syncplay ConfigurationGetter :",
+        Some("it") => "Compatibilita sorotte.ini di Syncplay ConfigurationGetter:",
+        Some("pt_PT" | "pt_BR") => "Compatibilidade sorotte.ini do Syncplay ConfigurationGetter:",
+        Some("tr") => "Syncplay ConfigurationGetter sorotte.ini uyumlulugu:",
+        Some("ru") => "Sovmestimost sorotte.ini Syncplay ConfigurationGetter:",
+        Some("zh_CN") => "Syncplay ConfigurationGetter sorotte.ini jianrongxing:",
+        Some("ko") => "Syncplay ConfigurationGetter sorotte.ini hohwanseong:",
+        _ => "Syncplay ConfigurationGetter sorotte.ini Compatibility:",
     }
 }
 
-pub(crate) fn localized_compatibility_input_label_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_compatibility_input_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Eingabe",
         Some("es") => "Entrada",
@@ -59,9 +51,7 @@ pub(crate) fn localized_compatibility_input_label_legacy_compatible(
     }
 }
 
-pub(crate) fn localized_compatibility_field_label_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_compatibility_field_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Feld",
         Some("es") => "Campo",
@@ -78,9 +68,7 @@ pub(crate) fn localized_compatibility_field_label_legacy_compatible(
     }
 }
 
-pub(crate) fn localized_compatibility_status_label_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_compatibility_status_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Status",
         Some("es") => "Estado",
@@ -97,9 +85,7 @@ pub(crate) fn localized_compatibility_status_label_legacy_compatible(
     }
 }
 
-pub(crate) fn localized_compatibility_note_label_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(crate) fn localized_compatibility_note_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Hinweis",
         Some("es") => "Nota",

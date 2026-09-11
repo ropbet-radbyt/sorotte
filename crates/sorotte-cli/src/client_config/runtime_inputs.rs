@@ -32,15 +32,15 @@ pub(crate) fn derive_runtime_loop_inputs(
     }
 }
 
-pub(crate) fn shared_playlists_enabled_cli_legacy_compatible(config: &ClientLoopConfig) -> bool {
+pub(crate) fn shared_playlists_enabled_cli(config: &ClientLoopConfig) -> bool {
     config.shared_playlists_enabled_override.unwrap_or(true)
 }
 
-pub(crate) fn client_hello_features_legacy_compatible(config: &ClientLoopConfig) -> Value {
+pub(crate) fn client_hello_features(config: &ClientLoopConfig) -> Value {
     let mut features = Map::new();
     features.insert(
         "sharedPlaylists".to_owned(),
-        Value::Bool(shared_playlists_enabled_cli_legacy_compatible(config)),
+        Value::Bool(shared_playlists_enabled_cli(config)),
     );
     features.insert("chat".to_owned(), Value::Bool(true));
     features.insert("uiMode".to_owned(), Value::String("CLI".to_owned()));

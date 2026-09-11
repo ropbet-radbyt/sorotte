@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn legacy_stats_snapshot_start_delay_seconds_for_port(port: u16) -> f64 {
+pub(crate) fn stats_snapshot_start_delay_seconds_for_port(port: u16) -> f64 {
     SERVER_STATS_DELAY_STEP_SECONDS * (f64::from(port % 10) + 1.0)
 }
 
@@ -52,8 +52,8 @@ pub(crate) fn client_version_meets_minimum(client_version: &str, minimum_version
 pub(crate) fn render_motd_template(template: &str, client_version: &str) -> String {
     template
         .replace("{client_version}", client_version)
-        .replace("{latest_version}", LEGACY_COMPAT_SERVER_VERSION)
-        .replace("{upgrade_url}", LEGACY_COMPAT_UPGRADE_URL)
+        .replace("{latest_version}", SYNCPLAY_COMPAT_VERSION)
+        .replace("{upgrade_url}", SYNCPLAY_COMPAT_UPGRADE_URL)
 }
 
 fn render_python_dollar_motd_template(
@@ -116,7 +116,7 @@ fn motd_template_variable<'a>(
     room_name: &'a str,
 ) -> Result<&'a str, ()> {
     match name {
-        "version" => Ok(LEGACY_COMPAT_SERVER_VERSION),
+        "version" => Ok(SYNCPLAY_COMPAT_VERSION),
         "userIp" => Ok(user_ip),
         "username" => Ok(username),
         "room" => Ok(room_name),
@@ -134,9 +134,9 @@ fn render_custom_motd_template(
     let rendered = render_python_dollar_motd_template(template, user_ip, username, room_name)?;
     Ok(rendered
         .replace("{client_version}", client_version)
-        .replace("{latest_version}", LEGACY_COMPAT_SERVER_VERSION)
-        .replace("{upgrade_url}", LEGACY_COMPAT_UPGRADE_URL)
-        .replace("{version}", LEGACY_COMPAT_SERVER_VERSION)
+        .replace("{latest_version}", SYNCPLAY_COMPAT_VERSION)
+        .replace("{upgrade_url}", SYNCPLAY_COMPAT_UPGRADE_URL)
+        .replace("{version}", SYNCPLAY_COMPAT_VERSION)
         .replace("{userIp}", user_ip)
         .replace("{username}", username)
         .replace("{room}", room_name))
@@ -144,12 +144,12 @@ fn render_custom_motd_template(
 
 fn motd_too_long_message(actual_chars: usize) -> String {
     format!(
-        "{LEGACY_SERVER_MOTD_TOO_LONG_PREFIX} {LEGACY_SERVER_MAX_TEMPLATE_LENGTH} chars, {actual_chars} given."
+        "{SYNCPLAY_SERVER_MOTD_TOO_LONG_PREFIX} {SYNCPLAY_SERVER_MAX_TEMPLATE_LENGTH} chars, {actual_chars} given."
     )
 }
 
 pub(crate) fn default_motd_for_client_version(client_version: &str) -> String {
-    if is_client_version_outdated(client_version, LEGACY_COMPAT_SERVER_VERSION) {
+    if is_client_version_outdated(client_version, SYNCPLAY_COMPAT_VERSION) {
         return render_motd_template(DEFAULT_OUTDATED_MOTD_TEMPLATE, client_version);
     }
     String::new()
@@ -170,7 +170,7 @@ pub(crate) fn motd_for_client_context(
     username: &str,
     room_name: &str,
 ) -> String {
-    let is_outdated = is_client_version_outdated(client_version, LEGACY_COMPAT_SERVER_VERSION);
+    let is_outdated = is_client_version_outdated(client_version, SYNCPLAY_COMPAT_VERSION);
     if let Some(template) = motd_template_override {
         if template.trim().is_empty() {
             return String::new();
@@ -183,7 +183,7 @@ pub(crate) fn motd_for_client_context(
             room_name,
         ) {
             Ok(custom_motd) => custom_motd,
-            Err(()) => return LEGACY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS.to_owned(),
+            Err(()) => return SYNCPLAY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS.to_owned(),
         };
         let motd = if is_outdated {
             let warning_motd = render_motd_template(DEFAULT_OUTDATED_MOTD_TEMPLATE, client_version);
@@ -191,7 +191,7 @@ pub(crate) fn motd_for_client_context(
         } else {
             custom_motd
         };
-        if motd.chars().count() <= LEGACY_SERVER_MAX_TEMPLATE_LENGTH {
+        if motd.chars().count() <= SYNCPLAY_SERVER_MAX_TEMPLATE_LENGTH {
             return motd;
         }
         return motd_too_long_message(motd.chars().count());
@@ -210,17 +210,14 @@ pub(crate) fn playlist_is_valid(files: &[String]) -> bool {
     files.iter().map(|file| file.chars().count()).sum::<usize>() <= DEFAULT_PLAYLIST_MAX_CHARACTERS
 }
 
-pub(crate) fn legacy_server_password_token_md5_hex(token: &str) -> String {
+pub(crate) fn syncplay_server_password_token_md5_hex(token: &str) -> String {
     lowercase_hex(Md5::digest(token.as_bytes()))
 }
 
-pub(crate) fn server_password_token_matches_legacy_compatible(
-    presented_token: &str,
-    configured_token: &str,
-) -> bool {
-    // Accept raw tokens for Rust-Rust interoperability and legacy-Python MD5 tokens for parity.
+pub(crate) fn server_password_token_matches(presented_token: &str, configured_token: &str) -> bool {
+    // Accept raw tokens for Rust-Rust interoperability and Python Syncplay MD5 tokens for parity.
     presented_token == configured_token
-        || presented_token == legacy_server_password_token_md5_hex(configured_token)
+        || presented_token == syncplay_server_password_token_md5_hex(configured_token)
 }
 
 pub(crate) fn persistent_rooms_notice_motd(
@@ -232,9 +229,9 @@ pub(crate) fn persistent_rooms_notice_motd(
         return base_motd;
     }
     if base_motd.is_empty() {
-        return LEGACY_PERSISTENT_ROOMS_NOTICE.to_owned();
+        return SYNCPLAY_PERSISTENT_ROOMS_NOTICE.to_owned();
     }
-    format!("{LEGACY_PERSISTENT_ROOMS_NOTICE}\n\n{base_motd}")
+    format!("{SYNCPLAY_PERSISTENT_ROOMS_NOTICE}\n\n{base_motd}")
 }
 
 pub(crate) fn room_name_is_marked_temporary(room_name: &str) -> bool {
@@ -262,7 +259,7 @@ pub(crate) fn parse_permanent_rooms_file(contents: &str) -> BTreeSet<String> {
         .collect()
 }
 
-pub(crate) fn legacy_dummy_list_entry() -> ListUserEntry {
+pub(crate) fn empty_persistent_room_list_entry() -> ListUserEntry {
     ListUserEntry::new()
         .with_position(0.0)
         .with_file(json!({}))

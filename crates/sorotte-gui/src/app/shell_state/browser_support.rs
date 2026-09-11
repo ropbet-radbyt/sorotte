@@ -40,7 +40,7 @@ pub(in crate::app) fn browser_uri_is_trusted(
     if !browser_is_url(uri) {
         return true;
     }
-    sorotte_client_core::playback_uri_is_trusted_legacy_compatible(
+    sorotte_client_core::playback_uri_is_trusted(
         uri,
         only_switch_to_trusted_domains,
         trusted_domains,

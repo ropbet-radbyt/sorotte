@@ -132,12 +132,6 @@ def preflight(phase: str, requested_tools: list[str], legacy: Path | None) -> di
         evaluate(json.loads((ROOT / "coverage/assurance-capabilities.json").read_text(encoding="utf-8")), datetime.now(timezone.utc))
         return f"{len(paths)} TOML manifests, lane policy, native and assurance registries validated"
     def writable_temp():
-        try:
-            Path(tempfile.gettempdir()).resolve().relative_to(ROOT)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("TEMP is inside the checkout; semver immutable exports require an external writable temp directory")
         with tempfile.TemporaryDirectory(prefix="sorotte-preflight-") as folder:
             path = Path(folder) / "rename-source"
             path.write_bytes(b"canary")

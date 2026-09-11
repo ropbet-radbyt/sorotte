@@ -6,13 +6,13 @@ fn protocol_hello_fixture_decodes() {
 }
 
 #[test]
-fn legacy_syncplay_checkout_dir_defaults_to_repo_local_cache() {
+fn syncplay_checkout_dir_defaults_to_repo_local_cache() {
     if std::env::var_os("SYNCPLAY_LEGACY_ROOT").is_some() {
         return;
     }
 
     assert!(
-        super::legacy_syncplay_checkout_dir()
+        super::syncplay_checkout_dir()
             .ends_with(Path::new(".interop-cache").join("syncplay-legacy"))
     );
 }
@@ -46,7 +46,7 @@ fn decode_protocol_file_works_for_existing_fixture() {
 #[test]
 #[ignore = "requires Twisted and writes fixture files from a live legacy server session"]
 fn capture_live_reference_state_latency_metrics_trace_fixture() {
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_state_latency_metrics.jsonl",
         "server_runtime_state_latency_metrics.legacy_trace.json",
     )
@@ -75,26 +75,26 @@ fn capture_persistent_rooms_lifecycle_trace_fixtures() {
         true,
     )
     .expect("persistent-rooms lifecycle python trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         PERSISTENT_ROOMS_LIFECYCLE_SCENARIO,
         "server_runtime_persistent_rooms_lifecycle.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
     )
     .expect("persistent-rooms lifecycle legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         PERSISTENT_ROOMS_TIMEOUT_LIST_UPDATES_SCENARIO,
         "server_runtime_persistent_rooms_timeout_list_updates.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
     )
     .expect("persistent timeout-list-updates legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_full_overrides(
+    capture_syncplay_server_trace_fixture_with_full_overrides(
         PERMANENT_ROOMS_FILE_SCENARIO,
         "server_runtime_permanent_rooms_file.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
         PERMANENT_ROOMS_FILE_LIST,
@@ -114,10 +114,10 @@ fn capture_permanent_rooms_file_trace_fixtures() {
         PERMANENT_ROOMS_FILE_LIST,
     )
     .expect("permanent-rooms-file python trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_full_overrides(
+    capture_syncplay_server_trace_fixture_with_full_overrides(
         PERMANENT_ROOMS_FILE_SCENARIO,
         "server_runtime_permanent_rooms_file.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
         PERMANENT_ROOMS_FILE_LIST,
@@ -129,72 +129,72 @@ fn capture_permanent_rooms_file_trace_fixtures() {
 #[test]
 #[ignore = "requires Twisted and writes fixture files from a live legacy server session"]
 fn capture_live_reference_controlled_room_trace_fixtures() {
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_controlled_room_permissions.jsonl",
         "server_runtime_controlled_room_permissions.legacy_trace.json",
     )
     .expect("controlled-room permissions legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_controlled_room_invalid_password.jsonl",
         "server_runtime_controlled_room_invalid_password.legacy_trace.json",
     )
     .expect("controlled-room invalid-password legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_controlled_room_state_forced_correction.jsonl",
         "server_runtime_controlled_room_state_forced_correction.legacy_trace.json",
     )
     .expect("controlled-room forced-correction legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_state_propagation.jsonl",
         "server_runtime_state_propagation.legacy_trace.json",
     )
     .expect("state propagation legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_state_metadata_forwarding.jsonl",
         "server_runtime_state_metadata_forwarding.legacy_trace.json",
     )
     .expect("state metadata forwarding legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_state_periodic_timeout.jsonl",
         "server_runtime_state_periodic_timeout.legacy_trace.json",
     )
     .expect("state periodic-timeout legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_state_latency_metrics.jsonl",
         "server_runtime_state_latency_metrics.legacy_trace.json",
     )
     .expect("state latency-metrics legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture(
+    capture_syncplay_server_trace_fixture(
         "server_runtime_username_conflict.jsonl",
         "server_runtime_username_conflict.legacy_trace.json",
     )
     .expect("username conflict legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_salt_and_motd_template(
+    capture_syncplay_server_trace_fixture_with_salt_and_motd_template(
         MOTD_TEMPLATE_SCENARIO,
         "server_runtime_motd_template.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         Some(MOTD_TEMPLATE_LEGACY_FILE),
     )
     .expect("motd-template legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_salt_and_motd_template(
+    capture_syncplay_server_trace_fixture_with_salt_and_motd_template(
         MOTD_TEMPLATE_OUTDATED_SCENARIO,
         "server_runtime_motd_template_outdated_client.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         Some(MOTD_TEMPLATE_LEGACY_FILE),
     )
     .expect("motd-template outdated-client legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         PERSISTENT_ROOMS_NOTICE_SCENARIO,
         "server_runtime_persistent_rooms_notice.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
     )
     .expect("persistent-rooms notice legacy trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         PERSISTENT_ROOMS_LIFECYCLE_SCENARIO,
         "server_runtime_persistent_rooms_lifecycle.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
     )
@@ -212,10 +212,10 @@ fn capture_persistent_rooms_timeout_list_updates_trace_fixtures() {
         true,
     )
     .expect("persistent timeout-list-updates python trace capture should succeed");
-    capture_legacy_server_trace_fixture_with_overrides(
+    capture_syncplay_server_trace_fixture_with_overrides(
         PERSISTENT_ROOMS_TIMEOUT_LIST_UPDATES_SCENARIO,
         "server_runtime_persistent_rooms_timeout_list_updates.legacy_trace.json",
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         None,
         true,
     )

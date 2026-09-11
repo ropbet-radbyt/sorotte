@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn parse_legacy_client_arg_overrides_parses_player_path_and_positional_file_and_player_args() {
-    let overrides = parse_legacy_client_arg_overrides([
+fn parse_syncplay_client_arg_overrides_parses_player_path_and_positional_file_and_player_args() {
+    let overrides = parse_syncplay_client_arg_overrides([
         "--no-gui",
         "--player-path",
         "/tmp/mpv",
@@ -24,9 +24,9 @@ fn parse_legacy_client_arg_overrides_parses_player_path_and_positional_file_and_
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_double_dash_assigns_first_trailing_positional_to_file() {
+fn parse_syncplay_client_arg_overrides_double_dash_assigns_first_trailing_positional_to_file() {
     let overrides =
-        parse_legacy_client_arg_overrides(["--no-gui", "--", "movie.mkv", "--fs", "--speed=1.1"]);
+        parse_syncplay_client_arg_overrides(["--no-gui", "--", "movie.mkv", "--fs", "--speed=1.1"]);
 
     assert!(overrides.connect_requested);
     assert_eq!(overrides.file.as_deref(), Some("movie.mkv"));
@@ -38,9 +38,10 @@ fn parse_legacy_client_arg_overrides_double_dash_assigns_first_trailing_position
 }
 
 #[test]
-fn parse_legacy_client_arg_overrides_double_dash_promotes_double_dash_prefixed_file_to_player_args()
-{
-    let overrides = parse_legacy_client_arg_overrides(["--no-gui", "--", "--start=12", "--pause"]);
+fn parse_syncplay_client_arg_overrides_double_dash_promotes_double_dash_prefixed_file_to_player_args()
+ {
+    let overrides =
+        parse_syncplay_client_arg_overrides(["--no-gui", "--", "--start=12", "--pause"]);
 
     assert!(overrides.connect_requested);
     assert_eq!(overrides.file, None);

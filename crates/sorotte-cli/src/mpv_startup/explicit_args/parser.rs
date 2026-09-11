@@ -134,29 +134,25 @@ const BOOL_STARTUP_ARG_SPECS: &[BoolStartupArgSpec] = &[
     },
 ];
 
-pub(super) fn parse_bool_startup_arg_legacy_compatible(
+pub(super) fn parse_bool_startup_arg(
     arg: &str,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
     for spec in BOOL_STARTUP_ARG_SPECS {
         if spec.positive_flags.contains(&arg) {
-            set_bool_startup_arg_legacy_compatible(&mut analysis.parsed, spec.target, true);
+            set_bool_startup_arg(&mut analysis.parsed, spec.target, true);
             analysis.diagnostics.supported_tokens.push(arg.to_owned());
             return true;
         }
         if spec.negative_flags.contains(&arg) {
-            set_bool_startup_arg_legacy_compatible(&mut analysis.parsed, spec.target, false);
+            set_bool_startup_arg(&mut analysis.parsed, spec.target, false);
             analysis.diagnostics.supported_tokens.push(arg.to_owned());
             return true;
         }
         for prefix in spec.assignment_prefixes {
             if let Some(value) = arg.strip_prefix(prefix) {
-                if let Some(parsed) = parse_env_bool_legacy_compatible(value) {
-                    set_bool_startup_arg_legacy_compatible(
-                        &mut analysis.parsed,
-                        spec.target,
-                        parsed,
-                    );
+                if let Some(parsed) = parse_env_bool(value) {
+                    set_bool_startup_arg(&mut analysis.parsed, spec.target, parsed);
                     analysis.diagnostics.supported_tokens.push(arg.to_owned());
                 } else {
                     analysis.diagnostics.malformed_tokens.push(arg.to_owned());
@@ -168,8 +164,8 @@ pub(super) fn parse_bool_startup_arg_legacy_compatible(
     false
 }
 
-fn set_bool_startup_arg_legacy_compatible(
-    parsed: &mut LegacyExplicitMpvIpcStartupPlayerArgs,
+fn set_bool_startup_arg(
+    parsed: &mut ExplicitMpvIpcStartupPlayerArgs,
     target: BoolStartupArgTarget,
     value: bool,
 ) {
@@ -196,58 +192,58 @@ fn set_bool_startup_arg_legacy_compatible(
     }
 }
 
-pub(super) fn parse_start_position_arg_legacy_compatible(
+pub(super) fn parse_start_position_arg(
     player_args: &[String],
     index: &mut usize,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
-    parse_value_option_arg_legacy_compatible(
+    parse_value_option_arg(
         player_args,
         index,
         analysis,
         "--start",
         "--start=",
-        parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible,
+        parse_explicit_mpv_ipc_start_position_seconds,
         |parsed, value| parsed.start_position_seconds = Some(value),
     )
 }
 
-pub(super) fn parse_speed_arg_legacy_compatible(
+pub(super) fn parse_speed_arg(
     player_args: &[String],
     index: &mut usize,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
-    parse_value_option_arg_legacy_compatible(
+    parse_value_option_arg(
         player_args,
         index,
         analysis,
         "--speed",
         "--speed=",
-        parse_positive_f64_legacy_compatible,
+        parse_positive_f64,
         |parsed, value| parsed.playback_rate = Some(value),
     )
 }
 
-pub(super) fn parse_volume_arg_legacy_compatible(
+pub(super) fn parse_volume_arg(
     player_args: &[String],
     index: &mut usize,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
-    parse_value_option_arg_legacy_compatible(
+    parse_value_option_arg(
         player_args,
         index,
         analysis,
         "--volume",
         "--volume=",
-        parse_env_non_negative_f64_legacy_compatible,
+        parse_env_non_negative_f64,
         |parsed, value| parsed.volume = Some(value),
     )
 }
 
-fn parse_value_option_arg_legacy_compatible<P, A>(
+fn parse_value_option_arg<P, A>(
     player_args: &[String],
     index: &mut usize,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
     flag: &str,
     assignment_prefix: &str,
     parse_value: P,
@@ -255,7 +251,7 @@ fn parse_value_option_arg_legacy_compatible<P, A>(
 ) -> bool
 where
     P: Fn(&str) -> Option<f64>,
-    A: Fn(&mut LegacyExplicitMpvIpcStartupPlayerArgs, f64),
+    A: Fn(&mut ExplicitMpvIpcStartupPlayerArgs, f64),
 {
     let arg = player_args[*index].as_str();
     if let Some(value) = arg.strip_prefix(assignment_prefix) {
@@ -278,8 +274,7 @@ where
             *index += 1;
             return true;
         }
-        let combined =
-            format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(arg, next);
+        let combined = format_explicit_mpv_ipc_flag_and_value_token(arg, next);
         if let Some(parsed_value) = parse_value(next) {
             apply_value(&mut analysis.parsed, parsed_value);
             analysis.diagnostics.supported_tokens.push(combined);
@@ -295,19 +290,19 @@ where
     true
 }
 
-pub(super) fn parse_profile_arg_legacy_compatible(
+pub(super) fn parse_profile_arg(
     player_args: &[String],
     index: &mut usize,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
     let arg = player_args[*index].as_str();
     if let Some(value) = arg.strip_prefix("--profile=") {
         if value.trim().is_empty() {
             analysis.diagnostics.malformed_tokens.push(arg.to_owned());
         } else {
-            push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+            push_explicit_mpv_ipc_startup_player_command(
                 &mut analysis.runtime_commands,
-                LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+                ExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
                     profile: value.to_owned(),
                 },
             );
@@ -326,16 +321,16 @@ pub(super) fn parse_profile_arg_legacy_compatible(
             *index += 1;
             return true;
         }
-        push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+        push_explicit_mpv_ipc_startup_player_command(
             &mut analysis.runtime_commands,
-            LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+            ExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
                 profile: next.to_owned(),
             },
         );
         analysis
             .diagnostics
             .supported_tokens
-            .push(format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(arg, next));
+            .push(format_explicit_mpv_ipc_flag_and_value_token(arg, next));
         *index += 2;
         return true;
     }
@@ -345,16 +340,14 @@ pub(super) fn parse_profile_arg_legacy_compatible(
     true
 }
 
-pub(super) fn parse_generic_option_assignment_arg_legacy_compatible(
+pub(super) fn parse_generic_option_assignment_arg(
     arg: &str,
-    analysis: &mut LegacyExplicitMpvIpcStartupPlayerArgAnalysis,
+    analysis: &mut ExplicitMpvIpcStartupPlayerArgAnalysis,
 ) -> bool {
-    if let Some((name, value)) =
-        parse_legacy_explicit_mpv_ipc_generic_option_assignment_legacy_compatible(arg)
-    {
-        push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
+    if let Some((name, value)) = parse_explicit_mpv_ipc_generic_option_assignment(arg) {
+        push_explicit_mpv_ipc_startup_player_command(
             &mut analysis.runtime_commands,
-            LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, value },
+            ExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, value },
         );
         analysis.diagnostics.supported_tokens.push(arg.to_owned());
         return true;
@@ -362,28 +355,20 @@ pub(super) fn parse_generic_option_assignment_arg_legacy_compatible(
     false
 }
 
-fn parse_positive_f64_legacy_compatible(value: &str) -> Option<f64> {
+fn parse_positive_f64(value: &str) -> Option<f64> {
     let parsed = value.trim().parse::<f64>().ok()?;
     (parsed.is_finite() && parsed > 0.0).then_some(parsed)
 }
 
-fn parse_legacy_explicit_mpv_ipc_start_position_seconds_legacy_compatible(
-    value: &str,
-) -> Option<f64> {
-    parse_env_non_negative_f64_legacy_compatible(value)
-        .or_else(|| parse_seek_time_seconds_legacy_like(value))
+fn parse_explicit_mpv_ipc_start_position_seconds(value: &str) -> Option<f64> {
+    parse_env_non_negative_f64(value).or_else(|| parse_seek_time_seconds(value))
 }
 
-fn format_legacy_explicit_mpv_ipc_flag_and_value_token_legacy_compatible(
-    flag: &str,
-    value: &str,
-) -> String {
+fn format_explicit_mpv_ipc_flag_and_value_token(flag: &str, value: &str) -> String {
     format!("{flag} {value}")
 }
 
-fn parse_legacy_explicit_mpv_ipc_generic_option_assignment_legacy_compatible(
-    arg: &str,
-) -> Option<(String, String)> {
+fn parse_explicit_mpv_ipc_generic_option_assignment(arg: &str) -> Option<(String, String)> {
     let option = arg
         .strip_prefix("--")
         .or_else(|| arg.strip_prefix('-'))
@@ -396,27 +381,26 @@ fn parse_legacy_explicit_mpv_ipc_generic_option_assignment_legacy_compatible(
     Some((trimmed_name.to_owned(), value.to_owned()))
 }
 
-fn legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(
-    command: &LegacyExplicitMpvIpcStartupPlayerCommand,
+fn explicit_mpv_ipc_startup_player_command_key(
+    command: &ExplicitMpvIpcStartupPlayerCommand,
 ) -> (&str, Option<&str>) {
     match command {
-        LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, .. } => {
+        ExplicitMpvIpcStartupPlayerCommand::SetOptionString { name, .. } => {
             ("set-option", Some(name.as_str()))
         }
-        LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile { .. } => ("apply-profile", None),
+        ExplicitMpvIpcStartupPlayerCommand::ApplyProfile { .. } => ("apply-profile", None),
     }
 }
 
-fn push_legacy_explicit_mpv_ipc_startup_player_command_legacy_compatible(
-    commands: &mut Vec<LegacyExplicitMpvIpcStartupPlayerCommand>,
-    command: LegacyExplicitMpvIpcStartupPlayerCommand,
+fn push_explicit_mpv_ipc_startup_player_command(
+    commands: &mut Vec<ExplicitMpvIpcStartupPlayerCommand>,
+    command: ExplicitMpvIpcStartupPlayerCommand,
 ) {
-    let command_key =
-        legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(&command);
-    if let Some(existing_index) = commands.iter().position(|existing| {
-        legacy_explicit_mpv_ipc_startup_player_command_key_legacy_compatible(existing)
-            == command_key
-    }) {
+    let command_key = explicit_mpv_ipc_startup_player_command_key(&command);
+    if let Some(existing_index) = commands
+        .iter()
+        .position(|existing| explicit_mpv_ipc_startup_player_command_key(existing) == command_key)
+    {
         commands.remove(existing_index);
     }
     commands.push(command);

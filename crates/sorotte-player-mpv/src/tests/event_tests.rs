@@ -904,7 +904,7 @@ fn client_message_events_from_syncplayintf_queue_pending_chat_requests() {
         r#"{"request_id":9,"error":"success","data":false}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.enable_test_legacy_chat_input();
+    adapter.enable_test_syncplay_chat_input();
 
     assert_eq!(
         adapter.take_pending_chat_request(),
@@ -920,12 +920,12 @@ fn endpoint_attachment_reset_discards_queued_syncplayintf_chat() {
         r#"{"request_id":1,"error":"success"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport(transport);
-    adapter.enable_test_legacy_chat_input();
+    adapter.enable_test_syncplay_chat_input();
 
     adapter
         .set_paused(false)
         .expect("a command should pump the queued client-message event");
-    adapter.reset_test_legacy_syncplayintf_attachment();
+    adapter.reset_test_syncplayintf_attachment();
 
     assert_eq!(adapter.take_pending_chat_request(), None);
 }

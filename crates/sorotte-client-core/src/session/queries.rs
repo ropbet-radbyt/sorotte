@@ -183,30 +183,30 @@ impl ClientSession {
         self.file_differences_for_room(room_name)
     }
 
-    pub fn same_filename_legacy_compatible(left: &str, right: &str) -> bool {
-        Self::same_filename_legacy_like(left, right)
+    pub fn same_filename(left: &str, right: &str) -> bool {
+        Self::filenames_match(left, right)
     }
 
-    pub fn same_filesize_legacy_compatible(left: &Value, right: &Value) -> bool {
-        Self::same_filesize_legacy_like(left, right)
+    pub fn same_filesize(left: &Value, right: &Value) -> bool {
+        Self::filesize_values_match(left, right)
     }
 
-    pub fn same_fileduration_legacy_compatible(left: f64, right: f64) -> bool {
-        Self::same_fileduration_legacy_compatible_with_overrides(
+    pub fn same_fileduration(left: f64, right: f64) -> bool {
+        Self::same_fileduration_with_overrides(
             left,
             right,
-            LEGACY_SHOW_DURATION_NOTIFICATION,
-            LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
+            DEFAULT_SHOW_DURATION_NOTIFICATION,
+            DEFAULT_DIFFERENT_DURATION_THRESHOLD_SECONDS,
         )
     }
 
-    pub fn same_fileduration_legacy_compatible_with_overrides(
+    pub fn same_fileduration_with_overrides(
         left: f64,
         right: f64,
         show_duration_notification: bool,
         different_duration_threshold_seconds: f64,
     ) -> bool {
-        Self::same_fileduration_legacy_like(
+        Self::durations_match(
             left,
             right,
             show_duration_notification,
@@ -215,7 +215,7 @@ impl ClientSession {
     }
 
     pub fn same_fileduration_with_readiness_autoplay_config(&self, left: f64, right: f64) -> bool {
-        Self::same_fileduration_legacy_compatible_with_overrides(
+        Self::same_fileduration_with_overrides(
             left,
             right,
             self.model.readiness.config.show_duration_notification,
@@ -226,7 +226,7 @@ impl ClientSession {
         )
     }
 
-    pub fn sanitize_outbound_file_payload_legacy_compatible(
+    pub fn sanitize_outbound_file_payload(
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
@@ -243,7 +243,7 @@ impl ClientSession {
 
         if let Some(name_value) = file_map.get("name") {
             let sanitized_name =
-                Self::filename_with_privacy_mode_legacy_like(name_value, filename_privacy_mode);
+                Self::filename_with_privacy_mode(name_value, filename_privacy_mode);
             if let Some(sanitized_name) = sanitized_name {
                 sanitized.insert("name".to_owned(), Value::String(sanitized_name));
             }
@@ -263,7 +263,7 @@ impl ClientSession {
                 .cloned()
                 .unwrap_or_else(|| Value::from(0));
             let sanitized_size =
-                Self::filesize_with_privacy_mode_legacy_like(&size_value, filesize_privacy_mode);
+                Self::filesize_with_privacy_mode(&size_value, filesize_privacy_mode);
             if let Some(sanitized_size) = sanitized_size {
                 sanitized.insert("size".to_owned(), sanitized_size);
             }
@@ -289,13 +289,13 @@ impl ClientSession {
         })
     }
 
-    pub fn runtime_actions_for_local_file_publish_legacy_compatible(
+    pub fn runtime_actions_for_local_file_publish(
         &mut self,
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Vec<ClientRuntimeAction> {
-        let Some(sanitized_payload) = Self::sanitize_outbound_file_payload_legacy_compatible(
+        let Some(sanitized_payload) = Self::sanitize_outbound_file_payload(
             file_payload,
             filename_privacy_mode,
             filesize_privacy_mode,
@@ -313,13 +313,6 @@ impl ClientSession {
         }];
         actions.push(ClientRuntimeAction::RequestUserList);
         actions
-    }
-
-    pub fn runtime_actions_for_local_media_opened_not_ready(&mut self) -> Vec<ClientRuntimeAction> {
-        // Kept as a source-compatible no-op while callers migrate to the
-        // generation-scoped playback preparation path. Loading or replacing
-        // media changes technical playability, never user readiness intent.
-        Vec::new()
     }
 
     pub fn room_playlist(&self, room_name: &str) -> Option<&RoomPlaylistView> {
@@ -376,10 +369,7 @@ impl ClientSession {
             .map(String::as_str)
     }
 
-    pub(crate) fn apply_local_playlist_runtime_actions_legacy_compatible(
-        &mut self,
-        actions: &[ClientRuntimeAction],
-    ) {
+    pub(crate) fn apply_local_playlist_runtime_actions(&mut self, actions: &[ClientRuntimeAction]) {
         let Some(room_name) = self.model.room.name.clone() else {
             return;
         };
@@ -522,11 +512,11 @@ impl ClientSession {
         }
         match playstate.set_by.as_deref() {
             Some(set_by) if self.model.connection.username.as_deref() == Some(set_by) => {
-                Some(RoomPlaystateAuthority::LegacyLocalEcho)
+                Some(RoomPlaystateAuthority::SyncplayLocalEcho)
             }
-            Some(_) => Some(RoomPlaystateAuthority::LegacyRemoteUser),
+            Some(_) => Some(RoomPlaystateAuthority::SyncplayRemoteUser),
             None if self.current_room_has_other_users() => {
-                Some(RoomPlaystateAuthority::LegacyRemoteUser)
+                Some(RoomPlaystateAuthority::SyncplayRemoteUser)
             }
             None => None,
         }
@@ -770,11 +760,11 @@ impl ClientSession {
         Some(self.user_controller(username).unwrap_or(false))
     }
 
-    pub fn noncontroller_event_hide_from_osd_legacy_compatible(&self, username: &str) -> bool {
+    pub fn noncontroller_event_hide_from_osd(&self, username: &str) -> bool {
         !self.behavior_config.show_noncontroller_osd && self.user_controller(username) != Some(true)
     }
 
-    pub(super) fn show_user_change_event_on_osd_legacy_compatible(
+    pub(super) fn show_user_change_event_on_osd(
         &self,
         current_room: Option<&str>,
         previous_room: Option<&str>,
@@ -853,11 +843,8 @@ impl ClientSession {
         let previous_room = previous_user_view
             .as_ref()
             .and_then(|view| view.room.as_deref());
-        let show_on_osd = self.show_user_change_event_on_osd_legacy_compatible(
-            Some(room_name.as_str()),
-            previous_room,
-            username,
-        );
+        let show_on_osd =
+            self.show_user_change_event_on_osd(Some(room_name.as_str()), previous_room, username);
         let hide_from_osd = !show_on_osd;
         if let Some(file) = current_user_view.file {
             let include_room_addendum = self.model.room.name.as_deref() != Some(room_name.as_str());
@@ -886,8 +873,7 @@ impl ClientSession {
         password: impl Into<SecretValue>,
     ) {
         let password = password.into();
-        let normalized_password =
-            Self::normalize_control_password_legacy_compatible(password.expose_secret());
+        let normalized_password = Self::normalize_control_password(password.expose_secret());
         self.remember_normalized_control_password_for_room(
             room_name,
             SecretValue::new(normalized_password),

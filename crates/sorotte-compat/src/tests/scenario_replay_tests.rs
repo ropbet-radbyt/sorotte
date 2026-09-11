@@ -90,8 +90,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_cross_room_playlist_scoping
         CROSS_ROOM_PLAYLIST_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(

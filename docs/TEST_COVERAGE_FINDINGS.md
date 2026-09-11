@@ -1687,7 +1687,7 @@ Severity: **Medium (required semantic evidence can be flaky)**
 Detection: preserved full semantic-suite reruns plus the reliable-transport
 single-frame ownership contract
 
-Resolution: every command issued by `LegacyServerPythonPeerHarness` receives a
+Resolution: every command issued by `SyncplayServerPythonPeerHarness` receives a
 monotonic `requestId`, and every success or error response echoes it. Rust
 rejects missing, stale, or mismatched response IDs. The probe remains compatible
 with existing uncorrelated test clients by omitting the response ID when the
@@ -3457,7 +3457,7 @@ portable external-launch tests)**
 
 Detection: lifecycle evidence compilation in workflow run `30610965479`
 
-`spawn_legacy_external_player_from_spec_legacy_compatible` was imported at the
+`spawn_external_player_from_spec` was imported at the
 CLI crate root only under `cfg(all(test, windows))`, while portable
 external-launch tests use it on Linux. The helper itself is test-only but not
 Windows-only. Its import is now gated by `cfg(test)`; only genuinely
@@ -3819,7 +3819,7 @@ failed the closed coverage oracle until explicitly reviewed)**
 
 Detection: coverage-diff job in workflow run `30626889218`
 
-The new `legacy_server_port_lease_serializes_startup_allocation` regression
+The new `syncplay_server_port_lease_serializes_startup_allocation` regression
 matches the strict `legacy_server_` coverage selector. Cargo therefore ran 21
 tests with 128 filtered out, while the source-bound oracle still required
 20/129. All 21 tests passed; only the exact inventory assertion failed.
@@ -4101,7 +4101,7 @@ minimum/newest mpv, packaging, and both strict server verifiers. The policy
 measured 82.53% combined, 80.51% ordinary, and 90.79% critical coverage, but
 failed because one ordinary changed line had no canonical map entry. The
 downloaded report identified only
-`LegacyClientArgumentIssue::UnknownOption`'s multiline
+`SyncplayClientArgumentIssue::UnknownOption`'s multiline
 `attached_value_present: true` match-pattern field. The surrounding arm was
 executed and mapped; the field-pattern line itself had no LLVM region. The
 verification aggregate then failed solely through its required dependency on

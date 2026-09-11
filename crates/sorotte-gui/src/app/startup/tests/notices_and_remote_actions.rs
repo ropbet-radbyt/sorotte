@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
-    let notice = startup_notice(&StoredClientSettingsMvp::default());
+    let notice = startup_notice(&StoredClientSettings::default());
 
     assert!(notice.contains("[Shell App State]"));
     assert!(notice.contains("active_view=setup"));
@@ -42,7 +42,7 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
 
 #[test]
 fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
-    let preview = shell_widget_preview(&StoredClientSettingsMvp::default());
+    let preview = shell_widget_preview(&StoredClientSettings::default());
 
     assert!(!preview.contains("[Widget Tree]"));
     assert!(preview.contains("- Sorotte GUI [panel] id=shell-root"));
@@ -61,7 +61,7 @@ fn shell_widget_preview_renders_tree_through_text_preview_renderer() {
 
 #[test]
 fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
-    let preview = startup_preview(&StoredClientSettingsMvp::default());
+    let preview = startup_preview(&StoredClientSettings::default());
 
     assert!(preview.contains("[Shell App State]"));
     assert!(preview.contains("[Widget Tree]"));
@@ -71,11 +71,11 @@ fn startup_preview_includes_shell_summary_and_widget_tree_preview() {
 #[test]
 fn gui_startup_public_server_outcome_hydrates_uninitialized_cache_independent_of_updates() {
     for automatic_updates in [None, Some(false), Some(true)] {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             check_for_updates_automatically: automatic_updates,
             last_checked_for_updates: Some("2027-01-14 09:10:11.123".to_owned()),
             public_servers: None,
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let fetch_calls = std::cell::Cell::new(0);
 
@@ -100,10 +100,10 @@ fn gui_startup_public_server_outcome_hydrates_uninitialized_cache_independent_of
 #[test]
 fn gui_startup_public_server_outcome_preserves_explicit_empty_cache_without_fetching() {
     for automatic_updates in [None, Some(false), Some(true)] {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             check_for_updates_automatically: automatic_updates,
             public_servers: Some(Vec::new()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
 
         let outcome =
@@ -120,9 +120,9 @@ fn gui_startup_public_server_outcome_preserves_explicit_empty_cache_without_fetc
 
 #[test]
 fn gui_startup_public_server_outcome_reports_empty_service_response() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         check_for_updates_automatically: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let outcome =
@@ -138,7 +138,7 @@ fn gui_startup_public_server_outcome_reports_empty_service_response() {
 #[test]
 fn gui_startup_public_server_outcome_reports_offline_fetch_failure() {
     let outcome = super::super::gui_startup_public_server_outcome_with_fetcher(
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         |_| Err("offline".to_owned()),
     );
 
@@ -151,13 +151,13 @@ fn gui_startup_public_server_outcome_reports_offline_fetch_failure() {
 #[test]
 fn gui_startup_public_server_outcome_preserves_existing_cache_without_fetching() {
     for automatic_updates in [None, Some(false), Some(true)] {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             check_for_updates_automatically: automatic_updates,
             public_servers: Some(vec![(
                 "Cached".to_owned(),
                 "cached.example:8999".to_owned(),
             )]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
 
         let outcome =

@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn gui_startup_actions_from_lookup_prefers_file_public_server_source() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
     let actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
@@ -39,7 +39,7 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_bootstrap() {
             "SOROTTE_CLIENT_ROOM" => Some("room-a".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         None,
     );
     let expected_message = format!(
@@ -61,7 +61,7 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_loopback_bootstrap()
             "SOROTTE_CLIENT_ROOM" => Some("room-a".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         None,
     );
     let expected_message = format!(
@@ -81,7 +81,7 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_defaults() {
             "SOROTTE_GUI_ENABLE_CLIENT_CORE_CHAT_TCP" => Some("true".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         None,
     );
 
@@ -98,11 +98,11 @@ fn gui_startup_actions_from_lookup_reports_client_core_chat_tcp_defaults() {
 fn gui_startup_actions_from_lookup_keeps_remote_work_out_of_pre_window_actions() {
     let actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
         |_name| None,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             check_for_updates_automatically: Some(true),
             last_checked_for_updates: None,
             public_servers: None,
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
         None,
     );
@@ -118,9 +118,9 @@ fn gui_startup_actions_from_lookup_keeps_remote_work_out_of_pre_window_actions()
 
 #[test]
 fn run_gui_host_with_startup_actions_surfaces_public_server_refresh_source() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let startup_actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
         |name| match name {
@@ -143,9 +143,9 @@ fn run_gui_host_with_startup_actions_surfaces_public_server_refresh_source() {
 
 #[test]
 fn run_gui_host_with_startup_actions_surfaces_tcp_bootstrap_and_public_server_sources() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let startup_actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
         |name| match name {
@@ -184,7 +184,7 @@ fn gui_startup_actions_from_lookup_reports_config_path_source() {
             .startup_message();
     let actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
         |_name| None,
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         Some(super::super::GuiStartupConfigPathSource::DefaultConfigTarget(default_target)),
     );
 
@@ -202,7 +202,7 @@ fn gui_startup_actions_from_lookup_reports_player_ipc_source_with_client_precede
             "SOROTTE_MPV_IPC_PATH" => Some("/tmp/ignored-mpv.sock".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         None,
     );
 
@@ -228,9 +228,9 @@ fn gui_startup_actions_from_lookup_and_config_path_source_keeps_multi_notice_det
             "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             public_servers: Some(vec![("Primary".to_owned(), "file.example:8999".to_owned())]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
         None,
     );
@@ -250,7 +250,7 @@ fn gui_startup_actions_from_lookup_and_config_path_source_keeps_multi_notice_det
 fn gui_startup_actions_from_lookup_reports_missing_player_ipc_source() {
     let actions = super::super::gui_startup_actions_from_lookup(
         |_name| None,
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
     );
 
     assert!(actions.iter().any(|action| {
@@ -263,10 +263,10 @@ fn gui_startup_actions_from_lookup_reports_missing_player_ipc_source() {
 }
 
 #[test]
-fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_default_target() {
+fn resolve_sorotte_gui_config_path_source_with_reports_default_target() {
     let env_root = test_default_sorotte_config_env_root();
     let env_root_string = env_root.display().to_string();
-    let source = super::super::resolve_sorotte_gui_config_path_source_legacy_compatible_with(
+    let source = super::super::resolve_sorotte_gui_config_path_source_with(
         &|name| match name {
             "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
             "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
@@ -287,10 +287,10 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_default
 }
 
 #[test]
-fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_env_root() {
+fn resolve_sorotte_gui_config_path_source_with_reports_env_root() {
     let env_root = test_default_sorotte_config_env_root();
     let env_root_string = env_root.display().to_string();
-    let source = super::super::resolve_sorotte_gui_config_path_source_legacy_compatible_with(
+    let source = super::super::resolve_sorotte_gui_config_path_source_with(
         &|name| match name {
             "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
             "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
@@ -314,7 +314,7 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_env_roo
 }
 
 #[test]
-fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_install_locator() {
+fn resolve_sorotte_gui_config_path_source_with_reports_install_locator() {
     let unique_suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time should be monotonic enough for test")
@@ -332,18 +332,17 @@ fn resolve_sorotte_gui_config_path_source_legacy_compatible_with_reports_install
 
     let env_root = test_default_sorotte_config_env_root();
     let env_root_string = env_root.display().to_string();
-    let source =
-        super::super::resolve_sorotte_gui_config_path_source_legacy_compatible_with_install_root(
-            &|name| match name {
-                "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
-                "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
-                _ => None,
-            },
-            || None,
-            || Some(install_root.clone()),
-            std::path::Path::is_file,
-        )
-        .expect("readable install locator should resolve");
+    let source = super::super::resolve_sorotte_gui_config_path_source_with_install_root(
+        &|name| match name {
+            "APPDATA" if cfg!(windows) => Some(env_root_string.clone()),
+            "HOME" if !cfg!(windows) => Some(env_root_string.clone()),
+            _ => None,
+        },
+        || None,
+        || Some(install_root.clone()),
+        std::path::Path::is_file,
+    )
+    .expect("readable install locator should resolve");
 
     assert_eq!(
         source,
@@ -366,7 +365,7 @@ fn gui_startup_actions_from_lookup_reports_config_storage_snapshot() {
             "SOROTTE_CLIENT_CONFIG_ROOT" => Some(env_root.join("portable").display().to_string()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
     );
 
     assert!(actions.iter().any(|action| {
@@ -390,7 +389,7 @@ fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
         super::super::GuiStartupConfigPathSource::Override(override_path.clone()).startup_message();
     let startup_actions = super::super::gui_startup_actions_from_lookup_and_config_path_source(
         |_name| None,
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         Some(super::super::GuiStartupConfigPathSource::Override(
             override_path,
         )),
@@ -398,7 +397,7 @@ fn run_gui_host_with_startup_actions_surfaces_config_path_source() {
     let mut host = GuiTextPreviewHost;
 
     let preview = super::super::run_gui_host_with_startup_actions(
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         startup_actions,
         &mut host,
     );
@@ -414,13 +413,13 @@ fn run_gui_host_with_startup_actions_surfaces_player_ipc_source() {
             "SOROTTE_MPV_IPC_PATH" => Some("/tmp/syncplay-mpv.sock".to_owned()),
             _ => None,
         },
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         None,
     );
     let mut host = GuiTextPreviewHost;
 
     let preview = super::super::run_gui_host_with_startup_actions(
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
         startup_actions,
         &mut host,
     );

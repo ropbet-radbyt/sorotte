@@ -374,7 +374,7 @@ impl SessionResetProjection {
             room_domain: format!("{:#?}", room.domain),
             room_users: room.users.clone(),
             room_participant_status_capabilities: room.participant_status_capabilities.clone(),
-            room_legacy_list_position_snapshots: room.legacy_list_position_snapshots.clone(),
+            room_legacy_list_position_snapshots: room.list_position_snapshots.clone(),
             room_participant_statuses: room.participant_statuses.clone(),
             room_participant_status_receipts: room
                 .participant_status_receipts
@@ -649,7 +649,7 @@ fn seed_room_state(session: &mut ClientSession, seed: u64) {
     session
         .model
         .room
-        .legacy_list_position_snapshots
+        .list_position_snapshots
         .insert("bob".to_owned(), 17.5 + seed as f64);
     session.model.room.participant_statuses.insert(
         "bob".to_owned(),
@@ -985,7 +985,7 @@ fn seed_playback_barrier_state(session: &mut ClientSession, seed: u64) {
         quorum: None,
         deadline: 115.0,
         participants: BTreeMap::<String, PlaybackBarrierParticipantStatus>::new(),
-        excluded_legacy_clients: BTreeSet::new(),
+        excluded_unsupported_clients: BTreeSet::new(),
     };
     let buffering_policy =
         RoomBufferingPolicyPayload::new(generation, RoomBufferingPolicy::PauseAnyEligible)

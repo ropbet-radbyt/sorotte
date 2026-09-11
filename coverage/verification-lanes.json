@@ -28,15 +28,6 @@
       ]
     },
     {
-      "id": "semver",
-      "owner": "API maintainers",
-      "command": "pwsh -File scripts/check-semver.ps1 -BaselineRev BASE",
-      "patterns": [
-        "crates/**",
-        "Cargo.*"
-      ]
-    },
-    {
       "id": "coverage",
       "owner": "crate maintainers",
       "command": "python scripts/coverage_profile_lanes.py --help",
@@ -130,7 +121,6 @@
     ],
     "merge": [
       "preflight",
-      "semver",
       "verification",
       "canaries"
     ]

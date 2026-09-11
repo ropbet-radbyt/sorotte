@@ -3,10 +3,10 @@ use super::*;
 #[test]
 fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_across_configuration_edits()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut runtime_public_servers = state.public_servers.clone();
     runtime_public_servers.can_connect = false;
@@ -43,10 +43,10 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
 #[test]
 fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_across_configuration_runtime_snapshots()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut runtime_public_servers = state.public_servers.clone();
     runtime_public_servers.can_connect = false;
@@ -95,10 +95,10 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
 #[test]
 fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_across_configuration_edits()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let runtime_public_servers = PublicServerBrowserShellState {
         servers: vec![
@@ -164,10 +164,10 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_acr
 #[test]
 fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_across_configuration_runtime_snapshots()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let runtime_public_servers = PublicServerBrowserShellState {
         servers: vec![

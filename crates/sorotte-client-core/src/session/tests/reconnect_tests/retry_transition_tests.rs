@@ -72,21 +72,16 @@ fn reconnect_retry_discards_latency_estimates_owned_by_the_previous_transport() 
         RecordingPlayer::default(),
         QueuedRuntimeControl::default(),
     );
-    runtime
-        .ping_metrics_legacy_compatible
-        .observe_inbound_state_at(
-            &StatePayload::new().with_ping(
-                PingPayload::new()
-                    .with_client_latency_calculation(100.0)
-                    .with_server_rtt(0.1),
-            ),
-            101.0,
-        );
+    runtime.ping_metrics.observe_inbound_state_at(
+        &StatePayload::new().with_ping(
+            PingPayload::new()
+                .with_client_latency_calculation(100.0)
+                .with_server_rtt(0.1),
+        ),
+        101.0,
+    );
     assert!(
-        runtime
-            .ping_metrics_legacy_compatible
-            .forward_delay_seconds()
-            > 1.0,
+        runtime.ping_metrics.forward_delay_seconds() > 1.0,
         "precondition: the first transport should own a material delay estimate"
     );
 
@@ -110,20 +105,18 @@ fn reconnect_retry_discards_latency_estimates_owned_by_the_previous_transport() 
         .expect("new transport state without fresh ping metrics should apply");
     assert_eq!(
         runtime
-            .current_room_playstate_legacy_ping_compatible_at(200.0)
+            .current_room_playstate_with_ping_at(200.0)
             .and_then(|playstate| playstate.position),
         Some(10.0),
         "the disconnected transport's delay must not move the new transport's room clock"
     );
     assert_eq!(
-        runtime
-            .ping_metrics_legacy_compatible
-            .forward_delay_seconds(),
+        runtime.ping_metrics.forward_delay_seconds(),
         0.0,
         "a new transport must not inherit the disconnected transport's one-way delay"
     );
     assert_eq!(
-        runtime.ping_metrics_legacy_compatible.client_rtt_seconds(),
+        runtime.ping_metrics.client_rtt_seconds(),
         0.0,
         "a new transport must not advertise the disconnected transport's RTT"
     );

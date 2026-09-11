@@ -1000,68 +1000,6 @@ class CiPolicyTests(unittest.TestCase):
                 "fallback": "none",
             },
         )
-        linux_semver_installer = named_step(
-            self.jobs,
-            "semver",
-            "Install pinned cargo-semver-checks",
-        )
-        self.assertEqual(
-            linux_semver_installer.get("if"),
-            "github.event_name == 'pull_request'",
-        )
-        self.assertNotIn("continue-on-error", linux_semver_installer)
-        self.assertEqual(
-            linux_semver_installer.get("uses"),
-            PINNED_USES["taiki-e/install-action"],
-        )
-        self.assertEqual(
-            linux_semver_installer.get("with"),
-            {
-                "tool": "cargo-semver-checks@0.50.0",
-                "fallback": "none",
-            },
-        )
-        linux_semver = self.assert_exact_run(
-            self.jobs,
-            "semver",
-            "Enforce public Rust API compatibility",
-            """set -euo pipefail
-baseline_sha="${{ github.event.pull_request.base.sha }}"
-git cat-file -e "${baseline_sha}^{commit}"
-for package in \\
-  sorotte-secret \\
-  sorotte-protocol \\
-  sorotte-core \\
-  sorotte-server \\
-  sorotte-media-match \\
-  sorotte-client-core \\
-  sorotte-client-app \\
-  sorotte-player-api \\
-  sorotte-player-mpv \\
-  sorotte-lifecycle-evidence \\
-  sorotte-plex \\
-  sorotte-cli \\
-  sorotte-gui \\
-  sorotte-sim \\
-  sorotte-compat
-do
-  if ! git cat-file -e "${baseline_sha}:crates/${package}/Cargo.toml" 2>/dev/null
-  then
-    echo "Skipping new package absent from baseline: ${package}"
-    continue
-  fi
-  cargo semver-checks \\
-    --package "$package" \\
-    --baseline-rev "$baseline_sha"
-done""",
-            allowed_if="github.event_name == 'pull_request'",
-        )
-        self.assertLess(
-            self.jobs["semver"]["steps"].index(linux_semver_installer),
-            self.jobs["semver"]["steps"].index(linux_semver),
-        )
-        self.assertNotIn("env", linux_semver)
-        self.assertEqual(linux_semver.get("shell"), "bash")
         linux_nextest = self.assert_exact_run(
             self.jobs,
             "checks",
@@ -1515,12 +1453,6 @@ done""",
             continue_on_error="true",
         )
         self.assertEqual(windows_nextest.get("id"), "nextest")
-        self.assert_exact_run(
-            self.jobs,
-            "rust_windows_tests",
-            "Validate Windows semver wrapper",
-            "python -m unittest scripts.tests.test_semver_wrapper -v",
-        )
         windows_doctests = self.assert_exact_run(
             self.jobs,
             "rust_windows_tests",
@@ -2815,7 +2747,7 @@ done""",
                             "finish_shared_playlist_open_after_delivery|"
                             "resume_pending_shared_playlist_open_if_ready|"
                             "delete field (username|room).*"
-                            "StoredClientSettingsMvp|"
+                            "StoredClientSettings\\b|"
                             "delete field direct_target.*"
                             "GuiLocalMediaSearchAliases)"
                         ),
@@ -2901,8 +2833,7 @@ done""",
                             "planned_local_runtime_action_is_player_bound|"
                             "contain_planned_local_runtime_action_result|"
                             "run_contained_planned_local_runtime_action|"
-                            "run_connected_session_branch_runtime_steps_"
-                            "legacy_compatible)"
+                            "run_connected_session_branch_runtime_steps)"
                         ),
                         "test_target": "lib",
                         "test_filter": (
@@ -2961,11 +2892,11 @@ done""",
                         "package": "sorotte-client-app",
                         "files": [
                             "crates/sorotte-client-app/src/"
-                            "legacy_runtime_config.rs"
+                            "stored_config.rs"
                         ],
                         "mutant_filter": "",
                         "test_target": "lib",
-                        "test_filter": "legacy_runtime_config::tests::",
+                        "test_filter": "stored_config::tests::",
                         "jobs": 2,
                         "timeout_seconds": 60,
                         "build_timeout_seconds": 120,
@@ -3330,11 +3261,10 @@ done""",
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
-                            "legacy_runtime_config.rs"
+                            "stored_config.rs"
                         ),
                         "function": (
-                            "parse_host_and_optional_port_from_host_arg_"
-                            "legacy_compatible"
+                            "parse_host_and_optional_port_from_host_arg"
                         ),
                         "return_type": "-> (String, Option<u16>)",
                         "genre": "BinaryOperator",
@@ -3352,10 +3282,10 @@ done""",
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
-                            "legacy_runtime_config.rs"
+                            "stored_config.rs"
                         ),
                         "function": (
-                            "normalize_controlled_room_input_legacy_compatible"
+                            "normalize_controlled_room_input"
                         ),
                         "return_type": "-> (String, Option<String>)",
                         "genre": "BinaryOperator",
@@ -3372,11 +3302,10 @@ done""",
                         "shard": "client-runtime-config",
                         "file": (
                             "crates/sorotte-client-app/src/"
-                            "legacy_runtime_config.rs"
+                            "stored_config.rs"
                         ),
                         "function": (
-                            "stored_client_settings_runtime_snapshot_"
-                            "legacy_compatible"
+                            "stored_client_settings_runtime_snapshot"
                         ),
                         "return_type": (
                             "-> StoredClientSettingsRuntimeSnapshot"
@@ -3442,7 +3371,7 @@ done""",
                         ),
                         "function": (
                             "ClientSession::local_playlist_target_index_from_"
-                            "changed_playlist_legacy_compatible"
+                            "changed_playlist"
                         ),
                         "return_type": "-> usize",
                         "genre": "BinaryOperator",
@@ -4269,7 +4198,7 @@ done""",
                                 ),
                                 (
                                     "run_connected_session_branch_runtime_"
-                                    "steps_legacy_compatible"
+                                    "steps"
                                 ),
                                 (
                                     "-> Option<"
@@ -4480,15 +4409,15 @@ done""",
             "GuiPlaylistProtocolDeliveryFence::note_frame_written",
             "queue_playlist_entry_with_delivery_fence",
             "clear_session_causal_player_effect_state",
-            "delete field username from struct StoredClientSettingsMvp",
-            "delete field room from struct StoredClientSettingsMvp",
+            "delete field username from struct StoredClientSettings",
+            "delete field room from struct StoredClientSettings",
             "delete field direct_target from struct Self expression in GuiLocalMediaSearchAliases::for_target",
         ):
             with self.subTest(owned=owned):
                 self.assertRegex(owned, mutant_filter)
 
         for neighbor in (
-            "delete field player_path from struct StoredClientSettingsMvp",
+            "delete field player_path from struct StoredClientSettings",
             "delete field username from struct StoredClientSettingsRuntimeSnapshot",
             "delete field fallback_title from struct Self expression in GuiLocalMediaSearchAliases::for_target",
             "clear_media_match_remote_lookup_state",

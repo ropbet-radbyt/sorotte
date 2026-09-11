@@ -6,14 +6,14 @@ fn gui_persisted_config_runtime_owner_routes_public_server_refresh_through_clien
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
             ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
             ("Invalid".to_owned(), " :9000 ".to_owned()),
             ("Backup".to_owned(), "backup.example:9000".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -64,12 +64,12 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -289,11 +289,11 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
         state: player_state.clone(),
     })));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -386,10 +386,10 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
         .with_client_core_chat_session_runtime("alice", room_input)
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room_input.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -480,13 +480,13 @@ fn gui_persisted_config_runtime_owner_startup_saved_connect_preserves_controlled
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some(connect_host.clone()),
         port: Some(connect_port),
         username: Some("alice".to_owned()),
         room: Some(room_input.to_owned()),
         tls_policy: Some("Plaintext".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -551,10 +551,10 @@ fn gui_persisted_config_runtime_owner_normalizes_bare_controlled_room_input_on_s
         .with_client_core_chat_session_runtime("alice", room_input)
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room_input.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);

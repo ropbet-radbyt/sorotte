@@ -1,12 +1,12 @@
 use super::*;
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_reads_python_style_sections() {
+fn parse_sorotte_ini_stored_client_settings_reads_python_style_sections() {
     let contents = "\u{feff}[general]\nlanguage = de\ncheckForUpdatesAutomatically = False\nlastCheckedForUpdates = 2026-02-23 11:22:33.444\n[server_data]\nhost = example.org\nport = 12345\npassword = secret\n\n[client_settings]\nname = Alice%%20\nroom = room-1\nroomList = ['room-1', 'room-2']\nplayerPath = C:/players/mpv.exe\nperPlayerArguments = {'C:/players/mpv.exe': ['--fs', '--profile=fast']}\nmediaSearchDirectories = ['C:/Media', 'D:/TV Shows']\npublicServers = [['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]\nfolderSearchFirstFileTimeout = 25.0\nfolderSearchTimeout = 20.0\nfolderSearchDoubleCheckInterval = 30.0\nfolderSearchWarningThreshold = 2.0\nforceGuiPrompt = True\nautoplayInitialState = True\nautoplayRequireSameFilenames = True\nreadyAtStart = True\nsharedPlaylistEnabled = False\npauseOnLeave = False\nloopAtEndOfPlaylist = True\nloopSingleFiles = False\nonlySwitchToTrustedDomains = True\ntrustedDomains = ['youtube.com', '*.example.com/videos']\nrewindOnDesync = False\nfastforwardOnDesync = True\nslowOnDesync = False\ndontSlowDownWithMe = True\nrewindThreshold = 1.25\nfastforwardThreshold = 3.5\nslowdownThreshold = 2.25\nunpauseAction = IfMinUsersReady\nautoplayMinUsers = 3\nfilenamePrivacyMode = SendHashed\nfilesizePrivacyMode = DoNotSend\n\n[gui]\nautosaveJoinsToList = True\nshowOSD = False\nchatInputEnabled = True\nchatInputFontUnderline = False\nchatInputFontFamily = sans-serif\nchatInputRelativeFontSize = 12\nchatInputFontWeight = 50\nchatInputFontColor = #abcdef\nchatInputPosition = Top\nchatDirectInput = False\nchatOutputEnabled = True\nchatOutputFontUnderline = False\nchatOutputFontFamily = serif\nchatOutputRelativeFontSize = 13\nchatOutputFontWeight = 75\nchatOutputMode = Chatroom\nchatMoveOSD = True\nchatMaxLines = 7\nchatTopMargin = 25\nchatLeftMargin = 20\nchatBottomMargin = 30\nchatOSDMargin = 110\nnotificationTimeout = 3\nalertTimeout = 5\nchatTimeout = 7\nshowDurationNotification = False\nshowSameRoomOSD = True\nshowOSDWarnings = False\nshowSlowdownOSD = True\nshowNonControllerOSD = True\nshowDifferentRoomOSD = False\nshowContactInfo = True\n";
-    let settings = parse_sorotte_ini_stored_client_settings_mvp(contents);
+    let settings = parse_sorotte_ini_stored_client_settings(contents);
     assert_eq!(
         settings,
-        StoredClientSettingsMvp {
+        StoredClientSettings {
             language: Some("de".to_owned()),
             check_for_updates_automatically: Some(false),
             last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
@@ -89,27 +89,26 @@ fn parse_sorotte_ini_stored_client_settings_mvp_reads_python_style_sections() {
             show_noncontroller_osd: Some(true),
             show_different_room_osd: Some(false),
             show_contact_info: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }
     );
 }
 
 #[test]
-fn parse_sorotte_ini_stored_client_settings_mvp_normalizes_supported_language_tags_and_drops_invalid_values()
+fn parse_sorotte_ini_stored_client_settings_normalizes_supported_language_tags_and_drops_invalid_values()
  {
-    let normalized = parse_sorotte_ini_stored_client_settings_mvp("[general]\nlanguage = PT-br\n");
-    let invalid = parse_sorotte_ini_stored_client_settings_mvp("[general]\nlanguage = klingon\n");
+    let normalized = parse_sorotte_ini_stored_client_settings("[general]\nlanguage = PT-br\n");
+    let invalid = parse_sorotte_ini_stored_client_settings("[general]\nlanguage = klingon\n");
 
     assert_eq!(normalized.language.as_deref(), Some("pt_BR"));
     assert_eq!(invalid.language, None);
 }
 
 #[test]
-fn legacy_utc_timestamp_string_legacy_compatible_roundtrips_fixed_timestamp() {
+fn utc_timestamp_string_roundtrips_fixed_timestamp() {
     let timestamp = UNIX_EPOCH + Duration::from_secs(1_800_000_000) + Duration::from_millis(123);
-    let formatted = legacy_utc_timestamp_string_legacy_compatible(timestamp);
-    let parsed = parse_legacy_utc_timestamp_legacy_compatible(&formatted)
-        .expect("formatted timestamp should parse");
+    let formatted = utc_timestamp_string(timestamp);
+    let parsed = parse_utc_timestamp(&formatted).expect("formatted timestamp should parse");
 
     assert_eq!(
         parsed
@@ -122,54 +121,54 @@ fn legacy_utc_timestamp_string_legacy_compatible_roundtrips_fixed_timestamp() {
 }
 
 #[test]
-fn should_run_headless_automatic_update_check_legacy_compatible_honors_frequency() {
+fn should_run_headless_automatic_update_check_honors_frequency() {
     let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    let recent_timestamp = legacy_utc_timestamp_string_legacy_compatible(
-        now - Duration::from_secs(crate::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS - 1),
+    let recent_timestamp = utc_timestamp_string(
+        now - Duration::from_secs(crate::DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS - 1),
     );
-    let stale_timestamp = legacy_utc_timestamp_string_legacy_compatible(
-        now - Duration::from_secs(crate::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS + 1),
+    let stale_timestamp = utc_timestamp_string(
+        now - Duration::from_secs(crate::DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS + 1),
     );
 
     assert!(
-        should_run_headless_automatic_update_check_legacy_compatible(
-            Some(&StoredClientSettingsMvp {
+        should_run_headless_automatic_update_check(
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: None,
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ),
         "missing timestamp should be treated as due"
     );
     assert!(
-        !should_run_headless_automatic_update_check_legacy_compatible(
-            Some(&StoredClientSettingsMvp {
+        !should_run_headless_automatic_update_check(
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: Some(recent_timestamp),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ),
         "recent timestamp should suppress the headless update-check notice"
     );
     assert!(
-        should_run_headless_automatic_update_check_legacy_compatible(
-            Some(&StoredClientSettingsMvp {
+        should_run_headless_automatic_update_check(
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: Some(stale_timestamp),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ),
         "stale timestamp should re-enable the headless update-check notice"
     );
     assert!(
-        !should_run_headless_automatic_update_check_legacy_compatible(
-            Some(&StoredClientSettingsMvp {
+        !should_run_headless_automatic_update_check(
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(false),
                 last_checked_for_updates: None,
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ),
@@ -178,8 +177,7 @@ fn should_run_headless_automatic_update_check_legacy_compatible_honors_frequency
 }
 
 #[test]
-fn persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible_updates_general_timestamp()
- {
+fn persist_sorotte_cli_last_checked_for_updates_setting_updates_general_timestamp() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -198,12 +196,10 @@ fn persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible_update
         )
         .expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible(
-        "2026-03-02 12:34:56.789",
-    )
-    .expect("timestamp persistence should succeed");
+    persist_sorotte_cli_last_checked_for_updates_setting("2026-03-02 12:34:56.789")
+        .expect("timestamp persistence should succeed");
 
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(
@@ -220,12 +216,12 @@ fn persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible_update
 }
 
 #[test]
-fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_unrelated_entries() {
+fn upsert_sorotte_ini_stored_client_settings_preserves_unrelated_entries() {
     let existing =
         "[general]\nlanguage = en\n\n[client_settings]\nroom = old-room\npublicservers = []\n";
-    let updated = upsert_sorotte_ini_stored_client_settings_mvp(
+    let updated = upsert_sorotte_ini_stored_client_settings(
         existing,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             language: None,
             check_for_updates_automatically: Some(false),
             last_checked_for_updates: Some("2026-02-23 11:22:33.444".to_owned()),
@@ -308,7 +304,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_unrelated_entries() {
             show_noncontroller_osd: Some(false),
             show_different_room_osd: Some(true),
             show_contact_info: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     );
 
@@ -394,7 +390,7 @@ fn upsert_sorotte_ini_stored_client_settings_mvp_preserves_unrelated_entries() {
 #[test]
 fn per_player_arguments_serialized_python_dict_parser_and_formatter_roundtrip() {
     let raw = "{'C:/players/mpv.exe': ['--fs', '--profile=fast'], 'C:/players/vlc.exe': []}";
-    let parsed = parse_serialized_per_player_arguments_map_legacy_compatible(raw)
+    let parsed = parse_serialized_per_player_arguments_map(raw)
         .expect("perPlayerArguments dict should parse");
     assert_eq!(
         parsed.get("C:/players/mpv.exe"),
@@ -405,7 +401,7 @@ fn per_player_arguments_serialized_python_dict_parser_and_formatter_roundtrip() 
         Some(&Vec::<String>::new())
     );
 
-    let rendered = format_serialized_per_player_arguments_map_legacy_compatible(&parsed);
+    let rendered = format_serialized_per_player_arguments_map(&parsed);
     assert_eq!(rendered, raw);
 }
 
@@ -413,8 +409,8 @@ fn per_player_arguments_serialized_python_dict_parser_and_formatter_roundtrip() 
 fn public_servers_serialized_python_list_parser_and_formatter_roundtrip() {
     let raw =
         "[['syncplay.pl:8995 (France)', 'syncplay.pl:8995'], ['Custom', 'custom.example:8999']]";
-    let parsed = parse_serialized_public_servers_list_legacy_compatible(raw)
-        .expect("publicServers list should parse");
+    let parsed =
+        parse_serialized_public_servers_list(raw).expect("publicServers list should parse");
     assert_eq!(
         parsed,
         vec![
@@ -426,6 +422,6 @@ fn public_servers_serialized_python_list_parser_and_formatter_roundtrip() {
         ]
     );
 
-    let rendered = format_serialized_public_servers_list_legacy_compatible(&parsed);
+    let rendered = format_serialized_public_servers_list(&parsed);
     assert_eq!(rendered, raw);
 }

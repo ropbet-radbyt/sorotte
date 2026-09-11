@@ -27,7 +27,7 @@ const JOURNAL_FILE: &str = ".sorotte-update-journal-v1.jsonl";
 const JOURNAL_SCHEMA: &str = "sorotte-update-replacement-journal-v1";
 const BOOTSTRAP_DIR_PREFIX: &str = ".sorotte-update-bootstrap-";
 const BOOTSTRAP_EXE: &str = "sorotte-gui-updater-bootstrap.exe";
-const LEGACY_MANAGED_FILES: &[&str] = &[
+const STAGED_DIRECTORY_MANAGED_FILES: &[&str] = &[
     GUI_EXE,
     UPDATER_EXE,
     "README.md",
@@ -52,7 +52,7 @@ enum UpdateInput {
         package: PathBuf,
         package_sha256: String,
     },
-    LegacySource {
+    StagedDirectory {
         source_dir: PathBuf,
         backup_dir: PathBuf,
     },
@@ -531,11 +531,11 @@ where
                 (Err(error), Err(cleanup)) => Err(format!("{error}; additionally {cleanup}")),
             }
         }
-        UpdateInput::LegacySource {
+        UpdateInput::StagedDirectory {
             source_dir,
             backup_dir: _,
         } => {
-            validate_legacy_source_root(&source_dir)?;
+            validate_staged_directory(&source_dir)?;
             apply_validated_source_update(&args, &source_dir)
         }
     }
@@ -621,7 +621,7 @@ where
             })
         }
         (false, None, None, Some(source_dir), Some(backup_dir)) => {
-            Some(UpdateInput::LegacySource {
+            Some(UpdateInput::StagedDirectory {
                 source_dir,
                 backup_dir,
             })
@@ -631,7 +631,7 @@ where
         }
         _ => {
             return Err(
-                "use --recover alone, --package with --package-sha256, or the exact legacy --source-dir with --backup-dir argument pair"
+                "use --recover alone, --package with --package-sha256, or the exact --source-dir with --backup-dir argument pair"
                     .to_owned(),
             );
         }
@@ -707,14 +707,14 @@ fn process_is_elevated() -> Result<bool, String> {
     Ok(false)
 }
 
-fn validate_legacy_source_root(source_dir: &Path) -> Result<(), String> {
+fn validate_staged_directory(source_dir: &Path) -> Result<(), String> {
     ensure_directory_is_not_reparse_point(source_dir)?;
     for required in [UPDATER_EXE, GUI_EXE, INSTALL_MANIFEST] {
         let path = source_dir.join(required);
         reject_reparse_path(&path)?;
         if !path.is_file() {
             return Err(format!(
-                "legacy staged update is missing required file {}",
+                "staged directory update is missing required file {}",
                 path.display()
             ));
         }
@@ -740,16 +740,16 @@ fn validate_updater_location(args: &UpdaterArgs) -> Result<UpdaterExecutionLocat
         if paths_are_equal(&running, &installed) {
             return Ok(UpdaterExecutionLocation::InstalledBootstrap);
         }
-        if let Some(UpdateInput::LegacySource { source_dir, .. }) = args.input.as_ref() {
-            validate_legacy_source_root(source_dir)?;
-            let staged_legacy_helper =
+        if let Some(UpdateInput::StagedDirectory { source_dir, .. }) = args.input.as_ref() {
+            validate_staged_directory(source_dir)?;
+            let staged_directory_helper =
                 fs::canonicalize(source_dir.join(UPDATER_EXE)).map_err(|error| {
                     format!(
-                        "failed resolving staged legacy update helper {}: {error}",
+                        "failed resolving staged directory update helper {}: {error}",
                         source_dir.join(UPDATER_EXE).display()
                     )
                 })?;
-            if paths_are_equal(&running, &staged_legacy_helper) {
+            if paths_are_equal(&running, &staged_directory_helper) {
                 return Ok(UpdaterExecutionLocation::DetachedHelper);
             }
         }
@@ -891,7 +891,7 @@ fn detached_update_helper_args(args: &UpdaterArgs, expected_sha256: &str) -> Vec
             result.push("--package-sha256".to_owned());
             result.push(package_sha256.clone());
         }
-        Some(UpdateInput::LegacySource {
+        Some(UpdateInput::StagedDirectory {
             source_dir,
             backup_dir,
         }) => {
@@ -1365,7 +1365,7 @@ fn replacement_plan(
             ));
         }
         let old_paths = if old_manifest.files.is_empty() {
-            LEGACY_MANAGED_FILES
+            STAGED_DIRECTORY_MANAGED_FILES
                 .iter()
                 .map(PathBuf::from)
                 .collect::<Vec<_>>()
@@ -3573,7 +3573,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_accepts_exact_legacy_source_and_backup_pair() {
+    fn parse_args_accepts_exact_staged_directory_and_backup_pair() {
         let args = parse_args([
             "--pid".to_owned(),
             "123".to_owned(),
@@ -3592,7 +3592,7 @@ mod tests {
 
         assert!(matches!(
             args.input,
-            Some(UpdateInput::LegacySource { ref source_dir, .. })
+            Some(UpdateInput::StagedDirectory { ref source_dir, .. })
                 if source_dir == Path::new("stage/extracted")
         ));
     }
@@ -3674,7 +3674,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_old_gui_invocation_bootstraps_v2_source_transactionally() {
+    fn staged_directory_invocation_bootstraps_update_transaction() {
         let root = test_root("legacy-bootstrap");
         let source = root.join("stage").join("extracted");
         let target = root.join("target");
@@ -4442,7 +4442,7 @@ mod tests {
             let new_manifest =
                 fs::read(source.join(INSTALL_MANIFEST)).expect("new manifest should be readable");
             fs::create_dir(root.join("unused-backup"))
-                .expect("the legacy backup placeholder should be created");
+                .expect("the staged-directory backup placeholder should be created");
             ExpectedInstall {
                 old_manifest,
                 new_manifest,

@@ -6,7 +6,7 @@ use sorotte_protocol::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessPresentationProtocol {
-    Legacy,
+    SyncplayReady,
     V2,
 }
 
@@ -100,9 +100,9 @@ impl std::fmt::Debug for ParticipantReadinessPresentation {
 }
 
 impl ParticipantReadinessPresentation {
-    pub fn from_legacy(username: impl Into<String>, room_ready: bool) -> Self {
+    pub fn from_syncplay_ready(username: impl Into<String>, room_ready: bool) -> Self {
         Self {
-            protocol: ReadinessPresentationProtocol::Legacy,
+            protocol: ReadinessPresentationProtocol::SyncplayReady,
             username: username.into(),
             canonical_user_intent: if room_ready {
                 UserReadinessIntent::Ready
@@ -180,7 +180,7 @@ impl ParticipantReadinessPresentation {
 
     pub fn status_label(&self) -> String {
         let intent = self.displayed_user_intent();
-        if self.protocol == ReadinessPresentationProtocol::Legacy {
+        if self.protocol == ReadinessPresentationProtocol::SyncplayReady {
             return if intent == UserReadinessIntent::Ready {
                 "Ready".to_owned()
             } else {
@@ -224,7 +224,7 @@ impl ParticipantReadinessPresentation {
 
     pub fn technical_detail_label(&self) -> String {
         let Some(phase) = self.technical_phase else {
-            return "unavailable (legacy readiness)".to_owned();
+            return "unavailable (Syncplay readiness)".to_owned();
         };
         let mut label = format!("phase={}", technical_phase_label(phase));
         if let Some(reason) = self.technical_reason {
@@ -245,42 +245,42 @@ impl ParticipantReadinessPresentation {
     }
 
     /// Describes whether this participant is part of the server's automatic
-    /// start cohort.  Keep the compatibility caveat explicit: a legacy or
+    /// start cohort.  Keep the compatibility caveat explicit: an unsupported or
     /// explicitly excluded participant has no generation-scoped technical
-    /// readiness guarantee even though their legacy Ready value remains
+    /// readiness guarantee even though their Syncplay Ready value remains
     /// visible.
     pub fn participation_detail_label(&self) -> &'static str {
         match (self.participation_role, self.mixed_readiness_policy) {
             (
-                Some(StartParticipationRole::ExcludedLegacy),
+                Some(StartParticipationRole::ExcludedUnsupported),
                 Some(MixedReadinessPolicy::RequireAllMembers),
             ) => {
-                "legacy participant; automatic start unavailable until every member supports readiness V2"
+                "coordinated start unsupported; automatic start requires support from every member"
             }
             (
-                Some(StartParticipationRole::ExcludedLegacy),
-                Some(MixedReadinessPolicy::ExcludeLegacy),
-            ) => "excluded legacy by compatibility policy; technical start guarantees unavailable",
+                Some(StartParticipationRole::ExcludedUnsupported),
+                Some(MixedReadinessPolicy::ExcludeUnsupported),
+            ) => "excluded by mixed-readiness policy; technical start guarantees unavailable",
             (None, Some(MixedReadinessPolicy::RequireAllMembers)) => {
-                "legacy participant; automatic start unavailable until every member supports readiness V2"
+                "coordinated start unsupported; automatic start requires support from every member"
             }
-            (None, Some(MixedReadinessPolicy::ExcludeLegacy)) => {
-                "excluded legacy by compatibility policy; technical start guarantees unavailable"
+            (None, Some(MixedReadinessPolicy::ExcludeUnsupported)) => {
+                "excluded by mixed-readiness policy; technical start guarantees unavailable"
             }
             (Some(StartParticipationRole::Required), _) => "required",
             (Some(StartParticipationRole::Spectator), _) => {
                 "spectator; excluded from automatic start"
             }
-            (Some(StartParticipationRole::ExcludedLegacy), _) => {
-                "excluded legacy; technical start guarantees unavailable"
+            (Some(StartParticipationRole::ExcludedUnsupported), _) => {
+                "coordinated start unsupported; technical start guarantees unavailable"
             }
-            (None, _) => "legacy participant; technical start guarantees unavailable",
+            (None, _) => "coordinated start unsupported; technical start guarantees unavailable",
         }
     }
 
     pub fn start_gate_detail_label(&self) -> String {
         match self.start_gate_phase.as_ref() {
-            None => "unavailable (legacy readiness)".to_owned(),
+            None => "unavailable (Syncplay readiness)".to_owned(),
             Some(RoomStartGatePhase::Inactive) => "inactive".to_owned(),
             Some(RoomStartGatePhase::WaitingForIntent { .. }) => {
                 "waiting for required participants to become Ready".to_owned()
@@ -293,7 +293,7 @@ impl ParticipantReadinessPresentation {
             }
             Some(RoomStartGatePhase::Committed { .. }) => "committed by server".to_owned(),
             Some(RoomStartGatePhase::Degraded {
-                reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+                reason: StartGateDegradedReason::UnsupportedParticipant,
                 ..
             }) => "automatic start unavailable: a room member does not support readiness V2"
                 .to_owned(),
@@ -358,7 +358,9 @@ fn degraded_reason_label(reason: StartGateDegradedReason) -> &'static str {
         StartGateDegradedReason::Cancelled => "cancelled",
         StartGateDegradedReason::TimedOut => "timed out",
         StartGateDegradedReason::NoRequiredParticipants => "no required participants",
-        StartGateDegradedReason::IncompatibleLegacyParticipant => "incompatible legacy participant",
+        StartGateDegradedReason::UnsupportedParticipant => {
+            "participant without coordinated start support"
+        }
     }
 }
 
@@ -564,13 +566,13 @@ mod tests {
             false,
             None,
         );
-        legacy.participation_role = StartParticipationRole::ExcludedLegacy;
+        legacy.participation_role = StartParticipationRole::ExcludedUnsupported;
         let snapshot = RoomReadinessSnapshot {
             room_readiness_revision: 9,
             media_generation: Some(3),
             start_gate_phase: RoomStartGatePhase::Degraded {
                 media_generation: 3,
-                reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+                reason: StartGateDegradedReason::UnsupportedParticipant,
             },
             pause_owner: Default::default(),
             mixed_readiness_policy: MixedReadinessPolicy::RequireAllMembers,
@@ -581,7 +583,7 @@ mod tests {
 
         assert_eq!(
             presentation.participation_detail_label(),
-            "legacy participant; automatic start unavailable until every member supports readiness V2"
+            "coordinated start unsupported; automatic start requires support from every member"
         );
         assert_eq!(
             presentation.start_gate_detail_label(),
@@ -590,19 +592,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_presentation_does_not_claim_technical_start_eligibility() {
-        let presentation = ParticipantReadinessPresentation::from_legacy("alice", true);
+    fn syncplay_ready_presentation_does_not_claim_technical_start_eligibility() {
+        let presentation = ParticipantReadinessPresentation::from_syncplay_ready("alice", true);
         assert_eq!(presentation.status_label(), "Ready");
         assert_eq!(presentation.technical_phase, None);
         assert_eq!(presentation.start_eligible, None);
         assert_eq!(
             presentation.participation_detail_label(),
-            "legacy participant; technical start guarantees unavailable"
+            "coordinated start unsupported; technical start guarantees unavailable"
         );
     }
 
     #[test]
-    fn excluded_legacy_role_makes_the_missing_technical_guarantee_explicit() {
+    fn unsupported_role_makes_the_missing_technical_guarantee_explicit() {
         let mut canonical = canonical(
             UserReadinessIntent::Ready,
             TechnicalPlayabilityPhase::Preparing,
@@ -610,12 +612,12 @@ mod tests {
             false,
             None,
         );
-        canonical.participation_role = StartParticipationRole::ExcludedLegacy;
+        canonical.participation_role = StartParticipationRole::ExcludedUnsupported;
         let presentation = ParticipantReadinessPresentation::from_v2(&canonical, None);
 
         assert_eq!(
             presentation.participation_detail_label(),
-            "excluded legacy; technical start guarantees unavailable"
+            "coordinated start unsupported; technical start guarantees unavailable"
         );
     }
 }

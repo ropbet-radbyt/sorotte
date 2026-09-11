@@ -1,7 +1,7 @@
 use super::*;
 
-const LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
-const LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
+const DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
+const DEFAULT_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
 const MEDIA_INDEX_PROGRESS_INTERVAL_MILLIS_DEFAULT: u64 = 250;
 
 type CachedMissingMediaCredibilityRank = (usize, usize, usize);
@@ -201,7 +201,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = self.runtime_operation_settings(state);
         Self::positive_duration_from_seconds_or_default(
             settings.folder_search_timeout_seconds,
-            LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
+            DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
         )
     }
 
@@ -212,7 +212,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = self.runtime_operation_settings(state);
         Self::positive_duration_from_seconds_or_default(
             settings.folder_search_double_check_interval_seconds,
-            LEGACY_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT,
+            DEFAULT_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT,
         )
     }
 
@@ -272,7 +272,7 @@ impl GuiPersistedConfigRuntimeOwner {
         retry_interval: Duration,
     ) -> GuiAttachedMediaSearchIndex {
         let mut index = GuiAttachedMediaSearchIndex::new(roots.to_vec());
-        let cache_root = self.legacy_gui_qsettings_root();
+        let cache_root = self.syncplay_qsettings_root();
         let now_unix_ms = current_unix_time_millis();
         let stale_after_ms = retry_interval.as_millis().min(u128::from(u64::MAX)) as u64;
 
@@ -820,7 +820,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         let (result_tx, result_rx) = mpsc::channel();
-        let cache_root = self.legacy_gui_qsettings_root();
+        let cache_root = self.syncplay_qsettings_root();
         let cache_generation = current_media_search_cache_generation();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let latest_progress = Arc::new(Mutex::new(None));
@@ -939,9 +939,9 @@ mod timeout_overflow_regression {
         assert_eq!(
             GuiPersistedConfigRuntimeOwner::positive_duration_from_seconds_or_default(
                 Some(f64::MAX),
-                LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
+                DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT,
             ),
-            Duration::from_secs_f64(LEGACY_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT),
+            Duration::from_secs_f64(DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT),
         );
     }
 }

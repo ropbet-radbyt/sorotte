@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use sorotte_client_app::app_boundary::{
-    persistence::parse_serialized_public_servers_list_legacy_compatible,
-    state::parse_host_and_optional_port_from_host_arg_legacy_compatible,
+    persistence::parse_serialized_public_servers_list,
+    state::parse_host_and_optional_port_from_host_arg,
 };
 
 use super::super::startup_support::env_trimmed;
@@ -22,7 +22,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             let Some(address) = normalized_editable_text(&address) else {
                 continue;
             };
-            let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+            let (host, _) = parse_host_and_optional_port_from_host_arg(&address);
             if host.trim().is_empty() {
                 continue;
             }
@@ -45,7 +45,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let Some(value) = lookup(env_name) else {
             return Ok(None);
         };
-        let Some(parsed) = parse_serialized_public_servers_list_legacy_compatible(&value) else {
+        let Some(parsed) = parse_serialized_public_servers_list(&value) else {
             return Err(format!(
                 "{env_name} must be a serialized public-server list like [[\"Primary\", \"syncplay.pl:8999\"]]."
             ));
@@ -65,8 +65,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if let Some(path) = lookup(path_env_name) {
             let value = read_to_string(&path)
                 .map_err(|error| format!("{path_env_name} could not read '{path}': {error}"))?;
-            let Some(parsed) = parse_serialized_public_servers_list_legacy_compatible(&value)
-            else {
+            let Some(parsed) = parse_serialized_public_servers_list(&value) else {
                 return Err(format!(
                     "{path_env_name} file '{path}' must be a serialized public-server list like [[\"Primary\", \"syncplay.pl:8999\"]]."
                 ));

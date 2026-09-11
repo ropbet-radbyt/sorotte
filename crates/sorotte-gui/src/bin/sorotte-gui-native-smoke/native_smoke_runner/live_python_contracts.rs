@@ -56,7 +56,7 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
     open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
-    let mut python_harness = LegacyServerPythonPeerHarness::spawn(
+    let mut python_harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_ROOM,
     )
@@ -64,11 +64,11 @@ pub(super) fn verify_live_python_peer_connect_contract<D: NativeGuiDriver>(
     let interop_config_path = temp_root.join("sorotte-native-smoke-python-interop.ini");
     let _ = fs::remove_file(&interop_config_path);
     seed_native_smoke_config(&interop_config_path)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &interop_config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {
@@ -474,7 +474,7 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
     open_media_file_path: &Path,
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
-    let mut python_harness = LegacyServerPythonPeerHarness::spawn(
+    let mut python_harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_CONTROLLED_ROOM,
     )
@@ -482,11 +482,11 @@ pub(super) fn verify_live_python_peer_controlled_room_contract<D: NativeGuiDrive
     let interop_config_path = temp_root.join("sorotte-native-smoke-python-controlled-room.ini");
     let _ = fs::remove_file(&interop_config_path);
     seed_native_smoke_config(&interop_config_path)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &interop_config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {

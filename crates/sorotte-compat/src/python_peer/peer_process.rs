@@ -1,8 +1,8 @@
 use super::*;
 
-impl LegacyServerPythonPeerHarness {
+impl SyncplayServerPythonPeerHarness {
     pub(super) fn spawn_peer_process(&mut self) -> Result<(), InteropError> {
-        let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
+        let legacy_checkout = ensure_syncplay_checkout_available()?;
 
         let live_peer_probe = python_live_peer_probe_script_path();
         if !live_peer_probe.is_file() {

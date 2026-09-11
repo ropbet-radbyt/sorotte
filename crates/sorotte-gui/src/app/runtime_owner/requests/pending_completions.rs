@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::app::runtime_owner::GuiUserMediaTargetResolutionSource;
 use crate::app::{
-    LEGACY_GUI_QSETTINGS_STORE_NAMES, shell_state::GuiConfigStorageChangeTarget,
-    ui_state::legacy_gui_qsettings_store_path,
+    SYNCPLAY_QSETTINGS_STORE_NAMES, shell_state::GuiConfigStorageChangeTarget,
+    ui_state::syncplay_qsettings_store_path,
 };
 
 use super::*;
@@ -29,11 +29,10 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
         selected_server: (String, String),
-        active_settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+        active_settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let replace_owned_transport = self.session.is_none() || self.session_transport.is_some();
-        let runtime_settings =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
+        let runtime_settings = stored_client_settings_runtime_snapshot(&active_settings);
         let replacement_transport_driver = if replace_owned_transport {
             GuiThreadedTcpSessionTransportDriver::connect_from_host_arg_with_tls_policy(
                 &selected_server.1,
@@ -186,7 +185,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .iter()
             .map(|row| (row.label.clone(), row.address.clone()))
             .collect();
-        let language = Some(projected_state.runtime_language_tag_legacy_compatible());
+        let language = Some(projected_state.runtime_language_tag());
         let refresh_result = if let Some(session) = self.session.as_mut() {
             session.refresh_public_servers(current_servers, language)
         } else {
@@ -355,7 +354,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+        settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let previous_settings = projected_state.saved_configuration.clone();
         let Some(path) = self.persisted_settings_config_path_for_request(projected_state) else {
@@ -374,11 +373,8 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         };
-        match merge_sorotte_ini_stored_client_settings_mvp_at_path(
-            &path,
-            &previous_settings,
-            &settings,
-        ) {
+        match merge_sorotte_ini_stored_client_settings_at_path(&path, &previous_settings, &settings)
+        {
             Ok(settings) => {
                 self.config_path = Some(path);
                 self.promote_on_save_runtime_fields(&settings);
@@ -422,7 +418,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+        settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         self.invalidate_plex_operation_context(handle, projected_state);
         Self::push_actions_and_project(
@@ -439,7 +435,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        fallback_settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+        fallback_settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let Some(path) = self.config_path.as_ref() else {
             self.invalidate_plex_operation_context(handle, projected_state);
@@ -455,7 +451,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return false;
         };
-        match load_sorotte_ini_stored_client_settings_mvp_from_path(path) {
+        match load_sorotte_ini_stored_client_settings_from_path(path) {
             Ok(Some(settings)) => {
                 self.invalidate_plex_operation_context(handle, projected_state);
                 self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
@@ -546,9 +542,9 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
         target: GuiConfigStorageChangeTarget,
-        settings: sorotte_client_app::app_boundary::state::StoredClientSettingsMvp,
+        settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
-        let old_root = self.legacy_gui_qsettings_root();
+        let old_root = self.syncplay_qsettings_root();
         let (paths, install_root) = match self.config_storage_paths_for_change_target(target) {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -569,7 +565,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let source = self.persisted_settings_config_path_for_request(projected_state);
-        let settings = match relocate_sorotte_ini_stored_client_settings_mvp_at_path(
+        let settings = match relocate_sorotte_ini_stored_client_settings_at_path(
             source.as_deref(),
             &paths.config_path,
             &projected_state.saved_configuration,
@@ -682,10 +678,10 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let mut warnings = Vec::new();
-        for store_name in LEGACY_GUI_QSETTINGS_STORE_NAMES {
+        for store_name in SYNCPLAY_QSETTINGS_STORE_NAMES {
             Self::copy_storage_path_best_effort(
-                &legacy_gui_qsettings_store_path(old_root, store_name),
-                &legacy_gui_qsettings_store_path(new_root, store_name),
+                &syncplay_qsettings_store_path(old_root, store_name),
+                &syncplay_qsettings_store_path(new_root, store_name),
                 &mut warnings,
             );
         }

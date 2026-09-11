@@ -16,13 +16,12 @@ fn staged_startup_hello_keeps_current_connection_ownership_across_settings_chang
     assert_eq!(decoded_a.hello.username, "alice");
     assert_eq!(decoded_a.hello.room.name, "room-a");
 
-    let settings_b =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("bob".to_owned()),
-            room: Some("room-b".to_owned()),
-            shared_playlist_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
-        });
+    let settings_b = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("bob".to_owned()),
+        room: Some("room-b".to_owned()),
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettings::default()
+    });
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &settings_b)
         .expect("settings B should become the next-connection template");
 
@@ -259,11 +258,10 @@ fn failed_runtime_delivery_retries_only_after_reconnect_hello_completes() {
 #[test]
 fn gui_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
     for (configured, expected) in [(None, true), (Some(true), true), (Some(false), false)] {
-        let runtime_settings =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-                shared_playlist_enabled: configured,
-                ..StoredClientSettingsMvp::default()
-            });
+        let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+            shared_playlist_enabled: configured,
+            ..StoredClientSettings::default()
+        });
         let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
             .expect("client-core chat adapter should bootstrap");
         GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
@@ -294,14 +292,13 @@ fn gui_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_password_and_full_features()
  {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("bob".to_owned()),
-            room: Some("room2".to_owned()),
-            server_password: Some("secret-pass".into()),
-            shared_playlist_enabled: Some(false),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("bob".to_owned()),
+        room: Some("room2".to_owned()),
+        server_password: Some("secret-pass".into()),
+        shared_playlist_enabled: Some(false),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -319,10 +316,10 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_pa
     };
     assert_eq!(hello.hello.username, "bob");
     assert_eq!(hello.hello.room.name, "room2");
-    assert_eq!(hello.hello.version, SYNCPLAY_WIRE_VERSION_LEGACY);
+    assert_eq!(hello.hello.version, SYNCPLAY_WIRE_VERSION);
     assert_eq!(
         hello.hello.realversion.as_deref(),
-        Some(SYNCPLAY_COMPAT_VERSION_LEGACY)
+        Some(SYNCPLAY_COMPAT_VERSION)
     );
     assert_eq!(
         hello
@@ -405,12 +402,11 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_pa
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_runtime_identity() {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("bob".to_owned()),
-            room: Some("room2".to_owned()),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("bob".to_owned()),
+        room: Some("room2".to_owned()),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -439,12 +435,11 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_run
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_server_assigned_username() {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 

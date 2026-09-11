@@ -26,7 +26,7 @@ where
                 self.playback_coordination.connection_generation(),
             )],
         );
-        self.ping_metrics_legacy_compatible = ClientPingMetricsLegacyCompatible::default();
+        self.ping_metrics = ClientPingMetrics::default();
     }
 
     pub fn run_readiness_unpause_attempt(
@@ -107,9 +107,7 @@ where
     }
 
     pub fn run_controller_auth_notifications_if_needed(&mut self) -> Result<(), PlayerError> {
-        self.run_controller_auth_notifications_if_needed_at(
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        )
+        self.run_controller_auth_notifications_if_needed_at(unix_wall_clock_time_seconds())
     }
 
     pub fn run_controller_auth_notifications_if_needed_at(
@@ -214,9 +212,7 @@ where
     }
 
     pub fn run_reconnect_state_restore_validation_if_needed(&mut self) -> Result<(), PlayerError> {
-        self.run_reconnect_state_restore_validation_if_needed_at(
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        )
+        self.run_reconnect_state_restore_validation_if_needed_at(unix_wall_clock_time_seconds())
     }
 
     pub fn run_reconnect_state_restore_validation_if_needed_at(
@@ -376,7 +372,7 @@ where
     }
 
     pub fn run_room_pause_sync_if_needed(&mut self) -> Result<(), PlayerError> {
-        self.run_room_pause_sync_if_needed_at(unix_wall_clock_time_seconds_legacy_compatible())
+        self.run_room_pause_sync_if_needed_at(unix_wall_clock_time_seconds())
     }
 
     pub fn run_room_pause_sync_if_needed_at(
@@ -389,7 +385,7 @@ where
         // Reconnect validation owns correction immediately after reconnect
         // state restore. Transport telemetry is deliberately drained first so
         // the coordinator can still observe unsafe loading/cache/seeking
-        // phases while legacy room synchronization remains suspended.
+        // phases while Syncplay room synchronization remains suspended.
         if self
             .session
             .model
@@ -406,9 +402,7 @@ where
             return Ok(());
         }
 
-        let Some(room_playstate) =
-            self.current_room_playstate_legacy_ping_compatible_at(now_seconds)
-        else {
+        let Some(room_playstate) = self.current_room_playstate_with_ping_at(now_seconds) else {
             return Ok(());
         };
         if room_playstate.paused == Some(true) {
@@ -549,8 +543,7 @@ where
         let Some(local_position) = self.projected_local_position_at(now_seconds) else {
             return Ok(());
         };
-        let local_position =
-            self.desync_local_position_with_legacy_ping_forward_delay(local_position);
+        let local_position = self.desync_local_position_with_ping_forward_delay(local_position);
         let Some(room_playstate) = self.session.current_room_playstate_at(now_seconds) else {
             self.session.model.playback.behind_first_detected_at_seconds = None;
             return Ok(());
@@ -605,10 +598,7 @@ where
             )
     }
 
-    pub(crate) fn desync_local_position_with_legacy_ping_forward_delay(
-        &self,
-        local_position: f64,
-    ) -> f64 {
+    pub(crate) fn desync_local_position_with_ping_forward_delay(&self, local_position: f64) -> f64 {
         let Some(room_playstate) = self.session.current_room_playstate() else {
             return local_position;
         };
@@ -616,7 +606,7 @@ where
             return local_position;
         }
 
-        let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
+        let forward_delay = self.ping_metrics.forward_delay_seconds();
         if !forward_delay.is_finite() || forward_delay <= 0.0 {
             return local_position;
         }

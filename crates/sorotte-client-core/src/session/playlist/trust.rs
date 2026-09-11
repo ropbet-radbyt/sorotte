@@ -130,26 +130,26 @@ fn parse_trusted_web_url_pattern(entry: &str) -> Option<TrustedWebUrlPattern> {
 }
 
 impl ClientSession {
-    pub(in crate::session) fn loop_single_files_enabled_legacy_compatible(&self) -> bool {
+    pub(in crate::session) fn loop_single_files_enabled(&self) -> bool {
         self.behavior_config.loop_single_files || self.is_playing_music()
     }
 
-    pub(in crate::session) fn loop_at_end_of_playlist_enabled_legacy_compatible(&self) -> bool {
+    pub(in crate::session) fn loop_at_end_of_playlist_enabled(&self) -> bool {
         self.behavior_config.loop_at_end_of_playlist || self.is_playing_music()
     }
 
-    pub fn playlist_target_switch_allowed_legacy_compatible(&self, file_name: &str) -> bool {
+    pub fn playlist_target_switch_allowed(&self, file_name: &str) -> bool {
         if Self::is_plex_uri(file_name) {
             return true;
         }
         if !Self::is_url(file_name) {
             return true;
         }
-        self.uri_is_trusted_legacy_compatible(file_name)
+        self.uri_is_trusted(file_name)
     }
 
-    pub(in crate::session) fn uri_is_trusted_legacy_compatible(&self, uri: &str) -> bool {
-        playback_uri_is_trusted_legacy_compatible(
+    pub(in crate::session) fn uri_is_trusted(&self, uri: &str) -> bool {
+        playback_uri_is_trusted(
             uri,
             self.behavior_config.only_switch_to_trusted_domains,
             &self.behavior_config.trusted_domains,
@@ -157,7 +157,7 @@ impl ClientSession {
     }
 }
 
-pub fn playback_uri_is_trusted_legacy_compatible(
+pub fn playback_uri_is_trusted(
     uri: &str,
     only_switch_to_trusted_domains: bool,
     trusted_domains: &[String],
@@ -181,7 +181,7 @@ pub fn playback_uri_is_trusted_legacy_compatible(
         {
             continue;
         }
-        if !trusted_domain_matches_host_legacy_compatible(&target.host, &pattern.host_pattern) {
+        if !trusted_domain_matches_host(&target.host, &pattern.host_pattern) {
             continue;
         }
         let port_matches = pattern.explicit_port.map_or_else(
@@ -205,7 +205,7 @@ pub fn playback_uri_is_trusted_legacy_compatible(
     false
 }
 
-fn trusted_domain_matches_host_legacy_compatible(host: &str, trusted_domain: &str) -> bool {
+fn trusted_domain_matches_host(host: &str, trusted_domain: &str) -> bool {
     if host == trusted_domain || host == format!("www.{trusted_domain}") {
         return true;
     }

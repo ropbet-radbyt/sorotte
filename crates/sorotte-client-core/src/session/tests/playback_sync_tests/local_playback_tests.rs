@@ -14,10 +14,11 @@ fn determine_local_state_change_uses_aged_room_position_for_seek_detection() {
             set_by: Some("bob".to_owned()),
         },
     );
-    session.model.room.playstate_updated_at_seconds.insert(
-        "room1".to_owned(),
-        unix_wall_clock_time_seconds_legacy_compatible() - 1.15,
-    );
+    session
+        .model
+        .room
+        .playstate_updated_at_seconds
+        .insert("room1".to_owned(), unix_wall_clock_time_seconds() - 1.15);
     session.model.playback.local_position = Some(0.0);
     session.model.playback.local_paused = Some(false);
 
@@ -198,7 +199,7 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
                 r#"{"State":{"playstate":{"position":12.5,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
             )
             .expect("remote seek state should apply");
-    let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+    let now_seconds = unix_wall_clock_time_seconds();
     session
         .model
         .room
@@ -855,8 +856,7 @@ fn client_runtime_deliberate_seek_survives_recent_playlist_rewind() {
         )
         .expect("hello should apply");
     session.model.playback.local_paused = Some(true);
-    session.model.playback.last_rewound_at_seconds =
-        Some(unix_wall_clock_time_seconds_legacy_compatible());
+    session.model.playback.last_rewound_at_seconds = Some(unix_wall_clock_time_seconds());
 
     let player = RecordingPlayer::default();
     let control = QueuedRuntimeControl::default();

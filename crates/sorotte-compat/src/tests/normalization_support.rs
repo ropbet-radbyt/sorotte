@@ -98,21 +98,21 @@ pub(super) fn normalization_options_for_legacy_scenario(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum LegacyTimingSide {
+pub(super) enum SyncplayTimingSide {
     Legacy,
     Runtime,
 }
 
 #[derive(Default)]
-pub(super) struct LegacyTimingCanonicalizer {
+pub(super) struct SyncplayTimingCanonicalizer {
     legacy_latency_origin: Option<f64>,
     runtime_latency_origin: Option<f64>,
-    legacy_server_rtt_nonzero_origin: Option<f64>,
+    syncplay_server_rtt_nonzero_origin: Option<f64>,
     runtime_server_rtt_nonzero_origin: Option<f64>,
 }
 
-impl LegacyTimingCanonicalizer {
-    pub(super) fn canonicalize_message(&mut self, message: &mut Value, side: LegacyTimingSide) {
+impl SyncplayTimingCanonicalizer {
+    pub(super) fn canonicalize_message(&mut self, message: &mut Value, side: SyncplayTimingSide) {
         let Some(state_payload) = message.get_mut("State").and_then(Value::as_object_mut) else {
             return;
         };
@@ -130,8 +130,8 @@ impl LegacyTimingCanonicalizer {
         }
 
         let origin_slot = match side {
-            LegacyTimingSide::Legacy => &mut self.legacy_latency_origin,
-            LegacyTimingSide::Runtime => &mut self.runtime_latency_origin,
+            SyncplayTimingSide::Legacy => &mut self.legacy_latency_origin,
+            SyncplayTimingSide::Runtime => &mut self.runtime_latency_origin,
         };
         let origin = *origin_slot.get_or_insert(latency);
         let canonical_latency = (latency - origin).round();
@@ -157,8 +157,8 @@ impl LegacyTimingCanonicalizer {
         }
 
         let rtt_origin_slot = match side {
-            LegacyTimingSide::Legacy => &mut self.legacy_server_rtt_nonzero_origin,
-            LegacyTimingSide::Runtime => &mut self.runtime_server_rtt_nonzero_origin,
+            SyncplayTimingSide::Legacy => &mut self.syncplay_server_rtt_nonzero_origin,
+            SyncplayTimingSide::Runtime => &mut self.runtime_server_rtt_nonzero_origin,
         };
         let rtt_origin = *rtt_origin_slot.get_or_insert(server_rtt);
         let canonical_server_rtt = (server_rtt - rtt_origin).round();
@@ -456,7 +456,7 @@ pub(super) fn normalize_cross_impl_message_with_options(
 fn strip_sorotte_causal_extensions(value: &mut Value) {
     // Python parity compares the shared Syncplay contract. Sorotte's
     // namespaced equality fences are tested independently and deliberately
-    // have no legacy-Python counterpart, so retaining them here would turn
+    // have no Python Syncplay counterpart, so retaining them here would turn
     // every additive causal guard into a false compatibility regression.
     if let Some(set_payload) = value.get_mut("Set").and_then(Value::as_object_mut) {
         for field in ["playlistChange", "playlistIndex"] {

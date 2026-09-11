@@ -666,8 +666,8 @@ fn capture_visual_scenario(
         main_window_entries.push(("configurationTab", configuration_tab.to_owned()));
     }
     let qsettings_root = config_path.parent().unwrap_or(&runtime_root);
-    write_legacy_gui_qsettings_ini(
-        &legacy_gui_qsettings_store_path(qsettings_root, "MainWindow"),
+    write_syncplay_qsettings_ini(
+        &syncplay_qsettings_store_path(qsettings_root, "MainWindow"),
         &[("MainWindow", main_window_entries)],
     )?;
 
@@ -924,7 +924,7 @@ fn seed_visual_scenario_config(scenario: VisualScenario, config_path: &Path) -> 
         return Ok(());
     }
 
-    let mut settings = load_sorotte_ini_stored_client_settings_mvp_from_path(config_path)
+    let mut settings = load_sorotte_ini_stored_client_settings_from_path(config_path)
         .map_err(|error| {
             format!(
                 "failed to reload visual config fixture {}: {error}",
@@ -943,7 +943,7 @@ fn seed_visual_scenario_config(scenario: VisualScenario, config_path: &Path) -> 
     if scenario == VisualScenario::PluginToggleDirty {
         settings.stream_support_plugin_enabled = Some(true);
     }
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(|error| {
+    upsert_sorotte_ini_stored_client_settings_at_path(config_path, &settings).map_err(|error| {
         format!(
             "failed to update visual config fixture {}: {error}",
             config_path.display()
@@ -1606,8 +1606,8 @@ fn prepare_visual_scenario_state<D: NativeGuiDriver>(
     }
 }
 
-fn load_visual_settings(config_path: &Path) -> Result<StoredClientSettingsMvp, String> {
-    load_sorotte_ini_stored_client_settings_mvp_from_path(config_path)
+fn load_visual_settings(config_path: &Path) -> Result<StoredClientSettings, String> {
+    load_sorotte_ini_stored_client_settings_from_path(config_path)
         .map_err(|error| {
             format!(
                 "failed to read visual config {}: {error}",
@@ -1626,8 +1626,8 @@ fn wait_for_stored_settings(
     config_path: &Path,
     timeout: Duration,
     expected: &str,
-    predicate: impl Fn(&StoredClientSettingsMvp) -> bool,
-) -> Result<StoredClientSettingsMvp, String> {
+    predicate: impl Fn(&StoredClientSettings) -> bool,
+) -> Result<StoredClientSettings, String> {
     let deadline = Instant::now() + timeout;
     let last = loop {
         let last = match load_visual_settings(config_path) {

@@ -65,12 +65,12 @@ use crate::constants::*;
 #[cfg(test)]
 use crate::ipc::MpvJsonIpcTransport;
 use crate::ipc::{MpvIpcConnectionEvent, MpvJsonIpcClient};
-use crate::legacy_ui::{
-    LegacySyncplayOsdKind, LegacySyncplayUiSettings, sanitize_legacy_syncplay_script_message_text,
-};
 use crate::lifecycle::{
     AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput, PlayerLifecycleState,
     reduce_player_lifecycle,
+};
+use crate::syncplay_ui::{
+    SyncplayOsdKind, SyncplayUiSettings, sanitize_syncplay_script_message_text,
 };
 use crate::transcript::{MpvTranscript, MpvTranscriptError, MpvTranscriptRecorder};
 
@@ -93,14 +93,14 @@ const MAX_CONSECUTIVE_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 2;
 const MAX_TOTAL_INTERRUPTED_NETWORK_STREAM_RECOVERY_ATTEMPTS: usize = 5;
 const NETWORK_CACHE_STALL_RECOVERY_DELAY: Duration = Duration::from_secs(20);
 const NETWORK_CACHE_STALL_RECOVERY_MARGIN: Duration = Duration::from_secs(5);
-const LEGACY_SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
-const LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-const LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
-const LEGACY_SYNCPLAYINTF_RUNTIME_RECOVERY_ATTEMPTS: usize = 3;
-const LEGACY_SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
-const LEGACY_SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
-const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
-const LEGACY_SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+const SYNCPLAYINTF_OWNER_LEASE_MS: u64 = 2_000;
+const SYNCPLAYINTF_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+const SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+const SYNCPLAYINTF_RUNTIME_RECOVERY_ATTEMPTS: usize = 3;
+const SYNCPLAYINTF_DISCOVERY_ATTEMPTS: usize = 3;
+const SYNCPLAYINTF_REGISTRATION_ATTEMPTS: usize = 20;
+const SYNCPLAYINTF_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
+const SYNCPLAYINTF_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_WINDOW: Duration = Duration::from_millis(2_500);
 const NETWORK_OPTIONS_HOOK_CONFIGURATION_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 // GUI rendering, synchronous settings work, and OS scheduling can legitimately delay the
@@ -120,8 +120,8 @@ const NETWORK_MEDIA_OPTION_READBACK_ALLOWLIST: [&str; 8] = [
     "demuxer-max-back-bytes",
     "cache-on-disk",
 ];
-static NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
-static LEGACY_SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
+static NEXT_SYNCPLAYINTF_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
+static SYNCPLAYINTF_OWNER_ID: LazyLock<String> = LazyLock::new(|| {
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -526,28 +526,28 @@ pub struct MpvAdapter {
     duration_metadata_generation: Option<PlayerMediaGeneration>,
     playback_restart_sequence: u64,
     next_command_id: u64,
-    legacy_syncplay_ui_settings: LegacySyncplayUiSettings,
-    last_simulated_legacy_syncplay_osd_message: Option<(String, LegacySyncplayOsdKind)>,
-    legacy_syncplay_osd_placement_restore: Option<(String, i64)>,
-    legacy_syncplayintf_script_loaded: bool,
-    legacy_syncplayintf_options_applied: bool,
-    legacy_syncplayintf_script_name: String,
-    legacy_syncplayintf_bridge_instance_id: Option<String>,
-    legacy_syncplayintf_owner_id: String,
-    legacy_syncplayintf_attachment_id: String,
-    legacy_syncplayintf_next_options_generation: u64,
-    legacy_syncplayintf_pending_options_generation: Option<u64>,
-    legacy_syncplayintf_acknowledged_options_generation: Option<u64>,
-    legacy_syncplayintf_options_ack_error: Option<String>,
-    legacy_syncplayintf_next_ping_nonce: u64,
-    legacy_syncplayintf_pending_ping_nonce: Option<u64>,
-    legacy_syncplayintf_last_heartbeat_at: Option<Instant>,
-    legacy_syncplayintf_pending_heartbeat_command_id: Option<u64>,
-    legacy_syncplayintf_last_discovery_at: Option<Instant>,
-    legacy_syncplayintf_lease_reacquire_required: bool,
-    legacy_syncplayintf_runtime_rediscovery_required: bool,
-    legacy_syncplayintf_runtime_recovery_attempts: usize,
-    legacy_syncplayintf_runtime_recovery_failure: Option<SorotteBridgeFailure>,
+    syncplay_ui_settings: SyncplayUiSettings,
+    last_simulated_syncplay_osd_message: Option<(String, SyncplayOsdKind)>,
+    syncplay_osd_placement_restore: Option<(String, i64)>,
+    syncplayintf_script_loaded: bool,
+    syncplayintf_options_applied: bool,
+    syncplayintf_script_name: String,
+    syncplayintf_bridge_instance_id: Option<String>,
+    syncplayintf_owner_id: String,
+    syncplayintf_attachment_id: String,
+    syncplayintf_next_options_generation: u64,
+    syncplayintf_pending_options_generation: Option<u64>,
+    syncplayintf_acknowledged_options_generation: Option<u64>,
+    syncplayintf_options_ack_error: Option<String>,
+    syncplayintf_next_ping_nonce: u64,
+    syncplayintf_pending_ping_nonce: Option<u64>,
+    syncplayintf_last_heartbeat_at: Option<Instant>,
+    syncplayintf_pending_heartbeat_command_id: Option<u64>,
+    syncplayintf_last_discovery_at: Option<Instant>,
+    syncplayintf_lease_reacquire_required: bool,
+    syncplayintf_runtime_rediscovery_required: bool,
+    syncplayintf_runtime_recovery_attempts: usize,
+    syncplayintf_runtime_recovery_failure: Option<SorotteBridgeFailure>,
     sorotte_bridge_health: SorotteBridgeHealth,
     pending_sorotte_bridge_health_transitions: VecDeque<SorotteBridgeHealth>,
     ipc_endpoint: Option<PathBuf>,
@@ -1173,12 +1173,12 @@ impl MpvAdapter {
     /// Lua settings acknowledgement.
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
-    pub fn with_unacknowledging_syncplayintf_test_ipc(settings: LegacySyncplayUiSettings) -> Self {
+    pub fn with_unacknowledging_syncplayintf_test_ipc(settings: SyncplayUiSettings) -> Self {
         Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
             ipc_client: Some(crate::test_support::unacknowledging_syncplayintf_client()),
             ..Self::default()
         }
@@ -1188,13 +1188,13 @@ impl MpvAdapter {
     /// never emits the canonical pong.
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
-    pub fn with_undiscoverable_sorotte_bridge_test_ipc(settings: LegacySyncplayUiSettings) -> Self {
+    pub fn with_undiscoverable_sorotte_bridge_test_ipc(settings: SyncplayUiSettings) -> Self {
         let mut adapter = Self {
-            legacy_syncplay_ui_settings: settings,
+            syncplay_ui_settings: settings,
             ipc_client: Some(crate::test_support::undiscoverable_syncplayintf_client()),
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
@@ -1202,15 +1202,13 @@ impl MpvAdapter {
     /// leaving the core JSON IPC transport healthy.
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
-    pub fn with_rejected_sorotte_bridge_discovery_test_ipc(
-        settings: LegacySyncplayUiSettings,
-    ) -> Self {
+    pub fn with_rejected_sorotte_bridge_discovery_test_ipc(settings: SyncplayUiSettings) -> Self {
         let mut adapter = Self {
-            legacy_syncplay_ui_settings: settings,
+            syncplay_ui_settings: settings,
             ipc_client: Some(crate::test_support::rejecting_syncplayintf_discovery_client()),
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
@@ -1219,16 +1217,16 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_release_recording_sorotte_bridge_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let (ipc_client, release_count) =
             crate::test_support::release_recording_syncplayintf_client();
         let adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             ipc_client: Some(ipc_client),
             ..Self::default()
@@ -1240,7 +1238,7 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_cleanup_recording_sorotte_bridge_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
         osd_placement_restore: Option<(String, i64)>,
     ) -> (
         Self,
@@ -1248,12 +1246,12 @@ impl MpvAdapter {
     ) {
         let (ipc_client, commands) = crate::test_support::cleanup_recording_syncplayintf_client();
         let adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplay_osd_placement_restore: osd_placement_restore,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplay_osd_placement_restore: osd_placement_restore,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             ipc_client: Some(ipc_client),
             ..Self::default()
@@ -1266,14 +1264,14 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_first_active_network_option_rejection_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> Self {
         Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             simulation_mode: true,
             ipc_client: Some(crate::test_support::reject_first_active_network_option_client()),
@@ -1286,7 +1284,7 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_nth_active_network_option_rejection_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
         rejected_write: usize,
     ) -> (
         Self,
@@ -1295,11 +1293,11 @@ impl MpvAdapter {
         let (ipc_client, commands) =
             crate::test_support::reject_nth_active_network_option_client(rejected_write);
         let adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             simulation_mode: true,
             ipc_client: Some(ipc_client),
@@ -1313,18 +1311,18 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_delayed_active_network_media_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> (
         Self,
         std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     ) {
         let (ipc_client, commands) = crate::test_support::delayed_active_network_media_client();
         let adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             simulation_mode: true,
             ipc_client: Some(ipc_client),
@@ -1339,7 +1337,7 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_external_network_media_transition_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> (
         Self,
         std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
@@ -1353,7 +1351,7 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_rejected_external_network_media_transition_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> (
         Self,
         std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
@@ -1367,7 +1365,7 @@ impl MpvAdapter {
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn with_active_network_media_supersession_test_ipc(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
     ) -> (
         Self,
         std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
@@ -1375,11 +1373,11 @@ impl MpvAdapter {
         let (ipc_client, commands) =
             crate::test_support::active_network_media_supersession_client();
         let adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             simulation_mode: true,
             ipc_client: Some(ipc_client),
@@ -1528,7 +1526,7 @@ impl MpvAdapter {
 
     #[cfg(feature = "test-support")]
     fn with_external_network_media_transition_test_ipc_mode(
-        settings: LegacySyncplayUiSettings,
+        settings: SyncplayUiSettings,
         reject_option_write: bool,
     ) -> (
         Self,
@@ -1538,11 +1536,11 @@ impl MpvAdapter {
         let (ipc_client, commands, transition_trigger) =
             crate::test_support::external_network_media_transition_client(reject_option_write);
         let mut adapter = Self {
-            legacy_syncplay_ui_settings: settings,
-            legacy_syncplayintf_script_loaded: true,
-            legacy_syncplayintf_options_applied: true,
-            legacy_syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
-            legacy_syncplayintf_acknowledged_options_generation: Some(1),
+            syncplay_ui_settings: settings,
+            syncplayintf_script_loaded: true,
+            syncplayintf_options_applied: true,
+            syncplayintf_bridge_instance_id: Some("test-bridge".to_owned()),
+            syncplayintf_acknowledged_options_generation: Some(1),
             sorotte_bridge_health: SorotteBridgeHealth::Ready,
             simulation_mode: true,
             ipc_client: Some(ipc_client),
@@ -1597,7 +1595,7 @@ impl MpvAdapter {
         self.recover_network_media_options_hook_ownership_if_needed();
         self.maintain_network_cache_stall_recovery();
         self.maintain_network_media_options_hook_lease();
-        self.maintain_legacy_syncplayintf_lease();
+        self.maintain_syncplayintf_lease();
         self.maintain_cache_pause_readback_nonblocking();
         self.maintain_ipc_event_fence_nonblocking();
         // Synchronous heartbeat commands can themselves harvest a bounded batch of events. Flush
@@ -1953,34 +1951,30 @@ impl MpvAdapter {
         self.pending_chat_requests.pop_front()
     }
 
-    pub fn show_syncplay_legacy_message(
+    pub fn show_syncplay_message(
         &mut self,
         message: &str,
-        kind: LegacySyncplayOsdKind,
+        kind: SyncplayOsdKind,
     ) -> Result<(), PlayerError> {
-        if message.trim().is_empty() || !self.legacy_syncplay_ui_settings.show_osd {
+        if message.trim().is_empty() || !self.syncplay_ui_settings.show_osd {
             return Ok(());
         }
         if self.simulation_mode {
-            self.last_simulated_legacy_syncplay_osd_message = Some((message.to_owned(), kind));
+            self.last_simulated_syncplay_osd_message = Some((message.to_owned(), kind));
         }
 
         let duration_ms = match kind {
-            LegacySyncplayOsdKind::Notification => {
-                self.legacy_syncplay_ui_settings.notification_timeout_ms
-            }
-            LegacySyncplayOsdKind::Alert => self.legacy_syncplay_ui_settings.alert_timeout_ms,
+            SyncplayOsdKind::Notification => self.syncplay_ui_settings.notification_timeout_ms,
+            SyncplayOsdKind::Alert => self.syncplay_ui_settings.alert_timeout_ms,
         };
-        if self.legacy_syncplay_ui_settings.chat_output_enabled
-            && self.ensure_legacy_syncplayintf_ready()
-        {
+        if self.syncplay_ui_settings.chat_output_enabled && self.ensure_syncplayintf_ready() {
             let script_message_name = match kind {
-                LegacySyncplayOsdKind::Notification => "notification-osd-neutral",
-                LegacySyncplayOsdKind::Alert => "alert-osd-neutral",
+                SyncplayOsdKind::Notification => "notification-osd-neutral",
+                SyncplayOsdKind::Alert => "alert-osd-neutral",
             };
             match self.send_syncplayintf_script_message(
                 script_message_name,
-                &sanitize_legacy_syncplay_script_message_text(message),
+                &sanitize_syncplay_script_message_text(message),
             ) {
                 Ok(()) => return Ok(()),
                 Err(error) => self.begin_sorotte_bridge_runtime_recovery(
@@ -1990,20 +1984,18 @@ impl MpvAdapter {
                 ),
             }
         }
-        self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
+        self.show_text(message, duration_ms, SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
     }
 
-    pub fn show_syncplay_legacy_chat_message(&mut self, message: &str) -> Result<(), PlayerError> {
+    pub fn show_syncplay_chat_message(&mut self, message: &str) -> Result<(), PlayerError> {
         if message.trim().is_empty() {
             return Ok(());
         }
 
-        if self.legacy_syncplay_ui_settings.chat_output_enabled
-            && self.ensure_legacy_syncplayintf_ready()
-        {
+        if self.syncplay_ui_settings.chat_output_enabled && self.ensure_syncplayintf_ready() {
             match self.send_syncplayintf_script_message(
                 "chat",
-                &sanitize_legacy_syncplay_script_message_text(message),
+                &sanitize_syncplay_script_message_text(message),
             ) {
                 Ok(()) => return Ok(()),
                 Err(error) => self.begin_sorotte_bridge_runtime_recovery(
@@ -2014,10 +2006,10 @@ impl MpvAdapter {
             }
         }
 
-        let maybe_duration_ms = if self.legacy_syncplay_ui_settings.chat_output_enabled {
-            Some(self.legacy_syncplay_ui_settings.chat_timeout_ms)
-        } else if self.legacy_syncplay_ui_settings.show_osd {
-            Some(self.legacy_syncplay_ui_settings.notification_timeout_ms)
+        let maybe_duration_ms = if self.syncplay_ui_settings.chat_output_enabled {
+            Some(self.syncplay_ui_settings.chat_timeout_ms)
+        } else if self.syncplay_ui_settings.show_osd {
+            Some(self.syncplay_ui_settings.notification_timeout_ms)
         } else {
             None
         };
@@ -2025,7 +2017,7 @@ impl MpvAdapter {
         let Some(duration_ms) = maybe_duration_ms else {
             return Ok(());
         };
-        self.show_text(message, duration_ms, LEGACY_SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
+        self.show_text(message, duration_ms, SYNCPLAY_SHOW_TEXT_OSD_LEVEL)
     }
 
     fn poll_ipc_local_file_update_if_attached(&mut self) {
@@ -2314,7 +2306,7 @@ impl MpvAdapter {
         #[cfg(test)]
         let generation = self
             .pending_load_generation
-            .expect("legacy scripted polling requires its submitted generation");
+            .expect("scripted polling requires its submitted generation");
         #[cfg(test)]
         if !self.player_lifecycle.load_attempts.values().any(|attempt| {
             attempt.media_generation == generation
@@ -2717,7 +2709,7 @@ impl MpvAdapter {
     }
 
     fn capture_authoritative_playlist_baseline(&mut self) -> BTreeSet<i64> {
-        // Most legacy unit-test transports script only the command under test.
+        // Most unit-test transports script only the command under test.
         // Keep their fixtures deterministic while production always captures
         // the real pre-command playlist identity set.
         #[cfg(test)]
@@ -4114,9 +4106,9 @@ impl MpvAdapter {
     }
 
     fn chat_input_polling_enabled(&self) -> bool {
-        self.legacy_syncplayintf_script_loaded
-            && self.legacy_syncplayintf_options_applied
-            && self.legacy_syncplay_ui_settings.chat_input_enabled
+        self.syncplayintf_script_loaded
+            && self.syncplayintf_options_applied
+            && self.syncplay_ui_settings.chat_input_enabled
     }
 
     fn poll_ipc_events_for_chat_input_if_enabled(&mut self) {
@@ -5528,17 +5520,17 @@ impl MpvAdapter {
             SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_TRANSITION_RESULT => {
                 self.handle_network_options_hook_transition_result(payload);
             }
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED => {
-                self.handle_legacy_syncplayintf_options_ack(payload);
+            SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED => {
+                self.handle_syncplayintf_options_ack(payload);
             }
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG => {
-                self.handle_legacy_syncplayintf_pong(payload);
+            SYNCPLAYINTF_CLIENT_MESSAGE_PONG => {
+                self.handle_syncplayintf_pong(payload);
             }
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED => {
-                self.handle_legacy_syncplayintf_lease_expired(payload);
+            SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED => {
+                self.handle_syncplayintf_lease_expired(payload);
             }
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_CHAT => {
-                self.handle_legacy_syncplayintf_chat_request(payload);
+            SYNCPLAYINTF_CLIENT_MESSAGE_CHAT => {
+                self.handle_syncplayintf_chat_request(payload);
             }
             _ => {}
         }
@@ -5691,7 +5683,7 @@ impl MpvAdapter {
             },
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
@@ -5707,7 +5699,7 @@ impl MpvAdapter {
             },
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
@@ -5725,7 +5717,7 @@ impl MpvAdapter {
             transport_observers_registered: true,
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
@@ -5745,26 +5737,26 @@ impl MpvAdapter {
             },
             ..Self::default()
         };
-        adapter.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        adapter.reset_syncplayintf_attachment_for_new_ipc();
         adapter
     }
 
     #[cfg(test)]
-    pub(crate) fn enable_test_legacy_chat_input(&mut self) {
-        self.legacy_syncplayintf_script_loaded = true;
-        self.legacy_syncplayintf_bridge_instance_id = Some("test-bridge".to_owned());
-        self.legacy_syncplayintf_owner_id = "test-owner".to_owned();
-        self.legacy_syncplayintf_attachment_id = "test-attachment".to_owned();
-        self.legacy_syncplayintf_options_applied = true;
-        self.legacy_syncplayintf_pending_options_generation = None;
-        self.legacy_syncplayintf_acknowledged_options_generation = Some(1);
-        self.legacy_syncplayintf_lease_reacquire_required = false;
-        self.legacy_syncplay_ui_settings.chat_input_enabled = true;
+    pub(crate) fn enable_test_syncplay_chat_input(&mut self) {
+        self.syncplayintf_script_loaded = true;
+        self.syncplayintf_bridge_instance_id = Some("test-bridge".to_owned());
+        self.syncplayintf_owner_id = "test-owner".to_owned();
+        self.syncplayintf_attachment_id = "test-attachment".to_owned();
+        self.syncplayintf_options_applied = true;
+        self.syncplayintf_pending_options_generation = None;
+        self.syncplayintf_acknowledged_options_generation = Some(1);
+        self.syncplayintf_lease_reacquire_required = false;
+        self.syncplay_ui_settings.chat_input_enabled = true;
     }
 
     #[cfg(test)]
-    pub(crate) fn reset_test_legacy_syncplayintf_attachment(&mut self) {
-        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+    pub(crate) fn reset_test_syncplayintf_attachment(&mut self) {
+        self.reset_syncplayintf_attachment_for_new_ipc();
     }
 
     #[cfg(test)]
@@ -5777,11 +5769,11 @@ impl MpvAdapter {
         self.simulation_mode = false;
         self.ipc_client = Some(MpvJsonIpcClient::new(Box::new(transport)));
         self.ipc_endpoint = None;
-        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        self.reset_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
         self.reset_network_media_options_attachment_state();
-        self.legacy_syncplay_osd_placement_restore = None;
+        self.syncplay_osd_placement_restore = None;
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
@@ -5793,10 +5785,10 @@ impl MpvAdapter {
     }
 
     #[cfg(test)]
-    pub(crate) fn force_test_legacy_syncplayintf_heartbeat_due(&mut self) {
-        self.legacy_syncplayintf_last_heartbeat_at =
-            Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
-        self.maintain_legacy_syncplayintf_lease();
+    pub(crate) fn force_test_syncplayintf_heartbeat_due(&mut self) {
+        self.syncplayintf_last_heartbeat_at =
+            Some(Instant::now() - SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+        self.maintain_syncplayintf_lease();
     }
 
     #[cfg(test)]
@@ -5857,8 +5849,8 @@ impl MpvAdapter {
     ) {
         let mut payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "hookInstanceId": "test-hook-instance",
             "loadSequence": load_sequence,
@@ -5889,8 +5881,8 @@ impl MpvAdapter {
         };
         let mut payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "hookInstanceId": "test-hook-instance",
             "loadSequence": load_sequence,
@@ -5923,8 +5915,8 @@ impl MpvAdapter {
     ) {
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "hookInstanceId": hook_instance_id,
             "loadSequence": load_sequence,
@@ -5943,8 +5935,8 @@ impl MpvAdapter {
     ) {
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "hookInstanceId": hook_instance_id,
             "currentLoadSequence": current_load_sequence,
@@ -5961,8 +5953,8 @@ impl MpvAdapter {
     ) {
         let mut payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "status": "configured",
         });
@@ -6079,10 +6071,10 @@ impl MpvAdapter {
     }
 
     #[cfg(test)]
-    pub(crate) fn force_test_legacy_syncplayintf_discovery_due(&mut self) {
-        self.legacy_syncplayintf_last_discovery_at =
-            Some(Instant::now() - LEGACY_SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL);
-        self.maintain_legacy_syncplayintf_lease();
+    pub(crate) fn force_test_syncplayintf_discovery_due(&mut self) {
+        self.syncplayintf_last_discovery_at =
+            Some(Instant::now() - SYNCPLAYINTF_RUNTIME_DISCOVERY_INTERVAL);
+        self.maintain_syncplayintf_lease();
     }
 
     #[cfg(test)]
@@ -6094,7 +6086,7 @@ impl MpvAdapter {
 
     #[cfg(test)]
     pub(crate) fn set_test_sorotte_bridge_owner_id(&mut self, owner_id: impl Into<String>) {
-        self.legacy_syncplayintf_owner_id = owner_id.into();
+        self.syncplayintf_owner_id = owner_id.into();
     }
 
     #[cfg(test)]

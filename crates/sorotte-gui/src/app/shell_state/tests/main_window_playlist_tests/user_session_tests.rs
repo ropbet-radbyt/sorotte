@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_announces_main_window_user_membership_events() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AnnounceMainWindowUserJoined(
         "alice".to_owned(),
@@ -59,10 +58,10 @@ fn gui_shell_app_state_announces_main_window_user_membership_events() {
 
 #[test]
 fn gui_shell_app_state_commits_native_add_drafts_and_playlist_appends_after_success() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::UpdateNewMainWindowUserDraft(
@@ -97,8 +96,7 @@ fn gui_shell_app_state_commits_native_add_drafts_and_playlist_appends_after_succ
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_main_window_user_announcement_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         !state.apply(GuiShellAction::AnnounceSelectedMainWindowUserRenamed(
@@ -119,9 +117,9 @@ fn gui_shell_app_state_rejects_invalid_main_window_user_announcement_actions() {
 
 #[test]
 fn gui_shell_app_state_announces_playback_readiness_and_autoplay_events() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_toggle_pause = true;
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
@@ -174,8 +172,7 @@ fn gui_shell_app_state_announces_playback_readiness_and_autoplay_events() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(!state.apply(GuiShellAction::AnnouncePlaybackPaused));
@@ -184,11 +181,11 @@ fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() 
         Some("Playback pause state cannot change when pause controls are unavailable.")
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         ready_at_start: Some(true),
         autoplay_initial_state: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_toggle_pause = true;
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
@@ -213,9 +210,9 @@ fn gui_shell_app_state_rejects_invalid_playback_readiness_and_autoplay_events() 
 
 #[test]
 fn gui_shell_app_state_starts_controlled_room_and_controller_auth_edit_sessions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
@@ -273,8 +270,7 @@ fn gui_shell_app_state_starts_controlled_room_and_controller_auth_edit_sessions(
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_controlled_room_and_controller_auth_edit_sessions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
     assert_eq!(
@@ -297,9 +293,9 @@ fn gui_shell_app_state_rejects_invalid_controlled_room_and_controller_auth_edit_
     );
 
     let mut joined_room_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             room: Some("Lounge".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     assert!(!joined_room_state.apply(GuiShellAction::BeginControllerAuthEdit));
     assert_eq!(
@@ -326,8 +322,7 @@ fn gui_shell_app_state_rejects_invalid_controlled_room_and_controller_auth_edit_
 
 #[test]
 fn gui_shell_app_state_renames_main_window_users_through_edit_sessions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AddMainWindowUser("alice".to_owned(),)));
     assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
@@ -357,8 +352,7 @@ fn gui_shell_app_state_renames_main_window_users_through_edit_sessions() {
 
 #[test]
 fn gui_shell_app_state_remaps_main_window_user_edit_sessions_across_runtime_row_reorders() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AddMainWindowUser("bob".to_owned(),)));
     assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
@@ -422,8 +416,7 @@ fn gui_shell_app_state_remaps_main_window_user_edit_sessions_across_runtime_row_
 
 #[test]
 fn gui_shell_app_state_keeps_main_window_selection_on_the_active_user_edit_row() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AddMainWindowUser("bob".to_owned(),)));
     assert!(state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
@@ -441,8 +434,7 @@ fn gui_shell_app_state_keeps_main_window_selection_on_the_active_user_edit_row()
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_main_window_user_edit_sessions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::UpdateMainWindowUserEdit(
         "nobody".to_owned(),
@@ -474,11 +466,11 @@ fn gui_shell_app_state_rejects_invalid_main_window_user_edit_sessions() {
 
 #[test]
 fn gui_shell_app_state_tracks_cross_surface_selection_and_preserves_it_across_resync() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/Archive".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let selected_menu_action = state
         .menus

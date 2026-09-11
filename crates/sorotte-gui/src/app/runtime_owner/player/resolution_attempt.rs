@@ -1456,8 +1456,7 @@ mod tests {
     use super::*;
     use crate::app::runtime_owner::player::media_resolution::GuiMediaResolutionPlan;
     use crate::app::{
-        GuiTestPlayerAdapter, StoredClientSettingsMvp,
-        runtime_owner::GuiPendingLogicalMediaOverride,
+        GuiTestPlayerAdapter, StoredClientSettings, runtime_owner::GuiPendingLogicalMediaOverride,
     };
     use sorotte_player_api::{PlayerCommandFailureKind, PlayerCommandId};
 
@@ -1582,7 +1581,7 @@ mod tests {
     }
 
     fn shell_state() -> SorotteGuiShellAppState {
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default())
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default())
     }
 
     struct TrackedFailureTelemetryPlayer {
@@ -2132,16 +2131,15 @@ mod tests {
         );
         assert!(!owner.reconcile_failed_playlist_candidates(&initial_state, now));
 
-        let changed_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                plex_plugin_enabled: Some(true),
-                plex_streaming_enabled: Some(true),
-                plex_user_token: Some("different-account-token".into()),
-                plex_selected_server_id: Some("different-machine".to_owned()),
-                plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-                plex_selected_server_token: Some("different-server-token".into()),
-                ..StoredClientSettingsMvp::default()
-            });
+        let changed_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("different-account-token".into()),
+            plex_selected_server_id: Some("different-machine".to_owned()),
+            plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: Some("different-server-token".into()),
+            ..StoredClientSettings::default()
+        });
         assert!(owner.reconcile_failed_playlist_candidates(&changed_state, now));
     }
 
@@ -2158,16 +2156,15 @@ mod tests {
             GuiPlaylistSourcePolicy::ForcePlex,
         );
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RejectingOpenPlayer)));
-        let initial_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                plex_plugin_enabled: Some(true),
-                plex_streaming_enabled: Some(true),
-                plex_user_token: Some("account-token".into()),
-                plex_selected_server_id: Some("machine".to_owned()),
-                plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-                plex_selected_server_token: Some("server-token".into()),
-                ..StoredClientSettingsMvp::default()
-            });
+        let initial_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("account-token".into()),
+            plex_selected_server_id: Some("machine".to_owned()),
+            plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettings::default()
+        });
         let initial_context =
             owner.plex_operation_context(&owner.runtime_operation_settings(&initial_state));
 
@@ -2193,16 +2190,15 @@ mod tests {
             Some(&initial_context)
         );
 
-        let changed_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                plex_plugin_enabled: Some(true),
-                plex_streaming_enabled: Some(true),
-                plex_user_token: Some("different-account-token".into()),
-                plex_selected_server_id: Some("different-machine".to_owned()),
-                plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-                plex_selected_server_token: Some("different-server-token".into()),
-                ..StoredClientSettingsMvp::default()
-            });
+        let changed_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+            plex_plugin_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("different-account-token".into()),
+            plex_selected_server_id: Some("different-machine".to_owned()),
+            plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: Some("different-server-token".into()),
+            ..StoredClientSettings::default()
+        });
         assert!(owner.reconcile_failed_playlist_candidates(&changed_state, Instant::now()));
         let attempt = owner
             .playlist_resolution_attempt
@@ -2430,11 +2426,11 @@ mod tests {
         let path = "C:/media/episode.mkv";
         let command_id = PlayerCommandId::new(13);
         let media_generation = PlayerMediaGeneration::new(5);
-        let stored_settings = StoredClientSettingsMvp {
+        let stored_settings = StoredClientSettings {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -2446,7 +2442,7 @@ mod tests {
                 .with_client_core_chat_session_runtime("alice", "room1")
                 .expect("client-core chat runtime should bootstrap");
         owner.active_session_settings = Some(
-            sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible(
+            sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(
                 &stored_settings,
             ),
         );
@@ -3090,9 +3086,9 @@ mod tests {
     fn confirmed_external_load_recovers_failed_automatic_candidate() {
         let target = "C:/media/externally-recovered.mkv";
         let candidate = local_candidate(target);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
         state.main_window.active_playlist_index = Some(0);

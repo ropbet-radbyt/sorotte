@@ -40,11 +40,11 @@ fn is_playing_music_uses_current_user_file_extension() {
 
 #[test]
 fn same_filename_legacy_like_treats_hidden_filename_as_match() {
-    assert!(ClientSession::same_filename_legacy_like(
+    assert!(ClientSession::filenames_match(
         PRIVACY_HIDDEN_FILENAME,
         "anything.mkv",
     ));
-    assert!(ClientSession::same_filename_legacy_like(
+    assert!(ClientSession::filenames_match(
         "anything.mkv",
         PRIVACY_HIDDEN_FILENAME,
     ));
@@ -52,7 +52,7 @@ fn same_filename_legacy_like_treats_hidden_filename_as_match() {
 
 #[test]
 fn same_filename_legacy_like_matches_url_encoded_and_plain_names() {
-    assert!(ClientSession::same_filename_legacy_like(
+    assert!(ClientSession::filenames_match(
         "https://example.invalid/media/Movie%20Name.mkv",
         "Movie Name.mkv",
     ));
@@ -60,7 +60,7 @@ fn same_filename_legacy_like_matches_url_encoded_and_plain_names() {
 
 #[test]
 fn same_filename_uses_plex_uri_file_hint() {
-    assert!(ClientSession::same_filename_legacy_like(
+    assert!(ClientSession::filenames_match(
         "plex://machine/metadata/456?title=Other&file=Movie%20Name.mkv&duration=7200000&type=movie",
         "Movie Name.mkv",
     ));
@@ -68,7 +68,7 @@ fn same_filename_uses_plex_uri_file_hint() {
 
 #[test]
 fn same_filename_uses_plex_uri_title_hint() {
-    assert!(ClientSession::same_filename_legacy_like(
+    assert!(ClientSession::filenames_match(
         "plex://machine/metadata/456?title=Movie%20Name&duration=7200000&type=movie",
         "Movie Name.mkv",
     ));
@@ -79,21 +79,21 @@ fn same_filename_legacy_like_matches_raw_filename_and_hash_form() {
     let raw_name = "Movie Name.mkv";
     let stripped = ClientSession::strip_filename_for_compare(raw_name, false);
     let hashed = ClientSession::hash_filename_for_compare(&stripped);
-    assert!(ClientSession::same_filename_legacy_like(raw_name, &hashed));
+    assert!(ClientSession::filenames_match(raw_name, &hashed));
 }
 
 #[test]
 fn same_filesize_legacy_like_treats_numeric_zero_as_wildcard() {
-    assert!(ClientSession::same_filesize_legacy_like(
+    assert!(ClientSession::filesize_values_match(
         &Value::from(0),
         &Value::from(123_456_789),
     ));
-    assert!(ClientSession::same_filesize_legacy_like(
+    assert!(ClientSession::filesize_values_match(
         &Value::from(123_456_789),
         &Value::from(0),
     ));
     assert!(
-        !ClientSession::same_filesize_legacy_like(&Value::from("0"), &Value::from(123_456_789),),
+        !ClientSession::filesize_values_match(&Value::from("0"), &Value::from(123_456_789),),
         "legacy behavior only treats numeric 0 as wildcard, not string \"0\""
     );
 }
@@ -102,17 +102,17 @@ fn same_filesize_legacy_like_treats_numeric_zero_as_wildcard() {
 fn same_filesize_legacy_like_matches_raw_and_hash_forms() {
     let raw_size = Value::from(123_456_789);
     let hashed = Value::from(ClientSession::hash_filesize_for_compare("123456789"));
-    assert!(ClientSession::same_filesize_legacy_like(&raw_size, &hashed));
+    assert!(ClientSession::filesize_values_match(&raw_size, &hashed));
 }
 
 #[test]
 fn same_fileduration_legacy_like_respects_default_threshold() {
     assert!(
-        ClientSession::same_fileduration_legacy_compatible(10.49, 12.49),
+        ClientSession::same_fileduration(10.49, 12.49),
         "rounded duration diff of 2 should match with legacy 2.5 threshold"
     );
     assert!(
-        !ClientSession::same_fileduration_legacy_compatible(10.49, 13.49),
+        !ClientSession::same_fileduration(10.49, 13.49),
         "rounded duration diff of 3 should fail with legacy 2.5 threshold"
     );
 }
@@ -120,29 +120,27 @@ fn same_fileduration_legacy_like_respects_default_threshold() {
 #[test]
 fn same_fileduration_legacy_like_uses_python_ties_to_even_rounding() {
     assert!(
-        ClientSession::same_fileduration_legacy_compatible(1.5, 4.5),
+        ClientSession::same_fileduration(1.5, 4.5),
         "Python round() ties-to-even should yield 2 vs 4 (diff 2), not away-from-zero"
     );
 }
 
 #[test]
 fn same_fileduration_legacy_like_short_circuits_when_duration_notifications_disabled() {
-    assert!(ClientSession::same_fileduration_legacy_like(
-        1.0, 999.0, false, 2.5
-    ));
+    assert!(ClientSession::durations_match(1.0, 999.0, false, 2.5));
 }
 
 #[test]
-fn same_fileduration_legacy_compatible_with_overrides_respects_toggle_and_threshold() {
-    assert!(
-        ClientSession::same_fileduration_legacy_compatible_with_overrides(10.49, 13.49, false, 0.1)
-    );
-    assert!(
-        !ClientSession::same_fileduration_legacy_compatible_with_overrides(10.49, 12.49, true, 1.0)
-    );
-    assert!(
-        ClientSession::same_fileduration_legacy_compatible_with_overrides(10.49, 12.49, true, 3.0)
-    );
+fn same_fileduration_with_overrides_respects_toggle_and_threshold() {
+    assert!(ClientSession::same_fileduration_with_overrides(
+        10.49, 13.49, false, 0.1
+    ));
+    assert!(!ClientSession::same_fileduration_with_overrides(
+        10.49, 12.49, true, 1.0
+    ));
+    assert!(ClientSession::same_fileduration_with_overrides(
+        10.49, 12.49, true, 3.0
+    ));
 }
 
 #[test]
@@ -275,7 +273,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
         "extra": "keep-me"
     });
 
-    let raw = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let raw = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::SendRaw,
         PrivacyMode::SendRaw,
@@ -292,7 +290,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
         })
     );
 
-    let hashed = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let hashed = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::SendHashed,
         PrivacyMode::SendHashed,
@@ -309,7 +307,7 @@ fn sanitize_outbound_file_payload_legacy_like_applies_privacy_modes_and_removes_
         })
     );
 
-    let hidden = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let hidden = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::DoNotSend,
         PrivacyMode::DoNotSend,
@@ -335,7 +333,7 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
         "extra": "keep-me"
     });
 
-    let raw = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let raw = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::SendRaw,
         PrivacyMode::SendRaw,
@@ -351,17 +349,15 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
         })
     );
 
-    let hashed = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let hashed = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::SendHashed,
         PrivacyMode::SendHashed,
     )
     .expect("hashed mode should return sanitized payload");
-    let hashed_name = ClientSession::filename_with_privacy_mode_legacy_like(
-        &json!("movie.mkv"),
-        PrivacyMode::SendHashed,
-    )
-    .expect("hashed filename should be available");
+    let hashed_name =
+        ClientSession::filename_with_privacy_mode(&json!("movie.mkv"), PrivacyMode::SendHashed)
+            .expect("hashed filename should be available");
     let hashed_zero_size = ClientSession::hash_filesize_for_compare("0");
     assert_eq!(
         json!(hashed),
@@ -373,7 +369,7 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
         })
     );
 
-    let hidden = ClientSession::sanitize_outbound_file_payload_legacy_compatible(
+    let hidden = ClientSession::sanitize_outbound_file_payload(
         &payload,
         PrivacyMode::DoNotSend,
         PrivacyMode::DoNotSend,
@@ -393,18 +389,18 @@ fn sanitize_outbound_file_payload_legacy_like_supplies_legacy_defaults_for_missi
 #[test]
 fn privacy_mode_from_legacy_name_maps_expected_modes() {
     assert_eq!(
-        PrivacyMode::from_legacy_name("SendRaw"),
+        PrivacyMode::from_syncplay_name("SendRaw"),
         Some(PrivacyMode::SendRaw)
     );
     assert_eq!(
-        PrivacyMode::from_legacy_name("SendHashed"),
+        PrivacyMode::from_syncplay_name("SendHashed"),
         Some(PrivacyMode::SendHashed)
     );
     assert_eq!(
-        PrivacyMode::from_legacy_name("DoNotSend"),
+        PrivacyMode::from_syncplay_name("DoNotSend"),
         Some(PrivacyMode::DoNotSend)
     );
-    assert_eq!(PrivacyMode::from_legacy_name("unknown"), None);
+    assert_eq!(PrivacyMode::from_syncplay_name("unknown"), None);
 }
 
 #[test]
@@ -424,7 +420,7 @@ fn local_file_publish_runtime_actions_apply_privacy_and_update_local_user_file_v
         "extra": "keep-me"
     });
 
-    let actions = session.runtime_actions_for_local_file_publish_legacy_compatible(
+    let actions = session.runtime_actions_for_local_file_publish(
         &file_payload,
         PrivacyMode::SendHashed,
         PrivacyMode::SendHashed,
@@ -468,7 +464,7 @@ fn local_file_publish_empty_payload_clears_local_user_file_view() {
             .expect("existing local file view should apply");
     assert_eq!(session.user_has_file("alice"), Some(true));
 
-    let actions = session.runtime_actions_for_local_file_publish_legacy_compatible(
+    let actions = session.runtime_actions_for_local_file_publish(
         &json!({}),
         PrivacyMode::SendRaw,
         PrivacyMode::SendRaw,
@@ -502,7 +498,7 @@ fn client_runtime_publish_local_file_dispatches_sanitized_set_file_message() {
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
     runtime
-        .publish_local_file_legacy_compatible(
+        .publish_local_file(
             &json!({
                 "name": "movie.mkv",
                 "size": 123456789,
@@ -568,17 +564,11 @@ fn client_runtime_publish_pending_local_file_update_dispatches_sanitized_set_fil
     let mut runtime = ClientRuntime::new(session, player, control);
 
     let published = runtime
-        .publish_pending_local_file_update_legacy_compatible(
-            PrivacyMode::SendHashed,
-            PrivacyMode::DoNotSend,
-        )
+        .publish_pending_local_file_update(PrivacyMode::SendHashed, PrivacyMode::DoNotSend)
         .expect("pending local file update should publish");
     assert!(published);
     let published_again = runtime
-        .publish_pending_local_file_update_legacy_compatible(
-            PrivacyMode::SendHashed,
-            PrivacyMode::DoNotSend,
-        )
+        .publish_pending_local_file_update(PrivacyMode::SendHashed, PrivacyMode::DoNotSend)
         .expect("second pending local file update poll should not fail");
     assert!(!published_again);
 
@@ -632,10 +622,7 @@ fn pending_cli_file_publish_announces_source_before_start_barrier() {
 
     assert!(
         runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendHashed,
-                PrivacyMode::DoNotSend,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendHashed, PrivacyMode::DoNotSend,)
             .expect("pending file should publish")
     );
     let messages = runtime.control().outbound_messages();
@@ -679,10 +666,7 @@ fn client_runtime_publish_pending_local_file_update_without_metadata_uses_legacy
     let mut runtime = ClientRuntime::new(session, player, control);
 
     let published = runtime
-        .publish_pending_local_file_update_legacy_compatible(
-            PrivacyMode::SendRaw,
-            PrivacyMode::SendHashed,
-        )
+        .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendHashed)
         .expect("pending local file update should publish");
     assert!(published);
 
@@ -719,7 +703,7 @@ fn client_runtime_publish_pending_local_file_update_without_metadata_uses_legacy
 }
 
 #[test]
-fn client_runtime_set_room_with_legacy_fallback_prefers_local_file_name() {
+fn client_runtime_set_room_with_default_fallback_prefers_local_file_name() {
     let mut session = ClientSession::default();
     session
             .apply_hello_json(
@@ -736,7 +720,7 @@ fn client_runtime_set_room_with_legacy_fallback_prefers_local_file_name() {
     let mut runtime = ClientRuntime::new(session, player, control);
     assert!(
         runtime
-            .run_set_room_with_legacy_fallback("fallback-room")
+            .run_set_room_with_default_fallback("fallback-room")
             .expect("set room fallback should not fail"),
         "room fallback should emit outbound Set.room from local file name"
     );

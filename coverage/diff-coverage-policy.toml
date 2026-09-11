@@ -78,7 +78,7 @@ id = "legacy-notification-controller-auth"
 category = "authorization"
 owner = "notifications"
 match = "file"
-path = "crates/sorotte-client-app/src/legacy_notifications/controller_auth.rs"
+path = "crates/sorotte-client-app/src/notifications/controller_auth.rs"
 
 [[critical_path]]
 id = "plex-auth"

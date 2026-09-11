@@ -1,5 +1,5 @@
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-pub(super) fn spawn_local_input_receiver_legacy_compatible() -> UnboundedReceiver<String> {
+pub(super) fn spawn_local_input_receiver() -> UnboundedReceiver<String> {
     let (sender, receiver) = unbounded_channel::<String>();
     std::thread::spawn(move || {
         use std::io::BufRead;

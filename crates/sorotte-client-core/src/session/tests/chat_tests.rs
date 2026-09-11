@@ -20,7 +20,7 @@ fn chat_config_defaults_include_legacy_max_message_length() {
     let config = ChatConfig::default();
     assert_eq!(
         config.max_chat_message_length,
-        LEGACY_CHAT_MAX_MESSAGE_LENGTH
+        SYNCPLAY_CHAT_MAX_MESSAGE_LENGTH
     );
     assert!(config.apply_server_max_chat_message_length);
 }
@@ -43,7 +43,7 @@ fn outbound_chat_message_truncates_to_configured_max_length() {
 }
 
 #[test]
-fn outbound_chat_message_preserves_empty_payload_legacy_compatible() {
+fn outbound_chat_message_preserves_empty_payload() {
     let mut session = ClientSession::default();
     session
             .apply_hello_json(

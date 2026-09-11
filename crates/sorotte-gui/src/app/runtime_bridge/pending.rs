@@ -2,22 +2,22 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiPendingCompletionRequest {
-    SaveConfiguration(StoredClientSettingsMvp),
-    DiscardConfigurationChanges(StoredClientSettingsMvp),
-    ReloadConfiguration(StoredClientSettingsMvp),
+    SaveConfiguration(StoredClientSettings),
+    DiscardConfigurationChanges(StoredClientSettings),
+    ReloadConfiguration(StoredClientSettings),
     ClearGuiData,
     ChangeConfigStorageRoot {
         target: GuiConfigStorageChangeTarget,
-        settings: StoredClientSettingsMvp,
+        settings: StoredClientSettings,
     },
     ConnectSavedServer {
         intent: GuiSavedServerConnectIntent,
-        submitted_settings: StoredClientSettingsMvp,
+        submitted_settings: StoredClientSettings,
     },
     DisconnectSession,
     ConnectPublicServer {
         selected_server: (String, String),
-        active_settings: StoredClientSettingsMvp,
+        active_settings: StoredClientSettings,
     },
     RefreshPublicServers(Vec<(String, String)>),
     SearchMissingMedia,

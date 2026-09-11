@@ -31,7 +31,7 @@ pub struct ClientRuntime<P, C> {
     session: ClientSession,
     player: P,
     control: C,
-    pub(crate) ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible,
+    pub(crate) ping_metrics: ClientPingMetrics,
     pending_player_playback_telemetry_updates: EffectOutbox<PlayerPlaybackTelemetryUpdate>,
     pending_ordered_local_file_updates: EffectOutbox<LocalFileUpdate>,
     last_local_file_update: Option<LocalFileUpdate>,

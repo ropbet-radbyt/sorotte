@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_projects_main_window_room_owned_editor_content() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginMediaUrlEdit));
@@ -34,10 +34,10 @@ fn gui_shell_app_state_projects_main_window_room_owned_editor_content() {
 
 #[test]
 fn gui_shell_app_state_projects_playlist_editors_inside_playlist_column() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
@@ -65,10 +65,10 @@ fn gui_shell_app_state_projects_playlist_editors_inside_playlist_column() {
 
 #[test]
 fn gui_shell_app_state_projects_playlist_source_badge_menu() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_matching_plugin_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -136,11 +136,11 @@ fn gui_shell_app_state_projects_playlist_source_badge_menu() {
 
 #[test]
 fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_tab_content() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(true),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let main_window = state.main_window_widget_tree();
@@ -166,9 +166,9 @@ fn gui_shell_app_state_projects_unified_room_content_and_selected_configuration_
 
 #[test]
 fn gui_shell_app_state_projects_shell_widget_trees() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
@@ -264,8 +264,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
 
 #[test]
 fn gui_shell_app_state_projects_media_index_status_into_shell_widget_tree() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         state.apply(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
@@ -291,8 +290,7 @@ fn gui_shell_app_state_projects_media_index_status_into_shell_widget_tree() {
 
 #[test]
 fn gui_shell_app_state_projects_validation_and_busy_command_status_into_widget_tree() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionPort,
@@ -370,9 +368,9 @@ fn gui_shell_app_state_renders_shell_widget_trees_through_renderer() {
         }
     }
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));

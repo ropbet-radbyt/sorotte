@@ -55,10 +55,9 @@ impl SorotteGuiShellAppState {
 
         let controlled_room_create_panel =
             self.controlled_room_create_session.as_ref().map(|session| {
-                let can_create_controlled_room = normalized_editable_text(
-                    &controlled_room_base_name_legacy_compatible(&session.room_buffer),
-                )
-                .is_some();
+                let can_create_controlled_room =
+                    normalized_editable_text(&controlled_room_base_name(&session.room_buffer))
+                        .is_some();
                 GuiWidgetNode::branch(
                     "main-window:controlled-room-create",
                     "Create Controlled Room",

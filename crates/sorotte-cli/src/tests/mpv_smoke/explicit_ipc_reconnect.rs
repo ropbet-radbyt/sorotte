@@ -266,14 +266,10 @@ async fn connected_client_session_real_mpv_explicit_ipc_reconnect_validation_smo
         .expect("reconnect retry planning should succeed");
 
     // Seed a local mismatch after reconnect reset so validation has something to correct.
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_position(0.0)
-    })
-    .expect("real mpv position seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_paused(false)
-    })
-    .expect("real mpv pause seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_position(0.0))
+        .expect("real mpv position seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_paused(false))
+        .expect("real mpv pause seed should succeed");
 
     let stream2 = TcpStream::connect(addr)
         .await

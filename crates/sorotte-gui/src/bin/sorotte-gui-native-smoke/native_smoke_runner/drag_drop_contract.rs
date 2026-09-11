@@ -14,9 +14,9 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
     let window_drop_file_path = temp_root.join("drag-window-target.mkv");
     fs::write(&window_drop_file_path, b"drag-window-target")
         .map_err(|error| format!("failed to create native smoke drag-drop window file: {error}"))?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &window_drop_config_path,
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
     )
     .map_err(|error| {
         format!(
@@ -73,13 +73,13 @@ pub(super) fn verify_drag_and_drop_contract<D: NativeGuiDriver>(
     .map_err(|error| format!("failed to create native smoke drag-drop playlist file: {error}"))?;
     let playlist_drop_entry_1 = "drag-episode-1.mkv";
     let playlist_drop_entry_2 = "drag-episode-2.mkv";
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &playlist_drop_config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             username: Some("drag-drop-user".to_owned()),
             room: Some("drag-drop-room".to_owned()),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {

@@ -59,8 +59,7 @@ fn queued_inbound_line_keeps_network_receipt_time_until_owner_drain() {
     );
     owner.session_transport = Some(session_transport.clone());
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     session_transport.push_inbound_protocol_line_at("{}", 123.5);
     owner.drain_session_transport_inbound(&handle, &mut state);
@@ -185,10 +184,10 @@ fn gui_runtime_owner_surfaces_transport_security_warnings_visibly() {
     let mut owner = owner
         .with_session_transport_driver(Box::new(QueueSecurityWarningTransportDriver::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -229,10 +228,10 @@ fn gui_runtime_owner_applies_queued_lines_before_transport_failure_advances_gene
     let mut owner = owner
         .with_session_transport_driver(Box::new(QueueInboundThenFailTransportDriver::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -274,11 +273,11 @@ fn gui_runtime_owner_retries_partially_written_chat_only_after_reconnect_hello()
             state: scripted_state.clone(),
         }));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -411,10 +410,10 @@ fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cle
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.pending_operation = Some(crate::app::GuiPendingOperationState {
         kind: GuiPendingOperationKind::DisconnectSession,
@@ -533,11 +532,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_clean_tcp_server_close() 
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let first_hello = recv_from_channel_while_pumping_runtime(
@@ -704,11 +703,11 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
         )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let first_hello = recv_from_channel_while_pumping_runtime(
@@ -906,11 +905,11 @@ fn gui_persisted_config_runtime_owner_reconnects_after_tcp_inbound_idle_timeout(
     let mut owner = owner.with_session_transport_driver(Box::new(driver));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let first_hello = recv_from_channel_while_pumping_runtime(
@@ -996,11 +995,11 @@ fn gui_persisted_config_runtime_owner_enables_transport_liveness_after_server_he
             events: events.clone(),
         }));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

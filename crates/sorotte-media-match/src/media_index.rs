@@ -92,7 +92,7 @@ struct MediaIndexManifest {
 #[derive(Debug)]
 enum ResolvedMediaIndexRoot {
     ExistingGeneration(PathBuf),
-    LegacyOrNew(PathBuf),
+    DirectRoot(PathBuf),
 }
 
 #[derive(Debug)]
@@ -175,7 +175,7 @@ impl MediaIndexService {
         let active_root = resolve_media_index_root(&self.root)
             .map(|resolved| match resolved.root {
                 ResolvedMediaIndexRoot::ExistingGeneration(root)
-                | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
+                | ResolvedMediaIndexRoot::DirectRoot(root) => root,
             })
             .unwrap_or_else(|_| self.root.clone());
         media_match_v3_index_path(&active_root)
@@ -192,7 +192,7 @@ impl MediaIndexService {
                     }
                 })
             }
-            ResolvedMediaIndexRoot::LegacyOrNew(active_root) => {
+            ResolvedMediaIndexRoot::DirectRoot(active_root) => {
                 open_media_match_v3_index(&active_root).map(|connection| MediaIndexSession {
                     root: active_root,
                     connection,
@@ -244,7 +244,7 @@ impl MediaIndexBuildTransaction {
         let base_generation = resolved.current_generation;
         let active_root = match resolved.root {
             ResolvedMediaIndexRoot::ExistingGeneration(root)
-            | ResolvedMediaIndexRoot::LegacyOrNew(root) => root,
+            | ResolvedMediaIndexRoot::DirectRoot(root) => root,
         };
         let live_path = media_match_v3_index_path(&active_root);
         let had_live_index = live_path.exists();
@@ -863,10 +863,10 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
                 });
             }
         }
-        let legacy_path = media_match_v3_index_path(root);
-        if legacy_path.exists() && validate_media_index_database(&legacy_path).is_ok() {
+        let direct_index_path = media_match_v3_index_path(root);
+        if direct_index_path.exists() && validate_media_index_database(&direct_index_path).is_ok() {
             return Ok(ResolvedMediaIndex {
-                root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+                root: ResolvedMediaIndexRoot::DirectRoot(root.to_path_buf()),
                 epoch: manifest.epoch,
                 current_generation: None,
             });
@@ -877,15 +877,15 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
         ));
     }
 
-    let legacy_path = media_match_v3_index_path(root);
-    if legacy_path.exists() {
-        validate_media_index_database(&legacy_path).map_err(|error| {
+    let direct_index_path = media_match_v3_index_path(root);
+    if direct_index_path.exists() {
+        validate_media_index_database(&direct_index_path).map_err(|error| {
             format!(
-                "media-match generation recovery failed and the legacy index is invalid: {error}"
+                "media-match generation recovery failed and the direct-root index is invalid: {error}"
             )
         })?;
         return Ok(ResolvedMediaIndex {
-            root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+            root: ResolvedMediaIndexRoot::DirectRoot(root.to_path_buf()),
             epoch: 0,
             current_generation: None,
         });
@@ -897,7 +897,7 @@ fn resolve_media_index_root_locked(root: &Path) -> Result<ResolvedMediaIndex, St
         ));
     }
     Ok(ResolvedMediaIndex {
-        root: ResolvedMediaIndexRoot::LegacyOrNew(root.to_path_buf()),
+        root: ResolvedMediaIndexRoot::DirectRoot(root.to_path_buf()),
         epoch: 0,
         current_generation: None,
     })
@@ -1028,7 +1028,7 @@ fn read_media_index_manifest_slot(path: &Path) -> ManifestRead {
     } else if version == 1 {
         let Some(current) = value.get("generation").and_then(serde_json::Value::as_str) else {
             return ManifestRead::CorruptKnownFormat(format!(
-                "legacy media-match manifest '{}' has no generation",
+                "version 1 media-match manifest '{}' has no generation",
                 path.display()
             ));
         };
@@ -1042,7 +1042,7 @@ fn read_media_index_manifest_slot(path: &Path) -> ManifestRead {
     } else if version == 2 {
         let Some(current) = value.get("current").and_then(serde_json::Value::as_str) else {
             return ManifestRead::CorruptKnownFormat(format!(
-                "legacy media-match manifest '{}' has no current generation",
+                "version 2 media-match manifest '{}' has no current generation",
                 path.display()
             ));
         };
@@ -1261,10 +1261,10 @@ fn collect_old_media_index_generations(
         )
     })?;
     let mut warnings = Vec::new();
-    let legacy_path = media_match_v3_index_path(root);
+    let direct_index_path = media_match_v3_index_path(root);
     if previous.is_some()
-        && legacy_path.exists()
-        && let Err(error) = remove_sqlite_file_set(&legacy_path)
+        && direct_index_path.exists()
+        && let Err(error) = remove_sqlite_file_set(&direct_index_path)
     {
         warnings.push(error);
     }

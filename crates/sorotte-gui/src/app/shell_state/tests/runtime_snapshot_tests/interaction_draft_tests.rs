@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_resync() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
@@ -48,9 +47,7 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
     let rendered = state.render_lines().join("\n");
     assert!(rendered.contains("[Validation] status=3 issue(s), last_action_error=(none)"));
     assert!(rendered.contains("Connection / Port: must be a valid TCP port from 1 to 65535."));
-    assert!(
-        rendered.contains("System / Language: must be one of the supported legacy language tags.")
-    );
+    assert!(rendered.contains("System / Language: must be one of the supported language tags."));
     assert!(rendered.contains("System / Update Channel: must be stable or dev."));
     assert!(rendered.contains("active_view=setup"));
     assert!(rendered.contains("open_modal=about"));
@@ -58,8 +55,7 @@ fn gui_shell_app_state_tracks_validation_issues_and_preserves_view_modal_across_
 
 #[test]
 fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::PrivacyTrustedDomains,
@@ -74,7 +70,7 @@ fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
             .any(|issue| issue.scope == "Privacy" && issue.label == "Trusted Domains")
     );
     assert!(state.render_lines().join("\n").contains(
-        "Privacy / Trusted Domains: must be a comma/semicolon-separated list or legacy bracketed list."
+        "Privacy / Trusted Domains: must be a comma/semicolon-separated list or Python bracketed list."
     ));
     assert_eq!(
         state.configuration.to_stored_settings().trusted_domains,
@@ -84,8 +80,7 @@ fn gui_shell_app_state_validates_trusted_domain_configuration_text() {
 
 #[test]
 fn gui_shell_app_state_tracks_action_errors_for_rejected_inputs() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::AddMediaSearchDirectory("   ".to_owned(),)));
     assert_eq!(
@@ -109,9 +104,9 @@ fn gui_shell_app_state_tracks_action_errors_for_rejected_inputs() {
 
 #[test]
 fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room_list: Some(vec!["beta".to_owned(), "alpha".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
@@ -157,9 +152,9 @@ fn gui_shell_app_state_edits_room_history_from_configuration_surface() {
 #[test]
 fn gui_shell_app_state_cancels_room_history_edit_without_changing_settings() {
     let original = vec!["beta".to_owned(), "alpha".to_owned()];
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room_list: Some(original.clone()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginRoomHistoryEdit));
@@ -177,12 +172,12 @@ fn gui_shell_app_state_cancels_room_history_edit_without_changing_settings() {
 
 #[test]
 fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Alpha".to_owned(), "alpha.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         shared_playlist_enabled: Some(true),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -278,9 +273,9 @@ fn gui_shell_app_state_applies_gui_interaction_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_preserves_local_playlist_selection_across_stale_interaction_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -325,10 +320,10 @@ fn gui_shell_app_state_preserves_local_playlist_selection_across_stale_interacti
 
 #[test]
 fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
@@ -379,8 +374,7 @@ fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_run
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_interaction_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         !state.apply(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(
@@ -416,8 +410,7 @@ fn gui_shell_app_state_rejects_invalid_gui_interaction_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_applies_gui_draft_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyGuiDraftRuntimeSnapshot(
         GuiDraftRuntimeSnapshot {
@@ -452,8 +445,7 @@ fn gui_shell_app_state_applies_gui_draft_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_draft_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginPendingOperation(
         GuiPendingOperationKind::SaveConfiguration,
@@ -478,16 +470,16 @@ fn gui_shell_app_state_rejects_invalid_gui_draft_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
 
-    let replacement = StoredClientSettingsMvp {
+    let replacement = StoredClientSettings {
         host: Some("draft.example".to_owned()),
         room: Some("DraftRoom".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -495,7 +487,7 @@ fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
             "Primary".to_owned(),
             "syncplay.example:8999".to_owned(),
         )]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(
@@ -522,16 +514,15 @@ fn gui_shell_app_state_applies_gui_configuration_draft_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_configuration_draft_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginConfigurationReload));
     assert!(
         !state.apply(GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(
             GuiConfigurationDraftRuntimeSnapshot {
-                settings: StoredClientSettingsMvp {
+                settings: StoredClientSettings {
                     host: Some("draft.example".to_owned()),
-                    ..StoredClientSettingsMvp::default()
+                    ..StoredClientSettings::default()
                 },
             }
         ))
@@ -550,9 +541,9 @@ fn gui_shell_app_state_rejects_invalid_gui_configuration_draft_runtime_snapshots
 
 #[test]
 fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("saved.example".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -561,9 +552,9 @@ fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
     }));
     assert!(state.commands.can_reset_configuration);
 
-    let replacement = StoredClientSettingsMvp {
+    let replacement = StoredClientSettings {
         host: Some("dirty.example".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     assert!(
         state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
@@ -583,8 +574,7 @@ fn gui_shell_app_state_applies_gui_saved_configuration_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_saved_configuration_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionHost,
@@ -594,9 +584,9 @@ fn gui_shell_app_state_rejects_invalid_gui_saved_configuration_runtime_snapshots
     assert!(
         !state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
             GuiSavedConfigurationRuntimeSnapshot {
-                settings: StoredClientSettingsMvp {
+                settings: StoredClientSettings {
                     host: Some("saved.example".to_owned()),
-                    ..StoredClientSettingsMvp::default()
+                    ..StoredClientSettings::default()
                 },
             }
         ))

@@ -151,7 +151,7 @@ def prepare(repo: pathlib.Path, run: pathlib.Path, target: pathlib.Path, timeout
         shutil.copy2(repo / "crates/sorotte-compat/scripts" / name, probes / name)
     legacy = repo / ".interop-cache/syncplay-legacy"
     if git(legacy, "rev-parse", "HEAD").decode().strip() != LEGACY_SHA:
-        raise ValueError("legacy Syncplay checkout is not the reviewed pinned revision")
+        raise ValueError("Syncplay checkout is not the reviewed pinned revision")
     git(legacy, "archive", "--format=zip", "--prefix=legacy/",
         f"--output={payload / 'legacy.zip'}", LEGACY_SHA)
 

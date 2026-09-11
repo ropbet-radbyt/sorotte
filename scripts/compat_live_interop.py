@@ -29,7 +29,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-compat-live-interop"
 REQUIRED_ENVIRONMENT_VARIABLE = "SYNCPLAY_REQUIRE_LIVE_INTEROP"
-PINNED_LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
+PINNED_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
 PINNED_LEGACY_SYNCPLAY_REPOSITORY = "Syncplay/syncplay"
 SUPPORTED_PYTHON_MINIMUM = (3, 11)
 SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE = (3, 14)
@@ -73,9 +73,9 @@ EXPECTED_IGNORED_TESTS = {
 }
 REQUIRED_LIVE_SENTINELS = frozenset(
     {
-        "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
-        "tests::legacy_client_contract_tests::legacy_client_chat_send_contract_matches_client_core_behavior",
-        "tests::legacy_tls_tests::legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
+        "tests::controlled_room_fanout_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
+        "tests::syncplay_client_contract_tests::syncplay_client_chat_send_contract_matches_client_core_behavior",
+        "tests::legacy_tls_tests::syncplay_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
         "tests::python_protocol_tests::generated_json_framing_matches_pinned_python_oracle",
         "tests::python_protocol_tests::python_interop_roundtrip_returns_server_hello",
         "tests::state_fanout_tests::python_state_tests::python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario",
@@ -342,28 +342,28 @@ def verify_oracle(
     oracle = resolve_within(
         repo_root,
         pathlib.Path(configured),
-        label="legacy Syncplay oracle",
+        label="Syncplay oracle",
     )
     if not oracle.is_dir() or not (oracle / "syncplayServer.py").is_file():
         raise PrerequisiteUnavailable(
             "missing-oracle-root",
-            "configured legacy Syncplay oracle is missing syncplayServer.py",
+            "configured Syncplay oracle is missing syncplayServer.py",
         )
     observed = git_text(
         repo_root,
         ("-C", str(oracle), "rev-parse", "HEAD^{commit}"),
         environment=environment,
-        label="legacy Syncplay oracle revision query",
+        label="Syncplay oracle revision query",
     )
-    if observed != PINNED_LEGACY_SYNCPLAY_SHA:
+    if observed != PINNED_SYNCPLAY_SHA:
         raise InteropContractError(
-            "legacy Syncplay oracle must be pinned to "
-            f"{PINNED_LEGACY_SYNCPLAY_SHA}, received {observed!r}"
+            "Syncplay oracle must be pinned to "
+            f"{PINNED_SYNCPLAY_SHA}, received {observed!r}"
         )
     return {
         "path": repo_relative(repo_root, oracle),
         "repository": PINNED_LEGACY_SYNCPLAY_REPOSITORY,
-        "expected_commit_sha": PINNED_LEGACY_SYNCPLAY_SHA,
+        "expected_commit_sha": PINNED_SYNCPLAY_SHA,
         "observed_commit_sha": observed,
     }
 
@@ -873,7 +873,7 @@ def build_execution_environment(
     oracle_path = resolve_within(
         repo_root,
         pathlib.Path(require_string(oracle["path"], label="oracle path")),
-        label="legacy Syncplay oracle execution path",
+        label="Syncplay oracle execution path",
     )
     execution_environment["SYNCPLAY_LEGACY_ROOT"] = str(oracle_path)
     execution_environment["SYNCPLAY_PYTHON_BIN"] = require_string(
@@ -1004,8 +1004,8 @@ def validate_report_document(value: Any) -> Mapping[str, Any]:
         if oracle["repository"] != PINNED_LEGACY_SYNCPLAY_REPOSITORY:
             raise InteropContractError("oracle repository identity drifted")
         if (
-            oracle["expected_commit_sha"] != PINNED_LEGACY_SYNCPLAY_SHA
-            or oracle["observed_commit_sha"] != PINNED_LEGACY_SYNCPLAY_SHA
+            oracle["expected_commit_sha"] != PINNED_SYNCPLAY_SHA
+            or oracle["observed_commit_sha"] != PINNED_SYNCPLAY_SHA
         ):
             raise InteropContractError("oracle revision identity drifted")
         require_string(oracle["path"], label="oracle path")

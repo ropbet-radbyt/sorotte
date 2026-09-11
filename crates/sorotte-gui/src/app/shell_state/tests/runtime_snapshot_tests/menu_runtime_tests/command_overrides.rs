@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
 
     assert!(state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
@@ -57,8 +56,7 @@ fn gui_shell_app_state_applies_gui_command_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_ignores_command_snapshots_from_stale_pending_contexts() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let idle_commands = state.commands.clone();
     let disabled_commands = GuiCommandAvailabilityState {
         can_save_configuration: false,
@@ -107,9 +105,9 @@ fn gui_shell_app_state_ignores_command_snapshots_from_stale_pending_contexts() {
 
 #[test]
 fn gui_shell_app_state_keeps_unrelated_command_flags_live_when_runtime_overrides_chat_send() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut command_availability = state.commands.clone();
     command_availability.can_send_chat_message = false;
@@ -136,9 +134,9 @@ fn gui_shell_app_state_keeps_unrelated_command_flags_live_when_runtime_overrides
 #[test]
 fn gui_shell_app_state_clears_stale_runtime_chat_command_override_when_configuration_runtime_snapshot_catches_up()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut command_availability = state.commands.clone();
     command_availability.can_send_chat_message = false;
@@ -188,8 +186,7 @@ fn gui_shell_app_state_clears_stale_runtime_chat_command_override_when_configura
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_command_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
         GuiCommandRuntimeSnapshot {
@@ -219,10 +216,10 @@ fn gui_shell_app_state_rejects_invalid_gui_command_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_syncs_playback_menu_actions_from_gui_command_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(

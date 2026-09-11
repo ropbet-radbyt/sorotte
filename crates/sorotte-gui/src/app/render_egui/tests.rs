@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_plex::PlexMediaType;
 
 use super::GuiWidgetEguiRenderer;

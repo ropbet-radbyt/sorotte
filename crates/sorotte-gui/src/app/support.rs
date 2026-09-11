@@ -6,8 +6,8 @@ use std::{
 
 use sorotte_client_app::app_boundary::{
     commands::LocalOffsetCommand,
-    persistence::parse_serialized_string_list_legacy_compatible,
-    state::{AutoplayThresholdOverride, ClientConfig, StoredClientSettingsMvp},
+    persistence::parse_serialized_string_list,
+    state::{AutoplayThresholdOverride, ClientConfig, StoredClientSettings},
 };
 
 use super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
@@ -37,7 +37,7 @@ pub(super) fn parse_trusted_domains_text(value: &str) -> Option<Vec<String>> {
     if trimmed.starts_with('[') != trimmed.ends_with(']') {
         return None;
     }
-    parse_serialized_string_list_legacy_compatible(trimmed)
+    parse_serialized_string_list(trimmed)
 }
 
 pub(super) fn parse_editable_string_list_text(value: &str) -> Option<Vec<String>> {
@@ -48,7 +48,7 @@ pub(super) fn parse_editable_string_list_text(value: &str) -> Option<Vec<String>
     if trimmed.starts_with('[') != trimmed.ends_with(']') {
         return None;
     }
-    parse_serialized_string_list_legacy_compatible(trimmed)
+    parse_serialized_string_list(trimmed)
 }
 
 pub(super) fn parse_room_history_text(value: &str) -> Option<Vec<String>> {
@@ -84,14 +84,14 @@ pub(super) fn bool_label(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
-pub(super) fn legacy_chat_input_enabled(settings: &StoredClientSettingsMvp) -> bool {
+pub(super) fn chat_input_enabled(settings: &StoredClientSettings) -> bool {
     ClientConfig::resolve(settings)
         .config
         .interface
         .chat_input_enabled
 }
 
-pub(super) fn autoplay_threshold_from_settings(settings: &StoredClientSettingsMvp) -> usize {
+pub(super) fn autoplay_threshold_from_settings(settings: &StoredClientSettings) -> usize {
     match &ClientConfig::resolve(settings)
         .config
         .readiness
@@ -187,7 +187,7 @@ pub(super) fn set_player_arguments_text_for_path(
     let Some(player_path) = player_path.and_then(normalized_editable_text) else {
         return;
     };
-    let parsed_arguments = parse_command_line_like_text_legacy_compatible(value);
+    let parsed_arguments = parse_command_line_like_text(value);
     let map = arguments.get_or_insert_with(BTreeMap::new);
     if parsed_arguments.is_empty() {
         map.remove(&player_path);
@@ -199,7 +199,7 @@ pub(super) fn set_player_arguments_text_for_path(
     }
 }
 
-fn parse_command_line_like_text_legacy_compatible(value: &str) -> Vec<String> {
+fn parse_command_line_like_text(value: &str) -> Vec<String> {
     let mut characters = value.chars().peekable();
     let mut parsed = Vec::new();
 
@@ -242,7 +242,7 @@ fn parse_command_line_like_text_legacy_compatible(value: &str) -> Vec<String> {
     parsed
 }
 
-pub(super) fn normalize_stored_player_argument_legacy_compatible(argument: &str) -> String {
+pub(super) fn normalize_stored_player_argument(argument: &str) -> String {
     for quote in ['"', '\''] {
         if argument.len() >= 2 && argument.starts_with(quote) && argument.ends_with(quote) {
             return argument[1..argument.len() - 1].to_owned();
@@ -253,15 +253,12 @@ pub(super) fn normalize_stored_player_argument_legacy_compatible(argument: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalize_stored_player_argument_legacy_compatible,
-        parse_command_line_like_text_legacy_compatible,
-    };
+    use super::{normalize_stored_player_argument, parse_command_line_like_text};
 
     #[test]
     fn player_argument_quotes_group_text_without_reaching_mpv() {
         assert_eq!(
-            parse_command_line_like_text_legacy_compatible(
+            parse_command_line_like_text(
                 r#""--ytdl-format=bestvideo[height<=1440]+bestaudio/best[height<=1440]" --profile="high quality""#,
             ),
             vec![
@@ -274,7 +271,7 @@ mod tests {
     #[test]
     fn legacy_outer_quotes_are_removed_from_stored_player_arguments() {
         assert_eq!(
-            normalize_stored_player_argument_legacy_compatible(
+            normalize_stored_player_argument(
                 r#""--ytdl-format=bestvideo[height<=1440]+bestaudio""#,
             ),
             "--ytdl-format=bestvideo[height<=1440]+bestaudio"

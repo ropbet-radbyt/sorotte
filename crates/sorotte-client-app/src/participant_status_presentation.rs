@@ -96,7 +96,6 @@ impl ParticipantStatusReportPresentation {
                     .phase
                     .unwrap_or(ParticipantPlaybackPhase::Unknown),
             ),
-            Some(_) => "Playback status unavailable",
         }
     }
 
@@ -130,7 +129,6 @@ impl ParticipantStatusReportPresentation {
             Some(ParticipantPlayerConnection::Connected) => "connected",
             Some(ParticipantPlayerConnection::Disconnected) => "disconnected",
             Some(ParticipantPlayerConnection::Failed) => "failed",
-            Some(_) => "unavailable",
         }
     }
 
@@ -384,33 +382,16 @@ fn participant_playback_phase_label(phase: ParticipantPlaybackPhase) -> &'static
         ParticipantPlaybackPhase::Seeking => "Seeking",
         ParticipantPlaybackPhase::Ended => "Ended",
         ParticipantPlaybackPhase::Failed => "Playback failed",
-        _ => "Playback state unknown",
     }
 }
 
-/// Extensible top-level participant-status presentation.
-///
-/// Downstream matches must retain a wildcard so future additive states do not
-/// become a source-compatibility break.
-///
-/// ```compile_fail
-/// use sorotte_client_app::app_boundary::participant_status::ParticipantStatusPresentation;
-///
-/// fn label(value: ParticipantStatusPresentation) -> &'static str {
-///     match value {
-///         ParticipantStatusPresentation::Unavailable => "unavailable",
-///         ParticipantStatusPresentation::LegacyClient => "legacy",
-///         ParticipantStatusPresentation::WaitingForFirstReport => "waiting",
-///         ParticipantStatusPresentation::Report(_) => "report",
-///     }
-/// }
-/// ```
-#[non_exhaustive]
+/// Participant-status presentation, distinguishing missing capability from
+/// missing or stale evidence supplied by a reporting client.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ParticipantStatusPresentation {
     #[default]
     Unavailable,
-    LegacyClient,
+    StatusUnsupported,
     WaitingForFirstReport,
     Report(ParticipantStatusReportPresentation),
 }
@@ -419,7 +400,7 @@ impl ParticipantStatusPresentation {
     pub fn headline_label(&self) -> String {
         match self {
             Self::Unavailable => "Status unavailable".to_owned(),
-            Self::LegacyClient => "Status unavailable · legacy client".to_owned(),
+            Self::StatusUnsupported => "Status reporting unsupported".to_owned(),
             Self::WaitingForFirstReport => "Waiting for first status report".to_owned(),
             Self::Report(report) => report.headline_label(),
         }
@@ -432,7 +413,7 @@ impl ParticipantStatusPresentation {
     pub fn connection_label(&self) -> String {
         match self {
             Self::Unavailable => "unavailable".to_owned(),
-            Self::LegacyClient => "unavailable (legacy client)".to_owned(),
+            Self::StatusUnsupported => "unavailable (status reporting unsupported)".to_owned(),
             Self::WaitingForFirstReport => "waiting for first report".to_owned(),
             Self::Report(report) => report.connection_label().to_owned(),
         }
@@ -441,7 +422,9 @@ impl ParticipantStatusPresentation {
     pub fn phase_label(&self) -> String {
         match self {
             Self::Unavailable => "Status unavailable".to_owned(),
-            Self::LegacyClient => "Status unavailable (legacy client)".to_owned(),
+            Self::StatusUnsupported => {
+                "Status unavailable (status reporting unsupported)".to_owned()
+            }
             Self::WaitingForFirstReport => "Waiting for first status report".to_owned(),
             Self::Report(report) => report.phase_label().to_owned(),
         }
@@ -475,7 +458,9 @@ impl ParticipantStatusPresentation {
     pub fn freshness_label(&self) -> String {
         match self {
             Self::Unavailable => "Heartbeat unavailable".to_owned(),
-            Self::LegacyClient => "Heartbeat unavailable (legacy client)".to_owned(),
+            Self::StatusUnsupported => {
+                "Heartbeat unavailable (status reporting unsupported)".to_owned()
+            }
             Self::WaitingForFirstReport => "Waiting for first heartbeat".to_owned(),
             Self::Report(report) => report.freshness_label(),
         }
@@ -484,7 +469,9 @@ impl ParticipantStatusPresentation {
     pub fn detail_label(&self) -> String {
         match self {
             Self::Unavailable => "Participant status is unavailable.".to_owned(),
-            Self::LegacyClient => "Legacy client · detailed status unavailable.".to_owned(),
+            Self::StatusUnsupported => {
+                "This client does not support detailed participant status.".to_owned()
+            }
             Self::WaitingForFirstReport => "Awaiting first player report.".to_owned(),
             Self::Report(report) => report.detail_label(),
         }
@@ -497,7 +484,6 @@ fn participant_status_freshness_label(freshness: ParticipantStatusFreshness) -> 
         ParticipantStatusFreshness::Fresh => "fresh",
         ParticipantStatusFreshness::Delayed => "delayed",
         ParticipantStatusFreshness::Stale => "stale",
-        _ => "freshness unknown",
     }
 }
 
@@ -705,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn uncorrelated_legacy_position_remains_visible_without_a_precise_offset() {
+    fn uncorrelated_position_remains_visible_without_a_precise_offset() {
         let mut status = report_presentation().status;
         status.correlation = Some(ParticipantStatusCorrelation::Uncorrelated);
         status.player_connection = Some(ParticipantPlayerConnection::Connected);
@@ -738,21 +724,21 @@ mod tests {
                 .contains("Offset unavailable")
         );
 
-        let mut legacy_without_position = report_presentation();
-        legacy_without_position.status.correlation = None;
-        legacy_without_position.status.position_seconds = None;
-        legacy_without_position.status.room_offset_seconds = None;
+        let mut uncorrelated_without_position = report_presentation();
+        uncorrelated_without_position.status.correlation = None;
+        uncorrelated_without_position.status.position_seconds = None;
+        uncorrelated_without_position.status.room_offset_seconds = None;
         assert!(
-            !legacy_without_position
+            !uncorrelated_without_position
                 .headline_label()
                 .contains("Offset unavailable")
         );
 
-        let mut legacy_with_position = report_presentation();
-        legacy_with_position.status.correlation = None;
-        legacy_with_position.status.room_offset_seconds = None;
+        let mut uncorrelated_with_position = report_presentation();
+        uncorrelated_with_position.status.correlation = None;
+        uncorrelated_with_position.status.room_offset_seconds = None;
         assert!(
-            legacy_with_position
+            uncorrelated_with_position
                 .headline_label()
                 .contains("Offset unavailable")
         );
@@ -790,8 +776,8 @@ mod tests {
     #[test]
     fn unsupported_awaiting_and_player_connection_states_remain_distinct() {
         assert_eq!(
-            ParticipantStatusPresentation::LegacyClient.headline_label(),
-            "Status unavailable · legacy client"
+            ParticipantStatusPresentation::StatusUnsupported.headline_label(),
+            "Status reporting unsupported"
         );
         assert_eq!(
             ParticipantStatusPresentation::WaitingForFirstReport.headline_label(),

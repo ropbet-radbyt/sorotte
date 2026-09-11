@@ -17,7 +17,7 @@ fn ambiguous_part_error() -> GuiPlexStreamResolveFailure {
 }
 
 fn automatic_plex_state() -> SorotteGuiShellAppState {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -25,7 +25,7 @@ fn automatic_plex_state() -> SorotteGuiShellAppState {
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);

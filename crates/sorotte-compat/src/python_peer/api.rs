@@ -1,6 +1,6 @@
 use super::*;
 
-impl LegacyServerPythonPeerHarness {
+impl SyncplayServerPythonPeerHarness {
     pub fn spawn_connected(peer_username: &str, room: &str) -> Result<Self, InteropError> {
         let mut harness = Self::spawn(peer_username, room)?;
         if let Err(error) = harness.start_peer_connected() {

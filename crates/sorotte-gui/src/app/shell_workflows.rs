@@ -1,4 +1,4 @@
-use super::runtime_localization::localize_gui_runtime_message_legacy_compatible;
+use super::runtime_localization::localize_gui_runtime_message;
 use super::shell_state::{
     GuiConfigurationTab, GuiShellModal, GuiShellView, GuiTransientNotification,
     GuiTransientNotificationLevel, MainWindowChatRow, MainWindowPlaybackControls,
@@ -678,10 +678,7 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn push_system_chat_message(&mut self, message: String) {
-        let message = localize_gui_runtime_message_legacy_compatible(
-            &message,
-            Some(self.runtime_language_tag_legacy_compatible()),
-        );
+        let message = localize_gui_runtime_message(&message, Some(self.runtime_language_tag()));
         self.main_window.chat.push(MainWindowChatRow {
             sender: "system".to_owned(),
             message,
@@ -774,10 +771,7 @@ impl SorotteGuiShellAppState {
         level: GuiTransientNotificationLevel,
         message: String,
     ) {
-        let message = localize_gui_runtime_message_legacy_compatible(
-            &message,
-            Some(self.runtime_language_tag_legacy_compatible()),
-        );
+        let message = localize_gui_runtime_message(&message, Some(self.runtime_language_tag()));
         self.notifications
             .push(GuiTransientNotification { level, message });
         const MAX_TRANSIENT_NOTIFICATIONS: usize = 5;

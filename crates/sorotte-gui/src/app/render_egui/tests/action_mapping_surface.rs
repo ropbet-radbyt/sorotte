@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn gui_widget_egui_renderer_maps_configuration_tab_buttons_to_shell_actions() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let shell_tree = state.shell_widget_tree();
     assert!(shell_tree.find("main-window:tab:playlist").is_none());
     let configuration_privacy_tab = shell_tree.find("configuration:tab:privacy-chat").unwrap();
@@ -17,8 +17,7 @@ fn gui_widget_egui_renderer_maps_configuration_tab_buttons_to_shell_actions() {
 
 #[test]
 fn gui_widget_egui_renderer_maps_plugin_enablement_checkboxes_to_shell_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let plugins = state.plugins_widget_tree();
     let stream_enabled = plugins
@@ -63,8 +62,7 @@ fn gui_widget_egui_renderer_maps_plugin_enablement_checkboxes_to_shell_actions()
 
 #[test]
 fn gui_widget_egui_renderer_maps_config_storage_buttons_and_external_override_state() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(
             GuiConfigStorageRuntimeSnapshot {
@@ -137,13 +135,13 @@ fn gui_widget_egui_renderer_maps_config_storage_buttons_and_external_override_st
 
 #[test]
 fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         shared_playlist_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -453,9 +451,9 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     );
 
     let mut controlled_room_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             room: Some("Lounge".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     assert!(controlled_room_state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
     let controlled_room_tree = controlled_room_state.main_window_widget_tree();
@@ -494,9 +492,9 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
     );
 
     let mut controller_auth_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             room: Some("+Lounge:ABCDEF123456".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     assert!(controller_auth_state.apply(GuiShellAction::BeginControllerAuthEdit));
     assert!(
@@ -535,11 +533,11 @@ fn gui_widget_egui_renderer_maps_surface_button_and_list_nodes_to_actions() {
 
 #[test]
 fn gui_widget_egui_renderer_keeps_local_ready_available_for_non_controller_empty_room() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("+room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.commands.can_disconnect_session = true;
 
@@ -573,7 +571,7 @@ fn gui_widget_egui_renderer_keeps_local_ready_available_for_non_controller_empty
 
 #[test]
 fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let menu_nodes = [
         MenuActionId::OpenMedia,
         MenuActionId::Seek,
@@ -633,10 +631,10 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
 
 #[test]
 fn room_intent_and_participant_status_keep_native_accessibility_at_narrow_and_wide_widths() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.room_playback_intent.paused = Some(true);
     state.main_window.room_playback_intent.position_seconds = Some(42.0);
@@ -732,7 +730,7 @@ fn room_clock_repaints_between_snapshots_and_stops_when_paused_or_stale() {
         (false, None, false),
     ] {
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         state.main_window.room_playback_intent.paused = Some(paused);
         state.main_window.room_playback_intent.position_seconds = Some(12.0);
         state.main_window.room_playback_intent.position_sampled_at =
@@ -774,12 +772,11 @@ fn room_clock_repaints_between_snapshots_and_stops_when_paused_or_stale() {
 fn short_participant_names_align_with_their_status_and_file_text() {
     for is_controller in [false, true] {
         for width in [360.0, 800.0] {
-            let mut state =
-                SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-                    username: Some("Alice".to_owned()),
-                    room: Some("room1".to_owned()),
-                    ..StoredClientSettingsMvp::default()
-                });
+            let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+                username: Some("Alice".to_owned()),
+                room: Some("room1".to_owned()),
+                ..StoredClientSettings::default()
+            });
             state.main_window.users[0].is_controller = is_controller;
             let tree = state.main_window_widget_tree();
             let panel = tree.find("main-window:connection").expect("room panel");
@@ -820,10 +817,10 @@ fn short_participant_names_align_with_their_status_and_file_text() {
 fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
     let name = "viewer-000 multilingual participant with a deliberately long display name";
     for is_controller in [false, true] {
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some(name.to_owned()),
             room: Some("room1".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.main_window.users[0].is_controller = is_controller;
         let tree = state.main_window_widget_tree();
@@ -875,7 +872,7 @@ fn long_participant_names_keep_full_accessible_text_inside_narrow_rows() {
 
 #[test]
 fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     for binding in GuiWidgetEguiRenderer::menu_shortcuts() {
         let context = egui::Context::default();

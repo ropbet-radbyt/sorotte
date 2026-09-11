@@ -6,16 +6,16 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::state::{
-    ClientConfig, EffectiveMpvStreamingOption, StoredClientSettingsMvp,
+    ClientConfig, EffectiveMpvStreamingOption, StoredClientSettings,
 };
 use sorotte_player_api::{PlayerAdapter, PlayerError};
 use sorotte_player_mpv::{
-    LegacySyncplayUiSettings, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
-    SorotteBridgeFailureKind, SorotteBridgeHealth, is_unsupported_mpv_version_error,
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, SorotteBridgeFailureKind,
+    SorotteBridgeHealth, SyncplayUiSettings, is_unsupported_mpv_version_error,
 };
 use sorotte_secret::RedactedCommandArgs;
 
-use super::support::normalize_stored_player_argument_legacy_compatible;
+use super::support::normalize_stored_player_argument;
 use sorotte_player_mpv::managed_process::{
     ManagedMpvCommand, ManagedMpvShutdownScope, OwnedMpvProcess,
 };
@@ -48,7 +48,7 @@ pub(crate) struct ManagedMpvLaunchConfig {
     pub(crate) program: PathBuf,
     pub(crate) effective_streaming_options: Vec<EffectiveMpvStreamingOption>,
     pub(crate) extra_args: Vec<String>,
-    pub(crate) ui_settings: LegacySyncplayUiSettings,
+    pub(crate) ui_settings: SyncplayUiSettings,
 }
 
 impl std::fmt::Debug for ManagedMpvLaunchConfig {
@@ -131,7 +131,7 @@ impl Drop for ManagedMpvProcessGuard {
 }
 
 pub(crate) fn managed_mpv_settings_decision_from_settings(
-    settings: Option<&StoredClientSettingsMvp>,
+    settings: Option<&StoredClientSettings>,
 ) -> ManagedMpvSettingsDecision {
     let Some(settings) = settings else {
         return ManagedMpvSettingsDecision::NotConfigured;
@@ -144,7 +144,7 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
     else {
         return ManagedMpvSettingsDecision::NotConfigured;
     };
-    if !legacy_player_path_requests_managed_mpv_legacy_compatible(player_path) {
+    if !player_path_requests_managed_mpv(player_path) {
         return ManagedMpvSettingsDecision::UnsupportedConfiguredPlayer {
             player_path: player_path.to_owned(),
         };
@@ -157,19 +157,19 @@ pub(crate) fn managed_mpv_settings_decision_from_settings(
         .map(|arguments| {
             arguments
                 .iter()
-                .map(|argument| normalize_stored_player_argument_legacy_compatible(argument))
+                .map(|argument| normalize_stored_player_argument(argument))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let streaming = ClientConfig::resolve(settings).config.playback.streaming;
     let effective_streaming_options = streaming.effective_mpv_options(&extra_args);
-    let program = resolve_managed_mpv_launch_program_legacy_compatible(Path::new(player_path));
+    let program = resolve_managed_mpv_launch_program(Path::new(player_path));
     ManagedMpvSettingsDecision::Launch(Box::new(ManagedMpvLaunchConfig {
         requested_player_path: player_path.to_owned(),
         program,
         effective_streaming_options,
         extra_args,
-        ui_settings: legacy_syncplay_ui_settings_from_stored_settings(Some(settings)),
+        ui_settings: syncplay_ui_settings_from_stored_settings(Some(settings)),
     }))
 }
 
@@ -181,24 +181,24 @@ pub(crate) struct SorotteChatOsdIntegrationOutcome {
 
 pub(crate) fn configure_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
-    ui_settings: &LegacySyncplayUiSettings,
+    ui_settings: &SyncplayUiSettings,
 ) -> SorotteChatOsdIntegrationOutcome {
     configure_sorotte_chat_osd_integration_inner(player, ui_settings, false)
 }
 
 pub(crate) fn retry_sorotte_chat_osd_integration(
     player: &mut MpvAdapter,
-    ui_settings: &LegacySyncplayUiSettings,
+    ui_settings: &SyncplayUiSettings,
 ) -> SorotteChatOsdIntegrationOutcome {
     configure_sorotte_chat_osd_integration_inner(player, ui_settings, true)
 }
 
 fn configure_sorotte_chat_osd_integration_inner(
     player: &mut MpvAdapter,
-    ui_settings: &LegacySyncplayUiSettings,
+    ui_settings: &SyncplayUiSettings,
     retry: bool,
 ) -> SorotteChatOsdIntegrationOutcome {
-    if let Err(error) = player.configure_legacy_syncplay_ui_settings(ui_settings.clone()) {
+    if let Err(error) = player.configure_syncplay_ui_settings(ui_settings.clone()) {
         return SorotteChatOsdIntegrationOutcome {
             bridge_health: player.mark_sorotte_bridge_degraded(
                 SorotteBridgeFailureKind::IpcCommand,
@@ -251,7 +251,7 @@ pub(crate) fn spawn_managed_mpv_and_attach(
     path_prefixes: &[PathBuf],
     downloader_path: Option<&Path>,
 ) -> Result<(MpvAdapter, ManagedMpvProcessGuard), String> {
-    if managed_mpv_launch_program_requires_existing_file_legacy_compatible(&config.program)
+    if managed_mpv_launch_program_requires_existing_file(&config.program)
         && !config.program.is_file()
     {
         return Err(format!(
@@ -331,10 +331,10 @@ fn managed_mpv_launch_args(
     args
 }
 
-pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
-    settings: Option<&StoredClientSettingsMvp>,
-) -> LegacySyncplayUiSettings {
-    let mut resolved = LegacySyncplayUiSettings::default();
+pub(crate) fn syncplay_ui_settings_from_stored_settings(
+    settings: Option<&StoredClientSettings>,
+) -> SyncplayUiSettings {
+    let mut resolved = SyncplayUiSettings::default();
     let Some(settings) = settings else {
         return resolved;
     };
@@ -458,28 +458,26 @@ fn timeout_ms_from_stored_client_setting(value: Option<i64>, default_ms: u64) ->
 }
 
 #[cfg(windows)]
-fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+fn managed_mpv_launch_candidate_file_names() -> &'static [&'static str] {
     &["mpv.exe", "mpv.com"]
 }
 
 #[cfg(not(windows))]
-fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+fn managed_mpv_launch_candidate_file_names() -> &'static [&'static str] {
     &["mpv"]
 }
 
-fn push_unique_pathbuf_legacy_compatible(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !paths.iter().any(|existing| existing == &candidate) {
         paths.push(candidate);
     }
 }
 
-pub(crate) fn autodetect_mpv_player_path_legacy_compatible() -> Option<String> {
-    autodetect_mpv_player_path_legacy_compatible_from_lookup(&|name| env::var(name).ok())
+pub(crate) fn autodetect_mpv_player_path() -> Option<String> {
+    autodetect_mpv_player_path_from_lookup(&|name| env::var(name).ok())
 }
 
-pub(crate) fn autodetect_mpv_player_path_legacy_compatible_from_lookup<F>(
-    lookup: &F,
-) -> Option<String>
+pub(crate) fn autodetect_mpv_player_path_from_lookup<F>(lookup: &F) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -489,8 +487,8 @@ where
         && !path_env.trim().is_empty()
     {
         for directory in env::split_paths(&OsString::from(path_env)) {
-            for file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
-                push_unique_pathbuf_legacy_compatible(&mut candidates, directory.join(file_name));
+            for file_name in managed_mpv_launch_candidate_file_names() {
+                push_unique_pathbuf(&mut candidates, directory.join(file_name));
             }
         }
     }
@@ -511,7 +509,7 @@ where
                     .join("mpv")
                     .join("mpv.exe"),
             ] {
-                push_unique_pathbuf_legacy_compatible(&mut candidates, candidate);
+                push_unique_pathbuf(&mut candidates, candidate);
             }
         }
     }
@@ -522,11 +520,11 @@ where
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
-fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> PathBuf {
+fn resolve_managed_mpv_launch_program(requested: &Path) -> PathBuf {
     let mut candidates = vec![requested.to_path_buf()];
     if requested.is_dir() || !requested.exists() {
-        for file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
-            push_unique_pathbuf_legacy_compatible(&mut candidates, requested.join(file_name));
+        for file_name in managed_mpv_launch_candidate_file_names() {
+            push_unique_pathbuf(&mut candidates, requested.join(file_name));
         }
     }
     if !requested.exists()
@@ -535,11 +533,8 @@ fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> Pat
     {
         let normalized = file_name.trim().to_ascii_lowercase();
         if matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com") {
-            for candidate_file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
-                push_unique_pathbuf_legacy_compatible(
-                    &mut candidates,
-                    parent.join(candidate_file_name),
-                );
+            for candidate_file_name in managed_mpv_launch_candidate_file_names() {
+                push_unique_pathbuf(&mut candidates, parent.join(candidate_file_name));
             }
         }
     }
@@ -549,7 +544,7 @@ fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> Pat
         .unwrap_or_else(|| requested.to_path_buf())
 }
 
-fn managed_mpv_launch_program_requires_existing_file_legacy_compatible(path: &Path) -> bool {
+fn managed_mpv_launch_program_requires_existing_file(path: &Path) -> bool {
     path.is_absolute()
         || path
             .to_string_lossy()
@@ -557,7 +552,7 @@ fn managed_mpv_launch_program_requires_existing_file_legacy_compatible(path: &Pa
             .any(|character| matches!(character, '/' | '\\'))
 }
 
-fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) -> bool {
+fn player_path_requests_managed_mpv(player_path: &str) -> bool {
     let trimmed = player_path.trim();
     if trimmed.is_empty() {
         return false;
@@ -578,9 +573,8 @@ fn legacy_player_path_requests_managed_mpv_legacy_compatible(player_path: &str) 
     }
 
     let requested = Path::new(trimmed);
-    let resolved = resolve_managed_mpv_launch_program_legacy_compatible(requested);
-    resolved.is_file()
-        || !managed_mpv_launch_program_requires_existing_file_legacy_compatible(&resolved)
+    let resolved = resolve_managed_mpv_launch_program(requested);
+    resolved.is_file() || !managed_mpv_launch_program_requires_existing_file(&resolved)
 }
 
 fn connect_mpv_adapter_with_retry(
@@ -656,14 +650,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        ManagedMpvLaunchConfig, ManagedMpvSettingsDecision,
-        autodetect_mpv_player_path_legacy_compatible_from_lookup,
+        ManagedMpvLaunchConfig, ManagedMpvSettingsDecision, autodetect_mpv_player_path_from_lookup,
         connect_mpv_adapter_with_retry_using, managed_mpv_launch_args,
         managed_mpv_settings_decision_from_settings,
     };
-    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_client_app::app_boundary::state::StoredClientSettings;
     use sorotte_player_api::PlayerError;
-    use sorotte_player_mpv::{LegacySyncplayUiSettings, MpvAdapter};
+    use sorotte_player_mpv::{MpvAdapter, SyncplayUiSettings};
 
     #[test]
     fn managed_attach_fails_fast_with_clear_mpv_upgrade_guidance() {
@@ -732,7 +725,7 @@ mod tests {
                 "--cookies-file=C:/private/GUI_PLAYER_ARG_CANARY.txt".to_owned(),
                 "https://media.example/video?Signature=GUI_PLAYER_ARG_CANARY".to_owned(),
             ],
-            ui_settings: LegacySyncplayUiSettings::default(),
+            ui_settings: SyncplayUiSettings::default(),
         };
 
         let rendered = format!("{config:?}");
@@ -757,14 +750,13 @@ mod tests {
                     .to_owned(),
             ],
         );
-        let decision =
-            managed_mpv_settings_decision_from_settings(Some(&StoredClientSettingsMvp {
-                player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-                per_player_arguments: Some(per_player_arguments),
-                show_osd: Some(false),
-                chat_input_enabled: Some(true),
-                ..StoredClientSettingsMvp::default()
-            }));
+        let decision = managed_mpv_settings_decision_from_settings(Some(&StoredClientSettings {
+            player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
+            per_player_arguments: Some(per_player_arguments),
+            show_osd: Some(false),
+            chat_input_enabled: Some(true),
+            ..StoredClientSettings::default()
+        }));
 
         let ManagedMpvSettingsDecision::Launch(config) = decision else {
             panic!("expected managed mpv launch config");
@@ -803,11 +795,10 @@ mod tests {
 
     #[test]
     fn managed_mpv_settings_decision_rejects_non_mpv_saved_player_paths() {
-        let decision =
-            managed_mpv_settings_decision_from_settings(Some(&StoredClientSettingsMvp {
-                player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
-                ..StoredClientSettingsMvp::default()
-            }));
+        let decision = managed_mpv_settings_decision_from_settings(Some(&StoredClientSettings {
+            player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
+            ..StoredClientSettings::default()
+        }));
 
         assert_eq!(
             decision,
@@ -820,9 +811,9 @@ mod tests {
     #[test]
     fn managed_mpv_settings_decision_ignores_empty_player_paths() {
         assert_eq!(
-            managed_mpv_settings_decision_from_settings(Some(&StoredClientSettingsMvp {
+            managed_mpv_settings_decision_from_settings(Some(&StoredClientSettings {
                 player_path: Some("   ".to_owned()),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             })),
             ManagedMpvSettingsDecision::NotConfigured
         );
@@ -918,7 +909,7 @@ mod tests {
             .expect("path should join")
             .to_string_lossy()
             .into_owned();
-        let detected = autodetect_mpv_player_path_legacy_compatible_from_lookup(&|name| {
+        let detected = autodetect_mpv_player_path_from_lookup(&|name| {
             (name == "PATH").then_some(path_value.clone())
         });
 

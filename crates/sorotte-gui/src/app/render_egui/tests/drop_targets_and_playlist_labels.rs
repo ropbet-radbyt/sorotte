@@ -19,7 +19,7 @@ fn dropped_file(path: &str) -> egui::DroppedFileHandle {
 
 #[test]
 fn gui_widget_egui_renderer_routes_drop_handles_without_reading_media() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
         &state,
         false,
@@ -49,9 +49,9 @@ fn gui_widget_egui_renderer_routes_drop_handles_without_reading_media() {
 
 #[test]
 fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_drops() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
@@ -76,9 +76,9 @@ fn gui_widget_egui_renderer_prefers_playlist_target_for_hovered_shared_playlist_
 
 #[test]
 fn gui_widget_egui_renderer_defaults_shared_playlist_drops_to_playlist_target() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
         &state,
@@ -99,7 +99,7 @@ fn gui_widget_egui_renderer_defaults_shared_playlist_drops_to_playlist_target() 
 
 #[test]
 fn gui_widget_egui_renderer_defaults_drops_to_playlist_target_when_shared_playlist_is_disabled() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
         &state,
         true,
@@ -119,9 +119,9 @@ fn gui_widget_egui_renderer_defaults_drops_to_playlist_target_when_shared_playli
 
 #[test]
 fn gui_widget_egui_renderer_carries_playlist_insert_slot_for_hovered_playlist_drops() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     let request = GuiWidgetEguiRenderer::dropped_files_request_for_input(
@@ -139,9 +139,9 @@ fn gui_widget_egui_renderer_carries_playlist_insert_slot_for_hovered_playlist_dr
 
 #[test]
 fn gui_widget_egui_renderer_defaults_playlist_drops_to_append_slot_when_hover_slot_is_missing() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

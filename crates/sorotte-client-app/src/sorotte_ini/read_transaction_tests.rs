@@ -8,8 +8,8 @@ use std::{
 };
 
 use super::{
-    clear_sorotte_ini_stored_client_settings_mvp_at_path, ensure_sorotte_ini_contents_at_path,
-    load_sorotte_ini_stored_client_settings_mvp_from_path, on_next_settings_lock_contention,
+    clear_sorotte_ini_stored_client_settings_at_path, ensure_sorotte_ini_contents_at_path,
+    load_sorotte_ini_stored_client_settings_from_path, on_next_settings_lock_contention,
     paths::write_sorotte_ini_contents_atomically_with_injected_pre_commit,
     read_sorotte_ini_contents_consistently_at_path,
     transaction::{SettingsTransaction, read_consistently_with_timeout},
@@ -89,7 +89,7 @@ fn missing_reads_do_not_create_parent_directories_or_sidecars() {
         None
     );
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&fixture.path()).unwrap(),
+        load_sorotte_ini_stored_client_settings_from_path(&fixture.path()).unwrap(),
         None
     );
     assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 0);
@@ -158,7 +158,7 @@ fn empty_document_is_present_and_clear_is_absent_without_removing_the_lock() {
         Some("")
     );
     assert!(!ensure_sorotte_ini_contents_at_path(&fixture.path(), AFTER.as_bytes()).unwrap());
-    assert!(clear_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path()).unwrap());
+    assert!(clear_sorotte_ini_stored_client_settings_at_path(&fixture.path()).unwrap());
     assert_eq!(
         read_sorotte_ini_contents_consistently_at_path(&fixture.path()).unwrap(),
         None
@@ -325,9 +325,9 @@ fn windows_case_aliases_share_the_read_lock_and_relocation_identity() {
     assert_busy(read_consistently_with_timeout(&alias, Duration::ZERO, actual_read).unwrap_err());
     std::fs::write(fixture.path(), BEFORE).unwrap();
     drop(writer);
-    let before = super::parse_sorotte_ini_stored_client_settings_mvp(BEFORE);
-    let after = super::parse_sorotte_ini_stored_client_settings_mvp(AFTER);
-    super::relocate_sorotte_ini_stored_client_settings_mvp_at_path(
+    let before = super::parse_sorotte_ini_stored_client_settings(BEFORE);
+    let after = super::parse_sorotte_ini_stored_client_settings(AFTER);
+    super::relocate_sorotte_ini_stored_client_settings_at_path(
         Some(&alias),
         &fixture.path(),
         &before,
@@ -336,7 +336,7 @@ fn windows_case_aliases_share_the_read_lock_and_relocation_identity() {
     )
     .unwrap();
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&alias)
+        load_sorotte_ini_stored_client_settings_from_path(&alias)
             .unwrap()
             .unwrap()
             .username
@@ -403,7 +403,7 @@ fn settings_reader_process_fixture() {
         .unwrap();
     let mut progress = stream.try_clone().unwrap();
     on_next_settings_lock_contention(move || writeln!(progress, "waiting").unwrap());
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(Path::new(&path)).unwrap();
+    let settings = load_sorotte_ini_stored_client_settings_from_path(Path::new(&path)).unwrap();
     let username = settings.and_then(|settings| settings.username);
     writeln!(stream, "{}", serde_json::to_string(&username).unwrap()).unwrap();
 }

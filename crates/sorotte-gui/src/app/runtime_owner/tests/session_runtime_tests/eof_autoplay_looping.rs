@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
-use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
 #[test]
 fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof() {
@@ -155,13 +155,11 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let active_settings = StoredClientSettingsMvp {
+    let active_settings = StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings),
-    );
+    owner.active_session_settings = Some(stored_client_settings_runtime_snapshot(&active_settings));
     let mut state = SorotteGuiShellAppState::from_stored_settings(&active_settings);
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
         id: SettingId::PlaybackSharedPlaylists,
@@ -236,15 +234,14 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
 
 #[test]
 fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_settings() {
-    let enabled_settings = StoredClientSettingsMvp {
+    let enabled_settings = StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.session_projects_to_shell = true;
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&enabled_settings),
-    );
+    owner.active_session_settings =
+        Some(stored_client_settings_runtime_snapshot(&enabled_settings));
     owner.active_shared_playlist_index = Some(0);
 
     let mut state = SorotteGuiShellAppState::from_stored_settings(&enabled_settings);
@@ -259,13 +256,12 @@ fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_sett
         "an unsaved disable must not hide the active session playlist target"
     );
 
-    let disabled_settings = StoredClientSettingsMvp {
+    let disabled_settings = StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    owner.active_session_settings = Some(
-        stored_client_settings_runtime_snapshot_legacy_compatible(&disabled_settings),
-    );
+    owner.active_session_settings =
+        Some(stored_client_settings_runtime_snapshot(&disabled_settings));
     assert!(state.apply(GuiShellAction::EditConfigurationBool {
         id: SettingId::PlaybackSharedPlaylists,
         value: true,
@@ -340,9 +336,9 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         .expect("session should exist")
         .note_local_playlist_index_reset_intent(true);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec![episode_two_path.to_string_lossy().into_owned()],
@@ -482,9 +478,9 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(0.0);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner.sync_session_playstate_to_attached_player_impl(&state, false);
 
@@ -615,10 +611,10 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         loop_single_files: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -760,10 +756,10 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     owner.user_offset_seconds = 5.0;
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         loop_single_files: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);

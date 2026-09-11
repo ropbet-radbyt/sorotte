@@ -566,7 +566,7 @@ fn media_match_runtime_snapshot_from_probes(
 
 pub(super) fn probe_media_match_startup_snapshot(
     root: Option<&Path>,
-    settings: Option<&sorotte_client_app::app_boundary::state::StoredClientSettingsMvp>,
+    settings: Option<&sorotte_client_app::app_boundary::state::StoredClientSettings>,
 ) -> GuiMediaMatchRuntimeSnapshot {
     let settings = settings
         .map(media_match_settings_from_stored_settings)

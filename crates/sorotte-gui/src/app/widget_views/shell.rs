@@ -4,7 +4,7 @@ impl SorotteGuiShellAppState {
     pub(crate) fn update_indicator_widget_tree(&self) -> GuiWidgetNode {
         let model = self
             .update_check
-            .indicator_model(Some(self.runtime_language_tag_legacy_compatible()));
+            .indicator_model(Some(self.runtime_language_tag()));
         let mut node = GuiWidgetNode::branch(
             "shell:update-indicator",
             model.title.clone(),

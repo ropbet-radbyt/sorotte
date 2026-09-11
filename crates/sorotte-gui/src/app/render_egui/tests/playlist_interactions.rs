@@ -55,7 +55,7 @@ fn gui_widget_egui_renderer_uses_focusable_noninteractive_playlist_keyboard_targ
 
 #[test]
 fn narrow_playlist_rows_paint_a_readable_title_beside_compact_actions() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let mut playlist = GuiWidgetNode::leaf(
         "main-window:playlist",
         "Playlist",
@@ -108,7 +108,7 @@ fn narrow_playlist_rows_paint_a_readable_title_beside_compact_actions() {
 
 #[test]
 fn playlist_keyboard_owner_tracks_selected_row_in_the_accessibility_tree() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let context = egui::Context::default();
     context.enable_accesskit();
     let mut renderer = GuiWidgetEguiRenderer::default();
@@ -180,9 +180,9 @@ fn gui_widget_egui_renderer_maps_playlist_pointer_actions_to_local_select_and_do
 
 #[test]
 fn gui_widget_egui_renderer_maps_playlist_row_shortcuts_to_selection_and_delete_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(
@@ -205,9 +205,9 @@ fn gui_widget_egui_renderer_maps_playlist_row_shortcuts_to_selection_and_delete_
 
 #[test]
 fn gui_widget_egui_renderer_ignores_playlist_row_shortcuts_without_focus_or_delete_permission() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -229,9 +229,9 @@ fn gui_widget_egui_renderer_ignores_playlist_row_shortcuts_without_focus_or_dele
 
 #[test]
 fn gui_widget_egui_renderer_ignores_playlist_row_shortcuts_for_unselected_rows() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(

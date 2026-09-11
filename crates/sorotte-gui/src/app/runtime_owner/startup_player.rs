@@ -146,9 +146,9 @@ impl GuiPersistedConfigRuntimeOwner {
         owner
     }
 
-    fn load_startup_player_settings_from_config_path(&self) -> Option<StoredClientSettingsMvp> {
+    fn load_startup_player_settings_from_config_path(&self) -> Option<StoredClientSettings> {
         self.config_path.as_ref().and_then(|path| {
-            load_sorotte_ini_stored_client_settings_mvp_from_path(path)
+            load_sorotte_ini_stored_client_settings_from_path(path)
                 .ok()
                 .flatten()
         })
@@ -190,7 +190,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn configure_startup_player_from_lookup_and_settings<F>(
         &mut self,
         lookup: &F,
-        settings: Option<&StoredClientSettingsMvp>,
+        settings: Option<&StoredClientSettings>,
     ) where
         F: Fn(&str) -> Option<String>,
     {
@@ -385,7 +385,7 @@ impl GuiPersistedConfigRuntimeOwner {
             launch_state.mpv_ui_settings().cloned();
         self.player_apply_state.acknowledged_bridge_generation = launch_state
             .mpv_ui_settings()
-            .is_some_and(LegacySyncplayUiSettings::uses_syncplayintf_bridge)
+            .is_some_and(SyncplayUiSettings::uses_syncplayintf_bridge)
             .then_some(1);
     }
 
@@ -414,7 +414,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         mut adapter: MpvAdapter,
         managed_process: Option<ManagedMpvProcessGuard>,
-        ui_settings: &sorotte_player_mpv::LegacySyncplayUiSettings,
+        ui_settings: &sorotte_player_mpv::SyncplayUiSettings,
     ) -> Result<(), String> {
         let core_ipc_was_connected = adapter.is_connected();
         let integration = configure_sorotte_chat_osd_integration(&mut adapter, ui_settings);
@@ -481,7 +481,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn complete_explicit_mpv_attachment_after_ipc_connect(
         &mut self,
         ipc_path: &str,
-        ui_settings: &LegacySyncplayUiSettings,
+        ui_settings: &SyncplayUiSettings,
         effective_streaming_options: &[EffectiveMpvStreamingOption],
         adapter: MpvAdapter,
     ) {
@@ -497,7 +497,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn complete_explicit_mpv_attachment_with_active_apply<F>(
         &mut self,
         ipc_path: &str,
-        ui_settings: &LegacySyncplayUiSettings,
+        ui_settings: &SyncplayUiSettings,
         effective_streaming_options: &[EffectiveMpvStreamingOption],
         mut adapter: MpvAdapter,
         apply_to_active_media: F,
@@ -563,7 +563,7 @@ impl GuiPersistedConfigRuntimeOwner {
     >(
         &mut self,
         ipc_path: &str,
-        ui_settings: &LegacySyncplayUiSettings,
+        ui_settings: &SyncplayUiSettings,
         effective_streaming_options: &[EffectiveMpvStreamingOption],
         adapter: MpvAdapter,
         apply_to_active_media: F,
@@ -737,7 +737,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             },
             GuiPlayerLaunchRuntimeState::ManagedMpv(config) => {
-                let helper_root = self.legacy_gui_qsettings_root();
+                let helper_root = self.syncplay_qsettings_root();
                 let helper_path_prefixes =
                     managed_stream_helper_path_prefixes(helper_root.as_deref());
                 let helper_downloader_path = helper_root
@@ -778,7 +778,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn configured_player_launch_state_from_lookup_and_settings<F>(
         lookup: &F,
-        settings: Option<&StoredClientSettingsMvp>,
+        settings: Option<&StoredClientSettings>,
     ) -> Result<GuiPlayerLaunchRuntimeState, String>
     where
         F: Fn(&str) -> Option<String>,
@@ -796,8 +796,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         if let Some(ipc_path) = explicit_mpv_ipc_path_from_lookup(lookup) {
-            let ui_settings =
-                mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(settings);
+            let ui_settings = mpv_launch::syncplay_ui_settings_from_stored_settings(settings);
             let streaming = settings
                 .map(|settings| ClientConfig::resolve(settings).config.playback.streaming)
                 .unwrap_or_default();
@@ -936,7 +935,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn apply_saved_player_settings_in_place(
         &mut self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) -> bool {
         let Ok(next_launch_state) = Self::configured_player_launch_state_from_lookup_and_settings(
             &env_trimmed,
@@ -1020,7 +1019,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn sync_player_from_lookup_and_settings<F>(
         &mut self,
         lookup: &F,
-        settings: Option<&StoredClientSettingsMvp>,
+        settings: Option<&StoredClientSettings>,
         force_relaunch: bool,
     ) where
         F: Fn(&str) -> Option<String>,
@@ -1166,7 +1165,7 @@ impl GuiPersistedConfigRuntimeOwner {
         ));
     }
 
-    pub(in crate::app) fn legacy_gui_qsettings_root(&self) -> Option<PathBuf> {
+    pub(in crate::app) fn syncplay_qsettings_root(&self) -> Option<PathBuf> {
         self.config_path
             .as_ref()
             .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -1191,7 +1190,7 @@ impl GuiPersistedConfigRuntimeOwner {
         target: Option<&str>,
     ) -> GuiStreamHelperRuntimeSnapshot {
         let snapshot = probe_stream_helper_runtime_snapshot(
-            self.legacy_gui_qsettings_root().as_deref(),
+            self.syncplay_qsettings_root().as_deref(),
             self.player_stream_helper_attach_mode(),
             target,
         );
@@ -1201,7 +1200,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn refresh_startup_stream_helper_snapshot(
         &mut self,
-        settings: Option<&StoredClientSettingsMvp>,
+        settings: Option<&StoredClientSettings>,
     ) {
         if let Some(settings) = settings
             && !ClientConfig::resolve(settings)
@@ -1213,7 +1212,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
         let snapshot = probe_stream_helper_startup_snapshot(
-            self.legacy_gui_qsettings_root().as_deref(),
+            self.syncplay_qsettings_root().as_deref(),
             self.player_stream_helper_attach_mode(),
         );
         self.stream_helper_runtime_snapshot = snapshot;
@@ -1223,10 +1222,8 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         settings: &sorotte_media_match::MediaMatchSettings,
     ) -> GuiMediaMatchRuntimeSnapshot {
-        let mut snapshot = probe_media_match_runtime_snapshot(
-            self.legacy_gui_qsettings_root().as_deref(),
-            settings,
-        );
+        let mut snapshot =
+            probe_media_match_runtime_snapshot(self.syncplay_qsettings_root().as_deref(), settings);
         snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
         snapshot.nearest_match = self.media_match_runtime_snapshot.nearest_match.clone();
         snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
@@ -1238,7 +1235,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn refresh_startup_media_match_snapshot(
         &mut self,
-        settings: Option<&StoredClientSettingsMvp>,
+        settings: Option<&StoredClientSettings>,
     ) {
         if let Some(settings) = settings
             && !ClientConfig::resolve(settings)
@@ -1250,10 +1247,8 @@ impl GuiPersistedConfigRuntimeOwner {
             self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::from(&state);
             return;
         }
-        let snapshot = probe_media_match_startup_snapshot(
-            self.legacy_gui_qsettings_root().as_deref(),
-            settings,
-        );
+        let snapshot =
+            probe_media_match_startup_snapshot(self.syncplay_qsettings_root().as_deref(), settings);
         self.media_match_runtime_snapshot = snapshot;
     }
 
@@ -1431,15 +1426,15 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn clear_gui_data(&mut self) -> Result<(), String> {
         self.clear_attached_media_search_runtime_cache();
         if let Some(path) = self.config_path.as_ref() {
-            clear_sorotte_ini_stored_client_settings_mvp_at_path(path).map_err(|error| {
+            clear_sorotte_ini_stored_client_settings_at_path(path).map_err(|error| {
                 format!(
                     "failed clearing stored settings {}: {error}",
                     path.display()
                 )
             })?;
         }
-        if let Some(root) = self.legacy_gui_qsettings_root() {
-            clear_legacy_gui_qsettings_files_at_root(&root)?;
+        if let Some(root) = self.syncplay_qsettings_root() {
+            clear_syncplay_qsettings_files_at_root(&root)?;
             clear_persisted_media_search_cache_at_root(&root)?;
             clear_persisted_media_match_cache_at_root(&root)?;
         }

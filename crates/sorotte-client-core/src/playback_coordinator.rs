@@ -1794,7 +1794,7 @@ impl PlaybackCoordinator {
 
     /// Whether the transport/recovery lifecycle currently owns correction.
     ///
-    /// Callers may retain their legacy steady-state drift policy while this is
+    /// Callers may retain their steady-state drift policy while this is
     /// false. Loading, buffering, seeking, and the full recovery stability
     /// interval must remain exclusively owned by this coordinator.
     pub fn ordinary_correction_blocked(&self) -> bool {

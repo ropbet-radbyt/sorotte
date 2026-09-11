@@ -4,10 +4,10 @@ use super::*;
 fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transitions_as_notifications()
  {
     let room = "+room:ABCDEF123456";
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", room)
         .expect("client-core chat adapter should bootstrap");
@@ -98,10 +98,10 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creation_before_reidentify()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -209,10 +209,10 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
 fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_room_when_password_is_stored()
  {
     let room = "+room:ABCDEF123456";
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
         "alice",
@@ -314,10 +314,10 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_notifications() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -414,10 +414,10 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_when_autoplay_fires()
 {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

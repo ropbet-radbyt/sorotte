@@ -799,10 +799,12 @@ impl GuiSemanticStep {
                     "apply-main-window-participant-status requires a status mode".to_owned()
                 })?;
                 let (status, start_barrier_status) = match mode {
-                    "unavailable" | "legacy" | "waiting" => {
+                    "unavailable" | "unsupported" | "waiting" => {
                         let status = match mode {
                             "unavailable" => MainWindowParticipantStatusPresentation::Unavailable,
-                            "legacy" => MainWindowParticipantStatusPresentation::LegacyClient,
+                            "unsupported" => {
+                                MainWindowParticipantStatusPresentation::StatusUnsupported
+                            }
                             "waiting" => {
                                 MainWindowParticipantStatusPresentation::WaitingForFirstReport
                             }
@@ -935,7 +937,6 @@ impl GuiSemanticStep {
                             MainWindowParticipantStatusFreshness::Stale => {
                                 ParticipantStatusAvailability::Stale
                             }
-                            _ => ParticipantStatusAvailability::Unavailable,
                         };
                         let mut status = ParticipantStatusView::new(availability);
                         status.correlation = correlation;

@@ -141,8 +141,8 @@ fn direct_final_flush_failure_is_also_sticky() {
     writer.0.lock().unwrap().fault = Some(Fault::Flush);
     assert!(matches!(recorder.flush(), Err(EvidenceError::Io(_))));
     assert!(matches!(
-        recorder.flush().unwrap_err().recording_failure(),
-        Some(RecordingFailure::RecordingFailed { .. })
+        recorder.flush().unwrap_err(),
+        EvidenceError::RecordingFailed { .. }
     ));
     assert!(recorder.emit(observation()).is_err());
 }
@@ -151,10 +151,7 @@ fn direct_final_flush_failure_is_also_sticky() {
 fn serialization_finishes_within_the_budget_before_any_external_write() {
     let mut writer = FaultWriter::default();
     let error = write_record(&mut writer, &"\u{0001}".repeat(MAX_RECORD_BYTES)).unwrap_err();
-    assert!(matches!(
-        error.recording_failure(),
-        Some(RecordingFailure::RecordTooLarge)
-    ));
+    assert!(matches!(error, EvidenceError::RecordTooLarge));
     assert_eq!(writer.0.lock().unwrap().writes, 0);
     write_record(&mut writer, &"x".repeat(MAX_RECORD_BYTES - 3)).unwrap();
     assert_eq!(writer.0.lock().unwrap().bytes.len(), MAX_RECORD_BYTES);
@@ -210,11 +207,8 @@ fn maximum_observation_fits_and_exhausted_sequence_never_wraps() {
     recorder.inner.lock().unwrap().sequence = MAX_SEQUENCE;
     assert!(recorder.emit(observation()).unwrap().ends_with(".99999999"));
     assert!(matches!(
-        recorder
-            .emit(observation())
-            .unwrap_err()
-            .recording_failure(),
-        Some(RecordingFailure::SequenceExhausted)
+        recorder.emit(observation()).unwrap_err(),
+        EvidenceError::SequenceExhausted
     ));
     assert!(
         recorder
@@ -249,29 +243,23 @@ fn concurrent_emitters_observe_one_sticky_failure_without_further_writes() {
     assert_eq!(
         errors
             .iter()
-            .filter(|error| matches!(error, EvidenceError::Io(_))
-                && error.recording_failure().is_none())
+            .filter(|error| matches!(error, EvidenceError::Io(_)))
             .count(),
         1
     );
     assert_eq!(
         errors
             .iter()
-            .filter(|error| matches!(
-                error.recording_failure(),
-                Some(RecordingFailure::RecordingFailed { .. })
-            ))
+            .filter(|error| matches!(error, EvidenceError::RecordingFailed { .. }))
             .count(),
         7
     );
     assert_eq!(writer.0.lock().unwrap().writes, before + 1);
     let first = recorder.flush().unwrap_err().to_string();
-    for error in errors.iter().filter(|error| {
-        matches!(
-            error.recording_failure(),
-            Some(RecordingFailure::RecordingFailed { .. })
-        )
-    }) {
+    for error in errors
+        .iter()
+        .filter(|error| matches!(error, EvidenceError::RecordingFailed { .. }))
+    {
         assert_eq!(error.to_string(), first);
     }
 }

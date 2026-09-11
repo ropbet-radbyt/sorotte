@@ -207,18 +207,14 @@ async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_se
 
     // Seed a borderline-behind local position and keep playback almost stationary so the
     // forward-delay compensation (from inbound ping/serverRtt) is what crosses the threshold.
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_paused(true)
-    })
-    .expect("real mpv pause seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_paused(true))
+        .expect("real mpv pause seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| {
         runtime.player_mut().set_playback_rate(0.01)
     })
     .expect("real mpv slow playback-rate seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_position(0.2)
-    })
-    .expect("real mpv position seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_position(0.2))
+        .expect("real mpv position seed should succeed");
 
     let stream = TcpStream::connect(addr)
         .await

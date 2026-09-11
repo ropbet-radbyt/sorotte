@@ -193,14 +193,10 @@ async fn connected_client_session_real_mpv_explicit_ipc_smoke_applies_inbound_se
             .expect("runtime creation with explicit mpv IPC should succeed");
 
     // Seed a local position ahead of the room target so rewind desync correction should apply.
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_paused(true)
-    })
-    .expect("real mpv pause seed should succeed");
-    crate::retry_explicit_mpv_ipc_startup_player_command_legacy_compatible(|| {
-        runtime.player_mut().set_position(6.0)
-    })
-    .expect("real mpv position seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_paused(true))
+        .expect("real mpv pause seed should succeed");
+    crate::retry_explicit_mpv_ipc_startup_player_command(|| runtime.player_mut().set_position(6.0))
+        .expect("real mpv position seed should succeed");
 
     let stream = TcpStream::connect(addr)
         .await

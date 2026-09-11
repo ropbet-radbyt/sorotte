@@ -11,12 +11,9 @@ use sorotte_client_core::{
 use sorotte_secret::{RedactedCommandArgs, SecretValue};
 
 use crate::{
-    legacy_language::normalized_legacy_runtime_language_tag_legacy_compatible,
-    legacy_runtime_config::{
-        normalize_controlled_room_input_legacy_compatible,
-        parse_host_and_optional_port_from_host_arg_legacy_compatible,
-    },
-    legacy_settings::{AutoplayThresholdOverride, StoredClientSettingsV1},
+    language::normalized_runtime_language_tag,
+    stored_config::{normalize_controlled_room_input, parse_host_and_optional_port_from_host_arg},
+    stored_settings::{AutoplayThresholdOverride, StoredClientSettings},
 };
 
 const DEFAULT_SERVER_PORT: u16 = 8999;
@@ -744,11 +741,11 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    pub fn resolve(settings: &StoredClientSettingsV1) -> ClientConfigResolution {
+    pub fn resolve(settings: &StoredClientSettings) -> ClientConfigResolution {
         resolve_client_config(settings)
     }
 
-    pub fn try_from_stored(settings: &StoredClientSettingsV1) -> Result<Self, ClientConfigErrors> {
+    pub fn try_from_stored(settings: &StoredClientSettings) -> Result<Self, ClientConfigErrors> {
         resolve_client_config(settings).into_result()
     }
 }
@@ -1060,7 +1057,7 @@ impl Default for MediaMatchConfig {
     }
 }
 
-pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigResolution {
+pub fn resolve_client_config(settings: &StoredClientSettings) -> ClientConfigResolution {
     let mut config = ClientConfig::default();
     let mut issues = Vec::new();
 
@@ -1126,7 +1123,7 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
         issues.push(ClientConfigIssue::new("room", "must not be empty"));
     }
     if let Some(raw_room) = raw_room {
-        let (room, password) = normalize_controlled_room_input_legacy_compatible(raw_room);
+        let (room, password) = normalize_controlled_room_input(raw_room);
         match RoomName::new(room) {
             Ok(room) => config.connection.room = Some(room),
             Err(message) => issues.push(ClientConfigIssue::new("room", message)),
@@ -1307,12 +1304,12 @@ pub fn resolve_client_config(settings: &StoredClientSettingsV1) -> ClientConfigR
 }
 
 fn apply_interface_settings(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     interface: &mut InterfaceConfig,
     issues: &mut Vec<ClientConfigIssue>,
 ) {
     if let Some(language) = settings.language.as_deref() {
-        if let Some(language) = normalized_legacy_runtime_language_tag_legacy_compatible(language) {
+        if let Some(language) = normalized_runtime_language_tag(language) {
             interface.language = language.to_owned();
         } else {
             issues.push(ClientConfigIssue::new(
@@ -1488,8 +1485,7 @@ fn resolve_endpoint(
     issues: &mut Vec<ClientConfigIssue>,
 ) -> ResolvedEndpoint {
     let field = field.into();
-    let (host, embedded_port) =
-        parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
+    let (host, embedded_port) = parse_host_and_optional_port_from_host_arg(address);
     let (port, is_valid) = match embedded_port.map(ServerPort::new) {
         Some(Ok(port)) => (Some(port), true),
         Some(Err(message)) => {
@@ -1509,7 +1505,7 @@ fn resolve_endpoint(
 }
 
 fn resolve_public_servers(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     issues: &mut Vec<ClientConfigIssue>,
 ) -> ResolvedPublicServers {
     let mut configs = Vec::new();
@@ -1549,7 +1545,7 @@ fn resolve_public_servers(
 }
 
 fn resolve_room_history(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     issues: &mut Vec<ClientConfigIssue>,
 ) -> Vec<RoomName> {
     let mut seen = BTreeSet::new();
@@ -1560,7 +1556,7 @@ fn resolve_room_history(
         .iter()
         .enumerate()
         .filter_map(|(index, room)| {
-            let (room, _) = normalize_controlled_room_input_legacy_compatible(room.clone());
+            let (room, _) = normalize_controlled_room_input(room.clone());
             match RoomName::new(room) {
                 Ok(room) if seen.insert(room.clone()) => Some(room),
                 Ok(_) => None,
@@ -1577,7 +1573,7 @@ fn resolve_room_history(
 }
 
 fn resolve_per_player_arguments(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     issues: &mut Vec<ClientConfigIssue>,
 ) -> BTreeMap<PathBuf, Vec<String>> {
     settings
@@ -1593,7 +1589,7 @@ fn resolve_per_player_arguments(
 }
 
 fn resolve_streaming_playback_config(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     issues: &mut Vec<ClientConfigIssue>,
 ) -> StreamingPlaybackConfig {
     let mut config = StreamingPlaybackConfig::default();
@@ -1753,7 +1749,7 @@ fn resolve_streaming_playback_config(
 }
 
 fn resolve_media_search_directories(
-    settings: &StoredClientSettingsV1,
+    settings: &StoredClientSettings,
     issues: &mut Vec<ClientConfigIssue>,
 ) -> Vec<PathBuf> {
     settings
@@ -1958,29 +1954,29 @@ mod tests {
 
     #[test]
     fn tls_policy_defaults_to_required_for_remote_saved_credentials() {
-        let remote = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+        let remote = ClientConfig::try_from_stored(&StoredClientSettings {
             host: Some("sync.example".to_owned()),
             server_password: Some("saved-secret".into()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         })
         .expect("remote credential settings should resolve");
         assert_eq!(remote.connection.tls_policy, TlsPolicy::RequireTls);
 
-        let loopback = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+        let loopback = ClientConfig::try_from_stored(&StoredClientSettings {
             host: Some("127.0.0.1".to_owned()),
             server_password: Some("local-secret".into()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         })
         .expect("loopback credential settings should resolve");
         assert_eq!(loopback.connection.tls_policy, TlsPolicy::RequireTls);
         assert_eq!(TlsPolicy::parse("plaintext"), Some(TlsPolicy::Plaintext));
         assert_eq!(TlsPolicy::parse("require-tls"), Some(TlsPolicy::RequireTls));
 
-        let explicit = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+        let explicit = ClientConfig::try_from_stored(&StoredClientSettings {
             host: Some("sync.example".to_owned()),
             server_password: Some("saved-secret".into()),
             tls_policy: Some("Plaintext".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         })
         .expect("explicit TLS policy should resolve");
         assert_eq!(explicit.connection.tls_policy, TlsPolicy::Plaintext);
@@ -1997,7 +1993,7 @@ mod tests {
             StartSynchronizationPolicy::Immediate
         );
 
-        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
+        let config = ClientConfig::try_from_stored(&StoredClientSettings::default())
             .expect("empty settings should resolve")
             .playback
             .streaming;
@@ -2022,7 +2018,7 @@ mod tests {
 
     #[test]
     fn legacy_ini_without_streaming_start_policy_migrates_to_immediate() {
-        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings_mvp(
+        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings(
             "[client_settings]\nname = legacy-user\n",
         );
         assert_eq!(settings.streaming_start_policy, None);
@@ -2039,9 +2035,9 @@ mod tests {
 
     #[test]
     fn explicit_wait_all_start_policy_remains_opt_in() {
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             streaming_start_policy: Some("wait-all".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
         let config = ClientConfig::try_from_stored(&settings)
@@ -2057,7 +2053,7 @@ mod tests {
 
     #[test]
     fn streaming_settings_resolve_to_typed_policy_and_network_media_mpv_arguments() {
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             streaming_quality_preset: Some("720p".to_owned()),
             streaming_buffer_target_seconds: Some(8.0),
             streaming_read_ahead_seconds: Some(45.0),
@@ -2069,7 +2065,7 @@ mod tests {
             streaming_room_buffering_policy: Some("quorum".to_owned()),
             streaming_start_policy: Some("wait-all".to_owned()),
             streaming_start_timeout_action: Some("remain-paused".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
         let config = ClientConfig::try_from_stored(&settings)
@@ -2186,13 +2182,13 @@ mod tests {
 
     #[test]
     fn invalid_streaming_configuration_reports_actionable_fields() {
-        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+        let resolution = ClientConfig::resolve(&StoredClientSettings {
             streaming_quality_preset: Some("custom".to_owned()),
             streaming_buffer_target_seconds: Some(8.0),
             streaming_read_ahead_seconds: Some(4.0),
             streaming_max_catchup_rate: Some(1.5),
             streaming_room_quorum_percent: Some(0.0),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         });
 
         let fields = resolution
@@ -2210,14 +2206,14 @@ mod tests {
     fn empty_stored_settings_keep_shared_playlists_enabled_by_default() {
         assert!(PlaybackConfig::default().shared_playlist_enabled);
 
-        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1::default())
+        let config = ClientConfig::try_from_stored(&StoredClientSettings::default())
             .expect("empty stored settings should resolve");
         assert!(config.playback.shared_playlist_enabled);
     }
 
     #[test]
     fn legacy_ini_without_shared_playlist_field_keeps_compatibility_default() {
-        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings_mvp(
+        let settings = crate::sorotte_ini::parse_sorotte_ini_stored_client_settings(
             "[client_settings]\nname = legacy-user\n",
         );
         assert_eq!(settings.shared_playlist_enabled, None);
@@ -2230,9 +2226,9 @@ mod tests {
     #[test]
     fn explicit_shared_playlist_settings_override_compatibility_default() {
         for enabled in [true, false] {
-            let settings = StoredClientSettingsV1 {
+            let settings = StoredClientSettings {
                 shared_playlist_enabled: Some(enabled),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             };
             let config = ClientConfig::try_from_stored(&settings)
                 .expect("explicit shared-playlist setting should resolve");
@@ -2242,7 +2238,7 @@ mod tests {
 
     #[test]
     fn resolves_storage_dto_into_sliced_runtime_config() {
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             host: Some("  example.org  ".to_owned()),
             port: Some(8998),
             username: Some(" alice ".to_owned()),
@@ -2251,7 +2247,7 @@ mod tests {
             player_path: Some(" C:/mpv/mpv.exe ".to_owned()),
             stream_support_plugin_enabled: Some(false),
             plex_sync_enabled: Some(true),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
         let config = ClientConfig::try_from_stored(&settings).expect("settings should resolve");
@@ -2276,9 +2272,9 @@ mod tests {
 
     #[test]
     fn embedded_zero_port_in_host_is_reported_instead_of_silently_using_the_default() {
-        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+        let resolution = ClientConfig::resolve(&StoredClientSettings {
             host: Some("example.org:0".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         });
 
         assert_eq!(
@@ -2298,12 +2294,12 @@ mod tests {
 
     #[test]
     fn embedded_zero_port_in_public_server_is_reported_and_filtered_before_fallback() {
-        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+        let resolution = ClientConfig::resolve(&StoredClientSettings {
             public_servers: Some(vec![
                 ("Invalid".to_owned(), "public.example:0".to_owned()),
                 ("Primary".to_owned(), "fallback.example:8123".to_owned()),
             ]),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         });
 
         assert_eq!(
@@ -2330,11 +2326,11 @@ mod tests {
 
     #[test]
     fn embedded_port_issues_aggregate_and_explicit_port_validation_remains_independent() {
-        let resolution = ClientConfig::resolve(&StoredClientSettingsV1 {
+        let resolution = ClientConfig::resolve(&StoredClientSettings {
             host: Some("example.org:0".to_owned()),
             port: Some(0),
             public_servers: Some(vec![("Secondary".to_owned(), "[2001:db8::1]:0".to_owned())]),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         });
 
         assert_eq!(resolution.config.connection.port.get(), DEFAULT_SERVER_PORT);
@@ -2356,19 +2352,19 @@ mod tests {
             ("127.0.0.1:7001", "127.0.0.1"),
             ("[2001:db8::1]:7001", "[2001:db8::1]"),
         ] {
-            let config = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+            let config = ClientConfig::try_from_stored(&StoredClientSettings {
                 host: Some(raw_host.to_owned()),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             })
             .expect("valid embedded endpoint should resolve");
             assert_eq!(config.connection.host.as_deref(), Some(expected_host));
             assert_eq!(config.connection.port.get(), 7001);
         }
 
-        let config = ClientConfig::try_from_stored(&StoredClientSettingsV1 {
+        let config = ClientConfig::try_from_stored(&StoredClientSettings {
             host: Some("[2001:db8::1]:7001".to_owned()),
             port: Some(7002),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         })
         .expect("valid explicit port should override an embedded port");
         assert_eq!(config.connection.host.as_deref(), Some("[2001:db8::1]"));
@@ -2377,7 +2373,7 @@ mod tests {
 
     #[test]
     fn reports_all_invalid_values_and_keeps_safe_fallbacks() {
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             host: Some("   ".to_owned()),
             port: Some(0),
             username: Some(" ".to_owned()),
@@ -2386,7 +2382,7 @@ mod tests {
             chat_input_relative_font_size: Some(0),
             notification_timeout_seconds: Some(-3),
             autoplay_min_users: Some(AutoplayThresholdOverride::Set(0)),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
         let resolution = ClientConfig::resolve(&settings);
@@ -2429,9 +2425,9 @@ mod tests {
 
     #[test]
     fn controlled_room_password_is_normalized_into_redacted_secret() {
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             room: Some("+room:ABC123DEF456:pass-word".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
         let config = ClientConfig::try_from_stored(&settings).expect("room should resolve");
         assert_eq!(
@@ -2455,12 +2451,12 @@ mod tests {
             "plex-server-config-secret",
             "ROOM-HISTORY-CONFIG-SECRET",
         ];
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             server_password: Some(secrets[0].into()),
             room_list: Some(vec![format!("+history:ABC123DEF456:{}", secrets[3])]),
             plex_user_token: Some(secrets[1].into()),
             plex_selected_server_token: Some(secrets[2].into()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
         let rendered = format!("{:?}", ClientConfig::resolve(&settings).config);

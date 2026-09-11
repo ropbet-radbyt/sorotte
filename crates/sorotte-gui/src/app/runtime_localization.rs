@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
+use sorotte_client_app::app_boundary::language::normalized_runtime_language_tag;
 
 use super::shell_state::SorotteGuiShellAppState;
 
@@ -42,19 +42,17 @@ fn localized_literal(
 
 pub(super) fn normalized_runtime_language_tag_or_default(language: Option<&str>) -> &'static str {
     language
-        .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+        .and_then(normalized_runtime_language_tag)
         .unwrap_or("en")
 }
 
 impl SorotteGuiShellAppState {
-    pub(super) fn runtime_language_tag_legacy_compatible(&self) -> &'static str {
+    pub(super) fn runtime_language_tag(&self) -> &'static str {
         normalized_runtime_language_tag_or_default(self.active_application_language.as_deref())
     }
 }
 
-pub(super) fn localized_update_notice_available_message_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(super) fn localized_update_notice_available_message(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
         "An update notice is available for this client build.",
@@ -72,9 +70,7 @@ pub(super) fn localized_update_notice_available_message_legacy_compatible(
     )
 }
 
-pub(super) fn localized_sorotte_uptodate_message_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(super) fn localized_sorotte_uptodate_message(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
         "Sorotte is up to date",
@@ -92,9 +88,7 @@ pub(super) fn localized_sorotte_uptodate_message_legacy_compatible(
     )
 }
 
-pub(super) fn localized_sorotte_update_available_message_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(super) fn localized_sorotte_update_available_message(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
         "A new version of Sorotte is available. Do you want to visit the release page?",
@@ -113,7 +107,7 @@ pub(super) fn localized_sorotte_update_available_message_legacy_compatible(
 }
 
 #[cfg(test)]
-pub(super) fn localized_update_check_failed_message_legacy_compatible(
+pub(super) fn localized_update_check_failed_message(
     language: Option<&str>,
     version: &str,
 ) -> String {
@@ -136,9 +130,7 @@ pub(super) fn localized_update_check_failed_message_legacy_compatible(
 }
 
 #[cfg(test)]
-pub(super) fn localized_public_server_list_failed_message_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(super) fn localized_public_server_list_failed_message(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
         "Failed to load public server list. Please visit https://www.syncplay.pl/ in your browser.",
@@ -156,10 +148,7 @@ pub(super) fn localized_public_server_list_failed_message_legacy_compatible(
     )
 }
 
-pub(super) fn localized_update_checked_at_line_legacy_compatible(
-    language: Option<&str>,
-    timestamp: &str,
-) -> String {
+pub(super) fn localized_update_checked_at_line(language: Option<&str>, timestamp: &str) -> String {
     format!(
         "{} {timestamp} UTC",
         localized_literal(
@@ -180,9 +169,7 @@ pub(super) fn localized_update_checked_at_line_legacy_compatible(
     )
 }
 
-pub(super) fn localized_update_dismiss_hint_line_legacy_compatible(
-    language: Option<&str>,
-) -> &'static str {
+pub(super) fn localized_update_dismiss_hint_line(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
         "Dismiss it here or trigger another update check from the same modal.",
@@ -292,10 +279,7 @@ fn localize_role_state(language: Option<&str>, controller: bool) -> &'static str
     }
 }
 
-pub(super) fn localize_gui_runtime_message_legacy_compatible(
-    message: &str,
-    language: Option<&str>,
-) -> String {
+pub(super) fn localize_gui_runtime_message(message: &str, language: Option<&str>) -> String {
     let language = Some(normalized_runtime_language_tag_or_default(language));
     exact_messages::localize_exact_message(message, language)
         .or_else(|| pattern_messages::localize_pattern_message(message, language))

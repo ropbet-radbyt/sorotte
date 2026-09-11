@@ -5,10 +5,10 @@ use crate::app::{
 
 #[test]
 fn gui_shell_app_state_handles_discard_configuration_changes_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(!state.commands.can_reset_configuration);
@@ -59,8 +59,7 @@ fn gui_shell_app_state_handles_discard_configuration_changes_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_discard_configuration_changes_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::BeginDiscardConfigurationChanges));
     assert_eq!(
@@ -70,7 +69,7 @@ fn gui_shell_app_state_rejects_invalid_discard_configuration_changes_actions() {
 
     assert!(
         !state.apply(GuiShellAction::CompleteDiscardConfigurationChanges(
-            StoredClientSettingsMvp::default(),
+            StoredClientSettings::default(),
         ))
     );
     assert_eq!(
@@ -97,8 +96,7 @@ fn gui_shell_app_state_rejects_invalid_discard_configuration_changes_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_clean_configuration_save_in_reducer_and_widget_availability() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.commands.can_save_configuration);
     assert!(
@@ -125,10 +123,10 @@ fn gui_shell_app_state_rejects_clean_configuration_save_in_reducer_and_widget_av
 
 #[test]
 fn gui_shell_app_state_handles_configuration_reload_command_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("before.example".to_owned()),
         room: Some("BeforeRoom".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.commands.can_reload_configuration);
@@ -154,7 +152,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     );
     assert!(state.commands.can_reload_configuration);
 
-    let replacement = StoredClientSettingsMvp {
+    let replacement = StoredClientSettings {
         host: Some("after.example".to_owned()),
         room: Some("AfterRoom".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -162,7 +160,7 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
             "Primary".to_owned(),
             "syncplay.example:8999".to_owned(),
         )]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
@@ -201,11 +199,10 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_configuration_reload_command_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::CompleteConfigurationReload(
-        StoredClientSettingsMvp::default(),
+        StoredClientSettings::default(),
     )));
     assert_eq!(
         state.validation.last_action_error.as_deref(),
@@ -231,12 +228,12 @@ fn gui_shell_app_state_rejects_invalid_configuration_reload_command_actions() {
 
 #[test]
 fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
         public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.active_view = GuiShellView::Setup;
     state.last_media_dialog_directory = Some("D:/Dialogs".to_owned());
@@ -287,10 +284,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
     assert_eq!(state.pending_operation, None);
     assert_eq!(state.configuration.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert_eq!(
-        state.saved_configuration,
-        StoredClientSettingsMvp::default()
-    );
+    assert_eq!(state.saved_configuration, StoredClientSettings::default());
     assert!(state.public_servers.servers.is_empty());
     assert!(state.media_search.directories.is_empty());
     assert_eq!(state.last_media_dialog_directory, None);
@@ -299,8 +293,7 @@ fn gui_shell_app_state_handles_clear_gui_data_command_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_clear_gui_data_command_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ConfirmClearGuiData));
     assert!(!state.apply(GuiShellAction::DismissClearGuiDataConfirmation));
@@ -329,9 +322,9 @@ fn gui_shell_app_state_rejects_invalid_clear_gui_data_command_actions() {
 
 #[test]
 fn gui_shell_app_state_settles_secret_draft_after_config_storage_save() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         server_password: Some("old-secret".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::BeginServerPasswordChange));
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -372,13 +365,13 @@ fn gui_shell_app_state_settles_secret_draft_after_config_storage_save() {
 
 #[test]
 fn gui_shell_app_state_requires_pending_config_location_to_be_saved_before_save_and_connect() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginConfigStorageRootChange(
@@ -408,13 +401,13 @@ fn gui_shell_app_state_requires_pending_config_location_to_be_saved_before_save_
 
 #[test]
 fn gui_shell_app_state_connect_once_only_blocks_connection_identity_errors() {
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
 
@@ -450,11 +443,11 @@ fn gui_shell_app_state_connect_once_only_blocks_connection_identity_errors() {
 
 #[test]
 fn gui_shell_app_state_discard_clears_active_configuration_edit_buffers() {
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("saved-room".to_owned()),
         room_list: Some(vec!["saved-room".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
 
@@ -494,15 +487,15 @@ fn gui_shell_app_state_discard_clears_active_configuration_edit_buffers() {
 
 #[test]
 fn gui_shell_app_state_reload_clears_active_secret_edit_and_staged_storage_target() {
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         server_password: Some("saved-secret".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let replacement = StoredClientSettingsMvp {
+    let replacement = StoredClientSettings {
         host: Some("disk.example".to_owned()),
         server_password: Some("disk-secret".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
 
@@ -541,11 +534,11 @@ fn gui_shell_app_state_reload_clears_active_secret_edit_and_staged_storage_targe
 
 #[test]
 fn configuration_changes_expose_typed_apply_requirements_and_save_follow_up() {
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         player_path: Some("C:/mpv/mpv.exe".to_owned()),
         language: Some("en".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&saved);
 

@@ -1,8 +1,8 @@
 use super::*;
 
-pub(crate) fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
-    overrides: &mut LegacyClientArgOverrides,
-    settings: &StoredClientSettingsMvp,
+pub(crate) fn apply_stored_startup_player_defaults_if_arg_absent(
+    overrides: &mut SyncplayClientArgOverrides,
+    settings: &StoredClientSettings,
 ) {
     if overrides.player_path.is_none()
         && let Some(player_path) = settings.player_path.as_deref()
@@ -12,10 +12,8 @@ pub(crate) fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
     }
     if let Some(player_path) = overrides.player_path.as_deref()
         && let Some(per_player_arguments) = settings.per_player_arguments.as_ref()
-        && let Some(args) = lookup_stored_per_player_arguments_for_player_path_legacy_compatible(
-            per_player_arguments,
-            player_path,
-        )
+        && let Some(args) =
+            lookup_stored_per_player_arguments_for_player_path(per_player_arguments, player_path)
     {
         if overrides.player_args.is_empty() {
             overrides.player_args = args.clone();
@@ -25,7 +23,7 @@ pub(crate) fn apply_stored_legacy_startup_player_defaults_if_arg_absent(
     }
 }
 
-fn lookup_stored_per_player_arguments_for_player_path_legacy_compatible<'a>(
+fn lookup_stored_per_player_arguments_for_player_path<'a>(
     per_player_arguments: &'a BTreeMap<String, Vec<String>>,
     player_path: &str,
 ) -> Option<&'a Vec<String>> {
@@ -33,21 +31,17 @@ fn lookup_stored_per_player_arguments_for_player_path_legacy_compatible<'a>(
         return Some(args);
     }
     let normalized_player_path =
-        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
-            player_path,
-        )?;
+        normalize_player_path_for_stored_per_player_arguments_lookup(player_path)?;
     per_player_arguments
         .iter()
         .find_map(|(stored_player_path, args)| {
             let normalized_stored_player_path =
-                normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
-                    stored_player_path,
-                )?;
+                normalize_player_path_for_stored_per_player_arguments_lookup(stored_player_path)?;
             (normalized_stored_player_path == normalized_player_path).then_some(args)
         })
 }
 
-pub(crate) fn normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+pub(crate) fn normalize_player_path_for_stored_per_player_arguments_lookup(
     player_path: &str,
 ) -> Option<String> {
     let trimmed = player_path.trim();
@@ -55,13 +49,13 @@ pub(crate) fn normalize_player_path_for_stored_per_player_arguments_lookup_legac
         return None;
     }
     let slash_normalized = trimmed.replace('\\', "/");
-    if looks_like_windows_player_path_legacy_compatible(trimmed) {
+    if looks_like_windows_player_path(trimmed) {
         return Some(slash_normalized.to_ascii_lowercase());
     }
     Some(slash_normalized)
 }
 
-fn looks_like_windows_player_path_legacy_compatible(path: &str) -> bool {
+fn looks_like_windows_player_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
         return true;

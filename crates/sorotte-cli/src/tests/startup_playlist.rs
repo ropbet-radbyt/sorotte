@@ -19,8 +19,7 @@ impl PlayerAdapter for StartupPlaylistMaintenancePlayer {
 }
 
 #[test]
-fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible_emits_playlist_change_then_index()
- {
+fn protocol_lines_for_startup_playlist_load_from_file_emits_playlist_change_then_index() {
     let unique_suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time should be monotonic enough for test")
@@ -32,10 +31,8 @@ fn protocol_lines_for_startup_playlist_load_from_file_legacy_compatible_emits_pl
     std::fs::write(&playlist_path, "episode1.mkv\nepisode2.mkv\n")
         .expect("playlist file should write");
 
-    let lines = protocol_lines_for_startup_playlist_load_from_file_legacy_compatible(
-        playlist_path.as_path(),
-    )
-    .expect("playlist file should load");
+    let lines = protocol_lines_for_startup_playlist_load_from_file(playlist_path.as_path())
+        .expect("playlist file should load");
     assert_eq!(lines.len(), 2);
 
     let first = decode_message_line(&lines[0]).expect("playlist change line should decode");
@@ -115,7 +112,7 @@ async fn blocked_startup_playlist_write_maintains_player_integrations() {
 
     let emitted = tokio::time::timeout(
         Duration::from_secs(2),
-        crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible(
+        crate::startup_playlist::emit_startup_playlist_load_from_file(
             &mut runtime,
             &mut writer,
             &playlist_path.to_string_lossy(),
@@ -225,7 +222,7 @@ async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_
     let mut file_difference_sink = ignore_file_difference_notification;
     let mut startup_playlist = Some(playlist_path.to_string_lossy().into_owned());
 
-    let exit = run_connected_client_session_with_legacy_startup_overrides(
+    let exit = run_connected_client_session_with_startup_overrides(
         stream,
         &mut runtime,
         &config,

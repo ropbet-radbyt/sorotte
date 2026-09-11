@@ -1,13 +1,13 @@
 use super::*;
 
 #[cfg(test)]
-pub(crate) fn parse_host_and_optional_port_from_host_arg_legacy_compatible(
+pub(crate) fn parse_host_and_optional_port_from_host_arg(
     host_value: &str,
 ) -> (String, Option<u16>) {
-    shared_parse_host_and_optional_port_from_host_arg_legacy_compatible(host_value)
+    shared_parse_host_and_optional_port_from_host_arg(host_value)
 }
 
-fn take_next_non_flag_arg_legacy_compatible<I>(args: &mut std::iter::Peekable<I>) -> Option<String>
+fn take_next_non_flag_arg<I>(args: &mut std::iter::Peekable<I>) -> Option<String>
 where
     I: Iterator<Item = String>,
 {
@@ -87,7 +87,7 @@ fn parse_cli_host_argument(value: &str) -> Result<(String, Option<u16>), HostArg
     }
 }
 
-fn replace_host_override(overrides: &mut LegacyClientArgOverrides, option: &str, value: &str) {
+fn replace_host_override(overrides: &mut SyncplayClientArgOverrides, option: &str, value: &str) {
     overrides.host = None;
     overrides.port = None;
     overrides
@@ -104,7 +104,7 @@ fn replace_host_override(overrides: &mut LegacyClientArgOverrides, option: &str,
         Err(error) => {
             overrides
                 .unknown_options
-                .push(LegacyClientArgumentIssue::invalid_host(option, error));
+                .push(SyncplayClientArgumentIssue::invalid_host(option, error));
         }
     }
 }
@@ -113,7 +113,7 @@ fn replace_non_empty_override(target: &mut Option<String>, value: &str) {
     *target = (!value.is_empty()).then(|| value.to_owned());
 }
 
-fn replace_password_override(overrides: &mut LegacyClientArgOverrides, value: &str) {
+fn replace_password_override(overrides: &mut SyncplayClientArgOverrides, value: &str) {
     overrides.controlled_room_password_override =
         (!value.is_empty()).then(|| SecretValue::from(value.to_owned()));
 }
@@ -121,7 +121,7 @@ fn replace_password_override(overrides: &mut LegacyClientArgOverrides, value: &s
 fn parse_short_option_token<I>(
     arg: &str,
     args: &mut std::iter::Peekable<I>,
-    overrides: &mut LegacyClientArgOverrides,
+    overrides: &mut SyncplayClientArgOverrides,
 ) -> bool
 where
     I: Iterator<Item = String>,
@@ -150,20 +150,19 @@ where
                 let option_name = format!("-{option}");
                 let attached_value = (!remainder.is_empty())
                     .then(|| remainder.strip_prefix('=').unwrap_or(remainder).to_owned());
-                let value =
-                    attached_value.or_else(|| take_next_non_flag_arg_legacy_compatible(args));
+                let value = attached_value.or_else(|| take_next_non_flag_arg(args));
                 match option {
                     'a' => match value {
                         Some(value) => replace_host_override(&mut staged, &option_name, &value),
                         None => staged
                             .unknown_options
-                            .push(LegacyClientArgumentIssue::missing_value(&option_name)),
+                            .push(SyncplayClientArgumentIssue::missing_value(&option_name)),
                     },
                     'n' => match value {
                         Some(value) => replace_non_empty_override(&mut staged.username, &value),
                         None => staged
                             .unknown_options
-                            .push(LegacyClientArgumentIssue::missing_value(&option_name)),
+                            .push(SyncplayClientArgumentIssue::missing_value(&option_name)),
                     },
                     'r' => replace_non_empty_override(
                         &mut staged.room,
@@ -180,7 +179,7 @@ where
             unknown => {
                 overrides
                     .unknown_options
-                    .push(LegacyClientArgumentIssue::unknown_short_option(
+                    .push(SyncplayClientArgumentIssue::unknown_short_option(
                         unknown,
                         !remainder.is_empty(),
                     ));
@@ -192,12 +191,12 @@ where
     true
 }
 
-pub(crate) fn parse_legacy_client_arg_overrides<I, S>(args: I) -> LegacyClientArgOverrides
+pub(crate) fn parse_syncplay_client_arg_overrides<I, S>(args: I) -> SyncplayClientArgOverrides
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut overrides = LegacyClientArgOverrides::default();
+    let mut overrides = SyncplayClientArgOverrides::default();
     let mut iter = args
         .into_iter()
         .map(|value| value.as_ref().to_owned())
@@ -259,34 +258,33 @@ where
                 overrides.clear_gui_data_requested = true;
             }
             "--config-path" => {
-                overrides.config_path = take_next_non_flag_arg_legacy_compatible(&mut iter);
+                overrides.config_path = take_next_non_flag_arg(&mut iter);
             }
             "--config-root" => {
-                overrides.config_root = take_next_non_flag_arg_legacy_compatible(&mut iter);
+                overrides.config_root = take_next_non_flag_arg(&mut iter);
             }
             "--no-store" => {
                 overrides.no_store = true;
             }
             "-psn" => {
-                if take_next_non_flag_arg_legacy_compatible(&mut iter).is_none() {
+                if take_next_non_flag_arg(&mut iter).is_none() {
                     overrides
                         .unknown_options
-                        .push(LegacyClientArgumentIssue::missing_value("-psn"));
+                        .push(SyncplayClientArgumentIssue::missing_value("-psn"));
                 }
             }
             value if value.starts_with("-psn=") => {
                 // macOS process-serial-number compatibility black hole.
             }
             "--language" => {
-                overrides.language = take_next_non_flag_arg_legacy_compatible(&mut iter);
+                overrides.language = take_next_non_flag_arg(&mut iter);
             }
             "--player-path" => {
                 overrides.connect_requested = true;
-                overrides.player_path = take_next_non_flag_arg_legacy_compatible(&mut iter);
+                overrides.player_path = take_next_non_flag_arg(&mut iter);
             }
             "--load-playlist-from-file" => {
-                overrides.load_playlist_from_file =
-                    take_next_non_flag_arg_legacy_compatible(&mut iter);
+                overrides.load_playlist_from_file = take_next_non_flag_arg(&mut iter);
             }
             "--no-gui" => {
                 overrides.connect_requested = true;
@@ -294,35 +292,34 @@ where
             }
             "--host" => {
                 overrides.connect_requested = true;
-                if let Some(value) = take_next_non_flag_arg_legacy_compatible(&mut iter) {
+                if let Some(value) = take_next_non_flag_arg(&mut iter) {
                     replace_host_override(&mut overrides, "--host", &value);
                 } else {
                     overrides
                         .unknown_options
-                        .push(LegacyClientArgumentIssue::missing_value("--host"));
+                        .push(SyncplayClientArgumentIssue::missing_value("--host"));
                 }
             }
             "--name" => {
                 overrides.connect_requested = true;
-                if let Some(value) = take_next_non_flag_arg_legacy_compatible(&mut iter) {
+                if let Some(value) = take_next_non_flag_arg(&mut iter) {
                     replace_non_empty_override(&mut overrides.username, &value);
                 } else {
                     overrides
                         .unknown_options
-                        .push(LegacyClientArgumentIssue::missing_value("--name"));
+                        .push(SyncplayClientArgumentIssue::missing_value("--name"));
                 }
             }
             "--room" => {
                 overrides.connect_requested = true;
-                overrides.room = take_next_non_flag_arg_legacy_compatible(&mut iter)
-                    .filter(|value| !value.is_empty());
+                overrides.room =
+                    take_next_non_flag_arg(&mut iter).filter(|value| !value.is_empty());
             }
             "--password" => {
                 overrides.connect_requested = true;
-                overrides.controlled_room_password_override =
-                    take_next_non_flag_arg_legacy_compatible(&mut iter)
-                        .filter(|value| !value.is_empty())
-                        .map(SecretValue::from);
+                overrides.controlled_room_password_override = take_next_non_flag_arg(&mut iter)
+                    .filter(|value| !value.is_empty())
+                    .map(SecretValue::from);
             }
             _ => {
                 if parse_short_option_token(&arg, &mut iter, &mut overrides) {
@@ -330,7 +327,7 @@ where
                 } else if arg.starts_with('-') {
                     overrides
                         .unknown_options
-                        .push(LegacyClientArgumentIssue::unknown_option(&arg));
+                        .push(SyncplayClientArgumentIssue::unknown_option(&arg));
                 } else if overrides.file.is_none() {
                     overrides.connect_requested = true;
                     overrides.file = Some(arg);

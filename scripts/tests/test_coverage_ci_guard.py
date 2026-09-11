@@ -350,7 +350,7 @@ class CoverageFinalizerTests(unittest.TestCase):
                     "legacy_reference": {
                         "path": ".interop-cache/syncplay-legacy",
                         "commit_sha": (
-                            profile_lanes.PINNED_LEGACY_SYNCPLAY_SHA
+                            profile_lanes.PINNED_SYNCPLAY_SHA
                         ),
                     },
                     "instrumentation_environment": {

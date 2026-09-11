@@ -4,19 +4,15 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::{
-    persistence::{
-        format_serialized_public_servers_list_legacy_compatible,
-        parse_serialized_public_servers_list_legacy_compatible,
-    },
-    state::StoredClientSettingsMvp,
+    persistence::{format_serialized_public_servers_list, parse_serialized_public_servers_list},
+    state::StoredClientSettings,
 };
 
-use super::LEGACY_GUI_QSETTINGS_STORE_NAMES;
+use super::SYNCPLAY_QSETTINGS_STORE_NAMES;
 use super::remote_services;
 use super::runtime_localization::{
-    localized_update_checked_at_line_legacy_compatible,
-    localized_update_dismiss_hint_line_legacy_compatible,
-    localized_update_notice_available_message_legacy_compatible,
+    localized_update_checked_at_line, localized_update_dismiss_hint_line,
+    localized_update_notice_available_message,
 };
 use super::shell_state::{
     GuiConfigurationTab, GuiShellView, GuiTransientNotificationLevel, MenuActionId,
@@ -45,7 +41,7 @@ pub(super) struct GuiPersistedUiState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct GuiUpdateCheckState {
-    pub(super) status: Option<remote_services::LegacyUpdateCheckStatus>,
+    pub(super) status: Option<remote_services::UpdateCheckStatus>,
     pub(super) message: Option<String>,
     pub(super) url: Option<String>,
     pub(super) candidate: Option<remote_services::UpdateCandidate>,
@@ -93,34 +89,30 @@ impl GuiUpdateCheckState {
         if let Some(message) = self.message.as_deref() {
             lines.push(message.to_owned());
         } else {
-            lines.push(
-                localized_update_notice_available_message_legacy_compatible(language).to_owned(),
-            );
+            lines.push(localized_update_notice_available_message(language).to_owned());
         }
         if let Some(timestamp) = self.last_checked_for_updates.as_deref() {
-            lines.push(localized_update_checked_at_line_legacy_compatible(
-                language, timestamp,
-            ));
+            lines.push(localized_update_checked_at_line(language, timestamp));
         } else {
-            lines.push(localized_update_dismiss_hint_line_legacy_compatible(language).to_owned());
+            lines.push(localized_update_dismiss_hint_line(language).to_owned());
         }
         lines
     }
 
     pub(super) fn status_level(&self) -> GuiTransientNotificationLevel {
         match self.status.as_ref() {
-            Some(remote_services::LegacyUpdateCheckStatus::UpToDate) => {
+            Some(remote_services::UpdateCheckStatus::UpToDate) => {
                 GuiTransientNotificationLevel::Success
             }
-            Some(remote_services::LegacyUpdateCheckStatus::Checking) => {
+            Some(remote_services::UpdateCheckStatus::Checking) => {
                 GuiTransientNotificationLevel::Info
             }
-            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable) => {
+            Some(remote_services::UpdateCheckStatus::UpdateAvailable) => {
                 GuiTransientNotificationLevel::Info
             }
-            Some(remote_services::LegacyUpdateCheckStatus::Failed)
-            | Some(remote_services::LegacyUpdateCheckStatus::Unknown(_))
-            | None => GuiTransientNotificationLevel::Warning,
+            Some(remote_services::UpdateCheckStatus::Failed) | None => {
+                GuiTransientNotificationLevel::Warning
+            }
         }
     }
 
@@ -153,13 +145,13 @@ impl GuiUpdateCheckState {
             };
         }
         match self.status.as_ref() {
-            Some(remote_services::LegacyUpdateCheckStatus::Checking) => GuiUpdateIndicatorModel {
+            Some(remote_services::UpdateCheckStatus::Checking) => GuiUpdateIndicatorModel {
                 title: "Checking for updates".to_owned(),
                 detail: "Please wait.".to_owned(),
                 tone: GuiUpdateIndicatorTone::Progress,
                 enabled: false,
             },
-            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable)
+            Some(remote_services::UpdateCheckStatus::UpdateAvailable)
                 if self.candidate.is_some() && self.self_update_supported =>
             {
                 GuiUpdateIndicatorModel {
@@ -169,17 +161,13 @@ impl GuiUpdateCheckState {
                     enabled: true,
                 }
             }
-            Some(remote_services::LegacyUpdateCheckStatus::UpdateAvailable) => {
-                GuiUpdateIndicatorModel {
-                    title: "Manual update available".to_owned(),
-                    detail: "Packaged install required.".to_owned(),
-                    tone: GuiUpdateIndicatorTone::Warning,
-                    enabled: true,
-                }
-            }
-            Some(remote_services::LegacyUpdateCheckStatus::UpToDate)
-                if !self.self_update_supported =>
-            {
+            Some(remote_services::UpdateCheckStatus::UpdateAvailable) => GuiUpdateIndicatorModel {
+                title: "Manual update available".to_owned(),
+                detail: "Packaged install required.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Warning,
+                enabled: true,
+            },
+            Some(remote_services::UpdateCheckStatus::UpToDate) if !self.self_update_supported => {
                 GuiUpdateIndicatorModel {
                     title: "Self-update unavailable".to_owned(),
                     detail: self
@@ -190,21 +178,18 @@ impl GuiUpdateCheckState {
                     enabled: true,
                 }
             }
-            Some(remote_services::LegacyUpdateCheckStatus::UpToDate) => GuiUpdateIndicatorModel {
+            Some(remote_services::UpdateCheckStatus::UpToDate) => GuiUpdateIndicatorModel {
                 title: "Up to date".to_owned(),
                 detail: self.indicator_checked_detail(language),
                 tone: GuiUpdateIndicatorTone::Success,
                 enabled: true,
             },
-            Some(remote_services::LegacyUpdateCheckStatus::Failed)
-            | Some(remote_services::LegacyUpdateCheckStatus::Unknown(_)) => {
-                GuiUpdateIndicatorModel {
-                    title: "Update failed".to_owned(),
-                    detail: "Click to retry.".to_owned(),
-                    tone: GuiUpdateIndicatorTone::Error,
-                    enabled: true,
-                }
-            }
+            Some(remote_services::UpdateCheckStatus::Failed) => GuiUpdateIndicatorModel {
+                title: "Update failed".to_owned(),
+                detail: "Click to retry.".to_owned(),
+                tone: GuiUpdateIndicatorTone::Error,
+                enabled: true,
+            },
             None => GuiUpdateIndicatorModel {
                 title: "Update".to_owned(),
                 detail: "Not checked yet.".to_owned(),
@@ -218,7 +203,7 @@ impl GuiUpdateCheckState {
         if self.update_install_launching()
             || matches!(
                 self.status,
-                Some(remote_services::LegacyUpdateCheckStatus::Checking)
+                Some(remote_services::UpdateCheckStatus::Checking)
             )
             || matches!(
                 self.download_state,
@@ -243,9 +228,7 @@ impl GuiUpdateCheckState {
     fn indicator_checked_detail(&self, language: Option<&str>) -> String {
         self.last_checked_for_updates
             .as_deref()
-            .map(|timestamp| {
-                localized_update_checked_at_line_legacy_compatible(language, timestamp)
-            })
+            .map(|timestamp| localized_update_checked_at_line(language, timestamp))
             .unwrap_or_else(|| "Checked recently.".to_owned())
     }
 
@@ -333,7 +316,7 @@ impl GuiPersistedUiState {
             && self.public_servers.is_empty()
     }
 
-    pub(super) fn merge_into_startup_settings(&self, settings: &mut StoredClientSettingsMvp) {
+    pub(super) fn merge_into_startup_settings(&self, settings: &mut StoredClientSettings) {
         if let Some(last_checked_for_updates) = self.last_checked_for_updates.as_ref() {
             settings.last_checked_for_updates = Some(last_checked_for_updates.clone());
         }
@@ -397,15 +380,15 @@ impl GuiPersistedUiState {
     }
 }
 
-fn legacy_gui_qsettings_store_dir(root: &Path) -> PathBuf {
+fn syncplay_qsettings_store_dir(root: &Path) -> PathBuf {
     root.to_path_buf()
 }
 
-pub(super) fn legacy_gui_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
-    legacy_gui_qsettings_store_dir(root).join(format!("{store_name}.ini"))
+pub(super) fn syncplay_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
+    syncplay_qsettings_store_dir(root).join(format!("{store_name}.ini"))
 }
 
-fn parse_legacy_gui_qsettings_ini(contents: &str) -> BTreeMap<(String, String), String> {
+fn parse_syncplay_qsettings_ini(contents: &str) -> BTreeMap<(String, String), String> {
     let mut current_section = String::new();
     let mut values = BTreeMap::new();
     for raw_line in contents.lines() {
@@ -431,7 +414,7 @@ fn parse_legacy_gui_qsettings_ini(contents: &str) -> BTreeMap<(String, String), 
     values
 }
 
-fn write_legacy_gui_qsettings_ini(
+fn write_syncplay_qsettings_ini(
     path: &Path,
     sections: &[(&str, Vec<(&str, String)>)],
 ) -> Result<(), String> {
@@ -482,11 +465,11 @@ fn remove_file_if_exists(path: &Path, context: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-pub(super) fn clear_legacy_gui_qsettings_files_at_root(root: &Path) -> Result<bool, String> {
+pub(super) fn clear_syncplay_qsettings_files_at_root(root: &Path) -> Result<bool, String> {
     let mut changed = false;
-    for store_name in LEGACY_GUI_QSETTINGS_STORE_NAMES {
+    for store_name in SYNCPLAY_QSETTINGS_STORE_NAMES {
         changed |= remove_file_if_exists(
-            &legacy_gui_qsettings_store_path(root, store_name),
+            &syncplay_qsettings_store_path(root, store_name),
             "Sorotte GUI state",
         )?;
     }
@@ -498,12 +481,12 @@ pub(super) fn persist_gui_ui_state_at_root(
     state: &GuiPersistedUiState,
 ) -> Result<(), String> {
     if state.is_empty() {
-        clear_legacy_gui_qsettings_files_at_root(root)?;
+        clear_syncplay_qsettings_files_at_root(root)?;
         return Ok(());
     }
 
-    write_legacy_gui_qsettings_ini(
-        &legacy_gui_qsettings_store_path(root, "MainWindow"),
+    write_syncplay_qsettings_ini(
+        &syncplay_qsettings_store_path(root, "MainWindow"),
         &[(
             "MainWindow",
             [
@@ -555,30 +538,30 @@ pub(super) fn persist_gui_ui_state_at_root(
             "PublicServerList",
             vec![(
                 "publicServers",
-                format_serialized_public_servers_list_legacy_compatible(&state.public_servers),
+                format_serialized_public_servers_list(&state.public_servers),
             )],
         ));
     }
     if interface_sections.is_empty() {
         remove_file_if_exists(
-            &legacy_gui_qsettings_store_path(root, "Interface"),
+            &syncplay_qsettings_store_path(root, "Interface"),
             "Sorotte GUI state",
         )?;
     } else {
-        write_legacy_gui_qsettings_ini(
-            &legacy_gui_qsettings_store_path(root, "Interface"),
+        write_syncplay_qsettings_ini(
+            &syncplay_qsettings_store_path(root, "Interface"),
             &interface_sections,
         )?;
     }
 
     if let Some(directory) = state.last_media_dialog_directory.as_ref() {
-        write_legacy_gui_qsettings_ini(
-            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+        write_syncplay_qsettings_ini(
+            &syncplay_qsettings_store_path(root, "MediaBrowseDialog"),
             &[("MediaBrowseDialog", vec![("mediadir", directory.clone())])],
         )?;
     } else {
         remove_file_if_exists(
-            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+            &syncplay_qsettings_store_path(root, "MediaBrowseDialog"),
             "Sorotte GUI state",
         )?;
     }
@@ -591,7 +574,7 @@ pub(super) fn load_gui_ui_state_from_root(
 ) -> Result<Option<GuiPersistedUiState>, String> {
     let mut state = GuiPersistedUiState::default();
 
-    let main_window_path = legacy_gui_qsettings_store_path(root, "MainWindow");
+    let main_window_path = syncplay_qsettings_store_path(root, "MainWindow");
     if main_window_path.exists() {
         let contents = std::fs::read_to_string(&main_window_path).map_err(|error| {
             format!(
@@ -599,7 +582,7 @@ pub(super) fn load_gui_ui_state_from_root(
                 main_window_path.display()
             )
         })?;
-        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        let parsed = parse_syncplay_qsettings_ini(&contents);
         state.active_view = parsed
             .get(&(String::from("MainWindow"), String::from("activeView")))
             .and_then(|value| GuiShellView::from_label(value));
@@ -656,7 +639,7 @@ pub(super) fn load_gui_ui_state_from_root(
             .filter(|value| !value.trim().is_empty());
     }
 
-    let interface_path = legacy_gui_qsettings_store_path(root, "Interface");
+    let interface_path = syncplay_qsettings_store_path(root, "Interface");
     if interface_path.exists() {
         let contents = std::fs::read_to_string(&interface_path).map_err(|error| {
             format!(
@@ -664,7 +647,7 @@ pub(super) fn load_gui_ui_state_from_root(
                 interface_path.display()
             )
         })?;
-        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        let parsed = parse_syncplay_qsettings_ini(&contents);
         state.last_checked_for_updates = parsed
             .get(&(String::from("Update"), String::from("lastCheckedQt")))
             .cloned()
@@ -674,11 +657,11 @@ pub(super) fn load_gui_ui_state_from_root(
                 String::from("PublicServerList"),
                 String::from("publicServers"),
             ))
-            .and_then(|value| parse_serialized_public_servers_list_legacy_compatible(value))
+            .and_then(|value| parse_serialized_public_servers_list(value))
             .unwrap_or_default();
     }
 
-    let media_browse_path = legacy_gui_qsettings_store_path(root, "MediaBrowseDialog");
+    let media_browse_path = syncplay_qsettings_store_path(root, "MediaBrowseDialog");
     if media_browse_path.exists() {
         let contents = std::fs::read_to_string(&media_browse_path).map_err(|error| {
             format!(
@@ -686,7 +669,7 @@ pub(super) fn load_gui_ui_state_from_root(
                 media_browse_path.display()
             )
         })?;
-        let parsed = parse_legacy_gui_qsettings_ini(&contents);
+        let parsed = parse_syncplay_qsettings_ini(&contents);
         state.last_media_dialog_directory = parsed
             .get(&(String::from("MediaBrowseDialog"), String::from("mediadir")))
             .cloned()

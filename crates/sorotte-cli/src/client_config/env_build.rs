@@ -1,9 +1,5 @@
 use super::*;
 
-pub(crate) fn normalize_controlled_room_input(room: String) -> (String, Option<String>) {
-    normalize_controlled_room_input_legacy_compatible(room)
-}
-
 pub(crate) fn build_client_loop_config_from_env() -> ClientLoopConfig {
     let room = env_trimmed("SOROTTE_CLIENT_ROOM").unwrap_or_else(|| "cli-demo".to_owned());
     let (room, controlled_room_password_override) = normalize_controlled_room_input(room);
@@ -57,9 +53,9 @@ pub(crate) fn build_client_loop_config_from_env() -> ClientLoopConfig {
             "SOROTTE_CLIENT_SLOWDOWN_THRESHOLD_SECONDS",
         ),
         unpause_action_override: env_trimmed("SOROTTE_CLIENT_UNPAUSE_ACTION")
-            .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
+            .and_then(|value| parse_unpause_action_mode(&value)),
         auto_play_threshold_override: env_trimmed("SOROTTE_CLIENT_AUTOPLAY_MIN_USERS")
-            .and_then(|value| parse_autoplay_min_users_override_legacy_compatible(&value)),
+            .and_then(|value| parse_autoplay_min_users_override(&value)),
         filename_privacy_mode: env_privacy_mode("SOROTTE_CLIENT_FILENAME_PRIVACY_MODE")
             .unwrap_or(PrivacyMode::SendRaw),
         filesize_privacy_mode: env_privacy_mode("SOROTTE_CLIENT_FILESIZE_PRIVACY_MODE")

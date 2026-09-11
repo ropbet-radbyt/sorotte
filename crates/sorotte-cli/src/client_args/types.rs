@@ -22,12 +22,12 @@ impl std::fmt::Display for HostArgumentError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LegacyUnknownOptionIssue {
+pub(crate) struct SyncplayUnknownOptionIssue {
     name: String,
     attached_value_present: bool,
 }
 
-impl LegacyUnknownOptionIssue {
+impl SyncplayUnknownOptionIssue {
     fn new(name: String, attached_value_present: bool) -> Self {
         Self {
             name,
@@ -53,8 +53,8 @@ impl LegacyUnknownOptionIssue {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum LegacyClientArgumentIssue {
-    UnknownOption(LegacyUnknownOptionIssue),
+pub(crate) enum SyncplayClientArgumentIssue {
+    UnknownOption(SyncplayUnknownOptionIssue),
     MissingValue {
         name: String,
     },
@@ -64,19 +64,19 @@ pub(crate) enum LegacyClientArgumentIssue {
     },
 }
 
-impl LegacyClientArgumentIssue {
+impl SyncplayClientArgumentIssue {
     pub(crate) fn unknown_option(argument: &str) -> Self {
         let (name, attached_value_present) = argument
             .split_once('=')
             .map_or((argument, false), |(name, _)| (name, true));
-        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+        Self::UnknownOption(SyncplayUnknownOptionIssue::new(
             name.to_owned(),
             attached_value_present,
         ))
     }
 
     pub(crate) fn unknown_short_option(name: char, attached_value_present: bool) -> Self {
-        Self::UnknownOption(LegacyUnknownOptionIssue::new(
+        Self::UnknownOption(SyncplayUnknownOptionIssue::new(
             format!("-{name}"),
             attached_value_present,
         ))
@@ -118,7 +118,7 @@ impl LegacyClientArgumentIssue {
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
-pub(crate) struct LegacyClientArgOverrides {
+pub(crate) struct SyncplayClientArgOverrides {
     pub(crate) connect_requested: bool,
     pub(crate) no_store: bool,
     pub(crate) debug_requested: bool,
@@ -139,13 +139,13 @@ pub(crate) struct LegacyClientArgOverrides {
     pub(crate) controlled_room_password_override: Option<SecretValue>,
     pub(crate) show_help: bool,
     pub(crate) show_version: bool,
-    pub(crate) unknown_options: Vec<LegacyClientArgumentIssue>,
+    pub(crate) unknown_options: Vec<SyncplayClientArgumentIssue>,
 }
 
-impl std::fmt::Debug for LegacyClientArgOverrides {
+impl std::fmt::Debug for SyncplayClientArgOverrides {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("LegacyClientArgOverrides")
+            .debug_struct("SyncplayClientArgOverrides")
             .field("connect_requested", &self.connect_requested)
             .field("no_store", &self.no_store)
             .field("debug_requested", &self.debug_requested)
@@ -163,7 +163,7 @@ impl std::fmt::Debug for LegacyClientArgOverrides {
     }
 }
 
-impl LegacyClientArgOverrides {
+impl SyncplayClientArgOverrides {
     pub(crate) fn should_connect_client(&self) -> bool {
         self.connect_requested
             || self.host.is_some()
@@ -176,7 +176,7 @@ impl LegacyClientArgOverrides {
             || !self.player_args.is_empty()
     }
 
-    pub(crate) fn should_halt_for_legacy_force_gui_prompt_compatibility(&self) -> bool {
+    pub(crate) fn should_halt_for_syncplay_force_gui_prompt_compatibility(&self) -> bool {
         self.force_gui_prompt_requested && !self.no_gui_requested
     }
 }

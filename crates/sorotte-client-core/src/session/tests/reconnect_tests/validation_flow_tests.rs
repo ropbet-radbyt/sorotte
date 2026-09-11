@@ -376,10 +376,11 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
             ..RoomPlaystateView::default()
         },
     );
-    session.model.room.playstate_updated_at_seconds.insert(
-        "room1".to_owned(),
-        unix_wall_clock_time_seconds_legacy_compatible() - 2.5,
-    );
+    session
+        .model
+        .room
+        .playstate_updated_at_seconds
+        .insert("room1".to_owned(), unix_wall_clock_time_seconds() - 2.5);
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {

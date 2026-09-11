@@ -4,7 +4,7 @@ use sorotte_media_match::MediaMatchWireSignature;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerCompatibilityFallback {
     IgnoredSetCommand { command: String },
-    UsedLegacyFeatureDefaults { context: String },
+    UsedSyncplayFeatureDefaults { context: String },
     IgnoredInvalidFileSize { context: String },
     IgnoredInvalidMediaMatch { context: String, reason: String },
     IgnoredInvalidFeatures { context: String },
@@ -33,7 +33,7 @@ impl ServerCompatibilityFallback {
             Self::IgnoredSetCommand { command } => Self::IgnoredSetCommand {
                 command: bounded_fallback_text(command),
             },
-            Self::UsedLegacyFeatureDefaults { context } => Self::UsedLegacyFeatureDefaults {
+            Self::UsedSyncplayFeatureDefaults { context } => Self::UsedSyncplayFeatureDefaults {
                 context: bounded_fallback_text(context),
             },
             Self::IgnoredInvalidFileSize { context } => Self::IgnoredInvalidFileSize {
@@ -189,7 +189,7 @@ impl ServerClientCapabilities {
     pub(crate) fn is_gui_user(&self) -> bool {
         matches!(
             self.ui_mode.as_deref(),
-            None | Some(LEGACY_UI_MODE_UNKNOWN) | Some(LEGACY_UI_MODE_GRAPHICAL)
+            None | Some(SYNCPLAY_UI_MODE_UNKNOWN) | Some(SYNCPLAY_UI_MODE_GRAPHICAL)
         )
     }
 }
@@ -348,13 +348,16 @@ fn bool_feature(features: &serde_json::Map<String, Value>, name: &str) -> bool {
     features.get(name).and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn legacy_capabilities(version: &str) -> ServerClientCapabilities {
+fn syncplay_capabilities_for_version(version: &str) -> ServerClientCapabilities {
     ServerClientCapabilities {
-        shared_playlists: client_version_meets_minimum(version, LEGACY_SHARED_PLAYLIST_MIN_VERSION),
-        chat: client_version_meets_minimum(version, LEGACY_CHAT_MIN_VERSION),
+        shared_playlists: client_version_meets_minimum(
+            version,
+            SYNCPLAY_SHARED_PLAYLIST_MIN_VERSION,
+        ),
+        chat: client_version_meets_minimum(version, SYNCPLAY_CHAT_MIN_VERSION),
         feature_list: false,
-        readiness: client_version_meets_minimum(version, LEGACY_USER_READY_MIN_VERSION),
-        managed_rooms: client_version_meets_minimum(version, LEGACY_CONTROLLED_ROOMS_MIN_VERSION),
+        readiness: client_version_meets_minimum(version, SYNCPLAY_USER_READY_MIN_VERSION),
+        managed_rooms: client_version_meets_minimum(version, SYNCPLAY_CONTROLLED_ROOMS_MIN_VERSION),
         persistent_rooms: false,
         media_match: false,
         plex_playlist_uris: false,
@@ -363,7 +366,7 @@ fn legacy_capabilities(version: &str) -> ServerClientCapabilities {
         readiness_v2: false,
         participant_status_v1: false,
         large_protocol_frames_v1: false,
-        ui_mode: Some(LEGACY_UI_MODE_UNKNOWN.to_owned()),
+        ui_mode: Some(SYNCPLAY_UI_MODE_UNKNOWN.to_owned()),
         ui_mode_advertised: true,
         advertised_fields: BTreeSet::from([
             "sharedPlaylists",
@@ -383,16 +386,16 @@ fn normalize_capabilities(
     fallbacks: &mut Vec<ServerCompatibilityFallback>,
 ) -> ServerClientCapabilities {
     let Some(Value::Object(features)) = value else {
-        fallbacks.push(ServerCompatibilityFallback::UsedLegacyFeatureDefaults {
+        fallbacks.push(ServerCompatibilityFallback::UsedSyncplayFeatureDefaults {
             context: context.to_owned(),
         });
-        return legacy_capabilities(version);
+        return syncplay_capabilities_for_version(version);
     };
     if features.is_empty() {
-        fallbacks.push(ServerCompatibilityFallback::UsedLegacyFeatureDefaults {
+        fallbacks.push(ServerCompatibilityFallback::UsedSyncplayFeatureDefaults {
             context: context.to_owned(),
         });
-        return legacy_capabilities(version);
+        return syncplay_capabilities_for_version(version);
     }
     capabilities_from_object(features)
 }

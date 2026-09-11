@@ -844,11 +844,9 @@ fn local_playlist_echo_tracking_is_bounded_and_recovers_after_authoritative_over
     let mut latest_files = Vec::new();
     for mutation in 0..=MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
         latest_files = vec![format!("mutation-{mutation}.mkv")];
-        session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-            ClientRuntimeAction::SetPlaylist {
-                files: latest_files.clone(),
-            },
-        ]);
+        session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylist {
+            files: latest_files.clone(),
+        }]);
     }
 
     let optimistic_revision = session
@@ -890,11 +888,9 @@ fn local_playlist_echo_tracking_is_bounded_and_recovers_after_authoritative_over
     );
 
     let recovered_files = vec!["recovered.mkv".to_owned()];
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-        ClientRuntimeAction::SetPlaylist {
-            files: recovered_files.clone(),
-        },
-    ]);
+    session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylist {
+        files: recovered_files.clone(),
+    }]);
     let recovered_revision = session
         .current_room_playlist()
         .expect("new optimistic mutation should be tracked after overflow recovery")
@@ -939,11 +935,9 @@ fn local_playlist_index_echo_tracking_is_bounded_and_recovers_after_overflow() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-        ClientRuntimeAction::SetPlaylist {
-            files: vec!["first.mkv".to_owned(), "second.mkv".to_owned()],
-        },
-    ]);
+    session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylist {
+        files: vec!["first.mkv".to_owned(), "second.mkv".to_owned()],
+    }]);
     session
         .apply_message_json(
             r#"{"Set":{"playlistChange":{"files":["first.mkv","second.mkv"],"user":"alice"}}}"#,
@@ -951,11 +945,9 @@ fn local_playlist_index_echo_tracking_is_bounded_and_recovers_after_overflow() {
         .expect("initial playlist echo should clear file tracking");
 
     for mutation in 0..=MAX_PENDING_LOCAL_PLAYLIST_ECHOES {
-        session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-            ClientRuntimeAction::SetPlaylistIndex {
-                index: i64::try_from(mutation % 2).expect("bounded test index should fit"),
-            },
-        ]);
+        session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylistIndex {
+            index: i64::try_from(mutation % 2).expect("bounded test index should fit"),
+        }]);
     }
     let playlist_before_echo = session
         .current_room_playlist()
@@ -994,11 +986,9 @@ fn local_playlist_index_echo_tracking_is_bounded_and_recovers_after_overflow() {
     } else {
         0
     };
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-        ClientRuntimeAction::SetPlaylistIndex {
-            index: recovered_index,
-        },
-    ]);
+    session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylistIndex {
+        index: recovered_index,
+    }]);
     assert_eq!(
         session.model.playlist.pending_local_index_echoes["room1"]
             .pending
@@ -1061,9 +1051,9 @@ fn playlist_selection_revision_advances_once_per_selection_event() {
         "index events must not masquerade as playlist-content mutations"
     );
 
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
-        ClientRuntimeAction::SetPlaylistIndex { index: 0 },
-    ]);
+    session.apply_local_playlist_runtime_actions(&[ClientRuntimeAction::SetPlaylistIndex {
+        index: 0,
+    }]);
     let optimistic_selection_revision = session
         .current_room_playlist_selection_revision()
         .expect("local replay should project a new selection identity");
@@ -1088,7 +1078,7 @@ fn local_playlist_echo_trackers_clear_across_room_and_reconnect_boundaries() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
         )
         .expect("hello should apply");
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+    session.apply_local_playlist_runtime_actions(&[
         ClientRuntimeAction::SetPlaylist {
             files: vec!["room1.mkv".to_owned()],
         },
@@ -1113,7 +1103,7 @@ fn local_playlist_echo_trackers_clear_across_room_and_reconnect_boundaries() {
     );
     assert!(session.model.playlist.pending_local_index_echoes.is_empty());
 
-    session.apply_local_playlist_runtime_actions_legacy_compatible(&[
+    session.apply_local_playlist_runtime_actions(&[
         ClientRuntimeAction::SetPlaylist {
             files: vec!["room2.mkv".to_owned()],
         },

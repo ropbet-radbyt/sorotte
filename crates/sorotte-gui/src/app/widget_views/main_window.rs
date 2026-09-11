@@ -16,9 +16,8 @@ fn participant_status_tone(status: &MainWindowParticipantStatusPresentation) -> 
             | MainWindowParticipantStatusPresentation::WaitingForFirstReport => {
                 GuiStatusTone::Warning
             }
-            MainWindowParticipantStatusPresentation::LegacyClient => GuiStatusTone::Muted,
+            MainWindowParticipantStatusPresentation::StatusUnsupported => GuiStatusTone::Muted,
             MainWindowParticipantStatusPresentation::Report(_) => unreachable!(),
-            _ => GuiStatusTone::Muted,
         };
     };
 

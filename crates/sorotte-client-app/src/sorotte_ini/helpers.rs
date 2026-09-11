@@ -1,4 +1,4 @@
-pub(super) fn parse_ini_bool_legacy_compatible(value: &str) -> Option<bool> {
+pub(super) fn parse_ini_bool(value: &str) -> Option<bool> {
     let normalized = value.trim();
     if normalized.is_empty() {
         return None;
@@ -20,17 +20,17 @@ pub(super) fn parse_ini_bool_legacy_compatible(value: &str) -> Option<bool> {
     None
 }
 
-pub(super) fn parse_ini_port_legacy_compatible(value: &str) -> Option<u16> {
+pub(super) fn parse_ini_port(value: &str) -> Option<u16> {
     let port = value.trim().parse::<u16>().ok()?;
     (port > 0).then_some(port)
 }
 
-pub(super) fn parse_ini_non_negative_f64_legacy_compatible(value: &str) -> Option<f64> {
+pub(super) fn parse_ini_non_negative_f64(value: &str) -> Option<f64> {
     let parsed = value.trim().parse::<f64>().ok()?;
     (parsed.is_finite() && parsed >= 0.0).then_some(parsed)
 }
 
-pub(super) fn escape_sorotte_ini_value_legacy_compatible(value: &str) -> String {
+pub(super) fn escape_sorotte_ini_value(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -44,7 +44,7 @@ pub(super) fn escape_sorotte_ini_value_legacy_compatible(value: &str) -> String 
     escaped
 }
 
-pub(super) fn unescape_sorotte_ini_value_legacy_compatible(value: &str) -> String {
+pub(super) fn unescape_sorotte_ini_value(value: &str) -> String {
     let mut unescaped = String::with_capacity(value.len());
     let mut characters = value.char_indices().peekable();
     while let Some((index, character)) = characters.next() {
@@ -90,29 +90,21 @@ pub(super) fn unescape_sorotte_ini_value_legacy_compatible(value: &str) -> Strin
     unescaped
 }
 
-pub(super) fn format_ini_bool_legacy_compatible(value: bool) -> &'static str {
+pub(super) fn format_ini_bool(value: bool) -> &'static str {
     if value { "True" } else { "False" }
 }
 
-pub(super) fn format_ini_non_negative_f64_legacy_compatible(value: f64) -> Option<String> {
+pub(super) fn format_ini_non_negative_f64(value: f64) -> Option<String> {
     (value.is_finite() && value >= 0.0).then(|| value.to_string())
 }
 
-pub(super) fn parse_ini_i64_legacy_compatible(value: &str) -> Option<i64> {
+pub(super) fn parse_ini_i64(value: &str) -> Option<i64> {
     value.trim().parse::<i64>().ok()
 }
 
-pub(super) fn upsert_ini_value_legacy_compatible(
-    lines: &mut Vec<String>,
-    section: &str,
-    key: &str,
-    value: &str,
-) {
+pub(super) fn upsert_ini_value(lines: &mut Vec<String>, section: &str, key: &str, value: &str) {
     let section_header = format!("[{section}]");
-    let rendered = format!(
-        "{key} = {}",
-        escape_sorotte_ini_value_legacy_compatible(value)
-    );
+    let rendered = format!("{key} = {}", escape_sorotte_ini_value(value));
 
     let mut in_section = false;
     let mut insert_at = None;
@@ -149,11 +141,7 @@ pub(super) fn upsert_ini_value_legacy_compatible(
     lines.push(rendered);
 }
 
-pub(super) fn remove_ini_value_legacy_compatible(
-    lines: &mut Vec<String>,
-    section: &str,
-    key: &str,
-) {
+pub(super) fn remove_ini_value(lines: &mut Vec<String>, section: &str, key: &str) {
     let mut in_section = false;
     lines.retain(|line| {
         let trimmed = line.trim();

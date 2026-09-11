@@ -1,84 +1,72 @@
 #[cfg(windows)]
-use super::spawn_legacy_external_player_from_spec_legacy_compatible;
+use super::spawn_external_player_from_spec;
 use super::{
     AutoplayThresholdOverride, ChatPolicyOverrides, ClientBehaviorOverrides, ClientLoopConfig,
-    ConnectedSessionExit, HostArgumentError, LegacyClientArgOverrides, LegacyClientArgumentIssue,
-    LegacyExplicitMpvIpcStartupPlayerArgDiagnostics, LegacyExplicitMpvIpcStartupPlayerCommand,
-    LegacyExternalPlayerLaunchSpec, LocalInputCommand, LocalOffsetCommand,
-    ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction, ReadinessAutoplayOverrides,
-    ReconnectCorrectionDiagnosticsFormat, ReconnectCorrectionDiagnosticsState,
-    StoredClientSettingsMvp, apply_chat_policy_overrides, apply_client_behavior_overrides,
-    apply_legacy_client_arg_managed_mpv_overrides, apply_legacy_client_arg_overrides,
-    apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
-    apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
-    apply_readiness_autoplay_overrides, apply_stored_client_settings_mvp_if_env_absent,
-    apply_stored_legacy_startup_player_defaults_if_arg_absent,
-    apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible,
-    build_client_loop_config_from_env, chat_notification_message, clear_sorotte_cli_gui_state,
-    clear_sorotte_cli_stored_settings_legacy_compatible,
-    cli_plex_config_from_env_and_stored_settings, client_hello_features_legacy_compatible,
-    client_runtime_now_seconds, controlled_room_base_name_legacy_compatible,
+    ConnectedSessionExit, ExplicitMpvIpcStartupPlayerArgDiagnostics,
+    ExplicitMpvIpcStartupPlayerCommand, ExternalPlayerLaunchSpec, HostArgumentError,
+    LocalInputCommand, LocalOffsetCommand, ManagedMpvLaunchEnvConfig, PlannedLocalRuntimeAction,
+    ReadinessAutoplayOverrides, ReconnectCorrectionDiagnosticsFormat,
+    ReconnectCorrectionDiagnosticsState, StoredClientSettings, SyncplayClientArgOverrides,
+    SyncplayClientArgumentIssue, apply_chat_policy_overrides, apply_client_behavior_overrides,
+    apply_readiness_autoplay_overrides, apply_startup_file_to_attached_player_if_explicit_mpv_ipc,
+    apply_stored_client_settings_if_env_absent,
+    apply_stored_media_search_startup_file_fallback_if_missing,
+    apply_stored_startup_player_defaults_if_arg_absent,
+    apply_syncplay_client_arg_managed_mpv_overrides, apply_syncplay_client_arg_overrides,
+    apply_syncplay_ui_settings_to_mpv_adapter, build_client_loop_config_from_env,
+    chat_notification_message, clear_sorotte_cli_gui_state, clear_sorotte_cli_stored_settings,
+    cli_plex_config_from_env_and_stored_settings, client_hello_features,
+    client_runtime_now_seconds, controlled_room_base_name,
     controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
     create_client_runtime, create_client_runtime_with_managed_mpv_support,
     create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test,
     create_client_runtime_with_prepared_mpv_and_startup_health_for_test,
     create_client_runtime_with_prepared_mpv_for_test, create_client_session,
-    flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
-    flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
-    flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
-    flush_user_change_notifications_to_sink, format_duration_legacy,
-    format_file_difference_summary, generate_room_password_legacy_compatible,
-    legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible,
-    legacy_external_player_launch_spec_from_overrides_legacy_compatible,
-    legacy_syncplay_ui_settings_from_stored_settings,
-    legacy_unrecognized_arguments_diagnostic_line, legacy_utc_timestamp_string_legacy_compatible,
-    load_sorotte_cli_stored_settings_mvp_legacy_compatible,
-    managed_mpv_launch_base_args_legacy_compatible, managed_mpv_launch_env_config_from_env,
-    normalize_controlled_room_input, parse_autoplay_min_users_override_legacy_compatible,
-    parse_env_bool_legacy_compatible, parse_env_non_negative_f64_legacy_compatible,
-    parse_env_port_legacy_compatible, parse_env_string_list_legacy_compatible,
-    parse_host_and_optional_port_from_host_arg_legacy_compatible,
-    parse_legacy_client_arg_overrides, parse_legacy_utc_timestamp_legacy_compatible,
+    explicit_mpv_ipc_startup_player_arg_diagnostic_lines,
+    external_player_launch_spec_from_overrides, flush_autoplay_notifications_to_sink,
+    flush_chat_notifications_to_sink, flush_controller_auth_notifications_to_sink,
+    flush_file_difference_notifications_to_sink, flush_reconnect_correction_diagnostics_to_sink,
+    flush_reconnect_notifications_to_sink, flush_user_change_notifications_to_sink,
+    format_duration, format_file_difference_summary, generate_room_password,
+    load_sorotte_cli_stored_settings, managed_mpv_launch_base_args,
+    managed_mpv_launch_env_config_from_env, normalize_controlled_room_input,
+    parse_autoplay_min_users_override, parse_env_bool, parse_env_non_negative_f64, parse_env_port,
+    parse_env_string_list, parse_host_and_optional_port_from_host_arg,
     parse_local_input_chat_message, parse_local_input_command,
-    parse_reconnect_state_restore_correction_policy_mode_legacy_compatible,
-    parse_sorotte_ini_stored_client_settings_mvp, parse_unpause_action_mode_legacy_compatible,
-    persist_sorotte_cli_language_setting_legacy_compatible,
-    persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible,
-    persist_sorotte_cli_per_player_arguments_setting_legacy_compatible,
-    persist_sorotte_cli_player_path_setting_legacy_compatible,
-    persist_sorotte_cli_stored_settings_mvp_legacy_compatible,
-    player_playback_telemetry_update_message, playlist_index_in_bounds_legacy_compatible,
-    protocol_lines_for_startup_playlist_load_from_file_legacy_compatible,
+    parse_reconnect_state_restore_correction_policy_mode, parse_sorotte_ini_stored_client_settings,
+    parse_syncplay_client_arg_overrides, parse_unpause_action_mode, parse_utc_timestamp,
+    persist_sorotte_cli_language_setting, persist_sorotte_cli_last_checked_for_updates_setting,
+    persist_sorotte_cli_per_player_arguments_setting, persist_sorotte_cli_player_path_setting,
+    persist_sorotte_cli_stored_settings, player_playback_telemetry_update_message,
+    playlist_index_in_bounds, protocol_lines_for_startup_playlist_load_from_file,
     publish_pending_local_file_updates, reconnect_correction_diagnostics_alert_thresholds_from_env,
     reconnect_correction_diagnostics_format_from_env,
     reconnect_correction_metrics_delta_alert_lines, reconnect_correction_metrics_delta_json_line,
     reconnect_correction_metrics_delta_message, reconnect_correction_state_snapshot_json_line,
     reconnect_correction_state_snapshot_message, reconnect_correction_state_threshold_alert_lines,
-    reconnect_transition_notification_message,
-    resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible,
+    reconnect_transition_notification_message, resolve_startup_file_with_media_search_fallback,
     run_client_network_loop, run_client_network_loop_with_prepared_runtime_for_test,
-    run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
-    run_connected_client_session_with_plex_config_for_test,
-    run_planned_local_runtime_action_legacy_compatible, seek_preparation_diagnostic_messages,
-    should_run_headless_automatic_update_check_legacy_compatible,
-    should_skip_legacy_external_player_launch_due_to_mpv_integration_env,
-    upsert_sorotte_ini_stored_client_settings_mvp, user_change_notification_hidden_from_osd,
-    user_change_notification_message, validate_composed_client_endpoint,
+    run_connected_client_session, run_connected_client_session_with_plex_config_for_test,
+    run_connected_client_session_with_startup_overrides, run_planned_local_runtime_action,
+    seek_preparation_diagnostic_messages, should_run_headless_automatic_update_check,
+    should_skip_external_player_launch_due_to_mpv_integration_env,
+    syncplay_ui_settings_from_stored_settings, syncplay_unrecognized_arguments_diagnostic_line,
+    upsert_sorotte_ini_stored_client_settings, user_change_notification_hidden_from_osd,
+    user_change_notification_message, utc_timestamp_string, validate_composed_client_endpoint,
 };
 use serde_json::Value;
 use sorotte_client_app::app_boundary::application::{
     ClientApplication, ClientApplicationSettings, PlexClientConfig,
 };
 use sorotte_client_app::app_boundary::compatibility::{
-    LegacyConfigurationGetterCompatibilityStatus, LegacyConfigurationGetterIniCompatEntry,
-    LegacyConfigurationGetterStartupCompatEntry, legacy_configuration_getter_ini_compat_entries,
-    legacy_configuration_getter_startup_compat_entries,
+    SyncplayConfigurationGetterCompatibilityStatus, SyncplayConfigurationGetterIniCompatEntry,
+    SyncplayConfigurationGetterStartupCompatEntry,
+    syncplay_configuration_getter_ini_compat_entries,
+    syncplay_configuration_getter_startup_compat_entries,
 };
 use sorotte_client_app::app_boundary::persistence::{
-    format_serialized_per_player_arguments_map_legacy_compatible,
-    format_serialized_public_servers_list_legacy_compatible,
-    parse_serialized_per_player_arguments_map_legacy_compatible,
-    parse_serialized_public_servers_list_legacy_compatible,
+    format_serialized_per_player_arguments_map, format_serialized_public_servers_list,
+    parse_serialized_per_player_arguments_map, parse_serialized_public_servers_list,
 };
 use sorotte_client_app::app_boundary::state::{ClientConfig, PlaybackConfig};
 use sorotte_client_core::{
@@ -90,8 +78,8 @@ use sorotte_client_core::{
 };
 use sorotte_player_api::{PlayerAdapter, PlayerError, PlayerPlaybackTelemetryUpdate};
 use sorotte_player_mpv::{
-    LegacySyncplayUiSettings, MpvAdapter, SorotteBridgeFailure, SorotteBridgeFailureKind,
-    SorotteBridgeHealth,
+    MpvAdapter, SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth,
+    SyncplayUiSettings,
 };
 #[cfg(windows)]
 use sorotte_protocol::HelloPayload;
@@ -328,7 +316,7 @@ fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
             shared_playlists_enabled_override: configured,
             ..test_client_loop_config()
         };
-        let features = client_hello_features_legacy_compatible(&config);
+        let features = client_hello_features(&config);
         assert_eq!(
             features
                 .get("sharedPlaylists")
@@ -341,7 +329,7 @@ fn cli_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
 
 #[test]
 fn cli_hello_advertises_sorotte_state_extensions() {
-    let features = client_hello_features_legacy_compatible(&test_client_loop_config());
+    let features = client_hello_features(&test_client_loop_config());
 
     assert_eq!(
         features
@@ -373,10 +361,10 @@ fn cli_runtime_configuration_debug_redacts_all_passwords() {
         room: format!("+room:{room_password}"),
         ..test_client_loop_config()
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         room: Some(format!("+room:{room_password}")),
         controlled_room_password_override: Some(room_password.into()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
 
     for debug in [format!("{config:?}"), format!("{overrides:?}")] {
@@ -545,12 +533,12 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
         format!("--cookies-file=C:/private/{COOKIES_PATH_MARKER}.txt"),
         format!("https://media.example/video?Signature={SIGNED_URL_MARKER}"),
     ];
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         per_player_arguments: Some(std::collections::BTreeMap::from([(
             "mpv".to_owned(),
             arguments.clone(),
         )])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let playback = PlaybackConfig {
         per_player_arguments: std::collections::BTreeMap::from([(
@@ -569,22 +557,22 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
         extra_args: arguments.clone(),
         ..ManagedMpvLaunchEnvConfig::default()
     };
-    let diagnostics = LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+    let diagnostics = ExplicitMpvIpcStartupPlayerArgDiagnostics {
         supported_tokens: vec![arguments[0].clone()],
         malformed_tokens: vec![arguments[1].clone()],
         unsupported_tokens: vec![arguments[2].clone()],
     };
-    let command = LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+    let command = ExplicitMpvIpcStartupPlayerCommand::SetOptionString {
         name: format!("script-opts-{AUTHORIZATION_MARKER}"),
         value: arguments.join("|"),
     };
-    let launch = LegacyExternalPlayerLaunchSpec {
+    let launch = ExternalPlayerLaunchSpec {
         program: PathBuf::from("mpv"),
         args: arguments,
     };
 
     let rendered_carriers = [
-        ("StoredClientSettingsV1", format!("{stored_settings:?}")),
+        ("StoredClientSettings", format!("{stored_settings:?}")),
         ("PlaybackConfig", format!("{playback:?}")),
         ("ClientConfig", format!("{config:?}")),
         (
@@ -593,14 +581,11 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
         ),
         ("ManagedMpvLaunchEnvConfig", format!("{managed:?}")),
         (
-            "LegacyExplicitMpvIpcStartupPlayerArgDiagnostics",
+            "ExplicitMpvIpcStartupPlayerArgDiagnostics",
             format!("{diagnostics:?}"),
         ),
-        (
-            "LegacyExplicitMpvIpcStartupPlayerCommand",
-            format!("{command:?}"),
-        ),
-        ("LegacyExternalPlayerLaunchSpec", format!("{launch:?}")),
+        ("ExplicitMpvIpcStartupPlayerCommand", format!("{command:?}")),
+        ("ExternalPlayerLaunchSpec", format!("{launch:?}")),
     ];
 
     for (carrier, rendered) in rendered_carriers {
@@ -628,11 +613,7 @@ fn free_form_player_argument_debug_is_redacted_across_every_carrier() {
     assert!(!managed_debug.contains(STARTUP_MEDIA_URL));
 
     let diagnostic_output =
-        legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
-            &diagnostics,
-            1,
-        )
-        .join("\n");
+        explicit_mpv_ipc_startup_player_arg_diagnostic_lines(&diagnostics, 1).join("\n");
     for marker in [AUTHORIZATION_MARKER, COOKIES_PATH_MARKER, SIGNED_URL_MARKER] {
         assert!(!diagnostic_output.contains(marker));
     }

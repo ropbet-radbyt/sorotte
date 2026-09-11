@@ -39,33 +39,6 @@ fn client_session_update_replaces_owned_configuration_slices() {
 }
 
 #[test]
-fn client_runtime_local_media_open_preserves_readiness_without_protocol_mutation() {
-    let mut session = ClientSession::default();
-    session
-            .apply_hello_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
-            )
-            .expect("hello should apply");
-    let player = RecordingPlayer::default();
-    let control = QueuedRuntimeControl::default();
-    let mut runtime = ClientRuntime::new(session, player, control);
-
-    runtime
-        .session_mut_for_test()
-        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
-        .expect("ready state should apply");
-    assert!(
-        !runtime
-            .run_local_media_opened_not_ready()
-            .expect("local media open should remain a harmless compatibility no-op")
-    );
-    assert_eq!(runtime.session().user_ready("alice"), Some(true));
-
-    let (_, _player, control) = runtime.into_parts();
-    assert!(control.outbound_messages().is_empty());
-}
-
-#[test]
 fn client_runtime_user_change_notifications_dispatch_from_inbound_set() {
     let mut session = ClientSession::default();
     session
@@ -449,7 +422,7 @@ fn client_runtime_set_room_dispatches_even_when_target_is_unchanged() {
 }
 
 #[test]
-fn client_runtime_set_room_with_legacy_fallback_uses_default_when_no_file() {
+fn client_runtime_set_room_with_default_fallback_uses_default_when_no_file() {
     let mut session = ClientSession::default();
     session
             .apply_hello_json(
@@ -461,7 +434,7 @@ fn client_runtime_set_room_with_legacy_fallback_uses_default_when_no_file() {
     let mut runtime = ClientRuntime::new(session, player, control);
     assert!(
         runtime
-            .run_set_room_with_legacy_fallback("fallback-room")
+            .run_set_room_with_default_fallback("fallback-room")
             .expect("set room fallback should not fail"),
         "room fallback should emit outbound Set.room from default room"
     );
@@ -672,7 +645,7 @@ fn reconnect_discards_failed_state_but_retains_reliable_chat_and_playlist_comman
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
 
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     runtime
         .flush_queued_protocol_lines_to_transport(|_| {
             Err(ProtocolError::ServerError {
@@ -728,7 +701,7 @@ fn reconnect_discards_failed_state_but_retains_reliable_chat_and_playlist_comman
             .with_position_seconds(99.0)
             .with_paused(false),
     );
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let ProtocolMessage::State(new_state) = &runtime.control().outbound_messages()[2] else {
         panic!("replacement connection should queue a fresh State after reliable commands");
     };

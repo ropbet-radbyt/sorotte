@@ -4553,7 +4553,7 @@ fn seed_real_mpv_config(
         format!("--log-file={}", mpv_log_path.display()),
         "--msg-level=all=v".to_owned(),
     ];
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         player_path: Some(player_path.clone()),
         per_player_arguments: Some(BTreeMap::from([(player_path, extra_args)])),
         // Every real-mpv mode exercises the GUI's playlist-backed media-open
@@ -4566,9 +4566,9 @@ fn seed_real_mpv_config(
         check_for_updates_automatically: Some(false),
         only_switch_to_trusted_domains: (!trusted_domains.is_empty()).then_some(true),
         trusted_domains: (!trusted_domains.is_empty()).then_some(trusted_domains),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(|error| {
+    upsert_sorotte_ini_stored_client_settings_at_path(config_path, &settings).map_err(|error| {
         format!(
             "failed to write isolated real-mpv config {}: {error}",
             config_path.display()

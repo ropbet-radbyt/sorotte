@@ -564,7 +564,7 @@ impl ClientSession {
 
             // An authorized controller resolves AwaitingDecision or a
             // terminal/precommit barrier with ordinary playback control. V2
-            // does not inherit the legacy instaplay preference matrix.
+            // does not inherit the Syncplay instaplay preference matrix.
             self.model.playback.local_paused = Some(false);
             return Vec::new();
         }

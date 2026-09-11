@@ -7,16 +7,15 @@ use std::path::PathBuf;
 
 use super::{
     AutoplayCountdownNotification, ChatConfig, ChatNotification, ClientEffect, ClientEffectError,
-    ClientEffectSink, ClientPingMetricsLegacyCompatible, ClientRuntime, ClientRuntimeAction,
-    ClientSession, ConnectionPhase, ControlledRoomCreationNotification,
-    ControllerAuthTransitionNotification, DesyncCorrectionAction, FileDifferenceSummary,
-    LEGACY_CHAT_MAX_MESSAGE_LENGTH, LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
-    LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, LEGACY_FALLBACK_MAX_FILENAME_LENGTH,
-    LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH, LEGACY_FALLBACK_MAX_USERNAME_LENGTH, PrivacyMode,
-    QueuedRuntimeControl, ReadinessAutoplayConfig, ReconnectStateRestoreCorrectionMetrics,
-    ReconnectStateRestoreCorrectionPolicyMode, ReconnectTransitionNotification, RoomPlaystateView,
-    ServerCapabilities, UnpauseActionMode, UserChangeNotification,
-    unix_wall_clock_time_seconds_legacy_compatible,
+    ClientEffectSink, ClientPingMetrics, ClientRuntime, ClientRuntimeAction, ClientSession,
+    ConnectionPhase, ControlledRoomCreationNotification, ControllerAuthTransitionNotification,
+    DEFAULT_DIFFERENT_DURATION_THRESHOLD_SECONDS, DesyncCorrectionAction, FileDifferenceSummary,
+    PrivacyMode, QueuedRuntimeControl, ReadinessAutoplayConfig,
+    ReconnectStateRestoreCorrectionMetrics, ReconnectStateRestoreCorrectionPolicyMode,
+    ReconnectTransitionNotification, RoomPlaystateView, SYNCPLAY_CHAT_MAX_MESSAGE_LENGTH,
+    SYNCPLAY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH, SYNCPLAY_FALLBACK_MAX_FILENAME_LENGTH,
+    SYNCPLAY_FALLBACK_MAX_ROOM_NAME_LENGTH, SYNCPLAY_FALLBACK_MAX_USERNAME_LENGTH,
+    ServerCapabilities, UnpauseActionMode, UserChangeNotification, unix_wall_clock_time_seconds,
 };
 use sorotte_media_match::MediaMatchTier;
 use sorotte_player_api::{

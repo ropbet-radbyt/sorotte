@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_applies_main_window_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("InitialRoom".to_owned()),
         shared_playlist_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -126,10 +126,10 @@ fn gui_shell_app_state_applies_main_window_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_syncs_playback_menu_actions_from_main_window_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -207,10 +207,10 @@ fn gui_shell_app_state_syncs_playback_menu_actions_from_main_window_runtime_snap
 
 #[test]
 fn gui_shell_app_state_preserves_local_playlist_highlight_across_main_window_playlist_reorders() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("RuntimeRoom".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -253,8 +253,7 @@ fn gui_shell_app_state_preserves_local_playlist_highlight_across_main_window_pla
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -322,8 +321,7 @@ fn gui_shell_app_state_rejects_invalid_main_window_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_preserves_whitespace_room_names_in_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -364,10 +362,10 @@ fn gui_shell_app_state_preserves_whitespace_room_names_in_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Keep".to_owned(), "keep.example:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Existing".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
@@ -564,8 +562,7 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_full_gui_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
         SorotteGuiRuntimeSnapshot {

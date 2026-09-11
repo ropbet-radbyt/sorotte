@@ -201,20 +201,19 @@ fn prepare_native_network_mode(launch: GuiLaunchConfig<'_>) -> Result<(), String
         NativeNetworkMode::TcpLoopback {
             bootstrap: NativeTcpBootstrap::SavedConfig,
         } => {
-            let settings =
-                load_sorotte_ini_stored_client_settings_mvp_from_path(launch.config_path)
-                    .map_err(|error| {
-                        format!(
-                            "failed to validate native saved TCP fixture {}: {error}",
-                            launch.config_path.display()
-                        )
-                    })?
-                    .ok_or_else(|| {
-                        format!(
-                            "native saved TCP fixture {} did not contain settings",
-                            launch.config_path.display()
-                        )
-                    })?;
+            let settings = load_sorotte_ini_stored_client_settings_from_path(launch.config_path)
+                .map_err(|error| {
+                    format!(
+                        "failed to validate native saved TCP fixture {}: {error}",
+                        launch.config_path.display()
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "native saved TCP fixture {} did not contain settings",
+                        launch.config_path.display()
+                    )
+                })?;
             settings.host.ok_or_else(|| {
                 format!(
                     "native saved TCP fixture {} did not define a host",
@@ -224,11 +223,11 @@ fn prepare_native_network_mode(launch: GuiLaunchConfig<'_>) -> Result<(), String
         }
     };
     validate_native_loopback_host(&loopback_host)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         launch.config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             tls_policy: Some("Plaintext".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {
@@ -389,7 +388,7 @@ pub(super) fn seed_native_smoke_config_with_saved_server(
     host: Option<&str>,
     port: Option<u16>,
 ) -> Result<(), String> {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: host.map(str::to_owned),
         port,
         username: Some(CONFIG_USERNAME_VALUE.to_owned()),
@@ -401,9 +400,9 @@ pub(super) fn seed_native_smoke_config_with_saved_server(
             MEDIA_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS,
         ),
         folder_search_warning_threshold_seconds: Some(MEDIA_SEARCH_WARNING_THRESHOLD_SECONDS),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(|error| {
+    upsert_sorotte_ini_stored_client_settings_at_path(config_path, &settings).map_err(|error| {
         format!(
             "failed to seed native smoke config {}: {error}",
             config_path.display()
@@ -419,18 +418,18 @@ pub(super) fn seed_native_smoke_config(config_path: &Path) -> Result<(), String>
     )
 }
 
-pub(super) fn legacy_gui_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
+pub(super) fn syncplay_qsettings_store_path(root: &Path, store_name: &str) -> PathBuf {
     root.join(format!("{store_name}.ini"))
 }
 
-pub(super) fn write_legacy_gui_qsettings_ini(
+pub(super) fn write_syncplay_qsettings_ini(
     path: &Path,
     sections: &[(&str, Vec<(&str, String)>)],
 ) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
-                "failed to create native smoke legacy GUI store directory {}: {error}",
+                "failed to create native smoke Syncplay GUI store directory {}: {error}",
                 parent.display()
             )
         })?;
@@ -453,7 +452,7 @@ pub(super) fn write_legacy_gui_qsettings_ini(
     }
     fs::write(path, contents).map_err(|error| {
         format!(
-            "failed to write native smoke legacy GUI store {}: {error}",
+            "failed to write native smoke Syncplay GUI store {}: {error}",
             path.display()
         )
     })
@@ -475,26 +474,26 @@ pub(super) fn seed_native_smoke_gui_state(
     .flatten()
     .collect::<Vec<_>>();
     if !main_window_entries.is_empty() {
-        write_legacy_gui_qsettings_ini(
-            &legacy_gui_qsettings_store_path(root, "MainWindow"),
+        write_syncplay_qsettings_ini(
+            &syncplay_qsettings_store_path(root, "MainWindow"),
             &[("MainWindow", main_window_entries)],
         )?;
     }
     if !public_servers.is_empty() {
-        write_legacy_gui_qsettings_ini(
-            &legacy_gui_qsettings_store_path(root, "Interface"),
+        write_syncplay_qsettings_ini(
+            &syncplay_qsettings_store_path(root, "Interface"),
             &[(
                 "PublicServerList",
                 vec![(
                     "publicServers",
-                    format_serialized_public_servers_list_legacy_compatible(public_servers),
+                    format_serialized_public_servers_list(public_servers),
                 )],
             )],
         )?;
     }
     if let Some(directory) = last_media_dialog_directory {
-        write_legacy_gui_qsettings_ini(
-            &legacy_gui_qsettings_store_path(root, "MediaBrowseDialog"),
+        write_syncplay_qsettings_ini(
+            &syncplay_qsettings_store_path(root, "MediaBrowseDialog"),
             &[(
                 "MediaBrowseDialog",
                 vec![("mediadir", directory.display().to_string())],
@@ -605,7 +604,7 @@ pub(super) fn wait_for_file_contains(
 }
 
 pub(super) fn saved_configuration_mismatch_message(
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
     media_search_directory: &str,
 ) -> Option<String> {
     let expected = expected_saved_configuration(media_search_directory);
@@ -614,7 +613,7 @@ pub(super) fn saved_configuration_mismatch_message(
     if normalized
         .last_checked_for_updates
         .as_deref()
-        .is_some_and(looks_like_legacy_update_timestamp)
+        .is_some_and(looks_like_update_timestamp)
     {
         normalized.last_checked_for_updates = None;
     }
@@ -626,7 +625,7 @@ pub(super) fn saved_configuration_mismatch_message(
     }
 }
 
-pub(super) fn looks_like_legacy_update_timestamp(value: &str) -> bool {
+pub(super) fn looks_like_update_timestamp(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 23
         && bytes[4] == b'-'
@@ -644,10 +643,8 @@ pub(super) fn looks_like_legacy_update_timestamp(value: &str) -> bool {
         })
 }
 
-pub(super) fn expected_saved_configuration(
-    media_search_directory: &str,
-) -> StoredClientSettingsMvp {
-    StoredClientSettingsMvp {
+pub(super) fn expected_saved_configuration(media_search_directory: &str) -> StoredClientSettings {
+    StoredClientSettings {
         host: Some(CONFIG_HOST_VALUE.to_owned()),
         port: Some(CONFIG_PORT_VALUE.parse().unwrap()),
         username: Some(CONFIG_USERNAME_VALUE.to_owned()),
@@ -701,7 +698,7 @@ pub(super) fn expected_saved_configuration(
         show_contact_info: Some(true),
         language: Some(CONFIG_LANGUAGE_VALUE.to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     }
 }
 
@@ -709,7 +706,7 @@ pub(super) fn wait_for_saved_configuration(
     config_path: &Path,
     media_search_directory: &str,
     timeout: Duration,
-) -> Result<StoredClientSettingsMvp, String> {
+) -> Result<StoredClientSettings, String> {
     let deadline = Instant::now() + timeout;
     let mut last_contents = String::new();
 
@@ -717,7 +714,7 @@ pub(super) fn wait_for_saved_configuration(
         let mismatch = match fs::read_to_string(config_path) {
             Ok(contents) => {
                 last_contents = contents;
-                match load_sorotte_ini_stored_client_settings_mvp_from_path(config_path) {
+                match load_sorotte_ini_stored_client_settings_from_path(config_path) {
                     Ok(Some(settings)) => {
                         if let Some(mismatch) =
                             saved_configuration_mismatch_message(&settings, media_search_directory)
@@ -802,12 +799,12 @@ mod native_network_mode_tests {
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("media");
 
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+        upsert_sorotte_ini_stored_client_settings_at_path(
             &config_path,
-            &StoredClientSettingsMvp {
+            &StoredClientSettings {
                 host: Some("saved.example".to_owned()),
                 port: Some(8999),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             },
         )
         .expect("off-loopback saved fixture should be written");
@@ -817,18 +814,18 @@ mod native_network_mode_tests {
                 .contains("explicit loopback host")
         );
 
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+        upsert_sorotte_ini_stored_client_settings_at_path(
             &config_path,
-            &StoredClientSettingsMvp {
+            &StoredClientSettings {
                 host: Some("127.0.0.1".to_owned()),
                 port: Some(8999),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             },
         )
         .expect("loopback saved fixture should be written");
         prepare_native_network_mode(saved_tcp_launch(&config_path, &media_path))
             .expect("loopback saved fixture should be accepted");
-        let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        let settings = load_sorotte_ini_stored_client_settings_from_path(&config_path)
             .expect("loopback saved fixture should load")
             .expect("loopback saved fixture settings should exist");
         assert_eq!(settings.tls_policy.as_deref(), Some("Plaintext"));

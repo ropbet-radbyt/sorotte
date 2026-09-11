@@ -1,14 +1,14 @@
 use super::*;
 
 #[test]
-fn legacy_server_state_propagation_matches_runtime_core_behavior() {
+fn syncplay_server_state_propagation_matches_runtime_core_behavior() {
     let steps = load_server_runtime_scenario_fixture("server_runtime_state_propagation.jsonl")
         .expect("state propagation scenario fixture should load");
     let rust_events = replay_server_runtime_scenario_steps(&steps)
         .expect("state propagation scenario should replay through server runtime");
-    let legacy_events = match run_legacy_server_fanout_roundtrip(&steps) {
+    let legacy_events = match run_syncplay_server_fanout_roundtrip(&steps) {
         Ok(events) => events,
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!("legacy state propagation test skipped due to missing prerequisites: {err}");
             return;
         }
@@ -128,7 +128,7 @@ fn legacy_server_state_propagation_matches_runtime_core_behavior() {
         assert!(!do_seek);
         assert!(
             (position - 12.5).abs() <= 0.01,
-            "legacy playstate position should stay near requested position"
+            "Syncplay playstate position should stay near requested position"
         );
     }
 
@@ -164,14 +164,14 @@ fn legacy_server_state_propagation_matches_runtime_core_behavior() {
 }
 
 #[test]
-fn legacy_server_state_latency_metrics_matches_runtime_core_behavior() {
+fn syncplay_server_state_latency_metrics_matches_runtime_core_behavior() {
     let steps = load_server_runtime_scenario_fixture("server_runtime_state_latency_metrics.jsonl")
         .expect("state latency-metrics scenario fixture should load");
     let rust_events = replay_server_runtime_scenario_steps(&steps)
         .expect("state latency-metrics scenario should replay through server runtime");
-    let legacy_events = match run_legacy_server_fanout_roundtrip(&steps) {
+    let legacy_events = match run_syncplay_server_fanout_roundtrip(&steps) {
         Ok(events) => events,
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy state latency-metrics test skipped due to missing prerequisites: {err}"
             );
@@ -309,18 +309,18 @@ fn legacy_server_state_latency_metrics_matches_runtime_core_behavior() {
 }
 
 #[test]
-fn legacy_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
         return;
     }
-    match assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+    match assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
         "server_runtime_state_metadata_forwarding.jsonl",
     ) {
         Ok(()) => {}
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy server fanout interop test skipped due to missing prerequisites: {err}"
             );
@@ -332,18 +332,18 @@ fn legacy_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwa
 }
 
 #[test]
-fn legacy_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
         return;
     }
-    match assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+    match assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
         "server_runtime_state_periodic_timeout.jsonl",
     ) {
         Ok(()) => {}
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy server fanout interop test skipped due to missing prerequisites: {err}"
             );

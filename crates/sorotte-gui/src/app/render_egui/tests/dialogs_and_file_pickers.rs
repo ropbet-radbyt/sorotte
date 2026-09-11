@@ -67,9 +67,9 @@ fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
 
 #[test]
 fn gui_widget_egui_renderer_prefers_selected_media_search_directory_for_native_browse_dialog() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/AltMedia".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
 
@@ -81,9 +81,9 @@ fn gui_widget_egui_renderer_prefers_selected_media_search_directory_for_native_b
 
 #[test]
 fn gui_widget_egui_renderer_prefers_last_media_dialog_directory_for_native_browse_dialog() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned(), "D:/AltMedia".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.last_media_dialog_directory = Some("E:/Dialogs".to_owned());
     assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(1)));
@@ -116,8 +116,7 @@ fn gui_widget_egui_renderer_reads_media_search_browse_override_paths_from_lookup
 
 #[test]
 fn bridge_degraded_modal_is_contextual_closable_and_retries_only_integration() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(
         state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
             GuiPlayerSetupRuntimeSnapshot {

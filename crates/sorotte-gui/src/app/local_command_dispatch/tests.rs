@@ -1,23 +1,23 @@
 use super::*;
 
 use super::super::remote_services::{
-    LegacyUpdateCheckStatus, StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+    StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel, UpdateCheckStatus,
 };
 use crate::app::{
     GuiDraftRuntimeSnapshot, GuiPlexPlaylistJobCancellationReason, GuiPlexPlaylistSearchResult,
     GuiPluginSelection, GuiRuntimeRequest, GuiSeekPreparationPhase, GuiSeekPreparationState,
     GuiShellAction, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot, MenuActionId,
-    SettingId, SorotteGuiShellAppState, StoredClientSettingsMvp,
+    SettingId, SorotteGuiShellAppState, StoredClientSettings,
 };
 use sorotte_plex::PlexMediaType;
 
 fn runtime_ready_state() -> SorotteGuiShellAppState {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -363,7 +363,7 @@ fn gui_shell_dispatch_plan_routes_update_indicator_checks() {
 fn gui_shell_dispatch_plan_routes_update_indicator_one_click_install() {
     let mut state = runtime_ready_state();
     let candidate = update_candidate();
-    state.update_check.status = Some(LegacyUpdateCheckStatus::UpdateAvailable);
+    state.update_check.status = Some(UpdateCheckStatus::UpdateAvailable);
     state.update_check.candidate = Some(candidate.clone());
     state.update_check.self_update_supported = true;
 
@@ -413,7 +413,7 @@ fn gui_shell_dispatch_plan_routes_update_indicator_staged_install() {
 #[test]
 fn gui_shell_dispatch_plan_ignores_update_indicator_while_checking() {
     let mut state = runtime_ready_state();
-    state.update_check.status = Some(LegacyUpdateCheckStatus::Checking);
+    state.update_check.status = Some(UpdateCheckStatus::Checking);
 
     let plan = GuiShellDispatchPlan::from_shell_actions(
         &state,

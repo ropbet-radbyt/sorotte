@@ -1075,7 +1075,7 @@ fn stale_rich_update_drops_position_but_preserves_cache_lifecycle_fields() {
 }
 
 #[test]
-fn rejected_rich_update_does_not_disable_the_legacy_fallback_channel() {
+fn rejected_rich_update_does_not_disable_the_default_room_fallback_channel() {
     let mut player = PositionTelemetryPlayer::default();
     player.playback_updates.push_back(
         sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
@@ -2241,7 +2241,7 @@ fn ordered_sequence_accepts_media_derived_after_newer_interleaved_transport_time
                 ),
             ),
         ],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let mut player = PositionTelemetryPlayer::default();
     player.ordered_batches.push_back(batch);
@@ -2284,7 +2284,7 @@ fn generation_advancing_loading_discards_old_file_and_generationless_playback() 
             sorotte_player_api::PlayerEventSequence::new(1),
             sorotte_player_api::PlayerOrderedEventKind::Transport(loading),
         )],
-        legacy_playback_telemetry: Some(
+        playback_telemetry: Some(
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_position_seconds(88.0)
                 .with_paused(true)
@@ -2339,7 +2339,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
                 ),
             ),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let gap = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
@@ -2353,7 +2353,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
                 .with_phase(sorotte_player_api::PlayerTransportPhase::Ended),
             ),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let reacquired = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(3)),
@@ -2381,7 +2381,7 @@ fn ordered_sequence_gap_fails_closed_and_applies_requested_authoritative_snapsho
                 ),
             ),
         ],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut player = PositionTelemetryPlayer {
@@ -2458,7 +2458,7 @@ fn contiguous_same_generation_recovery_does_not_trigger_reacquisition_or_drop_fi
                 sorotte_player_api::PlayerOrderedEventKind::Transport(position_update(1.0, 257.0)),
             ),
         ],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let loading = |sequence| {
         let mut update = sorotte_player_api::PlayerTransportTelemetryUpdate::new(
@@ -2476,7 +2476,7 @@ fn contiguous_same_generation_recovery_does_not_trigger_reacquisition_or_drop_fi
     let recovery = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
         ordered_events: vec![loading(102), loading(103)],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut player = PositionTelemetryPlayer {
@@ -2522,7 +2522,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
             sorotte_player_api::PlayerEventSequence::new(1),
             sorotte_player_api::PlayerOrderedEventKind::Transport(position_update(1.0, 5.0)),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let command_id = sorotte_player_api::PlayerCommandId::new(77);
     let snapshot = sorotte_player_api::PlayerObservationBatch {
@@ -2557,7 +2557,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
                 ),
             ),
         ],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let late_seek = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
@@ -2565,7 +2565,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
             sorotte_player_api::PlayerEventSequence::new(6),
             sorotte_player_api::PlayerOrderedEventKind::Transport(position_update(3.0, 40.0)),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let mut player = PositionTelemetryPlayer::default();
     player
@@ -2642,7 +2642,7 @@ fn sequenced_generationless_file_change_preserves_the_ordered_watermark() {
                 ),
             ),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let gap = sorotte_player_api::PlayerObservationBatch {
         dropped_events_through: None,
@@ -2650,7 +2650,7 @@ fn sequenced_generationless_file_change_preserves_the_ordered_watermark() {
             sorotte_player_api::PlayerEventSequence::new(12),
             sorotte_player_api::PlayerOrderedEventKind::Transport(position_update(2.0, 12.0)),
         )],
-        legacy_playback_telemetry: None,
+        playback_telemetry: None,
     };
     let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut player = PositionTelemetryPlayer {

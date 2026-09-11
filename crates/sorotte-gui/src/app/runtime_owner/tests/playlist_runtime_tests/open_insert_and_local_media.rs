@@ -86,12 +86,12 @@ fn seeded_loopback_shared_playlist_owner(
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -177,11 +177,11 @@ fn implicit_selected_media_changes_arm_exact_delivery_fences() {
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
     let empty_handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut empty_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut empty_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut empty_owner, &empty_handle, &mut empty_state);
     empty_owner =
@@ -414,7 +414,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -425,7 +425,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -481,7 +481,7 @@ fn gui_persisted_config_runtime_owner_automatic_cached_plex_drop_prefers_exact_l
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -493,7 +493,7 @@ fn gui_persisted_config_runtime_owner_automatic_cached_plex_drop_prefers_exact_l
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -572,7 +572,7 @@ fn gui_persisted_config_runtime_owner_automatic_cached_plex_duplicate_drop_retai
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -584,7 +584,7 @@ fn gui_persisted_config_runtime_owner_automatic_cached_plex_duplicate_drop_retai
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -731,12 +731,12 @@ fn gui_persisted_config_runtime_owner_deduplicated_local_drop_retains_first_exac
         .expect("client-core loopback runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -793,11 +793,11 @@ fn deduplicated_local_origin_updates_publish_snapshot_for_bound_and_missing_rows
     ] {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         let mut entries = Vec::new();
         if include_bound_row {
@@ -933,12 +933,12 @@ fn successful_insert_preserves_pending_source_resolution_while_replacement_super
             opened_paths: opened_paths.clone(),
         })));
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             player_path: Some("mpv".to_owned()),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         owner.session_transport = None;
@@ -1040,7 +1040,7 @@ fn gui_persisted_config_runtime_owner_reactivates_cached_plex_append_from_exact_
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -1053,7 +1053,7 @@ fn gui_persisted_config_runtime_owner_reactivates_cached_plex_append_from_exact_
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1155,7 +1155,7 @@ fn gui_persisted_config_runtime_owner_keeps_uncached_plex_local_add_on_fast_path
     let media_path_text = media_path.to_string_lossy().into_owned();
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -1163,7 +1163,7 @@ fn gui_persisted_config_runtime_owner_keeps_uncached_plex_local_add_on_fast_path
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("not-a-valid-url".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let dispatch = owner
@@ -1195,12 +1195,12 @@ fn gui_persisted_config_runtime_owner_routes_shared_playlist_open_through_client
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1278,12 +1278,12 @@ fn same_selected_shared_media_reopen_after_player_replacement_does_not_rearm_a_c
         .clone();
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1437,12 +1437,12 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1538,12 +1538,12 @@ fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delive
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1775,13 +1775,13 @@ fn ordinary_playlist_selection_mutations_wait_for_their_exact_delivery_receipts(
             .with_path(first_path.to_string_lossy().into_owned()),
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     owner
@@ -1906,9 +1906,9 @@ fn gui_persisted_config_runtime_owner_prioritizes_player_setup_before_stream_hel
     let mut owner =
         GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(Some(config_path));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -1944,10 +1944,10 @@ fn gui_persisted_config_runtime_owner_opens_playlist_url_without_a_local_origin(
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         trusted_domains: Some(vec!["media.example.test".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let stream_url = "https://media.example.test/video.mp4";
 
@@ -1983,14 +1983,14 @@ fn gui_persisted_config_runtime_owner_automatic_session_open_loads_direct_web_ur
             .expect("client-core loopback runtime owner should bootstrap");
         owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             player_path: Some("mpv".to_owned()),
             shared_playlist_enabled: Some(true),
             only_switch_to_trusted_domains: Some(false),
             trusted_domains: Some(Vec::new()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -2101,14 +2101,14 @@ fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_med
         next_command_id: 1,
     })));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         only_switch_to_trusted_domains: Some(false),
         trusted_domains: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -2327,14 +2327,14 @@ fn gui_persisted_config_runtime_owner_automatic_session_open_keeps_unsupported_u
             .expect("client-core loopback runtime owner should bootstrap");
         owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some("alice".to_owned()),
             room: Some("room1".to_owned()),
             player_path: Some("mpv".to_owned()),
             shared_playlist_enabled: Some(true),
             only_switch_to_trusted_domains: Some(true),
             trusted_domains: Some(vec!["media.example.test".to_owned()]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -2363,14 +2363,14 @@ fn gui_persisted_config_runtime_owner_automatic_session_open_blocks_untrusted_di
         .expect("client-core loopback runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         only_switch_to_trusted_domains: Some(true),
         trusted_domains: Some(vec!["trusted.example.test".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let untrusted_url = "https://untrusted.example.test/video.mp4";
@@ -2407,12 +2407,12 @@ fn gui_persisted_config_runtime_owner_inserts_shared_playlist_media_at_requested
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -2503,7 +2503,7 @@ fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_m
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -2514,7 +2514,7 @@ fn gui_persisted_config_runtime_owner_applies_playlist_default_source_to_local_m
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
@@ -2574,7 +2574,7 @@ fn gui_persisted_config_runtime_owner_explicit_plex_default_wins_for_cached_plex
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
@@ -2586,7 +2586,7 @@ fn gui_persisted_config_runtime_owner_explicit_plex_default_wins_for_cached_plex
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
@@ -2639,14 +2639,14 @@ fn gui_persisted_config_runtime_owner_uses_local_for_media_match_default_local_m
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(
@@ -2709,11 +2709,11 @@ fn gui_persisted_config_runtime_owner_keeps_manual_media_match_after_same_row_lo
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode1.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -2775,12 +2775,12 @@ fn gui_persisted_config_runtime_owner_appends_shared_playlist_media_without_swit
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -2978,10 +2978,10 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -3052,9 +3052,9 @@ fn gui_persisted_config_runtime_owner_coerces_local_media_open_into_playlist_con
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -3179,12 +3179,12 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("+room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

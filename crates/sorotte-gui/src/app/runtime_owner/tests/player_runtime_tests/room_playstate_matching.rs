@@ -146,7 +146,7 @@ fn run_self_attributed_coordinator_actions(
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
-    let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     owner.sync_session_playstate_to_attached_player_impl(&shell, false);
     state
 }
@@ -378,10 +378,10 @@ fn gui_persisted_config_runtime_owner_skips_self_origin_room_position_sync_for_a
     );
     owner.player_position_seconds = Some(41.0);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -470,10 +470,10 @@ fn gui_persisted_config_runtime_owner_ignores_unattributed_room_playstate_when_n
     owner.player_position_seconds = Some(41.0);
     owner.player_paused = Some(false);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -553,10 +553,10 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
         state: player_state.clone(),
     })));
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -670,10 +670,10 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
     owner.player_paused = Some(false);
     owner.player_paused_for_cache = Some(true);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -887,10 +887,10 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
     owner.player_position_seconds = Some(10.0);
     owner.player_paused = Some(true);
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .session
@@ -1030,7 +1030,7 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
     owner.player_position_seconds = Some(0.0);
     owner.player_paused = Some(false);
 
-    let stored_settings = StoredClientSettingsMvp {
+    let stored_settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
@@ -1038,7 +1038,7 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
         rewind_on_desync: Some(false),
         fastforward_on_desync: Some(false),
         slow_on_desync: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
     state.apply_shared_playlist_entries(vec!["episode1.mkv".to_owned()], Some(0), false);
@@ -1047,9 +1047,7 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
         .session
         .as_mut()
         .expect("session should exist")
-        .sync_runtime_settings(&stored_client_settings_runtime_snapshot_legacy_compatible(
-            &stored_settings,
-        ))
+        .sync_runtime_settings(&stored_client_settings_runtime_snapshot(&stored_settings))
         .expect("runtime settings should sync");
 
     owner

@@ -1,4 +1,4 @@
-use super::super::{StoredClientSettingsMvp, semantic_driver::GuiSemanticScenario};
+use super::super::{StoredClientSettings, semantic_driver::GuiSemanticScenario};
 use super::{GuiSemanticScenarioReport, run_gui_semantic_scenario};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,14 +73,14 @@ fn parse_external_optional_text(token: &str) -> Option<String> {
     }
 }
 
-fn push_external_public_server(settings: &mut StoredClientSettingsMvp, label: &str, address: &str) {
+fn push_external_public_server(settings: &mut StoredClientSettings, label: &str, address: &str) {
     settings
         .public_servers
         .get_or_insert_with(Vec::new)
         .push((label.to_owned(), address.to_owned()));
 }
 
-fn push_external_media_search_directory(settings: &mut StoredClientSettingsMvp, path: &str) {
+fn push_external_media_search_directory(settings: &mut StoredClientSettings, path: &str) {
     settings
         .media_search_directories
         .get_or_insert_with(Vec::new)
@@ -88,7 +88,7 @@ fn push_external_media_search_directory(settings: &mut StoredClientSettingsMvp, 
 }
 
 fn apply_external_semantic_setting_line(
-    settings: &mut StoredClientSettingsMvp,
+    settings: &mut StoredClientSettings,
     line: &str,
 ) -> Result<bool, String> {
     let trimmed = line.trim();
@@ -261,13 +261,13 @@ pub(super) fn parse_external_semantic_script(
 ) -> Result<
     (
         ExternalSemanticScenarioMetadata,
-        StoredClientSettingsMvp,
+        StoredClientSettings,
         String,
     ),
     String,
 > {
     let mut metadata = ExternalSemanticScenarioMetadata::default();
-    let mut settings = StoredClientSettingsMvp::default();
+    let mut settings = StoredClientSettings::default();
     let mut step_lines = Vec::new();
     for (line_index, line) in script.lines().enumerate() {
         let consumed = match apply_external_semantic_metadata_line(&mut metadata, line) {

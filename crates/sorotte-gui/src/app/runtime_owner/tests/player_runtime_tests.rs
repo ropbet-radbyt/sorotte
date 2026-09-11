@@ -2,7 +2,7 @@ use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
 use crate::app::runtime_owner::{GuiPendingStreamLoadContext, GuiPlaylistResolutionCoordinator};
 use crate::app::{GuiPlaylistSourceState, GuiStreamHelperHealth, GuiStreamHelperRuntimeSnapshot};
-use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
 fn write_persisted_media_search_root_index(
     gui_root: &std::path::Path,

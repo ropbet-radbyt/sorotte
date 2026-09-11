@@ -46,7 +46,7 @@ fn barrier_status(
         quorum: None,
         deadline: 120.0,
         participants: BTreeMap::new(),
-        excluded_legacy_clients: BTreeSet::new(),
+        excluded_unsupported_clients: BTreeSet::new(),
     }
 }
 
@@ -504,10 +504,10 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
             ),
         ),
     );
-    let shell_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let shell_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let room_summary = adapter
         .main_window_runtime_snapshot(&shell_state)
@@ -609,7 +609,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
     );
     assert_eq!(
         adapter.runtime.session().current_room_playstate_authority(),
-        Some(RoomPlaystateAuthority::LegacyLocalEcho)
+        Some(RoomPlaystateAuthority::SyncplayLocalEcho)
     );
     assert!(
         adapter
@@ -664,10 +664,10 @@ fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
             ),
         ),
     );
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let before = adapter
         .main_window_runtime_snapshot(&state)

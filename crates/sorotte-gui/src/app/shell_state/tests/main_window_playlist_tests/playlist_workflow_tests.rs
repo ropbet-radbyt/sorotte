@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_moves_and_removes_playlist_rows() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     state
@@ -56,12 +56,12 @@ fn gui_shell_app_state_moves_and_removes_playlist_rows() {
 
 #[test]
 fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
 
@@ -153,12 +153,12 @@ fn gui_shell_app_state_tracks_plex_playlist_picker_lifecycle() {
 
 #[test]
 fn gui_shell_app_state_rejects_stale_plex_search_completion_after_picker_reopens() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
 
@@ -220,10 +220,10 @@ fn gui_shell_app_state_rejects_stale_plex_search_completion_after_picker_reopens
 
 #[test]
 fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(
@@ -264,9 +264,9 @@ fn gui_shell_app_state_moves_playlist_rows_to_arbitrary_targets() {
 
 #[test]
 fn gui_shell_app_state_keeps_active_duplicate_attached_to_its_row_identity() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     state.apply_shared_playlist_entries(
@@ -303,9 +303,9 @@ fn gui_shell_app_state_keeps_active_duplicate_attached_to_its_row_identity() {
 
 #[test]
 fn gui_shell_app_state_preserves_distinct_duplicate_entry_ids_across_reorder_and_undo() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     let original_entries = vec![
@@ -371,9 +371,9 @@ fn gui_shell_app_state_preserves_distinct_duplicate_entry_ids_across_reorder_and
 
 #[test]
 fn gui_shell_app_state_reuses_duplicate_entry_ids_through_shuffle_and_undo() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     let original_entries = vec![
@@ -453,10 +453,10 @@ fn gui_shell_app_state_reuses_duplicate_entry_ids_through_shuffle_and_undo() {
 
 #[test]
 fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another_row() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(
@@ -503,10 +503,10 @@ fn gui_shell_app_state_preserves_selected_playlist_entry_when_reordering_another
 
 #[test]
 fn gui_shell_app_state_projects_playlist_source_defaults_and_disabled_options() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -547,10 +547,10 @@ fn gui_shell_app_state_projects_playlist_source_defaults_and_disabled_options() 
 
 #[test]
 fn gui_shell_app_state_playlist_default_source_applies_only_to_new_rows() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -631,11 +631,11 @@ fn gui_shell_app_state_playlist_default_source_applies_only_to_new_rows() {
 
 #[test]
 fn gui_shell_app_state_playlist_source_override_recovers_after_plugin_reenabled() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -699,14 +699,14 @@ fn gui_shell_app_state_playlist_source_override_recovers_after_plugin_reenabled(
 
 #[test]
 fn gui_shell_app_state_playlist_source_override_recovers_after_plex_runtime_unavailable() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -776,10 +776,10 @@ fn gui_shell_app_state_playlist_source_override_recovers_after_plex_runtime_unav
 
 #[test]
 fn gui_shell_app_state_preserves_playlist_source_metadata_across_edits_and_undo() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(
@@ -832,9 +832,9 @@ fn gui_shell_app_state_preserves_playlist_source_metadata_across_edits_and_undo(
 
 #[test]
 fn gui_shell_app_state_ignores_duplicate_shared_playlist_additions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -880,9 +880,9 @@ fn gui_shell_app_state_ignores_duplicate_shared_playlist_additions() {
 
 #[test]
 fn gui_shell_app_state_filters_duplicate_playlist_insertions_from_media_open() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -925,9 +925,9 @@ fn gui_shell_app_state_filters_duplicate_playlist_insertions_from_media_open() {
 
 #[test]
 fn gui_shell_app_state_announces_shared_playlist_events() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -1002,9 +1002,9 @@ fn gui_shell_app_state_announces_shared_playlist_events() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_shared_playlist_events() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -1017,9 +1017,9 @@ fn gui_shell_app_state_rejects_invalid_shared_playlist_events() {
         Some("Shared playlist events are unavailable when shared playlists are disabled.")
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -1040,9 +1040,9 @@ fn gui_shell_app_state_rejects_invalid_shared_playlist_events() {
 
 #[test]
 fn gui_shell_app_state_tracks_playlist_workflow_editors_undo_and_shuffle() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
 
@@ -1241,9 +1241,9 @@ fn gui_playlist_file_helpers_roundtrip_and_track_file_actions() {
         Some(playlist_path_string.clone())
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::LoadSharedPlaylistFromFile {
         path: playlist_path_string.clone(),

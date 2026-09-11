@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn persist_sorotte_cli_player_path_setting_legacy_compatible_updates_client_settings_player_path() {
+fn persist_sorotte_cli_player_path_setting_updates_client_settings_player_path() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -21,9 +21,9 @@ fn persist_sorotte_cli_player_path_setting_legacy_compatible_updates_client_sett
     )
     .expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_player_path_setting_legacy_compatible("C:/players/new.exe")
+    persist_sorotte_cli_player_path_setting("C:/players/new.exe")
         .expect("player path setting should persist");
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(loaded.player_path.as_deref(), Some("C:/players/new.exe"));
@@ -40,8 +40,7 @@ fn persist_sorotte_cli_player_path_setting_legacy_compatible_updates_client_sett
 }
 
 #[test]
-fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_updates_client_settings_per_player_arguments()
- {
+fn persist_sorotte_cli_per_player_arguments_setting_updates_client_settings_per_player_arguments() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -61,12 +60,12 @@ fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_updates_cl
     )
     .expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_per_player_arguments_setting_legacy_compatible(
+    persist_sorotte_cli_per_player_arguments_setting(
         "C:/players/mpv.exe",
         &["--fs".to_owned(), "--profile=fast".to_owned()],
     )
     .expect("per-player arguments should persist");
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     let per_player_arguments = loaded
@@ -96,8 +95,7 @@ fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_updates_cl
 }
 
 #[test]
-fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_dedupes_windows_path_variants()
- {
+fn persist_sorotte_cli_per_player_arguments_setting_dedupes_windows_path_variants() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -117,13 +115,10 @@ fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_dedupes_wi
         )
         .expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_per_player_arguments_setting_legacy_compatible(
-        r"C:\Players\mpv.exe",
-        &["--new".to_owned()],
-    )
-    .expect("per-player arguments should persist");
+    persist_sorotte_cli_per_player_arguments_setting(r"C:\Players\mpv.exe", &["--new".to_owned()])
+        .expect("per-player arguments should persist");
 
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     let per_player_arguments = loaded
@@ -158,7 +153,7 @@ fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible_dedupes_wi
 }
 
 #[test]
-fn clear_sorotte_cli_stored_settings_legacy_compatible_removes_config_file_via_env_override_path() {
+fn clear_sorotte_cli_stored_settings_removes_config_file_via_env_override_path() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -174,16 +169,16 @@ fn clear_sorotte_cli_stored_settings_legacy_compatible_removes_config_file_via_e
     std::fs::write(&config_path, "[server_data]\nhost = example.org\n")
         .expect("seed config should write");
     env.set_var(key, &config_path);
-    let cleared = clear_sorotte_cli_stored_settings_legacy_compatible()
-        .expect("clearing stored settings should succeed");
+    let cleared =
+        clear_sorotte_cli_stored_settings().expect("clearing stored settings should succeed");
     assert!(cleared, "existing config file should be cleared");
     assert!(
         !config_path.exists(),
         "config file should be removed after clear-gui-data handling"
     );
 
-    let cleared_again = clear_sorotte_cli_stored_settings_legacy_compatible()
-        .expect("clearing missing settings should be a no-op");
+    let cleared_again =
+        clear_sorotte_cli_stored_settings().expect("clearing missing settings should be a no-op");
     assert!(!cleared_again, "missing config file should report no-op");
 
     match prior {
@@ -216,15 +211,14 @@ fn persist_sorotte_cli_stored_settings_uses_env_config_root_when_path_absent() {
         room: "RootRoom".to_owned(),
         ..test_client_loop_config()
     };
-    persist_sorotte_cli_stored_settings_mvp_legacy_compatible(&config)
-        .expect("settings should persist via config root");
+    persist_sorotte_cli_stored_settings(&config).expect("settings should persist via config root");
 
     let config_path = temp_root.join("sorotte.ini");
     assert!(
         config_path.exists(),
         "config root should store sorotte.ini under the selected folder"
     );
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(loaded.host.as_deref(), Some("root.example"));
@@ -267,8 +261,7 @@ fn persist_sorotte_cli_stored_settings_prefers_env_path_over_env_config_root() {
         host: "path.example".to_owned(),
         ..test_client_loop_config()
     };
-    persist_sorotte_cli_stored_settings_mvp_legacy_compatible(&config)
-        .expect("settings should persist via config path");
+    persist_sorotte_cli_stored_settings(&config).expect("settings should persist via config path");
 
     assert!(
         config_path.exists(),

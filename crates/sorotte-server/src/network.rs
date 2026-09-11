@@ -1098,7 +1098,7 @@ async fn run_server_network_client_session_with_timeouts_until_shutdown(
                                     if source.to_string() == PROTOCOL_LINE_TOO_LONG_ERROR {
                                         PROTOCOL_LINE_TOO_LONG_ERROR
                                     } else {
-                                        LEGACY_SERVER_LINE_DECODE_ERROR
+                                        SYNCPLAY_SERVER_LINE_DECODE_ERROR
                                     },
                                 ),
                             )
@@ -1251,7 +1251,7 @@ pub(crate) async fn stalled_transport_error_response_write_for_test(
 ) -> io::Result<()> {
     let mut transport = ServerNetworkTransport::StalledWrite;
     let error_line = encode_message_line(&ProtocolMessage::error_message(
-        LEGACY_SERVER_LINE_DECODE_ERROR,
+        SYNCPLAY_SERVER_LINE_DECODE_ERROR,
     ))
     .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
     transport

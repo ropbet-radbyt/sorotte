@@ -32,8 +32,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         state: &SorotteGuiShellAppState,
         mut command_availability: GuiCommandAvailabilityState,
     ) -> GuiCommandAvailabilityState {
-        if !legacy_chat_input_enabled(&self.runtime_settings.settings)
-            || state.pending_operation.is_some()
+        if !chat_input_enabled(&self.runtime_settings.settings) || state.pending_operation.is_some()
         {
             return command_availability;
         }
@@ -173,7 +172,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     fn set_room(&mut self, room: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room,
-            legacy_fallback: false,
+            default_room_fallback: false,
         }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
@@ -199,10 +198,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
+    fn set_room_with_default_fallback(&mut self, default_room: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room: default_room,
-            legacy_fallback: true,
+            default_room_fallback: true,
         }) {
             Ok(true) => {
                 self.pending_room_for_next_hello =
@@ -312,16 +311,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 "Client-core session runtime readiness dispatch failed: {error}"
             )),
         }
-    }
-
-    fn mark_local_media_opened_not_ready(&mut self) -> Result<bool, String> {
-        self.runtime
-            .run_local_media_opened_not_ready()
-            .map_err(|error| {
-                format!(
-                    "Client-core session runtime local media-open readiness dispatch failed: {error}"
-                )
-            })
     }
 
     fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
@@ -975,7 +964,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         );
         let queued = self
             .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(self.dont_slow_down_with_me);
+            .run_state_sync_heartbeat_with_ping(self.dont_slow_down_with_me);
         let after = self.runtime.playback_coordination_snapshot();
         crate::app::test_lifecycle::record_playback_control(
             "playback-control-state-publication-after",
@@ -1087,7 +1076,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             return None;
         }
         self.runtime
-            .current_room_playstate_legacy_ping_compatible_now()
+            .current_room_playstate_with_ping_now()
             .map(|playstate| GuiSessionRoomPlaystate {
                 position_seconds: playstate.position,
                 paused: playstate.paused,
@@ -1185,7 +1174,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         let active_room = self
             .runtime
             .session()
-            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+            .local_room_command_target_with_default_fallback(&self.baseline_room);
         self.dispatch_application_command(ClientCommand::update_settings(
             ClientApplicationSettings::new(config).with_active_room(active_room),
         ))?;
@@ -1206,7 +1195,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         let active_room = self
             .runtime
             .session()
-            .local_room_command_target_with_legacy_fallback(&self.baseline_room);
+            .local_room_command_target_with_default_fallback(&self.baseline_room);
         self.dispatch_application_command(ClientCommand::update_settings(
             ClientApplicationSettings::new(config).with_active_room(active_room),
         ))?;
@@ -1433,7 +1422,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
         let Some(room_playstate) = self
             .runtime
-            .current_room_playstate_legacy_ping_compatible_at(now_seconds)
+            .current_room_playstate_with_ping_at(now_seconds)
         else {
             return Ok(Vec::new());
         };
@@ -1491,18 +1480,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn publish_local_file_legacy_compatible(
+    fn publish_local_file(
         &mut self,
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<(), String> {
         self.runtime
-            .publish_local_file_legacy_compatible(
-                file_payload,
-                filename_privacy_mode,
-                filesize_privacy_mode,
-            )
+            .publish_local_file(file_payload, filename_privacy_mode, filesize_privacy_mode)
             .map_err(|error| {
                 format!("Client-core session runtime local file publish failed: {error}")
             })
@@ -1518,7 +1503,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                     .to_owned(),
             );
         };
-        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+        let (host, _) = parse_host_and_optional_port_from_host_arg(&address);
         if host.trim().is_empty() {
             return Err(
                 "Client-core session runtime cannot connect because the selected public-server address is invalid."

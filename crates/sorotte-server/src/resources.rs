@@ -11,7 +11,6 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct ServerResourceLimits {
     pub active_connections: usize,
     pub unauthenticated_connections: usize,
@@ -91,7 +90,6 @@ impl ServerResourceLimits {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub struct ServerResourceSnapshot {
     pub active_connections: usize,
     pub unauthenticated_connections: usize,

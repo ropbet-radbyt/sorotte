@@ -2374,7 +2374,7 @@ mod tests {
         GuiOwnedPlayer, GuiSessionRuntimeAdapter, GuiTestPlayerAdapter,
     };
     use crate::app::testing::support::test_temp_root;
-    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
     struct MediaMatchTargetSession {
         target: String,
@@ -2565,13 +2565,13 @@ mod tests {
         owner.active_shared_playlist_index = Some(0);
         owner.media_match_runtime_snapshot.health = GuiMediaMatchToolHealth::Healthy;
 
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
             media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
             media_matching_plugin_enabled: Some(true),
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
 
@@ -2719,10 +2719,10 @@ mod tests {
         std::fs::write(media_root.join("episode.mkv"), b"not real media")
             .expect("candidate file should be created");
         let media_root_text = media_root.to_string_lossy().into_owned();
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_search_directories: Some(vec![media_root_text]),
             media_match_fingerprinting_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
@@ -2843,10 +2843,10 @@ mod tests {
             std::fs::create_dir_all(live_index_root.join("current.json"))
                 .expect("manifest destination conflict should be created");
 
-            let saved_settings = StoredClientSettingsMvp {
+            let saved_settings = StoredClientSettings {
                 media_matching_plugin_enabled: Some(true),
                 media_match_fingerprinting_enabled: Some(true),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             };
             let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
             let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
@@ -2980,10 +2980,10 @@ mod tests {
         std::fs::create_dir_all(&nested_directory).expect("media root should be created");
         let media_path = nested_directory.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
             media_match_fingerprinting_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         let root_key =
@@ -3029,11 +3029,11 @@ mod tests {
         std::fs::create_dir_all(&media_root).expect("media root should be created");
         let media_path = media_root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
             media_match_fingerprinting_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -3057,11 +3057,11 @@ mod tests {
         let previous_media_path = media_root.join("episode1.mkv");
         std::fs::write(&previous_media_path, b"not real media")
             .expect("previous media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
             media_match_fingerprinting_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(
@@ -3143,12 +3143,12 @@ mod tests {
         );
         owner.media_match_runtime_snapshot.health = crate::app::GuiMediaMatchToolHealth::Healthy;
 
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
             media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec![remote_file_name.to_owned()], Some(0), false);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -3223,7 +3223,7 @@ mod tests {
     fn media_match_background_progress_backlog_yields_between_runtime_pumps() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let (tx, rx) = mpsc::channel();
 
@@ -3262,7 +3262,7 @@ mod tests {
     fn canceled_media_match_background_worker_ok_result_does_not_publish_stale_nearest_match() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
         owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
@@ -3310,10 +3310,10 @@ mod tests {
     #[test]
     fn disabled_media_match_background_worker_result_does_not_publish_stale_nearest_match() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             media_matching_plugin_enabled: Some(false),
             media_match_fingerprinting_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
@@ -3362,11 +3362,11 @@ mod tests {
     #[test]
     fn background_warmup_waits_for_unresolved_room_media_before_full_root_scan() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_background_warmup_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -3390,11 +3390,11 @@ mod tests {
     #[test]
     fn background_warmup_cancels_running_full_root_scan_for_unresolved_room_media() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_background_warmup_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -3429,11 +3429,11 @@ mod tests {
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(false),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -3475,11 +3475,11 @@ mod tests {
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -3509,11 +3509,11 @@ mod tests {
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -3552,12 +3552,12 @@ mod tests {
         let config_path = root.join("sorotte.ini");
         let media_path = root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
             media_match_background_warmup_enabled: Some(false),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -3606,11 +3606,11 @@ mod tests {
         std::fs::create_dir_all(&other_root).expect("other root should be created");
         let other_path = other_root.join("episode.mkv");
         std::fs::write(&media_path, b"not real media").expect("media file should be created");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             media_match_fingerprinting_enabled: Some(true),
             media_match_wire_sharing_enabled: Some(true),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(

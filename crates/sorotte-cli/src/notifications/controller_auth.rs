@@ -7,14 +7,11 @@ pub(crate) fn controller_auth_transition_notification_message(
     shared_controller_auth_transition_notification_message(notification)
 }
 
-pub(crate) fn controller_auth_transition_notification_message_localized_legacy_compatible(
+pub(crate) fn controller_auth_transition_notification_message_localized(
     notification: &ControllerAuthTransitionNotification,
     language: Option<&str>,
 ) -> String {
-    shared_controller_auth_transition_notification_message_localized_legacy_compatible(
-        notification,
-        language,
-    )
+    shared_controller_auth_transition_notification_message_localized(notification, language)
 }
 
 pub(crate) fn controller_auth_notification_hidden_from_osd(
@@ -29,10 +26,10 @@ fn emit_controller_auth_transition_notification(
     if controller_auth_notification_hidden_from_osd(notification) {
         return Ok(());
     }
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let language = current_runtime_language_tag();
     println!(
         "{}",
-        controller_auth_transition_notification_message_localized_legacy_compatible(
+        controller_auth_transition_notification_message_localized(
             notification,
             language.as_deref(),
         )
@@ -40,7 +37,7 @@ fn emit_controller_auth_transition_notification(
     Ok(())
 }
 
-fn emit_controller_auth_transition_notification_to_player_legacy_compatible(
+fn emit_controller_auth_transition_notification_to_player(
     player: &mut MpvAdapter,
     notification: &ControllerAuthTransitionNotification,
 ) {
@@ -48,28 +45,25 @@ fn emit_controller_auth_transition_notification_to_player_legacy_compatible(
         return;
     }
 
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let message = controller_auth_transition_notification_message_localized_legacy_compatible(
+    let language = current_runtime_language_tag();
+    let message = controller_auth_transition_notification_message_localized(
         notification,
         language.as_deref(),
     );
-    emit_sorotte_player_osd_notification_legacy_compatible(
+    emit_sorotte_player_osd_notification(
         player,
         &message,
-        LegacySyncplayOsdKind::Notification,
+        SyncplayOsdKind::Notification,
         "controller-auth notification",
     );
 }
 
-pub(crate) fn flush_controller_auth_notifications_legacy_compatible(
+pub(crate) fn flush_controller_auth_notifications(
     runtime: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
     while let Some(notification) = runtime.pending_controller_auth_notification().cloned() {
         runtime.with_player_io(|player| {
-            emit_controller_auth_transition_notification_to_player_legacy_compatible(
-                player,
-                &notification,
-            );
+            emit_controller_auth_transition_notification_to_player(player, &notification);
         });
         emit_controller_auth_transition_notification(&notification)?;
         let acknowledged = runtime.acknowledge_controller_auth_notification();

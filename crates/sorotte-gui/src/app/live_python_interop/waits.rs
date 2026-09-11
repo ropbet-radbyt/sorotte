@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use sorotte_compat::{LegacyPythonPeerSnapshot, LegacyServerPythonPeerHarness};
+use sorotte_compat::{SyncplayPythonPeerSnapshot, SyncplayServerPythonPeerHarness};
 
 use super::super::{
     GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle, SorotteGuiShellAppState,
@@ -19,33 +19,33 @@ use super::{
 };
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_ready(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     ready: bool,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_user_ready(username, ready, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_controller(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     controller: bool,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_user_controller(username, controller, timeout)
         .map_err(LivePythonPeerInteropError::from)
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_chat_message(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     message: &str,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_chat_message(username, message, timeout)
         .map_err(LivePythonPeerInteropError::from)
@@ -56,11 +56,11 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_file_name
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     file_name: &str,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     let deadline = Instant::now() + timeout;
     loop {
         // File-open completion and its protocol receipt can outlive the
@@ -88,10 +88,10 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     playlist: &[String],
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     let deadline = Instant::now() + timeout;
     loop {
         // Production transports advance one receipt-owned protocol frame at a
@@ -117,10 +117,10 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_observed_playlist_index
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     index: usize,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     let deadline = Instant::now() + timeout;
     loop {
         pump_and_apply(owner, handle, state);
@@ -142,9 +142,9 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_local_ready_with_runtim
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     expected_ready: bool,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     let deadline = Instant::now() + LIVE_PYTHON_INTEROP_TIMEOUT;
     loop {
         // A readiness mutation can still be crossing the real GUI runtime and
@@ -167,10 +167,10 @@ pub(in crate::app::live_python_interop) fn wait_for_peer_local_ready_with_runtim
 }
 
 pub(in crate::app::live_python_interop) fn wait_for_peer_observed_user_presence(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     timeout: Duration,
-) -> Result<LegacyPythonPeerSnapshot, LivePythonPeerInteropError> {
+) -> Result<SyncplayPythonPeerSnapshot, LivePythonPeerInteropError> {
     harness
         .wait_for_peer_observed_user_presence(username, timeout)
         .map_err(LivePythonPeerInteropError::from)
@@ -181,7 +181,7 @@ pub(in crate::app::live_python_interop) fn wait_for_sustained_connection_presenc
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
     username: &str,
     duration: Duration,
 ) -> Result<(), LivePythonPeerInteropError> {

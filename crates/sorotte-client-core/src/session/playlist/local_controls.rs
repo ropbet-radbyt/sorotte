@@ -11,11 +11,9 @@ impl ClientSession {
         if self.chat_config.max_chat_message_length == 0 {
             return Vec::new();
         }
-        let sanitized = Self::sanitize_chat_message_legacy_compatible(&message);
-        let truncated = Self::truncate_chat_message_legacy_compatible(
-            &sanitized,
-            self.chat_config.max_chat_message_length,
-        );
+        let sanitized = Self::sanitize_chat_message(&message);
+        let truncated =
+            Self::truncate_chat_message(&sanitized, self.chat_config.max_chat_message_length);
         vec![ClientRuntimeAction::SendChat { message: truncated }]
     }
 
@@ -138,9 +136,7 @@ impl ClientSession {
         if room.is_empty() {
             return Vec::new();
         }
-        let password = SecretValue::new(Self::normalize_control_password_legacy_compatible(
-            password.expose_secret(),
-        ));
+        let password = SecretValue::new(Self::normalize_control_password(password.expose_secret()));
         self.model.controller.last_auth_password_attempt = Some(password.clone());
         vec![
             ClientRuntimeAction::NotifyControllerAuthTransition(
@@ -157,8 +153,7 @@ impl ClientSession {
         if !self.is_active() {
             return Vec::new();
         }
-        let (room, inline_password) =
-            Self::normalize_runtime_controlled_room_input_legacy_compatible(room);
+        let (room, inline_password) = Self::normalize_runtime_controlled_room_input(room);
         if room.is_empty() {
             return Vec::new();
         }
@@ -200,7 +195,7 @@ impl ClientSession {
         actions
     }
 
-    pub fn local_room_command_target_with_legacy_fallback(&self, default_room: &str) -> String {
+    pub fn local_room_command_target_with_default_fallback(&self, default_room: &str) -> String {
         let Some(username) = self.model.connection.username.as_deref() else {
             return default_room.to_owned();
         };
@@ -225,7 +220,7 @@ impl ClientSession {
         &mut self,
         current_gate_holds_play: Option<bool>,
     ) -> Vec<ClientRuntimeAction> {
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         let target_paused = !self.effective_local_paused_state(now_seconds);
         self.runtime_actions_for_local_pause_change(
             target_paused,
@@ -248,7 +243,7 @@ impl ClientSession {
     ) -> Vec<ClientRuntimeAction> {
         self.runtime_actions_for_local_pause_change(
             paused,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
             current_gate_holds_play,
         )
     }

@@ -1,8 +1,7 @@
 use super::*;
 
 #[test]
-fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_resolves_recursive_media_match()
- {
+fn resolve_startup_file_with_media_search_fallback_resolves_recursive_media_match() {
     let unique_suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after epoch")
@@ -15,11 +14,11 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_reso
     let media_file = nested_dir.join("episode1.mkv");
     std::fs::write(&media_file, b"").expect("media file should be created");
 
-    let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+    let resolution = resolve_startup_file_with_media_search_fallback(
         Some("episode1.mkv"),
-        Some(&StoredClientSettingsMvp {
+        Some(&StoredClientSettings {
             media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }),
     );
 
@@ -37,8 +36,7 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_reso
 }
 
 #[test]
-fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_respects_folder_search_timeout_zero()
- {
+fn resolve_startup_file_with_media_search_fallback_respects_folder_search_timeout_zero() {
     let unique_suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after epoch")
@@ -50,12 +48,12 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_resp
     let media_file = nested_dir.join("episode1.mkv");
     std::fs::write(&media_file, b"").expect("media file should be created");
 
-    let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+    let resolution = resolve_startup_file_with_media_search_fallback(
         Some("episode1.mkv"),
-        Some(&StoredClientSettingsMvp {
+        Some(&StoredClientSettings {
             media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
             folder_search_timeout_seconds: Some(0.0),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }),
     );
 
@@ -73,8 +71,7 @@ fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible_resp
 }
 
 #[test]
-fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible_updates_startup_file()
- {
+fn apply_stored_media_search_startup_file_fallback_if_missing_updates_startup_file() {
     let unique_suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time should be after epoch")
@@ -86,19 +83,16 @@ fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible_
     let media_file = nested_dir.join("episode1.mkv");
     std::fs::write(&media_file, b"").expect("media file should be created");
 
-    let mut overrides = LegacyClientArgOverrides {
+    let mut overrides = SyncplayClientArgOverrides {
         file: Some("episode1.mkv".to_owned()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         media_search_directories: Some(vec![temp_root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
-        &mut overrides,
-        Some(&settings),
-    );
+    apply_stored_media_search_startup_file_fallback_if_missing(&mut overrides, Some(&settings));
 
     assert_eq!(
         overrides.file.as_deref(),
@@ -109,21 +103,21 @@ fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible_
 }
 
 #[test]
-fn apply_stored_legacy_startup_player_defaults_if_arg_absent_uses_stored_player_path() {
-    let mut overrides = LegacyClientArgOverrides {
+fn apply_stored_startup_player_defaults_if_arg_absent_uses_stored_player_path() {
+    let mut overrides = SyncplayClientArgOverrides {
         connect_requested: true,
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         player_path: Some("C:/players/stored-mpv.exe".to_owned()),
         per_player_arguments: Some(std::collections::BTreeMap::from([(
             "C:/players/stored-mpv.exe".to_owned(),
             vec!["--fs".to_owned(), "--profile=fast".to_owned()],
         )])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+    apply_stored_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
     assert_eq!(
         overrides.player_path.as_deref(),
         Some("C:/players/stored-mpv.exe")
@@ -133,12 +127,12 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent_uses_stored_player_
         vec!["--fs".to_owned(), "--profile=fast".to_owned()]
     );
 
-    let mut arg_overrides = LegacyClientArgOverrides {
+    let mut arg_overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         player_path: Some("C:/players/arg-mpv.exe".to_owned()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut arg_overrides, &settings);
+    apply_stored_startup_player_defaults_if_arg_absent(&mut arg_overrides, &settings);
     assert_eq!(
         arg_overrides.player_path.as_deref(),
         Some("C:/players/arg-mpv.exe"),
@@ -151,23 +145,23 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent_uses_stored_player_
 }
 
 #[test]
-fn apply_stored_legacy_startup_player_defaults_if_arg_absent_appends_stored_per_player_arguments_after_cli_args()
+fn apply_stored_startup_player_defaults_if_arg_absent_appends_stored_per_player_arguments_after_cli_args()
  {
-    let mut overrides = LegacyClientArgOverrides {
+    let mut overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         player_path: Some("C:/players/stored-mpv.exe".to_owned()),
         player_args: vec!["--profile=fast".to_owned(), "--msg-level=all=v".to_owned()],
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         per_player_arguments: Some(std::collections::BTreeMap::from([(
             "C:/players/stored-mpv.exe".to_owned(),
             vec!["--fs".to_owned(), "--script-opts=osc=no".to_owned()],
         )])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+    apply_stored_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
     assert_eq!(
         overrides.player_args,
         vec![
@@ -180,14 +174,13 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent_appends_stored_per_
 }
 
 #[test]
-fn apply_stored_legacy_startup_player_defaults_if_arg_absent_matches_windows_path_case_and_slashes()
-{
-    let mut overrides = LegacyClientArgOverrides {
+fn apply_stored_startup_player_defaults_if_arg_absent_matches_windows_path_case_and_slashes() {
+    let mut overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         player_path: Some(r"C:\Players\MPV.EXE".to_owned()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         per_player_arguments: Some(std::collections::BTreeMap::from([
             (
                 "c:/players/mpv.exe".to_owned(),
@@ -195,30 +188,30 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent_matches_windows_pat
             ),
             ("C:/Players/MPV.EXE".to_owned(), vec!["--exact".to_owned()]),
         ])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+    apply_stored_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
     assert_eq!(
         overrides.player_args,
         vec!["--exact".to_owned()],
         "exact key should win before normalized fallback lookup"
     );
 
-    let mut normalized_only_overrides = LegacyClientArgOverrides {
+    let mut normalized_only_overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         player_path: Some(r"C:\Players\mpv.exe".to_owned()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let normalized_only_settings = StoredClientSettingsMvp {
+    let normalized_only_settings = StoredClientSettings {
         per_player_arguments: Some(std::collections::BTreeMap::from([(
             "c:/players/MPV.EXE".to_owned(),
             vec!["--fs".to_owned()],
         )])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(
+    apply_stored_startup_player_defaults_if_arg_absent(
         &mut normalized_only_overrides,
         &normalized_only_settings,
     );
@@ -229,22 +222,21 @@ fn apply_stored_legacy_startup_player_defaults_if_arg_absent_matches_windows_pat
 }
 
 #[test]
-fn apply_stored_legacy_startup_player_defaults_if_arg_absent_keeps_unix_path_matching_case_sensitive()
- {
-    let mut overrides = LegacyClientArgOverrides {
+fn apply_stored_startup_player_defaults_if_arg_absent_keeps_unix_path_matching_case_sensitive() {
+    let mut overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         player_path: Some("/usr/bin/MPV".to_owned()),
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         per_player_arguments: Some(std::collections::BTreeMap::from([(
             "/usr/bin/mpv".to_owned(),
             vec!["--fs".to_owned()],
         )])),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
 
-    apply_stored_legacy_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
+    apply_stored_startup_player_defaults_if_arg_absent(&mut overrides, &settings);
     assert!(
         overrides.player_args.is_empty(),
         "unix-style player paths should not match with case-only differences"
