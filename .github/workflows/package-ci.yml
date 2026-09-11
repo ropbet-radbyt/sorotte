@@ -129,7 +129,7 @@ jobs:
 
   package-required:
     name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'package-required' || format('package-{0}', github.event_name) }}
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [preflight, archive]
     runs-on: ubuntu-24.04
     timeout-minutes: 95

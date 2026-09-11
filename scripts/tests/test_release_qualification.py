@@ -654,7 +654,7 @@ class PackageWorkflowTests(unittest.TestCase):
         self.assertIn("pull_request", workflow["on"])
         self.assertNotIn("push", workflow["on"])
         jobs = workflow["jobs"]
-        self.assertEqual(jobs["package-required"]["if"], "always()")
+        self.assertEqual(jobs["package-required"]["if"], "${{ !cancelled() }}")
         self.assertEqual(set(jobs["package-required"]["needs"]), {"preflight", "archive"})
         self.assertEqual({(row["package"], row["runner"]) for row in jobs["archive"]["strategy"]["matrix"]["include"]}, {("gui", "windows-2025"), ("server", "windows-2025"), ("server", "ubuntu-24.04")})
         commands = "\n".join(step.get("run", "") for job in jobs.values() for step in job.get("steps", []))
