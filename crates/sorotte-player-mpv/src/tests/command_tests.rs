@@ -1364,7 +1364,7 @@ fn observed_media_failure_finishes_an_accepted_tracked_load() {
 
 #[test]
 fn simulated_player_reports_observed_completion_for_tracked_commands() {
-    let mut player = SimulatedPlayer::new();
+    let mut player = MpvAdapter::simulated();
 
     for command in [
         PlayerCommand::OpenFile("movie.mkv".to_owned()),

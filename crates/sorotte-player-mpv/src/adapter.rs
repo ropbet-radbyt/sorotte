@@ -260,25 +260,6 @@ pub struct MpvNetworkMediaDiagnosticSnapshot {
     pub cache_underrun: Option<bool>,
 }
 
-/// Compatibility view that merges the two independent event channels in production order.
-/// New consumers should use the split transition/outcome APIs and the authoritative snapshot.
-#[derive(Debug, PartialEq, Eq)]
-pub enum MpvNetworkMediaOptionsTransitionOutcome {
-    /// A previously degraded core hook was positively reconfigured or responded successfully.
-    HookRecovered,
-    /// The active media ended and there is currently no file-specific policy to apply.
-    NoActiveMedia,
-    /// The authoritative hook classified the active media as local, so network options are idle.
-    LocalMediaUnchanged,
-    /// Every configured file-local network option was accepted for the active network media.
-    NetworkMediaUpdated,
-    /// The core hook is unavailable or this adapter lost its lease. Playback and JSON IPC remain
-    /// attached, but applying network-only policy requires an explicit retry or hook recovery.
-    HookDegraded(PlayerError),
-    /// At least one option write failed. IPC health determines whether the failure is retryable.
-    Failed(PlayerError),
-}
-
 fn uses_network_media_options(path: &str) -> bool {
     let Some((scheme, _)) = path.trim().split_once("://") else {
         return false;
@@ -1133,7 +1114,8 @@ impl MpvAdapter {
             .is_some_and(MpvJsonIpcClient::is_healthy)
     }
 
-    pub(crate) fn simulated() -> Self {
+    /// Uses the mpv lifecycle reducer without starting or connecting to a player process.
+    pub fn simulated() -> Self {
         Self {
             simulation_mode: true,
             ..Self::default()
@@ -1481,19 +1463,6 @@ impl MpvAdapter {
         self.observed_state.cache_eof = Some(false);
         self.observed_state.cache_underrun = Some(false);
         self.observed_state.cache_metrics_observed_at = Some(self.observation_timestamp());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inject_test_cache_telemetry_update(&mut self) {
-        let generation = self
-            .observation_media_generation()
-            .or_else(|| Some(PlayerMediaGeneration::new(1)));
-        self.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
-            media_generation: generation,
-            observed_at: Some(self.observation_timestamp()),
-            buffered_ahead_seconds: Some(5.0),
-            ..PlayerCacheTelemetryUpdate::default()
-        });
     }
 
     #[cfg(feature = "test-support")]
@@ -4335,8 +4304,8 @@ impl MpvAdapter {
                 }
                 #[cfg(test)]
                 if next_path.is_some() && self.active_load_attempt_id.is_none() {
-                    // Legacy scripted transports omit the authoritative playlist
-                    // query used in production. This compatibility projection is
+                    // Scripted fixture transports omit the authoritative playlist
+                    // query used in production. This fixture projection is
                     // test-only; production ownership is established by the
                     // reducer from playlist-entry evidence before metadata is
                     // correlated.
@@ -4716,7 +4685,7 @@ impl MpvAdapter {
             if has_unbound_candidate {
                 #[cfg(test)]
                 {
-                    // Legacy scripted unit transports do not expose an
+                    // Scripted unit transports do not expose an
                     // authoritative playlist. Matching path/file-loaded
                     // evidence performs the actual binding without mutating
                     // the physical projection before ownership is proven.

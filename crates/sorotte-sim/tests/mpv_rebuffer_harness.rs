@@ -17,7 +17,7 @@ use sorotte_player_api::{
     PlayerCommandProgressState, PlayerCommandResult, PlayerPlayIntent, PlayerTransportPhase,
     PlayerTransportTelemetryUpdate,
 };
-use sorotte_player_mpv::{ConnectedMpvPlayer, MpvAdapter, MpvNetworkMediaPolicyApplicationState};
+use sorotte_player_mpv::{MpvAdapter, MpvNetworkMediaPolicyApplicationState};
 use sorotte_sim::{BurstStall, FaultInjectingHttpServer, HttpMediaFixture, NetworkFaultProfile};
 
 const TEST_DURATION: Duration = Duration::from_secs(20);
@@ -196,7 +196,7 @@ fn real_mpv_cache_cap_drains_and_input_resumes() {
     )
     .expect("cache-cap HTTP fixture should start");
     let (process, connected) = MpvProcess::start_with_cache_options(30_000, &cache_options);
-    let mut player = connected.into_inner();
+    let mut player = connected;
     player.configure_network_media_options(cache_options);
     player
         .execute(PlayerCommand::SetPaused(true))
@@ -1486,8 +1486,7 @@ impl RealMpvClient {
         mut desired: DesiredRoomPlayback,
         desired_update_kind: DesiredRoomPlaybackUpdateKind,
     ) -> Self {
-        let (process, player) = MpvProcess::start(index);
-        let mut player = player.into_inner();
+        let (process, mut player) = MpvProcess::start(index);
         // Exercise Sorotte's network `loadfile` options against the minimum
         // supported real mpv binary used by the required CI harness.
         player.configure_network_media_options([
@@ -1778,7 +1777,7 @@ struct MpvProcess {
 }
 
 impl MpvProcess {
-    fn start(index: usize) -> (Self, ConnectedMpvPlayer) {
+    fn start(index: usize) -> (Self, MpvAdapter) {
         Self::start_with_cache_options(
             index,
             &[
@@ -1796,7 +1795,7 @@ impl MpvProcess {
     fn start_with_cache_options(
         index: usize,
         cache_options: &[(&str, &str)],
-    ) -> (Self, ConnectedMpvPlayer) {
+    ) -> (Self, MpvAdapter) {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after Unix epoch")
@@ -1833,7 +1832,7 @@ impl MpvProcess {
 
         let started = Instant::now();
         let player = loop {
-            match ConnectedMpvPlayer::connect(&process.socket) {
+            match MpvAdapter::with_json_ipc(&process.socket) {
                 Ok(player) => break player,
                 Err(error) if started.elapsed() < Duration::from_secs(5) => {
                     let _ = error;

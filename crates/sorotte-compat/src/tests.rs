@@ -213,7 +213,7 @@ fn syncplay_server_port_lease_serializes_startup_allocation() {
 }
 
 #[test]
-fn step_collector_waits_for_a_delayed_required_first_frame() {
+fn step_collector_waits_for_a_delayed_required_response() {
     assert!(
         !syncplay_server_step_collection_is_complete(
             true,
@@ -257,51 +257,73 @@ fn step_collector_waits_for_a_delayed_required_first_frame() {
             .expect("collector stream should become nonblocking");
         (reader, writer)
     };
-    let (required_reader, mut required_writer) = connect_pair();
-    let (unrelated_reader, mut unrelated_writer) = connect_pair();
-    let mut clients = BTreeMap::from([
+    for (request_line, is_new_client) in [
         (
-            "late-client".to_owned(),
-            SyncplayServerClientConnection {
-                stream: required_reader,
-                pending_bytes: Vec::new(),
-            },
+            r#"{"Hello":{"username":"alice","room":{"name":"lobby"},"version":"1.7.0"}}"#,
+            true,
         ),
-        (
-            "other-client".to_owned(),
-            SyncplayServerClientConnection {
-                stream: unrelated_reader,
-                pending_bytes: Vec::new(),
-            },
-        ),
-    ]);
-    unrelated_writer
-        .write_all(b"{\"List\":null}\n")
-        .expect("unrelated immediate framed output should be written");
-
-    let delayed_writer = thread::spawn(move || {
-        thread::sleep(SYNCPLAY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(40));
-        required_writer
+        (r#"{"Set":{"room":{"name":"lobby"}}}"#, false),
+    ] {
+        let (required_reader, mut required_writer) = connect_pair();
+        let (unrelated_reader, mut unrelated_writer) = connect_pair();
+        let mut clients = BTreeMap::from([
+            (
+                "late-client".to_owned(),
+                SyncplayServerClientConnection {
+                    stream: required_reader,
+                    pending_bytes: Vec::new(),
+                },
+            ),
+            (
+                "other-client".to_owned(),
+                SyncplayServerClientConnection {
+                    stream: unrelated_reader,
+                    pending_bytes: Vec::new(),
+                },
+            ),
+        ]);
+        unrelated_writer
             .write_all(b"{\"List\":null}\n")
-            .expect("delayed framed output should be written");
-    });
-    let outputs = collect_syncplay_server_step_outputs(&mut clients, Some("late-client"))
-        .expect("the delayed first frame should be collected");
-    delayed_writer
-        .join()
-        .expect("the delayed writer should complete");
+            .expect("unrelated immediate framed output should be written");
+        if !is_new_client {
+            required_writer
+                .write_all(b"{\"Set\":{\"user\":{\"alice\":{\"room\":{\"name\":\"old-room\"}}}}}\n")
+                .expect("an earlier room announcement should not complete the current step");
+        }
 
-    assert_eq!(outputs.len(), 2);
-    assert!(
-        outputs.iter().any(|output| {
+        let response = r#"{"Set":{"user":{"alice":{"room":{"name":"lobby"}}}}}"#;
+        let delayed_writer = thread::spawn(move || {
+            thread::sleep(SYNCPLAY_SERVER_STEP_IDLE_WAIT + Duration::from_millis(100));
+            required_writer
+                .write_all(format!("{response}\n").as_bytes())
+                .expect("delayed framed output should be written");
+        });
+        let request = sorotte_protocol::decode_message_line(request_line).unwrap();
+        let outputs = collect_syncplay_server_step_outputs(
+            &mut clients,
+            "late-client",
+            &request,
+            is_new_client,
+        )
+        .expect("the delayed first frame should be collected");
+        delayed_writer
+            .join()
+            .expect("the delayed writer should complete");
+
+        assert_eq!(
+            outputs.len(),
+            if is_new_client { 2 } else { 3 },
+            "request: {request_line}"
+        );
+        assert!(outputs.iter().any(|output| {
             output.client_id == "other-client" && output.line == r#"{"List":null}"#
-        })
-    );
-    assert!(
-        outputs.iter().any(|output| {
-            output.client_id == "late-client" && output.line == r#"{"List":null}"#
-        })
-    );
+        }));
+        assert!(
+            outputs
+                .iter()
+                .any(|output| { output.client_id == "late-client" && output.line == response })
+        );
+    }
 }
 
 fn wait_for_compat_lock_fixture_marker(path: &Path, timeout: Duration) -> bool {

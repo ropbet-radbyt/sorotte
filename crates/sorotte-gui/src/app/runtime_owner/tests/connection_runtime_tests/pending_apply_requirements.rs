@@ -75,7 +75,7 @@ fn install_attached_mpv_baseline(
     owner.player_launch_state = applied.clone();
     owner.record_fully_applied_player_launch_state(&applied);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
-        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+        sorotte_player_mpv::MpvAdapter::simulated(),
     )));
 }
 
@@ -747,7 +747,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     );
 
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
-        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+        sorotte_player_mpv::MpvAdapter::simulated(),
     )));
     let mut per_player_arguments = std::collections::BTreeMap::new();
     per_player_arguments.insert(

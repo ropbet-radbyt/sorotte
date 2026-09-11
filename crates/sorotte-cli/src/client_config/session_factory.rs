@@ -6,7 +6,7 @@ use super::*;
 #[cfg(test)]
 pub(crate) fn create_client_runtime(config: &ClientLoopConfig) -> ClientApplication<MpvAdapter> {
     let session = create_client_session(config);
-    let mut player = SimulatedPlayer::new().into_inner();
+    let mut player = MpvAdapter::simulated();
     let _ = apply_syncplay_ui_settings_to_mpv_adapter(&mut player, None);
     ClientApplication::new(session, player)
 }

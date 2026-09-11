@@ -130,7 +130,6 @@ impl MpvAdapter {
         self.network_options
             .pending_network_options_hook_health_transitions
             .pop_front()
-            .map(|event| event.value)
     }
 
     /// Returns the authoritative current network-options state without consuming notifications.
@@ -149,69 +148,6 @@ impl MpvAdapter {
                 .network_options
                 .network_media_options_policy_state
                 .clone(),
-        }
-    }
-
-    /// Returns the next production-ordered compatibility outcome across the two independent
-    /// channels. New consumers should drain each typed channel and reconcile the snapshot.
-    pub fn take_network_media_options_transition_outcome(
-        &mut self,
-    ) -> Option<MpvNetworkMediaOptionsTransitionOutcome> {
-        self.maintain_runtime_integrations();
-        let hook_sequence = self
-            .network_options
-            .pending_network_options_hook_health_transitions
-            .front()
-            .map(|event| event.sequence);
-        let policy_sequence = self
-            .network_options
-            .pending_network_media_policy_outcomes
-            .front()
-            .map(|event| event.sequence);
-        match (hook_sequence, policy_sequence) {
-            (Some(hook), Some(policy)) if hook <= policy => self
-                .network_options
-                .pending_network_options_hook_health_transitions
-                .pop_front()
-                .map(|event| match event.value {
-                    MpvNetworkOptionsHookHealthTransition::Recovered => {
-                        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered
-                    }
-                    MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
-                    }
-                }),
-            (Some(_), Some(_)) | (None, Some(_)) => self
-                .network_options
-                .pending_network_media_policy_outcomes
-                .pop_front()
-                .map(|event| match event.value {
-                    MpvNetworkMediaPolicyOutcome::NoActiveMedia => {
-                        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia
-                    }
-                    MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged => {
-                        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged
-                    }
-                    MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated => {
-                        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated
-                    }
-                    MpvNetworkMediaPolicyOutcome::Failed(error) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::Failed(error)
-                    }
-                }),
-            (Some(_), None) => self
-                .network_options
-                .pending_network_options_hook_health_transitions
-                .pop_front()
-                .map(|event| match event.value {
-                    MpvNetworkOptionsHookHealthTransition::Recovered => {
-                        MpvNetworkMediaOptionsTransitionOutcome::HookRecovered
-                    }
-                    MpvNetworkOptionsHookHealthTransition::Degraded(error) => {
-                        MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
-                    }
-                }),
-            (None, None) => None,
         }
     }
 
@@ -864,16 +800,6 @@ impl MpvAdapter {
         }
     }
 
-    pub(super) fn next_network_options_event_sequence(&mut self) -> u64 {
-        let sequence = self.network_options.next_network_options_event_sequence;
-        self.network_options.next_network_options_event_sequence = self
-            .network_options
-            .next_network_options_event_sequence
-            .wrapping_add(1)
-            .max(1);
-        sequence
-    }
-
     pub(super) fn queue_network_options_hook_health_transition(
         &mut self,
         transition: MpvNetworkOptionsHookHealthTransition,
@@ -904,13 +830,9 @@ impl MpvAdapter {
                 .pending_network_options_hook_health_transitions
                 .pop_front();
         }
-        let sequence = self.next_network_options_event_sequence();
         self.network_options
             .pending_network_options_hook_health_transitions
-            .push_back(SequencedNetworkOptionsEvent {
-                sequence,
-                value: transition,
-            });
+            .push_back(transition);
     }
 
     pub(super) fn queue_network_media_options_hook_degraded(&mut self, error: PlayerError) {
@@ -1311,10 +1233,6 @@ impl MpvAdapter {
             "no-active" => Some(NetworkOptionsHookApplyStatus::NoActiveMedia),
             "local" => Some(NetworkOptionsHookApplyStatus::LocalMediaUnchanged),
             "network-updated" => Some(NetworkOptionsHookApplyStatus::NetworkMediaUpdated),
-            // Accepted for compatibility with short-lived development builds. The bundled v3
-            // hook uses legacy `failed` plus `applicationState=partially-applied`, so an older
-            // v3 adapter still fails closed instead of silently ignoring a new wire status.
-            "partially-applied" => Some(NetworkOptionsHookApplyStatus::PartiallyApplied),
             "failed" => Some(NetworkOptionsHookApplyStatus::Failed),
             _ => None,
         }
@@ -1891,11 +1809,6 @@ impl MpvAdapter {
     }
 }
 
-pub(super) struct SequencedNetworkOptionsEvent<T> {
-    pub(super) sequence: u64,
-    pub(super) value: T,
-}
-
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct NetworkMediaOptionsApplyIdentity {
     pub(super) attempt_id: u64,
@@ -2102,11 +2015,9 @@ pub(super) struct NetworkOptionsState {
     pub(super) network_media_options_event_batch_depth: usize,
     pub(super) deferred_network_media_options_observation:
         Option<DeferredAuthoritativePathObservation>,
-    pub(super) next_network_options_event_sequence: u64,
     pub(super) pending_network_options_hook_health_transitions:
-        VecDeque<SequencedNetworkOptionsEvent<MpvNetworkOptionsHookHealthTransition>>,
-    pub(super) pending_network_media_policy_outcomes:
-        VecDeque<SequencedNetworkOptionsEvent<MpvNetworkMediaPolicyOutcome>>,
+        VecDeque<MpvNetworkOptionsHookHealthTransition>,
+    pub(super) pending_network_media_policy_outcomes: VecDeque<MpvNetworkMediaPolicyOutcome>,
 }
 
 impl Default for NetworkOptionsState {
@@ -2143,7 +2054,6 @@ impl Default for NetworkOptionsState {
             next_network_media_options_apply_attempt_id: 1,
             network_media_options_event_batch_depth: 0,
             deferred_network_media_options_observation: None,
-            next_network_options_event_sequence: 1,
             pending_network_options_hook_health_transitions: VecDeque::new(),
             pending_network_media_policy_outcomes: VecDeque::new(),
         }
@@ -2164,7 +2074,6 @@ impl MpvAdapter {
         self.network_options
             .pending_network_media_policy_outcomes
             .pop_front()
-            .map(|event| event.value)
     }
 
     /// Returns generation-correlated effective policy and cache state without retaining media
@@ -2485,13 +2394,9 @@ impl MpvAdapter {
                 .pending_network_media_policy_outcomes
                 .pop_front();
         }
-        let sequence = self.next_network_options_event_sequence();
         self.network_options
             .pending_network_media_policy_outcomes
-            .push_back(SequencedNetworkOptionsEvent {
-                sequence,
-                value: outcome,
-            });
+            .push_back(outcome);
     }
 
     pub(super) fn reset_network_media_policy_diagnostics(&mut self) {

@@ -234,7 +234,7 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
     apply_syncplay_client_arg_managed_mpv_overrides(&mut managed_config, argument_overrides);
     if !managed_config.enabled {
         #[cfg(test)]
-        return Ok((SimulatedPlayer::new().into_inner(), None, None));
+        return Ok((MpvAdapter::simulated(), None, None));
         #[cfg(not(test))]
         return Ok((MpvAdapter::default(), None, None));
     }

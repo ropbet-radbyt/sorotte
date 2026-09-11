@@ -9,8 +9,6 @@ use sorotte_client_app::app_boundary::{
     state::{ClientConfig, StoredClientSettings},
 };
 use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerError};
-#[cfg(test)]
-use sorotte_player_mpv::SimulatedPlayer;
 use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth};
 use sorotte_secret::RedactedCommandArgs;
 

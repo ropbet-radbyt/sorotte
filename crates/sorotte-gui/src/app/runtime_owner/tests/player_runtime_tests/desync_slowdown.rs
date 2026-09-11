@@ -156,7 +156,7 @@ fn slowdown_osd_follows_the_active_session_setting() {
             ),
         );
         owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
-            sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+            sorotte_player_mpv::MpvAdapter::simulated(),
         )));
 
         owner.apply_attached_player_runtime_actions_impl(

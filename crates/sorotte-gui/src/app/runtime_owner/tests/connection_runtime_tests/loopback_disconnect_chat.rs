@@ -6,7 +6,7 @@ fn gui_persisted_config_runtime_owner_loopback_transport_echoes_client_core_chat
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
-        sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+        sorotte_player_mpv::MpvAdapter::simulated(),
     )));
     owner.player_integration_health = GuiPlayerIntegrationHealth::BridgeDegraded {
         reason: "test bridge is unavailable".to_owned(),

@@ -250,7 +250,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
     session.apply_player_playback_telemetry_update(
         &PlayerPlaybackTelemetryUpdate::default().with_paused(false),
     );
-    let player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let player = sorotte_player_mpv::MpvAdapter::simulated();
     let control = QueuedRuntimeControl::default();
     let runtime = ClientRuntime::new(session, player, control);
     let mut application = ClientApplication::from_runtime(runtime);
@@ -312,7 +312,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
 }
 
 fn cli_v2_readiness_application() -> ClientApplication<MpvAdapter> {
-    let player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let player = sorotte_player_mpv::MpvAdapter::simulated();
     let mut runtime = ClientRuntime::new(
         ClientSession::default(),
         player,

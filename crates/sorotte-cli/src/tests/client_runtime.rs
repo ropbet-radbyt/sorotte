@@ -445,9 +445,13 @@ fn cli_runtime_applies_launch_options_when_external_queue_advances_local_to_netw
     );
     assert!(runtime.player().is_connected());
     assert!(
-        runtime
-            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
-            .is_none(),
+        runtime.with_player_io(|player| {
+            player.maintain_runtime_integrations();
+            (
+                player.take_network_media_policy_outcome_nonblocking(),
+                player.take_network_options_hook_health_transition_nonblocking(),
+            )
+        }) == (None, None),
         "the CLI pump should consume the successful transition outcome"
     );
 }
@@ -500,9 +504,13 @@ fn cli_runtime_contains_external_network_option_rejection_during_file_update_pum
         "the first rejected option must stop the remaining partial apply"
     );
     assert!(
-        runtime
-            .with_player_io(MpvAdapter::take_network_media_options_transition_outcome)
-            .is_none(),
+        runtime.with_player_io(|player| {
+            player.maintain_runtime_integrations();
+            (
+                player.take_network_media_policy_outcome_nonblocking(),
+                player.take_network_options_hook_health_transition_nonblocking(),
+            )
+        }) == (None, None),
         "the CLI pump should consume the adapter failure after surfacing its warning"
     );
 }

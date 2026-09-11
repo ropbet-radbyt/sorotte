@@ -244,7 +244,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
             };
             file.get("name").and_then(serde_json::Value::as_str) == Some("episode1.mkv")
                 && file.get("duration").and_then(serde_json::Value::as_f64) == Some(0.0)
-                && file.get("size").and_then(serde_json::Value::as_i64) == Some(0)
+                && file.get("size").and_then(serde_json::Value::as_i64) == Some(3)
         }),
         "shared-playlist open should publish the local file metadata over the detached transport",
     );

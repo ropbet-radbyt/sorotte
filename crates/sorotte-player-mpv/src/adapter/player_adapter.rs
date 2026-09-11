@@ -1010,6 +1010,12 @@ impl PlayerAdapter for MpvAdapter {
             self.stream_recovery.network_stream_recovery_evidence = None;
             self.stream_recovery.network_cache_stall = None;
             if self.simulation_mode {
+                if let Some(playlist_entry_id) = self.active_playlist_entry_id {
+                    self.handle_end_file_event(&json!({
+                        "reason": "stop",
+                        "playlist_entry_id": playlist_entry_id,
+                    }));
+                }
                 self.clear_physical_projection();
                 self.observed_state = MpvObservedState::default();
                 self.transport_phase = PlayerTransportPhase::Empty;
@@ -1670,7 +1676,7 @@ mod nonblocking_maintenance_tests {
         responses: VecDeque<String>,
         ordering: HeartbeatEventOrdering,
         network_heartbeats: Arc<AtomicUsize>,
-        legacy_heartbeats: Arc<AtomicUsize>,
+        syncplay_heartbeats: Arc<AtomicUsize>,
         ordinary_sequence: usize,
     }
 
@@ -3219,7 +3225,7 @@ mod nonblocking_maintenance_tests {
                     }
                 }
             } else if message == Some(SYNCPLAYINTF_HEARTBEAT_MESSAGE) {
-                self.legacy_heartbeats.fetch_add(1, Ordering::Relaxed);
+                self.syncplay_heartbeats.fetch_add(1, Ordering::Relaxed);
                 let event = self.ordinary_property_event();
                 self.push(event);
             } else {
@@ -3247,13 +3253,13 @@ mod nonblocking_maintenance_tests {
         ordering: HeartbeatEventOrdering,
     ) -> (MpvAdapter, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let network_heartbeats = Arc::new(AtomicUsize::new(0));
-        let legacy_heartbeats = Arc::new(AtomicUsize::new(0));
+        let syncplay_heartbeats = Arc::new(AtomicUsize::new(0));
         let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
             RuntimeLeaseControlLaneTransport {
                 responses: VecDeque::new(),
                 ordering,
                 network_heartbeats: Arc::clone(&network_heartbeats),
-                legacy_heartbeats: Arc::clone(&legacy_heartbeats),
+                syncplay_heartbeats: Arc::clone(&syncplay_heartbeats),
                 ordinary_sequence: 0,
             },
             Duration::from_millis(250),
@@ -3280,7 +3286,7 @@ mod nonblocking_maintenance_tests {
             .network_options
             .pending_network_options_hook_health_transitions
             .clear();
-        (adapter, network_heartbeats, legacy_heartbeats)
+        (adapter, network_heartbeats, syncplay_heartbeats)
     }
 
     #[test]
@@ -3461,7 +3467,7 @@ mod nonblocking_maintenance_tests {
         ordering: HeartbeatEventOrdering,
         expected_event_names: &[&str],
     ) {
-        let (mut adapter, network_heartbeats, _legacy_heartbeats) =
+        let (mut adapter, network_heartbeats, _syncplay_heartbeats) =
             ready_adapter_with_control_lane_transport(ordering);
         adapter.syncplay_ui_settings.chat_input_enabled = false;
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
@@ -3506,7 +3512,7 @@ mod nonblocking_maintenance_tests {
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
-                    transition.value,
+                    transition,
                     MpvNetworkOptionsHookHealthTransition::Degraded(_)
                 ))
         );
@@ -3554,7 +3560,7 @@ mod nonblocking_maintenance_tests {
 
     #[test]
     fn both_runtime_leases_renew_for_more_than_owner_lease_with_only_nonblocking_pumps() {
-        let (mut adapter, network_heartbeats, legacy_heartbeats) =
+        let (mut adapter, network_heartbeats, syncplay_heartbeats) =
             ready_adapter_with_control_lane_transport(HeartbeatEventOrdering::PropertyThenAck);
         let deadline = Instant::now() + Duration::from_millis(2_200);
         while Instant::now() < deadline {
@@ -3568,7 +3574,7 @@ mod nonblocking_maintenance_tests {
             "network hook should receive multiple acknowledged renewals"
         );
         assert!(
-            legacy_heartbeats.load(Ordering::Relaxed) >= 3,
+            syncplay_heartbeats.load(Ordering::Relaxed) >= 3,
             "optional Chat/OSD bridge should renew alongside the core hook"
         );
         assert_eq!(
@@ -3585,7 +3591,7 @@ mod nonblocking_maintenance_tests {
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
-                    transition.value,
+                    transition,
                     MpvNetworkOptionsHookHealthTransition::Degraded(_)
                 ))
         );
@@ -3608,7 +3614,7 @@ mod nonblocking_maintenance_tests {
 
     #[test]
     fn stale_heartbeat_poll_and_bridge_completions_cannot_mutate_successors() {
-        let (mut adapter, _network_heartbeats, _legacy_heartbeats) =
+        let (mut adapter, _network_heartbeats, _syncplay_heartbeats) =
             ready_adapter_with_control_lane_transport(HeartbeatEventOrdering::PropertyThenAck);
         adapter
             .network_options
@@ -4155,18 +4161,14 @@ mod nonblocking_maintenance_tests {
                 .network_options
                 .pending_network_options_hook_health_transitions
                 .iter()
-                .all(|event| !matches!(
-                    event.value,
-                    MpvNetworkOptionsHookHealthTransition::Recovered
-                )),
+                .all(|event| !matches!(event, MpvNetworkOptionsHookHealthTransition::Recovered)),
             "an earlier transition result must not recover the hook after later ownership loss"
         );
         assert!(matches!(
             adapter
                 .network_options
                 .pending_network_media_policy_outcomes
-                .front()
-                .map(|event| &event.value),
+                .front(),
             Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
         ));
         assert!(
@@ -4242,8 +4244,7 @@ mod nonblocking_maintenance_tests {
             adapter
                 .network_options
                 .pending_network_media_policy_outcomes
-                .front()
-                .map(|event| &event.value),
+                .front(),
             Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
         ));
     }
