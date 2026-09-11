@@ -1,5 +1,11 @@
 {
   "schema_version": 1,
+  "retired_lanes": {
+    "semver": {
+      "definition_sha256": "962923bf67cd29c6c930f683daeed2ff5c1b9765f707fd41944c1e31984c1240",
+      "reason": "Rust crates have no consumers outside this workspace. Source compatibility is retired; behavioral checks and Syncplay protocol/settings compatibility remain required. See docs/audits/compatibility-terminology-cleanup-2026-09-11.md."
+    }
+  },
   "required_checks": {
     "verification-required": ".github/workflows/rust-ci.yml",
     "merge-required": ".github/workflows/rust-ci.yml",
