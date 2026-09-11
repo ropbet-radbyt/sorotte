@@ -4,9 +4,9 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_client_core::ExternalPlayerAvailability;
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCapability, PlayerCommand,
-    PlayerCommandId, PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken,
-    PlayerEventBatch, PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
+    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
+    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
+    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
     PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
     PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
 };
@@ -280,8 +280,8 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
         self.adapter.execute_tracked(command)
     }
 
-    fn capabilities(&self) -> sorotte_player_api::PlayerCapabilities {
-        self.adapter.capabilities()
+    fn supports_transport_telemetry(&self) -> bool {
+        self.adapter.supports_transport_telemetry()
     }
 
     fn maintain_runtime_leases_nonblocking(&mut self) {
@@ -374,16 +374,16 @@ impl GuiOwnedPlayer {
     }
 
     pub(in super::super) fn external_availability(&self) -> ExternalPlayerAvailability {
-        let capabilities = match self {
-            Self::Test(player) => player.capabilities(),
+        let supports_telemetry = match self {
+            Self::Test(player) => player.supports_transport_telemetry(),
             Self::Mpv(player) if !player.is_connected() => {
                 return ExternalPlayerAvailability::Disconnected;
             }
-            Self::Mpv(player) => player.capabilities(),
+            Self::Mpv(player) => player.supports_transport_telemetry(),
             #[cfg(test)]
-            Self::Custom(player) => player.capabilities(),
+            Self::Custom(player) => player.supports_transport_telemetry(),
         };
-        if capabilities.contains(PlayerCapability::Telemetry) {
+        if supports_telemetry {
             ExternalPlayerAvailability::Connecting
         } else {
             ExternalPlayerAvailability::TelemetryUnavailable

@@ -1133,10 +1133,6 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn handle_playlist_media_load_outcome(&mut self, outcome: &PlayerMediaLoadOutcome) {
-        self.handle_playlist_media_load_outcome_for_generation(outcome, None);
-    }
-
     pub(super) fn handle_playlist_media_load_outcome_for_generation(
         &mut self,
         outcome: &PlayerMediaLoadOutcome,
@@ -2325,10 +2321,13 @@ mod tests {
         assert!(attempt.media_confirmation_pending);
         assert!(!attempt.handoff_pending);
 
-        owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
-            "C:/media/episode.mkv",
-            Some("C:/media/episode.mkv".to_owned()),
-        ));
+        owner.handle_playlist_media_load_outcome_for_generation(
+            &PlayerMediaLoadOutcome::success(
+                "C:/media/episode.mkv",
+                Some("C:/media/episode.mkv".to_owned()),
+            ),
+            None,
+        );
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
         assert!(!attempt.media_confirmation_pending);
@@ -2611,10 +2610,10 @@ mod tests {
                     Some(command_id),
                 ));
             } else {
-                owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
-                    path,
-                    Some(path.to_owned()),
-                ));
+                owner.handle_playlist_media_load_outcome_for_generation(
+                    &PlayerMediaLoadOutcome::success(path, Some(path.to_owned())),
+                    None,
+                );
             }
 
             owner.handle_playlist_resolution_command_progress(PlayerCommandProgress::finished(

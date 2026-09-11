@@ -190,42 +190,6 @@ mod error_display_redaction_tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum PlayerCapability {
-    OpenFile,
-    SetOption,
-    ApplyProfile,
-    Playback,
-    Audio,
-    Video,
-    Window,
-    Subtitles,
-    Osd,
-    Telemetry,
-    ChatInput,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PlayerCapabilities(u64);
-
-impl PlayerCapabilities {
-    pub const NONE: Self = Self(0);
-    pub const ALL: Self = Self((1 << 11) - 1);
-
-    pub const fn contains(self, capability: PlayerCapability) -> bool {
-        self.0 & (1 << capability as u8) != 0
-    }
-
-    pub fn from_capabilities(capabilities: impl IntoIterator<Item = PlayerCapability>) -> Self {
-        capabilities
-            .into_iter()
-            .fold(Self::NONE, |result, capability| {
-                Self(result.0 | (1 << capability as u8))
-            })
-    }
-}
-
 #[derive(Clone, PartialEq)]
 pub enum PlayerCommand {
     OpenFile(String),
@@ -300,36 +264,6 @@ pub enum PlayerPlayIntent {
     /// Start playback after a seek operation. The baseline is captured when
     /// seeking begins for the same reason: the restart can precede unpause.
     StartAfterSeek { baseline_restart_sequence: u64 },
-}
-
-impl PlayerCommand {
-    pub const fn required_capability(&self) -> PlayerCapability {
-        match self {
-            Self::OpenFile(_) => PlayerCapability::OpenFile,
-            Self::SetOptionString { .. } => PlayerCapability::SetOption,
-            Self::ApplyProfile(_) => PlayerCapability::ApplyProfile,
-            Self::SetPaused(_)
-            | Self::Play(_)
-            | Self::SetPosition(_)
-            | Self::SetPlaybackRate(_) => PlayerCapability::Playback,
-            Self::SetMuted(_) | Self::SetVolume(_) => PlayerCapability::Audio,
-            Self::SetDeinterlace(_) | Self::SetKeepaspect(_) | Self::SetKeepaspectWindow(_) => {
-                PlayerCapability::Video
-            }
-            Self::SetFullscreen(_)
-            | Self::SetOntop(_)
-            | Self::SetBorder(_)
-            | Self::SetForceWindow(_)
-            | Self::SetKeepOpen(_)
-            | Self::SetKeepOpenPause(_)
-            | Self::SetCursorAutohideFsOnly(_)
-            | Self::SetStopScreensaver(_)
-            | Self::SetWindowMaximized(_)
-            | Self::SetWindowMinimized(_) => PlayerCapability::Window,
-            Self::SetSubVisibility(_) => PlayerCapability::Subtitles,
-            Self::SetOsdBar(_) => PlayerCapability::Osd,
-        }
-    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -1566,8 +1500,8 @@ pub trait PlayerAdapter: Send + Sync {
     /// This hook may perform bounded synchronous player operations. Async owners should use
     /// [`Self::maintain_runtime_leases_nonblocking`] instead.
     fn maintain_runtime_integrations(&mut self) {}
-    fn capabilities(&self) -> PlayerCapabilities {
-        PlayerCapabilities::NONE
+    fn supports_transport_telemetry(&self) -> bool {
+        false
     }
     fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
         match command {
@@ -1789,12 +1723,12 @@ impl PlayerAdapter for DisconnectedPlayer {
 mod tests {
     use super::{
         DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate,
-        PlayerCapabilities, PlayerCapability, PlayerCommand, PlayerCommandFailureKind,
-        PlayerCommandId, PlayerCommandProgress, PlayerCommandProgressState, PlayerCommandResult,
-        PlayerError, PlayerEventSequence, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-        PlayerMediaLoadOutcome, PlayerObservationTimestamp, PlayerOrderedEvent,
-        PlayerOrderedEventKind, PlayerPlaybackTelemetryUpdate, PlayerSeekableRange,
-        PlayerTimelineKind, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+        PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
+        PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerEventSequence,
+        PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+        PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind,
+        PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
+        PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
 
     struct DummyPlayer;
@@ -1933,7 +1867,7 @@ mod tests {
         assert_eq!(player.take_media_load_outcome(), None);
         assert_eq!(player.take_media_load_observation(), None);
         assert_eq!(player.take_pending_chat_request(), None);
-        assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
+        assert!(!player.supports_transport_telemetry());
         assert_eq!(
             player.execute(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("set_paused"))
@@ -1995,25 +1929,6 @@ mod tests {
     }
 
     #[test]
-    fn player_commands_advertise_required_capabilities() {
-        assert_eq!(
-            PlayerCommand::OpenFile("movie.mkv".to_owned()).required_capability(),
-            PlayerCapability::OpenFile
-        );
-        assert_eq!(
-            PlayerCommand::SetVolume(50.0).required_capability(),
-            PlayerCapability::Audio
-        );
-        let capabilities = PlayerCapabilities::from_capabilities([
-            PlayerCapability::OpenFile,
-            PlayerCapability::Playback,
-        ]);
-        assert!(capabilities.contains(PlayerCapability::OpenFile));
-        assert!(capabilities.contains(PlayerCapability::Playback));
-        assert!(!capabilities.contains(PlayerCapability::Audio));
-    }
-
-    #[test]
     fn disconnected_player_rejects_commands_explicitly() {
         let mut player = DisconnectedPlayer;
         assert_eq!(
@@ -2024,7 +1939,7 @@ mod tests {
             player.execute_tracked(PlayerCommand::SetPaused(false)),
             Err(PlayerError::NotConnected)
         );
-        assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
+        assert!(!player.supports_transport_telemetry());
     }
 
     #[test]

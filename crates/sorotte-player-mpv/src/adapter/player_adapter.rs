@@ -1,7 +1,5 @@
 use super::*;
-use sorotte_player_api::{
-    PlayerAdapter, PlayerCapabilities, PlayerCommand, PlayerCommandId, PlayerCommandProgress,
-};
+use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress};
 
 const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
 const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
@@ -599,12 +597,8 @@ impl PlayerAdapter for MpvAdapter {
         MpvAdapter::maintain_runtime_integrations(self);
     }
 
-    fn capabilities(&self) -> PlayerCapabilities {
-        if self.is_connected() || self.simulation_mode {
-            PlayerCapabilities::ALL
-        } else {
-            PlayerCapabilities::NONE
-        }
+    fn supports_transport_telemetry(&self) -> bool {
+        self.is_connected() || self.simulation_mode
     }
 
     fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {

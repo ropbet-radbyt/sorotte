@@ -2869,7 +2869,6 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(player) = self.player.as_mut() else {
             return;
         };
-        let delivery_mode = player.player_event_delivery_mode();
         let mut hook_health_transitions = Vec::new();
         let mut media_policy_outcomes = Vec::new();
         let mut network_options_snapshot = None;
@@ -2944,199 +2943,7 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             self.pending_attached_player_pause_command = None;
         }
-        if delivery_mode == PlayerEventDeliveryMode::OrderedAcknowledgedBatches {
-            self.drain_ordered_player_events(user_offset_seconds);
-            self.finish_player_state_refresh();
-            return;
-        }
-
-        let Some(player) = self.player.as_mut() else {
-            return;
-        };
-        let mut playback_updates = Vec::new();
-        let mut transport_updates = Vec::new();
-        let mut command_progress_updates = Vec::new();
-        let mut media_load_outcomes = Vec::new();
-        let mut local_file_updates = Vec::new();
-        while let Some(progress) = player.take_command_progress() {
-            command_progress_updates.push(progress);
-        }
-        while let Some(update) = player.take_playback_telemetry_update() {
-            playback_updates.push(update);
-        }
-        while let Some(update) = player.take_transport_telemetry_update() {
-            transport_updates.push(update);
-        }
-        if !mpv_connected {
-            transport_updates.clear();
-        }
-        while let Some(outcome) = player.take_media_load_outcome() {
-            media_load_outcomes.push(outcome);
-        }
-        while let Some(update) = player.take_local_file_update() {
-            local_file_updates.push(update);
-        }
-        for update in playback_updates {
-            if let Some(paused_for_cache) = update.paused_for_cache {
-                self.player_paused_for_cache = Some(paused_for_cache);
-            }
-            if let Some(cache_buffering_percent) = update.cache_buffering_percent {
-                self.player_cache_buffering_percent = Some(cache_buffering_percent);
-            }
-            if (update.paused_for_cache.is_some() || update.cache_buffering_percent.is_some())
-                && let Some(session) = self.session.as_mut()
-                && let Err(error) = session.sync_local_playback_cache_state(
-                    update.paused_for_cache,
-                    update.cache_buffering_percent,
-                )
-            {
-                eprintln!(
-                    "warning: failed to mirror attached-player cache buffering state into the session runtime: {error}"
-                );
-            }
-            if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds - user_offset_seconds);
-            }
-            if let Some(paused) = update.paused
-                && self.player_paused_for_cache != Some(true)
-            {
-                let application_pause_command_active = self
-                    .pending_attached_player_pause_command
-                    .is_some_and(|pending| pending.suppress_until > now);
-                let previous_paused = self.player_paused;
-                let accept_paused = match self.pending_attached_player_pause_command {
-                    Some(pending) if pending.suppress_until > now => {
-                        self.player_paused = Some(pending.target_paused);
-                        paused == pending.target_paused
-                    }
-                    _ => true,
-                };
-                if accept_paused {
-                    if !application_pause_command_active
-                        && previous_paused != Some(paused)
-                        && paused
-                        && self.attached_player_position_is_end_of_file()
-                        && let Some(session) = self.session.as_mut()
-                        && let Err(error) =
-                            session.observe_external_player_end_of_file(system_time_seconds())
-                    {
-                        eprintln!(
-                            "warning: failed to classify attached-player EOF as a technical transition: {error}"
-                        );
-                    }
-                    self.player_paused = Some(paused);
-                }
-            }
-        }
-        for outcome in media_load_outcomes {
-            self.handle_playlist_media_load_outcome(&outcome);
-            self.handle_player_media_load_outcome(outcome);
-        }
-        for mut update in local_file_updates {
-            // Legacy adapters do not provide a generation-aware lifecycle,
-            // but their physical target is still the authority for candidate
-            // correlation. Project only after that evidence is consumed.
-            let physical_candidate_matches = self
-                .playlist_resolution_attempt
-                .as_ref()
-                .and_then(|attempt| attempt.candidate.as_ref())
-                .is_some_and(|candidate| {
-                    update
-                        .path
-                        .as_deref()
-                        .is_some_and(|path| candidate.matches_loaded_target(path))
-                        || candidate.matches_loaded_target(&update.name)
-                });
-            self.handle_untracked_playlist_local_file_observation(&update);
-            let tracked_playlist_load_unconfirmed =
-                self.tracked_playlist_resolution_load_matches_local_file(&update);
-            let mut logical_override_confirmed = None;
-            if let Some((override_update, confirmed)) =
-                self.logical_media_override_for_loaded_target(&update, None)
-            {
-                update = override_update;
-                logical_override_confirmed = Some(confirmed);
-            }
-            let file_changed = Self::local_file_update_replaces_current_file(
-                self.player_local_file.as_ref(),
-                &update,
-            );
-            if file_changed && !physical_candidate_matches && logical_override_confirmed.is_none() {
-                self.supersede_playlist_resolution_attempt();
-                self.last_attached_media_resolution_trigger = None;
-            }
-            if file_changed {
-                self.pending_local_attached_pause_override = None;
-                let _ = self
-                    .interrupt_attached_playback_recovery_impl("observed media transport change");
-                let logical_id = logical_media_id_for_local_file_update(&update);
-                let kind = if update.path.as_deref().is_some_and(browser_is_url)
-                    || browser_is_url(&update.name)
-                {
-                    MediaTransportKind::NetworkVod
-                } else {
-                    MediaTransportKind::LocalFile
-                };
-                if let Some(session) = self.session.as_mut()
-                    && let Err(error) = session.prepare_attached_playback_media(
-                        logical_id,
-                        kind,
-                        MediaLoadIntent::TransportRefresh,
-                        system_time_seconds(),
-                    )
-                {
-                    eprintln!(
-                        "warning: failed to prepare attached-player logical media generation: {error}"
-                    );
-                }
-            }
-            self.player_local_file = Some(update);
-            self.player_local_file_placeholder = tracked_playlist_load_unconfirmed
-                || logical_override_confirmed.is_some_and(|confirmed| !confirmed);
-            if file_changed || self.player_position_seconds.is_none() {
-                self.player_position_seconds = Some(0.0);
-            }
-        }
-        // A tracked load's terminal result is the final authority for the
-        // provisional identity observed in the queues above. Processing it
-        // last prevents an earlier file-loaded observation from resurrecting
-        // media that the same command subsequently rejected.
-        for progress in command_progress_updates {
-            self.handle_playlist_resolution_command_progress(progress);
-        }
-        for update in transport_updates {
-            self.reconcile_pending_logical_override_media_generation(update.media_generation);
-            let update = transport_update_on_room_timeline(update, user_offset_seconds);
-            if let Some(paused_for_cache) = update.paused_for_cache {
-                self.player_paused_for_cache = Some(paused_for_cache);
-            }
-            if let Some(position_seconds) = update.position_seconds {
-                self.player_position_seconds = Some(position_seconds);
-            }
-            if let Some(logical_pause) = update.logical_pause
-                && self.player_paused_for_cache != Some(true)
-            {
-                self.player_paused = Some(logical_pause);
-            }
-            let actions = self.session.as_mut().and_then(|session| {
-                match session.sync_attached_player_transport_telemetry(
-                    update,
-                    system_time_seconds(),
-                ) {
-                    Ok(actions) => Some(actions),
-                    Err(error) => {
-                        eprintln!(
-                            "warning: failed to feed attached-player transport telemetry to client-core coordinator: {error}"
-                        );
-                        None
-                    }
-                }
-            });
-            if let Some(actions) = actions {
-                let _ = self
-                    .apply_attached_player_runtime_actions_impl(actions, "transport observation");
-            }
-        }
+        self.drain_ordered_player_events(user_offset_seconds);
         self.finish_player_state_refresh();
     }
 
@@ -3672,20 +3479,20 @@ mod logical_media_projection_tests {
                     Some(PlayerEventSequence::new(1)),
                     false,
                 );
-                owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
-                    STREAM_TARGET,
-                    Some(STREAM_TARGET.to_owned()),
-                ));
+                owner.handle_playlist_media_load_outcome_for_generation(
+                    &PlayerMediaLoadOutcome::success(STREAM_TARGET, Some(STREAM_TARGET.to_owned())),
+                    None,
+                );
             } else {
                 owner.process_attached_local_file_observation(
                     physical_observation,
                     Some(PlayerEventSequence::new(1)),
                     false,
                 );
-                owner.handle_playlist_media_load_outcome(&PlayerMediaLoadOutcome::success(
-                    STREAM_TARGET,
-                    Some(STREAM_TARGET.to_owned()),
-                ));
+                owner.handle_playlist_media_load_outcome_for_generation(
+                    &PlayerMediaLoadOutcome::success(STREAM_TARGET, Some(STREAM_TARGET.to_owned())),
+                    None,
+                );
                 complete_tracked_load(&mut owner, command_id, media_generation);
             }
 
@@ -3891,10 +3698,8 @@ mod ordered_delivery_tests {
     }
 
     impl PlayerAdapter for OrderedBatchPlayer {
-        fn capabilities(&self) -> sorotte_player_api::PlayerCapabilities {
-            sorotte_player_api::PlayerCapabilities::from_capabilities([
-                sorotte_player_api::PlayerCapability::Telemetry,
-            ])
+        fn supports_transport_telemetry(&self) -> bool {
+            true
         }
 
         fn name(&self) -> &'static str {

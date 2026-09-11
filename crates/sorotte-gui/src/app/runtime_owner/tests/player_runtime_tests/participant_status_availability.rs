@@ -1,7 +1,6 @@
 use super::*;
 
 use sorotte_client_core::ExternalPlayerAvailability;
-use sorotte_player_api::{PlayerCapabilities, PlayerCapability};
 
 struct TelemetryCapablePlayer;
 
@@ -10,8 +9,8 @@ impl PlayerAdapter for TelemetryCapablePlayer {
         "telemetry-capable"
     }
 
-    fn capabilities(&self) -> PlayerCapabilities {
-        PlayerCapabilities::from_capabilities([PlayerCapability::Telemetry])
+    fn supports_transport_telemetry(&self) -> bool {
+        true
     }
 }
 

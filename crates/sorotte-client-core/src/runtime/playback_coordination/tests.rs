@@ -3,9 +3,9 @@ use super::ordered_events::OrderedLoadInstall;
 use super::ordered_events::snapshot_known_copy;
 use super::*;
 use sorotte_player_api::{
-    DisconnectedPlayer, PlayerAdapter, PlayerCapabilities, PlayerCapability, PlayerCommand,
-    PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerObservationTimestamp,
-    PlayerPhysicalLoadOutcome, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    DisconnectedPlayer, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerError,
+    PlayerMediaGeneration, PlayerObservationTimestamp, PlayerPhysicalLoadOutcome,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
     CommitStartPayload, ParticipantPlaybackPhase, ParticipantPlayerConnection,
@@ -2713,12 +2713,8 @@ impl PlayerAdapter for CoordinatedTestPlayer {
         "coordinated-test-player"
     }
 
-    fn capabilities(&self) -> PlayerCapabilities {
-        if self.advertises_telemetry {
-            PlayerCapabilities::from_capabilities([PlayerCapability::Telemetry])
-        } else {
-            PlayerCapabilities::NONE
-        }
+    fn supports_transport_telemetry(&self) -> bool {
+        self.advertises_telemetry
     }
 
     fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {

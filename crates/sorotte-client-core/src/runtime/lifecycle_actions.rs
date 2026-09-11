@@ -230,11 +230,7 @@ where
             return Ok(());
         }
         if validation_pending {
-            if self
-                .player
-                .capabilities()
-                .contains(sorotte_player_api::PlayerCapability::Telemetry)
-            {
+            if self.player.supports_transport_telemetry() {
                 self.playback_coordination
                     .mark_transport_telemetry_available();
             }

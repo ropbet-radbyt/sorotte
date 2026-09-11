@@ -4,7 +4,6 @@ use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient
 use crate::{
     MpvNetworkMediaPolicyApplicationState, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
 };
-use sorotte_player_api::PlayerCapabilities;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -1874,7 +1873,7 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
     );
 
     assert!(adapter.is_connected());
-    assert_eq!(adapter.capabilities(), PlayerCapabilities::ALL);
+    assert!(adapter.supports_transport_telemetry());
 
     let error = adapter
         .set_paused(true)
@@ -1891,7 +1890,7 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
     }
 
     assert!(!adapter.is_connected());
-    assert_eq!(adapter.capabilities(), PlayerCapabilities::NONE);
+    assert!(!adapter.supports_transport_telemetry());
 
     let events = adapter.take_ipc_connection_events();
     assert!(
@@ -1909,11 +1908,11 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
 }
 
 #[test]
-fn simulated_player_keeps_all_capabilities_without_ipc() {
+fn simulated_player_supports_transport_telemetry_without_ipc() {
     let player = MpvAdapter::simulated();
 
     assert!(!player.is_connected());
-    assert_eq!(player.capabilities(), PlayerCapabilities::ALL);
+    assert!(player.supports_transport_telemetry());
 }
 
 #[test]
