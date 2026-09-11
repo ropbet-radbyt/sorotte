@@ -3,6 +3,20 @@ use super::*;
 impl SorotteGuiShellAppState {
     pub(super) fn apply_shell_runtime_action(&mut self, action: GuiShellAction) -> bool {
         match action {
+            GuiShellAction::ApplySharedPlaylistSelection(index) => {
+                if self.main_window_playlist_selection_is_local {
+                    return false;
+                }
+                if index.is_some_and(|index| index >= self.main_window.playlist.len()) {
+                    return self.record_action_error(
+                        "The shared playlist selection refers to a missing row.",
+                    );
+                }
+                self.set_main_window_playlist_selection(index, false);
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                true
+            }
             GuiShellAction::SwitchView(view) => {
                 self.active_view = view;
                 self.clear_action_error_and_refresh();

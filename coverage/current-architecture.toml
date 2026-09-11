@@ -392,3 +392,21 @@ environment = ["Python 3.11 or newer", "No hosted environment required for stati
 capability = "implemented"
 local_evidence = "The index maps every A01-A22 task to current source/proof/environment ownership; CLI write/check coverage handles LF and CRLF checkouts. The implementation ledger records current working-tree evidence and superseded runs separately from future release provenance."
 remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+
+
+[[boundary]]
+id = "GUI feature state and player delivery"
+tasks = ["A20"]
+contract = "Player lifecycle observations have one acknowledged stream. GUI worker state consists of feature views, retains changes across polls, and applies output effects before the next command; UI edits remain shell-owned."
+owners = ["crates/sorotte-player-api/src/lib.rs", "crates/sorotte-gui/src/app/feature_slices.rs", "crates/sorotte-gui/src/app/runtime_state.rs", "crates/sorotte-gui/src/app/runtime_detached.rs", "crates/sorotte-gui/src/app/main_window_projection.rs"]
+normative = ["docs/DEVELOPMENT.md", "docs/PLAYBACK_LIFECYCLE_ASSURANCE.md"]
+proof = [
+  { source = "crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs", symbol = "worker_applies_pending_completion_before_the_next_settings_action", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib runtime_state_tests" },
+  { source = "crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs", symbol = "ordinary_polls_keep_worker_changes_and_changed_input_replaces_them", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib runtime_state_tests" },
+  { source = "crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs", symbol = "playlist_selection_output_preserves_ui_edit_and_focus_and_respects_local_selection", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib runtime_state_tests" },
+]
+catalog = []
+environment = ["Windows and Linux Rust suites", "Live Syncplay interoperability", "GUI semantic and isolated native qualification"]
+capability = "implemented"
+local_evidence = "Strict all-feature workspace Clippy and 1,201 all-feature GUI library tests passed, including seven focused worker-state regressions for input replacement, pending completion and cancellation, UI edit preservation, public-server refresh, Plex search results, room edits and updates. Player migration passed the default CLI, client-app, client-core, GUI, API and mpv library suites before the GUI state extraction."
+remaining = "The bundled cleanup still requires complete workspace, hosted and exact-head native qualification; earlier source checkpoints do not qualify this PR."

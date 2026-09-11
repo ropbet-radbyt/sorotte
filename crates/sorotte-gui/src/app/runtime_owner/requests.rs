@@ -1,3 +1,4 @@
+use crate::app::runtime_state::GuiRuntimeState;
 mod media_match;
 mod pending_completions;
 mod playback;
@@ -47,7 +48,7 @@ use super::super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiMediaMatchToolHealth, GuiMediaSourceProviderId,
     GuiPersistedSettingsPatch, GuiPluginSelection, GuiShellAction, GuiStreamHelperHealth,
     GuiStreamTargetKind, GuiTransientNotificationLevel, MainWindowRuntimeSnapshot,
-    SorotteGuiShellAppState, browser_stream_target_kind,
+    browser_stream_target_kind,
 };
 use super::super::startup_support::env_trimmed;
 use super::super::stream_support::{
@@ -64,12 +65,13 @@ use super::{
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn persisted_settings_config_path_for_request(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<PathBuf> {
         if let Some(config_path) = self.config_path.clone() {
             return Some(config_path);
         }
         projected_state
+            .settings
             .config_storage
             .config_path
             .as_deref()
@@ -78,7 +80,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn persist_saved_settings_patch(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         patch: &GuiPersistedSettingsPatch,
     ) -> Result<sorotte_client_app::app_boundary::state::StoredClientSettings, String> {
         let Some(config_path) = self.persisted_settings_config_path_for_request(projected_state)
@@ -97,7 +99,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn stop_disabled_plugin_runtime_work(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         plugin: GuiPluginSelection,
     ) {
         match plugin {
@@ -143,7 +145,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn push_plugin_disabled_notification(
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         plugin: GuiPluginSelection,
     ) {
         Self::push_actions_and_project(
@@ -159,7 +161,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn handle_set_plugin_enabled_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         plugin: GuiPluginSelection,
         enabled: bool,
     ) -> bool {
@@ -187,7 +189,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut actions = Vec::new();
         if enabled && plugin == GuiPluginSelection::MediaMatching {
             actions.push(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
-                self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings),
+                self.refresh_media_match_runtime_snapshot(
+                    &projected_state.media_match.model.settings,
+                ),
             ));
         }
         if !actions.is_empty() {
@@ -199,7 +203,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_runtime_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         request: GuiRuntimeRequest,
     ) -> bool {
         match request {
@@ -245,24 +249,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 if paths.is_empty() {
                     return false;
                 }
-                if projected_state.playlist_backed_media_opens_preferred() {
-                    self.open_media_files_through_shared_playlist_runtime(
-                        handle,
-                        projected_state,
-                        paths,
-                        None,
-                    );
-                    return true;
-                }
-                self.ensure_configured_player_attached();
-                if self.player.is_some() {
-                    self.open_media_files_through_attached_player(handle, paths);
-                } else {
-                    Self::push_runtime_unavailable(
-                        handle,
-                        self.open_media_unavailable_message(&paths),
-                    );
-                }
+                self.open_media_files_through_shared_playlist_runtime(
+                    handle,
+                    projected_state,
+                    paths,
+                    None,
+                );
             }
             GuiRuntimeRequest::ImportSharedPlaylistFile { path, shuffled } => {
                 self.import_shared_playlist_file_runtime(handle, projected_state, path, shuffled);

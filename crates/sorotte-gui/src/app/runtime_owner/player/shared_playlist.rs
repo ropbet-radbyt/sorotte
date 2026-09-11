@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 use crate::app::shell_state::MainWindowPlaylistRow;
 use sorotte_player_api::LocalFileUpdate;
 use sorotte_plex::{
@@ -60,41 +61,21 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn shared_playlist_mutation_current_index(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         allow_local_selection: bool,
     ) -> Option<usize> {
-        let playlist_len = state.main_window.playlist.len();
+        let playlist_len = state.playlist.main_window.playlist.len();
         self.session
             .as_ref()
             .and_then(|session| session.current_room_playlist_index())
-            .or(state.main_window.active_playlist_index)
+            .or(state.playlist.main_window.active_playlist_index)
             .or(self.active_shared_playlist_index)
             .or_else(|| {
                 allow_local_selection
-                    .then_some(state.selection.selected_main_window_playlist)
+                    .then_some(state.playlist.selection.selected_main_window_playlist)
                     .flatten()
             })
             .filter(|index| *index < playlist_len)
-    }
-
-    pub(in crate::app::runtime_owner) fn open_media_unavailable_message_impl(
-        &self,
-        selected_paths: &[String],
-    ) -> String {
-        let base = if selected_paths.len() == 1 {
-            "Opening media requires a playback runtime connection; the selected file was not opened."
-                .to_owned()
-        } else {
-            format!(
-                "Opening media requires a playback runtime connection; {} selected files were not opened.",
-                selected_paths.len()
-            )
-        };
-        if let Some(reason) = self.player_unavailability_reason.as_deref() {
-            format!("{base} {reason}")
-        } else {
-            base
-        }
     }
 
     pub(super) fn shared_playlist_open_unavailable_message_impl(
@@ -326,10 +307,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn shared_playlist_plex_publish_target_for_path(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         path: &str,
     ) -> Option<String> {
         if !state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -351,7 +333,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn shared_playlist_open_dispatch_for_selected_paths_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         paths: Vec<String>,
     ) -> Result<GuiSharedPlaylistOpenDispatch, String> {
         if paths.len() == 1
@@ -457,7 +439,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn import_shared_playlist_file_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         path: String,
         shuffled: bool,
     ) {
@@ -490,10 +472,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn reconcile_local_shared_playlist_media_paths(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) {
         let room_changed = self.playlist_resolution.room_name.as_deref()
-            != Some(state.main_window.room_name.as_str());
+            != Some(state.playlist.main_window.room_name.as_str());
         let scope_initialized = self.playlist_resolution.room_name.is_some();
         let session_active = self.session.is_some();
         let session_changed = self.playlist_resolution.session_generation
@@ -508,6 +490,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .map_or(0, |session| session.current_room_playlist_remote_revision());
         let current_row_ids = state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -528,7 +511,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         self.playlist_resolution.row_scope_reset_pending |=
             remote_playlist_replacement || established_scope_transition;
-        self.playlist_resolution.room_name = Some(state.main_window.room_name.clone());
+        self.playlist_resolution.room_name = Some(state.playlist.main_window.room_name.clone());
         self.playlist_resolution.session_generation = self.session_generation;
         self.playlist_resolution.session_active = session_active;
         self.playlist_resolution.playlist_revision = playlist_revision;
@@ -541,7 +524,8 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut retained_row_ids = current_row_ids.into_iter().collect::<BTreeSet<_>>();
         retained_row_ids.extend(
             state
-                .playlist_entry_id_undo_snapshot
+                .playlist
+                .entry_id_undo_snapshot
                 .iter()
                 .flatten()
                 .copied(),
@@ -558,6 +542,7 @@ impl GuiPersistedConfigRuntimeOwner {
             if pending.generation != self.playlist_resolution.generation {
                 self.pending_playlist_source_resolution = None;
             } else if let Some(index) = state
+                .playlist
                 .main_window
                 .playlist
                 .iter()
@@ -572,13 +557,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn apply_pending_playlist_row_scope_reset(
         &mut self,
-        state: &mut SorotteGuiShellAppState,
+        state: &mut GuiRuntimeState,
     ) -> bool {
         if !self.playlist_resolution.row_scope_reset_pending {
             return false;
         }
 
         let fresh_rows = state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -592,11 +578,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             })
             .collect::<Vec<_>>();
-        state.main_window.playlist = fresh_rows;
-        state.playlist_undo_snapshot = None;
-        state.playlist_source_undo_snapshot = None;
-        state.playlist_entry_id_undo_snapshot = None;
+        state.playlist.main_window.playlist = fresh_rows;
+        state.playlist.undo_snapshot = None;
+        state.playlist.source_undo_snapshot = None;
+        state.playlist.entry_id_undo_snapshot = None;
         self.playlist_resolution.row_ids = state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -618,7 +605,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn remember_local_shared_playlist_media_paths(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         dispatch: &GuiSharedPlaylistOpenDispatch,
         opened_rows: &[(GuiPlaylistEntryId, String)],
     ) -> GuiPlaylistLocalOriginBindingOutcome {
@@ -660,7 +647,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn local_shared_playlist_media_path_for_row(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         entry_id: GuiPlaylistEntryId,
     ) -> Option<String> {
         self.reconcile_local_shared_playlist_media_paths(state);

@@ -1,3 +1,8 @@
+use crate::app::runtime_state::GuiRuntimeState;
+#[cfg(test)]
+use crate::app::shell_state::SorotteGuiShellAppState;
+#[cfg(test)]
+use crate::app::testing::support::runtime_state_for_shell;
 use std::{
     collections::{BTreeMap, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
@@ -54,11 +59,16 @@ enum GuiMediaMatchExactPlaylistPlan {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
-    fn media_match_resolution_enabled(projected_state: &SorotteGuiShellAppState) -> bool {
+    fn media_match_resolution_enabled(projected_state: &GuiRuntimeState) -> bool {
         projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
-            && projected_state.media_match.settings.fingerprinting_enabled
+            && projected_state
+                .media_match
+                .model
+                .settings
+                .fingerprinting_enabled
     }
 
     fn usable_media_match_peer_file_name(file_name: Option<String>) -> Option<String> {
@@ -70,7 +80,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn apply_media_match_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         progress: MediaMatchToolProgress,
     ) {
         self.report_media_match_remediation_progress(
@@ -85,7 +95,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn finish_media_match_tool_success(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         success_message: String,
     ) {
         self.report_media_match_remediation_progress(
@@ -96,7 +106,7 @@ impl GuiPersistedConfigRuntimeOwner {
             0.92,
         );
         let snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         self.last_published_local_file = None;
         self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
@@ -115,13 +125,13 @@ impl GuiPersistedConfigRuntimeOwner {
     fn finish_media_match_tool_error(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         failure_label: &str,
         error: String,
     ) {
         let message = format!("{failure_label}: {error}");
         let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         snapshot.message = Some(message.clone());
         self.media_match_runtime_snapshot = snapshot.clone();
         self.clear_media_match_remediation_progress(handle, projected_state);
@@ -142,7 +152,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn set_media_match_peer_tiers(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         tiers: BTreeMap<String, MediaMatchTier>,
     ) -> bool {
         if let Some(session) = self.session.as_mut()
@@ -169,11 +179,12 @@ impl GuiPersistedConfigRuntimeOwner {
     fn sync_media_match_wire_decisions(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let sync_token = self.media_match_wire_sync_token_for_state(projected_state);
         self.media_match_wire_sync_token = Some(sync_token);
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -188,9 +199,19 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         }
         let mut tiers = BTreeMap::new();
-        let status = if !projected_state.media_match.settings.fingerprinting_enabled {
+        let status = if !projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled
+        {
             "disabled: fingerprinting off".to_owned()
-        } else if !projected_state.media_match.settings.wire_sharing_enabled {
+        } else if !projected_state
+            .media_match
+            .model
+            .settings
+            .wire_sharing_enabled
+        {
             "disabled: sharing off".to_owned()
         } else {
             let Some(root) = self.media_match_root_for_request(projected_state) else {
@@ -258,7 +279,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     let decision = decide_media_match_against_wire_signature(
                         &local_record,
                         &signature,
-                        &projected_state.media_match.settings,
+                        &projected_state.media_match.model.settings,
                     );
                     tiers.insert(username.clone(), decision.tier);
                     summaries.push(Self::summarize_media_match_wire_decision(
@@ -271,6 +292,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let gate_tiers = if projected_state
             .media_match
+            .model
             .settings
             .autoplay_allows_strong_same_media()
         {
@@ -288,7 +310,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn maybe_sync_media_match_wire_decisions(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let token = self.media_match_wire_sync_token_for_state(projected_state);
         if self.media_match_wire_sync_token.as_deref() == Some(token.as_str()) {
@@ -299,7 +321,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_wire_sync_token_for_state(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> String {
         let current_path = self
             .media_match_wire_local_path_for_state(projected_state)
@@ -314,11 +336,20 @@ impl GuiPersistedConfigRuntimeOwner {
             "{}|{}|{}|{}|{:?}|{:?}|{}",
             current_path,
             projected_state
+                .settings
                 .plugin_enablement
                 .enabled_for(GuiPluginSelection::MediaMatching),
-            projected_state.media_match.settings.fingerprinting_enabled,
-            projected_state.media_match.settings.wire_sharing_enabled,
-            projected_state.media_match.settings.autoplay_policy,
+            projected_state
+                .media_match
+                .model
+                .settings
+                .fingerprinting_enabled,
+            projected_state
+                .media_match
+                .model
+                .settings
+                .wire_sharing_enabled,
+            projected_state.media_match.model.settings.autoplay_policy,
             self.media_match_runtime_snapshot.health,
             remote_signature_token
         )
@@ -327,16 +358,17 @@ impl GuiPersistedConfigRuntimeOwner {
     fn update_media_match_remote_status(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         status: String,
     ) {
         if self.media_match_runtime_snapshot.remote_status.as_deref() == Some(status.as_str())
-            && self.media_match_runtime_snapshot.settings == projected_state.media_match.settings
+            && self.media_match_runtime_snapshot.settings
+                == projected_state.media_match.model.settings
         {
             return;
         }
         let mut snapshot = self.media_match_runtime_snapshot.clone();
-        snapshot.settings = projected_state.media_match.settings.clone();
+        snapshot.settings = projected_state.media_match.model.settings.clone();
         snapshot.remote_status = Some(status);
         self.media_match_runtime_snapshot = snapshot.clone();
         Self::push_actions_and_project(
@@ -349,7 +381,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn media_match_tool_worker_busy_notification(
         &self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if self.media_match_tool_worker_rx.is_none() {
             return false;
@@ -368,14 +400,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_config_path_for_request(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<PathBuf> {
         self.persisted_settings_config_path_for_request(projected_state)
     }
 
     pub(in crate::app) fn media_match_root_for_request(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<PathBuf> {
         self.media_match_config_path_for_request(projected_state)
             .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -384,7 +416,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn pump_media_match_tool_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(rx) = self.media_match_tool_worker_rx.take() else {
             return;
@@ -445,7 +477,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn publish_media_match_background_status(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         status: impl Into<String>,
     ) {
         let mut snapshot = self.media_match_runtime_snapshot.clone();
@@ -461,7 +493,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn request_media_match_background_worker_cancel(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         disposition: GuiMediaMatchBackgroundCancelDisposition,
         status: impl Into<String>,
     ) -> bool {
@@ -495,7 +527,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn publish_media_match_background_cancel_status(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         disposition: GuiMediaMatchBackgroundCancelDisposition,
     ) {
         let status = match disposition {
@@ -514,7 +546,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .unwrap_or_else(|error| format!("canceled: checkpoint failed: {error}")),
         };
         let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         snapshot.background_status = Some(status);
         self.media_match_runtime_snapshot = snapshot.clone();
         Self::push_actions_and_project(
@@ -527,7 +559,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn publish_media_match_activation_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         error: String,
     ) {
         self.media_match_background_trigger_key = None;
@@ -536,7 +568,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_match_remote_lookup_result = None;
         self.media_match_remote_lookup_rx = None;
         let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         let message = format!("Media Matching rebuild was not activated: {error}");
         snapshot.message = Some(message.clone());
         snapshot.background_status = Some("failed: previous index remains active".to_owned());
@@ -556,7 +588,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_background_trigger_key(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         search_roots: &[PathBuf],
         current_player_path: Option<&str>,
     ) -> String {
@@ -573,7 +605,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|root| root.display().to_string())
             .collect::<Vec<_>>()
             .join("|");
-        let settings = &projected_state.media_match.settings;
+        let settings = &projected_state.media_match.model.settings;
         format!(
             "current={current_player_path}\ntarget={room_target}\nremote={remote_targets}\nroots={roots}\nfingerprinting={}\nruntime={}\nautoplay={:?}\nwarmup={}",
             settings.fingerprinting_enabled,
@@ -617,7 +649,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn media_match_wire_signature_allowed_for_local_file(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         local_file: Option<&sorotte_player_api::LocalFileUpdate>,
     ) -> bool {
         let Some(path) = local_file.and_then(|file| file.path.as_deref()) else {
@@ -634,7 +666,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_exact_playlist_plan_for_state(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         root: &Path,
     ) -> GuiMediaMatchExactPlaylistPlan {
         let Some(target) = self.current_shared_playlist_target(projected_state) else {
@@ -653,7 +685,11 @@ impl GuiPersistedConfigRuntimeOwner {
             return GuiMediaMatchExactPlaylistPlan::None;
         };
 
-        if projected_state.media_match.settings.wire_sharing_enabled
+        if projected_state
+            .media_match
+            .model
+            .settings
+            .wire_sharing_enabled
             && self.local_shared_playlist_media_match_signature_path_matches(&path)
             && media_match_record_for_path(
                 root,
@@ -671,7 +707,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn queue_exact_playlist_signature_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         root: PathBuf,
         path: String,
         force_restart: bool,
@@ -703,7 +739,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let tool_snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         if tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
             if notify_on_finish {
                 let message = tool_snapshot.message.unwrap_or_else(|| {
@@ -715,7 +751,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
 
-        let settings = projected_state.media_match.settings.clone();
+        let settings = projected_state.media_match.model.settings.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
         let (tx, rx) = mpsc::channel();
@@ -802,7 +838,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_remote_targets_for_state(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Vec<GuiMediaMatchRemoteTarget> {
         let playlist_target = self
             .current_shared_playlist_target(projected_state)
@@ -828,9 +864,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn media_match_remote_resolution_token_for_state(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> String {
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled
+        {
             return String::new();
         }
 
@@ -851,7 +892,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_preferred_remote_target_for_state(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<GuiMediaMatchRemoteTarget> {
         let room_target = self.media_match_room_target_for_state(projected_state);
         let mut targets = self.media_match_remote_targets_for_state(projected_state);
@@ -874,7 +915,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_remote_target_for_target(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
     ) -> Option<GuiMediaMatchRemoteTarget> {
         let room_target = Path::new(target)
@@ -1039,7 +1080,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_remote_lookup_request_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
     ) -> Option<GuiMediaMatchRemoteLookupRequest> {
         if !Self::media_match_resolution_enabled(projected_state) {
@@ -1058,7 +1099,7 @@ impl GuiPersistedConfigRuntimeOwner {
             &search_roots,
             candidate_paths.as_deref(),
             &remote,
-            &projected_state.media_match.settings,
+            &projected_state.media_match.model.settings,
         );
         Some(GuiMediaMatchRemoteLookupRequest {
             root,
@@ -1071,7 +1112,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn media_match_cached_room_candidate_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
     ) -> Option<String> {
         let lookup = self.media_match_remote_lookup_request_for_target(projected_state, target)?;
@@ -1086,14 +1127,14 @@ impl GuiPersistedConfigRuntimeOwner {
             lookup.search_roots,
             lookup.candidate_paths,
             lookup.remote,
-            projected_state.media_match.settings.clone(),
+            projected_state.media_match.model.settings.clone(),
         );
         None
     }
 
     pub(in crate::app::runtime_owner) fn media_match_remote_lookup_pending_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
     ) -> bool {
         let Some(lookup) =
@@ -1108,7 +1149,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn media_match_cached_exact_inventory_candidate_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<String> {
@@ -1124,7 +1165,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn media_match_cached_exact_inventory_resolution_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<MediaMatchInventoryExactResolution> {
@@ -1138,7 +1179,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn current_player_path_if_cached_media_match_candidate_for_target(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         target: &str,
         current_path: &str,
     ) -> Option<String> {
@@ -1158,7 +1199,7 @@ impl GuiPersistedConfigRuntimeOwner {
             &search_roots,
             candidate_paths.as_deref(),
             &remote,
-            &projected_state.media_match.settings,
+            &projected_state.media_match.model.settings,
         );
         let candidate_path = self.cached_media_match_remote_lookup_result(&trigger_key)??;
         if Self::normalized_current_player_match_key(&candidate_path)
@@ -1171,7 +1212,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_room_target_for_state(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<String> {
         self.current_shared_playlist_target(projected_state)
             .or_else(|| {
@@ -1185,7 +1226,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_current_local_path_for_state(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<String> {
         let room_target = self.media_match_room_target_for_state(projected_state);
         if let Some(path) = self
@@ -1232,7 +1273,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_wire_local_path_for_state(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> Option<String> {
         self.player_local_file
             .as_ref()
@@ -1284,12 +1325,17 @@ impl GuiPersistedConfigRuntimeOwner {
     fn queue_media_match_background_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         reason: &'static str,
         force_restart: bool,
         notify_on_finish: bool,
     ) -> bool {
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled
+        {
             if notify_on_finish {
                 Self::push_runtime_error_notification(
                     handle,
@@ -1381,7 +1427,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .flatten();
         let extraction_required = current_player_path.is_some() || remote_candidate.is_some();
         let tool_snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         if extraction_required && tool_snapshot.health != GuiMediaMatchToolHealth::Healthy {
             if notify_on_finish {
                 let message = tool_snapshot.message.unwrap_or_else(|| {
@@ -1430,7 +1476,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let candidates = extraction_required
             .then(|| self.attached_media_match_candidate_paths(&root_keys))
             .flatten();
-        let settings = projected_state.media_match.settings.clone();
+        let settings = projected_state.media_match.model.settings.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
         let (tx, rx) = mpsc::channel();
@@ -1570,13 +1616,13 @@ impl GuiPersistedConfigRuntimeOwner {
     fn apply_media_match_background_result(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         result: MediaMatchIndexRebuildResult,
         notify: bool,
         background_status: impl Into<String>,
     ) -> bool {
         let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         snapshot.cache_status = Some(result.cache_status);
         snapshot.current_decision = result.current_decision;
         snapshot.nearest_match = result.nearest_match;
@@ -1612,7 +1658,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn pump_media_match_background_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(rx) = self.media_match_background_worker_rx.take() else {
             return;
@@ -1621,6 +1667,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut processed_events = 0usize;
         let mut latest_progress = None;
         let plugin_enabled = projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching);
         loop {
@@ -1729,7 +1776,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             let restore_error =
                                 self.abort_media_match_background_index_backup().err();
                             let mut snapshot = self.refresh_media_match_runtime_snapshot(
-                                &projected_state.media_match.settings,
+                                &projected_state.media_match.model.settings,
                             );
                             let message = restore_error
                                 .as_ref()
@@ -1771,7 +1818,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         .map(|()| "failed: previous index restored".to_owned())
                         .unwrap_or_else(|error| format!("failed: restore failed: {error}"));
                     let mut snapshot = self.refresh_media_match_runtime_snapshot(
-                        &projected_state.media_match.settings,
+                        &projected_state.media_match.model.settings,
                     );
                     snapshot.background_status = Some(status);
                     self.media_match_runtime_snapshot = snapshot.clone();
@@ -1799,19 +1846,26 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn maybe_queue_media_match_background_warmup(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
             return;
         }
-        if !projected_state.media_match.settings.fingerprinting_enabled {
+        if !projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled
+        {
             return;
         }
         if !projected_state
             .media_match
+            .model
             .settings
             .background_warmup_enabled
         {
@@ -1849,7 +1903,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_background_warmup_should_wait_for_room_resolution(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) -> bool {
         self.media_match_room_target_for_state(projected_state)
             .is_some()
@@ -1864,16 +1918,25 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn maybe_queue_media_match_exact_playlist_signature(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
             return;
         }
-        if !projected_state.media_match.settings.fingerprinting_enabled
-            || !projected_state.media_match.settings.wire_sharing_enabled
+        if !projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled
+            || !projected_state
+                .media_match
+                .model
+                .settings
+                .wire_sharing_enabled
         {
             return;
         }
@@ -1898,9 +1961,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_install_media_match_tools_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -1961,11 +2025,12 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_import_media_match_tool_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         tool: MediaMatchTool,
         source_path: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -2031,7 +2096,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_open_media_match_install_location_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(root) = self.media_match_root_for_request(projected_state) else {
             Self::push_runtime_error_notification(
@@ -2061,9 +2126,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_recheck_media_match_tools_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -2076,7 +2142,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         let _ = self.media_match_config_path_for_request(projected_state);
         let snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         let mut actions = vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
             snapshot.clone(),
         )];
@@ -2101,9 +2167,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_rebuild_media_match_index_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -2127,7 +2194,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_cancel_media_match_rebuild_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if self.request_media_match_background_worker_cancel(
             handle,
@@ -2151,9 +2218,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_clear_media_match_cache_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
         {
@@ -2187,7 +2255,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         snapshot.cache_status = Some("empty".to_owned());
         snapshot.current_decision = None;
         snapshot.nearest_match = None;
@@ -2220,13 +2288,18 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_media_match_fingerprinting_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
-        let was_enabled = projected_state.media_match.settings.fingerprinting_enabled;
+        let was_enabled = projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled;
         let should_start_initial_index = enabled
             && !was_enabled
             && projected_state
+                .settings
                 .plugin_enablement
                 .enabled_for(GuiPluginSelection::MediaMatching)
             && self
@@ -2262,7 +2335,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_media_match_background_warmup_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         if !self.persist_media_match_settings_request(
@@ -2286,7 +2359,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_media_match_wire_sharing_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         self.persist_media_match_settings_request(
@@ -2299,7 +2372,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_media_match_runtime_tolerance_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         self.persist_media_match_settings_request(
@@ -2312,7 +2385,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_media_match_autoplay_policy_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         policy: sorotte_media_match::MediaMatchAutoplayPolicy,
     ) -> bool {
         self.persist_media_match_settings_request(
@@ -2325,7 +2398,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn persist_media_match_settings_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         patch: GuiPersistedSettingsPatch,
     ) -> bool {
         if let Err(error) = self.persist_saved_settings_patch(projected_state, &patch) {
@@ -2342,7 +2415,7 @@ impl GuiPersistedConfigRuntimeOwner {
             vec![GuiShellAction::ApplyGuiPersistedSettingsPatch(patch)],
         );
         let snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.settings);
+            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
         self.media_match_runtime_snapshot = snapshot.clone();
         self.last_published_local_file = None;
         self.last_published_media_match_signature = None;
@@ -2603,13 +2676,17 @@ mod tests {
         });
 
         assert_eq!(
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+                &runtime_state_for_shell(&state)
+            ),
             SelectedPlaylistMediaSyncOutcome::NoChange,
             "automatic resolution should queue Media Matching while local indexing continues"
         );
         wait_for_media_match_remote_lookup(&mut owner);
         assert_eq!(
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+                &runtime_state_for_shell(&state)
+            ),
             SelectedPlaylistMediaSyncOutcome::NoChange,
             "a ready Media Matching result must wait for the higher-priority local index"
         );
@@ -2648,7 +2725,9 @@ mod tests {
         let _ = owner.poll_attached_media_search_index_build(std::time::Duration::from_secs(1));
 
         assert_eq!(
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+                &runtime_state_for_shell(&state)
+            ),
             SelectedPlaylistMediaSyncOutcome::StartedLoading
         );
         let exact_local_path = exact_local_path.to_string_lossy().into_owned();
@@ -2694,12 +2773,17 @@ mod tests {
             result_rx: preferred_index_rx,
         });
         assert_eq!(
-            owner.media_match_cached_room_candidate_for_target(&state, target),
+            owner.media_match_cached_room_candidate_for_target(
+                &runtime_state_for_shell(&state),
+                target
+            ),
             Some(sorotte_media_match::normalize_media_path(&media_match_path)),
             "the preferred-source check requires an already-ready Media Matching fallback"
         );
         assert_eq!(
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+                &runtime_state_for_shell(&state)
+            ),
             SelectedPlaylistMediaSyncOutcome::NoChange,
             "PreferMediaMatching must preserve local-first priority while local indexing is pending"
         );
@@ -2724,7 +2808,8 @@ mod tests {
             media_match_fingerprinting_enabled: Some(true),
             ..StoredClientSettings::default()
         };
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
         let root_key =
             crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
@@ -2848,7 +2933,8 @@ mod tests {
                 media_match_fingerprinting_enabled: Some(true),
                 ..StoredClientSettings::default()
             };
-            let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+            let mut state =
+                crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
             let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
             owner.media_match_runtime_snapshot.nearest_match =
                 Some("previous live nearest".to_owned());
@@ -3011,11 +3097,11 @@ mod tests {
 
         assert!(owner.player_local_file.is_none());
         assert_eq!(
-            owner.media_match_room_target_for_state(&state),
+            owner.media_match_room_target_for_state(&runtime_state_for_shell(&state)),
             Some("episode.mkv".to_owned())
         );
         assert_eq!(
-            owner.media_match_current_local_path_for_state(&state),
+            owner.media_match_current_local_path_for_state(&runtime_state_for_shell(&state)),
             Some(media_path.to_string_lossy().into_owned())
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -3042,7 +3128,7 @@ mod tests {
 
         assert!(owner.player_local_file.is_none());
         assert_eq!(
-            owner.media_match_current_local_path_for_state(&state),
+            owner.media_match_current_local_path_for_state(&runtime_state_for_shell(&state)),
             Some(media_path.to_string_lossy().into_owned())
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -3092,10 +3178,15 @@ mod tests {
         });
 
         assert_eq!(
-            owner.media_match_room_target_for_state(&state).as_deref(),
+            owner
+                .media_match_room_target_for_state(&runtime_state_for_shell(&state))
+                .as_deref(),
             Some("episode2.mkv")
         );
-        assert_eq!(owner.media_match_current_local_path_for_state(&state), None);
+        assert_eq!(
+            owner.media_match_current_local_path_for_state(&runtime_state_for_shell(&state)),
+            None
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3143,13 +3234,15 @@ mod tests {
         );
         owner.media_match_runtime_snapshot.health = crate::app::GuiMediaMatchToolHealth::Healthy;
 
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            shared_playlist_enabled: Some(true),
-            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
-            media_match_fingerprinting_enabled: Some(true),
-            media_match_wire_sharing_enabled: Some(true),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                shared_playlist_enabled: Some(true),
+                media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+                media_match_fingerprinting_enabled: Some(true),
+                media_match_wire_sharing_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
         state.apply_shared_playlist_entries(vec![remote_file_name.to_owned()], Some(0), false);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
 
@@ -3222,8 +3315,9 @@ mod tests {
     #[test]
     fn media_match_background_progress_backlog_yields_between_runtime_pumps() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings::default(),
+        );
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let (tx, rx) = mpsc::channel();
 
@@ -3261,8 +3355,9 @@ mod tests {
     #[test]
     fn canceled_media_match_background_worker_ok_result_does_not_publish_stale_nearest_match() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings::default(),
+        );
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
         owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
@@ -3310,11 +3405,13 @@ mod tests {
     #[test]
     fn disabled_media_match_background_worker_result_does_not_publish_stale_nearest_match() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            media_matching_plugin_enabled: Some(false),
-            media_match_fingerprinting_enabled: Some(true),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                media_matching_plugin_enabled: Some(false),
+                media_match_fingerprinting_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
         owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
@@ -3362,12 +3459,14 @@ mod tests {
     #[test]
     fn background_warmup_waits_for_unresolved_room_media_before_full_root_scan() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            media_match_fingerprinting_enabled: Some(true),
-            media_match_background_warmup_enabled: Some(true),
-            shared_playlist_enabled: Some(true),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                media_match_fingerprinting_enabled: Some(true),
+                media_match_background_warmup_enabled: Some(true),
+                shared_playlist_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.active_shared_playlist_index = Some(0);
@@ -3390,12 +3489,14 @@ mod tests {
     #[test]
     fn background_warmup_cancels_running_full_root_scan_for_unresolved_room_media() {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            media_match_fingerprinting_enabled: Some(true),
-            media_match_background_warmup_enabled: Some(true),
-            shared_playlist_enabled: Some(true),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                media_match_fingerprinting_enabled: Some(true),
+                media_match_background_warmup_enabled: Some(true),
+                shared_playlist_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.active_shared_playlist_index = Some(0);
@@ -3435,7 +3536,8 @@ mod tests {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettings::default()
         };
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
         owner.active_shared_playlist_index = Some(0);
@@ -3494,7 +3596,8 @@ mod tests {
         );
 
         assert_eq!(
-            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            owner
+                .media_match_exact_playlist_plan_for_state(&runtime_state_for_shell(&state), &root),
             GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature {
                 path: media_path.to_string_lossy().into_owned(),
             }
@@ -3515,7 +3618,8 @@ mod tests {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettings::default()
         };
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
         owner.active_shared_playlist_index = Some(0);
@@ -3559,7 +3663,8 @@ mod tests {
             shared_playlist_enabled: Some(true),
             ..StoredClientSettings::default()
         };
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
         state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
         owner.active_shared_playlist_index = Some(0);
@@ -3626,7 +3731,8 @@ mod tests {
         );
 
         assert_eq!(
-            owner.media_match_exact_playlist_plan_for_state(&state, &root),
+            owner
+                .media_match_exact_playlist_plan_for_state(&runtime_state_for_shell(&state), &root),
             GuiMediaMatchExactPlaylistPlan::None
         );
         let _ = std::fs::remove_dir_all(&root);

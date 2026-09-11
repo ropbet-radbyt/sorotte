@@ -1,14 +1,10 @@
 use super::runtime_localization::localize_gui_runtime_message;
 use super::shell_state::{
     GuiConfigurationTab, GuiShellModal, GuiShellView, GuiTransientNotification,
-    GuiTransientNotificationLevel, MainWindowChatRow, MainWindowPlaybackControls,
-    MainWindowPlaylistRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
-    MainWindowUserRow, MenuActionId, SettingId, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, MainWindowChatRow, MainWindowRoomRow, MainWindowRuntimeSnapshot,
+    MenuActionId, SettingId, SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState,
 };
-use super::support::{
-    NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text, normalized_editable_text,
-};
-use sorotte_client_app::app_boundary::readiness::ReadinessPresentationProtocol;
+use super::support::{NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_name_text};
 
 impl SorotteGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {
@@ -275,315 +271,37 @@ impl SorotteGuiShellAppState {
         &mut self,
         snapshot: MainWindowRuntimeSnapshot,
     ) -> bool {
-        let Some(room_name) = nonempty_room_name_text(&snapshot.room_name) else {
-            return self.record_action_error(
-                "Main-window runtime snapshots must include a non-empty room name.",
-            );
+        let sources = super::playlist_model::GuiPlaylistSources {
+            default_source: self
+                .main_window
+                .playlist_default_source
+                .current_source_id
+                .clone(),
+            media_match: &self.media_match,
+            plex: &self.plex,
+            plugin_enablement: self.plugin_enablement,
         };
-        if !snapshot.playlist_entry_ids.is_empty()
-            && snapshot.playlist_entry_ids.len() != snapshot.playlist.len()
-        {
-            return self.record_action_error(
-                "Main-window runtime snapshots must align playlist row identities with entries.",
-            );
+        let result = super::main_window_projection::GuiMainWindowProjection {
+            main_window: &mut self.main_window,
+            selection: &mut self.selection,
+            main_window_playlist_selection_is_local: &mut self
+                .main_window_playlist_selection_is_local,
+            playlist_undo_snapshot: &mut self.playlist_undo_snapshot,
+            playlist_source_undo_snapshot: &mut self.playlist_source_undo_snapshot,
+            playlist_entry_id_undo_snapshot: &mut self.playlist_entry_id_undo_snapshot,
+            pending_local_ready_target: &mut self.pending_local_ready_target,
+            menus: &mut self.menus,
+            sources,
         }
-
-        let mut normalized_rooms = Vec::with_capacity(snapshot.rooms.len());
-        for room in snapshot.rooms {
-            let Some(room_name) = nonempty_room_name_text(&room.room_name) else {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain empty room names.",
-                );
-            };
-            if normalized_rooms.iter().any(|existing: &MainWindowRoomRow| {
-                existing.room_name.eq_ignore_ascii_case(&room_name)
-            }) {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain duplicate room names.",
-                );
-            }
-            normalized_rooms.push(MainWindowRoomRow {
-                room_name,
-                is_controlled: room.is_controlled,
-                has_named_users: room.has_named_users,
-            });
+        .apply(snapshot);
+        if let Err(message) = result {
+            return self.record_action_error(message);
         }
-
-        let mut normalized_users = Vec::with_capacity(snapshot.users.len());
-        for user in snapshot.users {
-            let Some(username) = normalized_editable_text(&user.username) else {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain empty user names.",
-                );
-            };
-            let user_room_name =
-                nonempty_room_name_text(&user.room_name).unwrap_or_else(|| room_name.clone());
-            if normalized_users.iter().any(|existing: &MainWindowUserRow| {
-                existing.username.eq_ignore_ascii_case(&username)
-            }) {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain duplicate user names.",
-                );
-            }
-            if !normalized_rooms
-                .iter()
-                .any(|room| room.room_name == user_room_name)
-            {
-                normalized_rooms.push(MainWindowRoomRow {
-                    room_name: user_room_name.clone(),
-                    is_controlled: user_room_name.starts_with('+'),
-                    has_named_users: true,
-                });
-            }
-            normalized_users.push(MainWindowUserRow {
-                username,
-                room_name: user_room_name,
-                is_self: user.is_self,
-                is_ready: user.is_ready,
-                is_controller: user.is_controller,
-                has_file: user.has_file,
-                file_name_label: user
-                    .file_name
-                    .clone()
-                    .unwrap_or_else(|| "No file".to_owned()),
-                file_name: user.file_name,
-                file_size_label: user.file_size_label,
-                file_duration_label: user.file_duration_label,
-                file_is_url: user.file_is_url,
-                file_is_trusted: user.file_is_trusted,
-                filename_differs: user.filename_differs,
-                filesize_differs: user.filesize_differs,
-                fileduration_differs: user.fileduration_differs,
-                participant_status: user.participant_status,
-                start_barrier_status: user.start_barrier_status,
-                is_selected: false,
-            });
-        }
-        if !normalized_rooms
-            .iter()
-            .any(|room| room.room_name == room_name)
-        {
-            normalized_rooms.push(MainWindowRoomRow {
-                room_name: room_name.clone(),
-                is_controlled: snapshot.controlled_room_active || room_name.starts_with('+'),
-                has_named_users: normalized_users
-                    .iter()
-                    .any(|user| user.room_name == room_name),
-            });
-        }
-        for room in &mut normalized_rooms {
-            room.has_named_users = normalized_users
-                .iter()
-                .any(|user| user.room_name == room.room_name);
-        }
-
-        let mut normalized_readiness = snapshot.readiness;
-        normalized_readiness.retain(|username, presentation| {
-            presentation.protocol == ReadinessPresentationProtocol::V2
-                && presentation.username.eq_ignore_ascii_case(username)
-                && normalized_users
-                    .iter()
-                    .any(|user| user.username.eq_ignore_ascii_case(username))
-        });
-
-        let playlist_scope_unchanged = self.main_window.room_name == room_name
-            && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
-        if !playlist_scope_unchanged {
-            self.playlist_undo_snapshot = None;
-            self.playlist_source_undo_snapshot = None;
-            self.playlist_entry_id_undo_snapshot = None;
-        }
-        let previous_playlist = if playlist_scope_unchanged {
-            self.main_window.playlist.clone()
-        } else {
-            Vec::new()
-        };
-        let mut used_previous_rows = vec![false; previous_playlist.len()];
-        let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
-        let snapshot_playlist_entry_ids = if playlist_scope_unchanged {
-            snapshot.playlist_entry_ids.clone()
-        } else {
-            Vec::new()
-        };
-        for (index, entry) in snapshot.playlist.into_iter().enumerate() {
-            let Some(label) = normalized_editable_text(&entry) else {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain empty playlist entries.",
-                );
-            };
-            let previous_row = Self::reconciled_playlist_row(
-                &previous_playlist,
-                &mut used_previous_rows,
-                index,
-                &label,
-                snapshot_playlist_entry_ids.get(index).copied(),
-            );
-            let mut source_state = playlist_scope_unchanged
-                .then(|| snapshot.playlist_source_states.get(index).cloned())
-                .flatten()
-                .map(|state| self.refreshed_playlist_source_state_for_entry(&label, state))
-                .or_else(|| {
-                    previous_row.as_ref().map(|row| {
-                        self.refreshed_playlist_source_state_for_entry(
-                            &label,
-                            row.source_state.clone(),
-                        )
-                    })
-                })
-                .unwrap_or_else(|| self.playlist_source_state_for_entry(&label));
-            if let Some(entry_id) = snapshot_playlist_entry_ids.get(index).copied() {
-                source_state.entry_id = entry_id;
-            }
-            normalized_playlist.push(MainWindowPlaylistRow {
-                entry_id: source_state.entry_id,
-                label,
-                is_selected: false,
-                source_state,
-            });
-        }
-        if snapshot
-            .active_playlist_index
-            .is_some_and(|index| index >= normalized_playlist.len())
-        {
-            return self.record_action_error(
-                "Main-window runtime snapshots cannot activate a missing playlist row.",
-            );
-        }
-
-        let mut normalized_chat = Vec::with_capacity(snapshot.chat.len());
-        for row in snapshot.chat {
-            let Some(sender) = normalized_editable_text(&row.sender) else {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain empty chat senders.",
-                );
-            };
-            let Some(message) = normalized_editable_text(&row.message) else {
-                return self.record_action_error(
-                    "Main-window runtime snapshots cannot contain empty chat messages.",
-                );
-            };
-            normalized_chat.push(MainWindowChatRow { sender, message });
-        }
-
-        let previously_selected_username = self
-            .selection
-            .selected_main_window_user
-            .and_then(|index| self.main_window.users.get(index))
-            .map(|user| user.username.clone());
-        let previous_main_window_user_edit_session = self.main_window_user_edit_session.clone();
-        let previously_selected_playlist_id = self
-            .selection
-            .selected_main_window_playlist
-            .and_then(|index| self.main_window.playlist.get(index))
-            .map(|row| row.entry_id);
-        let can_preserve_local_playlist_selection = self.main_window.room_name == room_name
-            && self.main_window.shared_playlist_enabled == snapshot.shared_playlist_enabled;
-        let local_readiness = normalized_users
-            .iter()
-            .find(|user| user.is_self)
-            .and_then(|user| normalized_readiness.get(&user.username));
-        let pending_local_ready_target = match local_readiness {
-            Some(readiness) if readiness.protocol == ReadinessPresentationProtocol::V2 => {
-                if readiness.pending_is_acknowledged() {
-                    None
-                } else if readiness.has_unacknowledged_pending_intent() {
-                    Some(readiness.displayed_ready())
-                } else {
-                    None
-                }
-            }
-            _ => self.pending_local_ready_target.filter(|target| {
-                snapshot.can_set_ready
-                    && normalized_users
-                        .iter()
-                        .find(|user| user.is_self)
-                        .is_some_and(|user| user.is_ready != *target)
-            }),
-        };
-
-        self.main_window = MainWindowShellState {
-            room_name,
-            room_control_status: snapshot.room_control_status,
-            shared_playlist_enabled: snapshot.shared_playlist_enabled,
-            controlled_room_active: snapshot.controlled_room_active,
-            hide_empty_rooms: snapshot.hide_empty_rooms,
-            rooms: normalized_rooms,
-            users: normalized_users,
-            readiness: normalized_readiness,
-            room_playback_intent: snapshot.room_playback_intent,
-            playlist: normalized_playlist,
-            playlist_default_source: self.refreshed_playlist_source_default_state(
-                self.main_window.playlist_default_source.clone(),
-            ),
-            active_playlist_index: snapshot.active_playlist_index,
-            chat: normalized_chat,
-            playback: MainWindowPlaybackControls {
-                can_toggle_pause: snapshot.can_toggle_pause,
-                can_seek: snapshot.can_seek,
-                can_undo_seek: snapshot.can_undo_seek,
-                can_set_offset: snapshot.can_set_offset,
-                can_toggle_autoplay: snapshot.can_toggle_autoplay,
-                can_adjust_autoplay_threshold: snapshot.can_adjust_autoplay_threshold,
-                can_set_ready: snapshot.can_set_ready,
-                can_set_others_ready: snapshot.can_set_others_ready,
-                can_manage_playlist: snapshot.can_manage_playlist,
-            },
-            playback_paused: snapshot.playback_paused,
-            autoplay_active: snapshot.autoplay_active,
-            autoplay_threshold: snapshot.autoplay_threshold,
-            autoplay_countdown_seconds: snapshot.autoplay_countdown_seconds,
-            user_offset_seconds: snapshot.user_offset_seconds,
-            show_playback_buttons: snapshot.show_playback_buttons,
-            show_autoplay_controls: snapshot.show_autoplay_controls,
-        };
-        self.pending_local_ready_target = pending_local_ready_target;
-        self.set_menu_action_checked(
-            MenuActionId::TogglePlaybackButtons,
-            self.main_window.show_playback_buttons,
-        );
-        self.set_menu_action_checked(
-            MenuActionId::ToggleAutoplayControls,
-            self.main_window.show_autoplay_controls,
-        );
-        self.set_menu_action_checked(
-            MenuActionId::ToggleHideEmptyRooms,
-            self.main_window.hide_empty_rooms,
-        );
-        self.selection.selected_main_window_user = previously_selected_username
-            .as_deref()
-            .and_then(|username| {
-                self.main_window
-                    .users
-                    .iter()
-                    .position(|user| user.username == username)
-            })
-            .or_else(|| (!self.main_window.users.is_empty()).then_some(0));
-        let preserve_local_playlist_selection = can_preserve_local_playlist_selection
-            && self.main_window_playlist_selection_is_local
-            && previously_selected_playlist_id.is_some_and(|entry_id| {
-                self.main_window
-                    .playlist
-                    .iter()
-                    .any(|row| row.entry_id == entry_id)
-            });
-        self.set_main_window_playlist_selection(
-            previously_selected_playlist_id
-                .and_then(|entry_id| {
-                    self.main_window
-                        .playlist
-                        .iter()
-                        .position(|row| row.entry_id == entry_id)
-                })
-                .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
-            preserve_local_playlist_selection,
-        );
-        self.main_window_user_edit_session = previous_main_window_user_edit_session;
         self.normalize_main_window_user_edit_session();
         self.normalize_selection();
         self.apply_selection_to_surfaces();
         true
     }
-
     pub(super) fn apply_main_window_runtime_snapshot(
         &mut self,
         snapshot: MainWindowRuntimeSnapshot,

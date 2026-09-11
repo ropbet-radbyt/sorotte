@@ -1,9 +1,10 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) fn drain_gui_actions_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Vec<GuiShellAction> {
         // Building the returned action batch is an infallible, best-effort UI
         // ownership handoff. Fallible notification adapters use the client-core
@@ -149,28 +150,28 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 "runtime-projected main-window snapshots should remain shell-applicable"
             );
         }
-        let interaction_runtime_snapshot = self.interaction_runtime_snapshot(
-            state,
+        let interaction_runtime_snapshot = self.playlist_selection_update(
             &interaction_state,
             main_window_runtime_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.playlist.len())
-                .unwrap_or_else(|| state.main_window.playlist.len()),
+                .unwrap_or_else(|| state.playlist.main_window.playlist.len()),
         );
         let menu_dialog_runtime_snapshot = self.menu_dialog_runtime_snapshot(
             state,
             main_window_runtime_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.shared_playlist_enabled)
-                .unwrap_or(state.main_window.shared_playlist_enabled),
+                .unwrap_or(state.playlist.main_window.shared_playlist_enabled),
         );
         if let Some(snapshot) = main_window_runtime_snapshot
-            && !snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window)
+            && !snapshot
+                .matches_shell_state_with_omitted_playlist_metadata(&state.playlist.main_window)
         {
             actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot));
         }
         if let Some(snapshot) = interaction_runtime_snapshot {
-            actions.push(GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot));
+            actions.push(GuiShellAction::ApplySharedPlaylistSelection(snapshot));
         }
         if let Some(snapshot) = menu_dialog_runtime_snapshot {
             actions.push(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot));

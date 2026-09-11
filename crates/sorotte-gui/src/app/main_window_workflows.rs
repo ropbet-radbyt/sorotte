@@ -27,53 +27,17 @@ impl SorotteGuiShellAppState {
         from_index: usize,
         to_index: usize,
     ) -> bool {
-        if !self.main_window.playback.can_manage_playlist {
-            return self.record_action_error(
-                "Playlist row movement is unavailable when shared playlist controls are disabled.",
-            );
-        }
-        if from_index >= self.main_window.playlist.len()
-            || to_index >= self.main_window.playlist.len()
+        match self
+            .playlist_edit_model()
+            .move_main_window_playlist_row(from_index, to_index)
         {
-            return self.record_action_error("No playlist row exists at the requested index.");
-        }
-        if from_index == to_index {
-            self.clear_action_error_and_refresh();
-            return false;
-        }
-
-        let active_entry_id = self
-            .main_window
-            .active_playlist_index
-            .and_then(|index| self.main_window.playlist.get(index))
-            .map(|row| row.entry_id);
-        let current_index = self.selection.selected_main_window_playlist;
-        let mut next_rows = self.main_window.playlist.clone();
-        let moved_row = next_rows.remove(from_index);
-        next_rows.insert(to_index, moved_row);
-        let next_selection = current_index.map(|selected_index| {
-            if selected_index == from_index {
-                to_index
-            } else if from_index < selected_index && selected_index <= to_index {
-                selected_index - 1
-            } else if to_index <= selected_index && selected_index < from_index {
-                selected_index + 1
-            } else {
-                selected_index
+            Ok(applied) => {
+                self.apply_selection_to_surfaces();
+                self.clear_action_error_and_refresh();
+                applied
             }
-        });
-        self.remember_shared_playlist_undo_snapshot_if_rows_changed(&next_rows);
-        self.main_window.playlist = next_rows;
-        self.main_window.active_playlist_index = active_entry_id.and_then(|entry_id| {
-            self.main_window
-                .playlist
-                .iter()
-                .position(|row| row.entry_id == entry_id)
-        });
-        self.set_main_window_playlist_selection(next_selection, true);
-        self.apply_selection_to_surfaces();
-        self.clear_action_error_and_refresh();
-        true
+            Err(message) => self.record_action_error(message),
+        }
     }
 
     pub(super) fn move_selected_main_window_playlist(&mut self, delta: isize) -> bool {

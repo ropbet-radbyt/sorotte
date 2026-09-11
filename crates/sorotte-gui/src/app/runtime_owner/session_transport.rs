@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn with_session_runtime(
@@ -106,7 +107,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn apply_session_transport_disconnect_pause(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let should_pause = self
             .session
@@ -167,7 +168,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_session_transport_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         error: String,
     ) {
         let error_message = format!("Session transport driver pump failed: {error}");
@@ -231,7 +232,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn handle_terminal_session_transport_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         error_message: String,
         now_seconds: f64,
     ) {
@@ -260,7 +261,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn handle_terminal_session_transport_apply_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         error: String,
     ) {
         self.handle_terminal_session_transport_failure(
@@ -274,7 +275,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_due_session_transport_reconnect(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(due_at) = self.session_transport_reconnect_due_at else {
             return;
@@ -325,7 +326,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn clear_session_runtime_after_transport_disconnect(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if let Some(session_transport) = self.session_transport.as_ref() {
             session_transport.clear_protocol_lines();
@@ -346,6 +347,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let mut actions = self.sessionless_projection_actions(projected_state);
         if matches!(
             projected_state
+                .session
                 .pending_operation
                 .as_ref()
                 .map(|pending| pending.kind),
@@ -359,7 +361,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn finish_pending_session_transport_disconnect(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !self.session_transport_disconnect_pending_cleanup {
             return;
@@ -370,7 +372,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn drain_session_runtime_actions_and_finish_transport_disconnect(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.drain_session_runtime_actions(handle, projected_state);
         self.sync_session_transport_reconnect_state_from_handshake();
@@ -457,7 +459,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn drain_session_transport_outbound_before_synchronous_player_open(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> GuiSessionOutboundDrainDisposition {
         let Some(session_transport) = self.session_transport.as_ref().cloned() else {
             return GuiSessionOutboundDrainDisposition::Drained;
@@ -517,7 +519,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_session_transport_driver(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         const MAX_RELIABLE_FRAME_WRITES_PER_PUMP: usize = 64;
 
@@ -567,7 +569,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_session_transport_warnings(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         session_transport: &GuiQueuedSessionTransportHandle,
     ) {
         let actions = session_transport
@@ -591,7 +593,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn apply_session_transport_outbound_delivery_results(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(session_transport) = self.session_transport.as_ref() else {
             return false;
@@ -662,7 +664,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn drain_session_transport_inbound(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(session_transport) = self.session_transport.as_ref() else {
             return false;
@@ -710,7 +712,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_session_runtime_actions(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !self.session_projects_to_shell {
             if let Some(session) = self.session.as_mut() {
@@ -734,7 +736,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn sync_active_shared_playlist_media_and_playstate_impl(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
     ) {
         let selected_media_sync =
             self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
@@ -756,7 +758,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn flush_session_transport_outbound(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let _ = self.apply_session_transport_outbound_delivery_results(handle, projected_state);
         let Some(session_transport) = self.session_transport.as_ref().cloned() else {

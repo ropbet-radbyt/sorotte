@@ -1,11 +1,12 @@
 use super::*;
 use crate::app::runtime_stack::GuiPlaylistProtocolDeliveryFence;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_main_window_user_media_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target: String,
     ) {
         let Some(target) = normalized_editable_text(&target) else {
@@ -54,54 +55,25 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         };
 
-        if projected_state.playlist_backed_media_opens_preferred() {
-            self.open_media_files_through_shared_playlist_runtime_impl(
-                handle,
-                projected_state,
-                vec![resolved_target],
-                None,
-            );
-            return;
-        }
-
-        self.ensure_configured_player_attached();
-        if self.player.is_some() {
-            if browser_stream_target_kind(&resolved_target, None)
-                == GuiStreamTargetKind::ExtractorPageUrl
-                && !projected_state
-                    .plugin_enablement
-                    .enabled_for(GuiPluginSelection::StreamSupport)
-            {
-                Self::push_runtime_unavailable(
-                    handle,
-                    "Stream Support is disabled; extractor-backed URLs cannot be opened until it is enabled.".to_owned(),
-                );
-                return;
-            }
-            if !self.preflight_user_stream_target(&resolved_target) {
-                return;
-            }
-            self.prepare_stream_load_tracking(&resolved_target, true);
-            self.open_media_files_through_attached_player_impl(handle, vec![resolved_target]);
-        } else {
-            Self::push_runtime_unavailable(
-                handle,
-                self.open_media_unavailable_message_impl(&[resolved_target]),
-            );
-        }
+        self.open_media_files_through_shared_playlist_runtime_impl(
+            handle,
+            projected_state,
+            vec![resolved_target],
+            None,
+        );
     }
 
     fn project_loaded_shared_playlist_into_state(
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         entries: Vec<String>,
         selected_index: Option<usize>,
         fresh_row_identities: bool,
     ) -> bool {
-        let entries = SorotteGuiShellAppState::normalize_shared_playlist_entries(entries);
+        let entries = GuiRuntimeState::normalize_shared_playlist_entries(entries);
         let selected_index = selected_index
             .filter(|_| !entries.is_empty())
             .map(|index| index.min(entries.len().saturating_sub(1)));
-        projected_state.main_window.shared_playlist_enabled = true;
+        projected_state.playlist.main_window.shared_playlist_enabled = true;
         if fresh_row_identities {
             projected_state.remember_shared_playlist_undo_snapshot();
         } else {
@@ -116,6 +88,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state.apply_shared_playlist_entries(entries.clone(), selected_index, false);
         if let Some(fresh_source_states) = fresh_source_states {
             for (row, mut source_state) in projected_state
+                .playlist
                 .main_window
                 .playlist
                 .iter_mut()
@@ -127,15 +100,16 @@ impl GuiPersistedConfigRuntimeOwner {
                 row.source_state = source_state;
             }
         }
-        projected_state.main_window.active_playlist_index = selected_index;
+        projected_state.playlist.main_window.active_playlist_index = selected_index;
         true
     }
 
     fn mark_shared_playlist_entry_as_local_source(
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
     ) -> bool {
         let Some(mut source_state) = projected_state
+            .playlist
             .main_window
             .playlist
             .get(index)
@@ -157,10 +131,11 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn mark_bound_shared_playlist_entries_as_local_sources(
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         bound_row_ids: &[GuiPlaylistEntryId],
     ) -> bool {
         let matching_indices = projected_state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -175,11 +150,11 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn mark_unavailable_shared_playlist_local_origins(
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         unavailable_row_ids: &[GuiPlaylistEntryId],
     ) -> bool {
         let mut changed = false;
-        for row in &mut projected_state.main_window.playlist {
+        for row in &mut projected_state.playlist.main_window.playlist {
             if !unavailable_row_ids.contains(&row.entry_id)
                 || !matches!(
                     row.source_state.policy,
@@ -204,7 +179,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn shared_playlist_rows_corresponding_to_dispatch(
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         dispatch: &GuiSharedPlaylistOpenDispatch,
         previous_row_count: usize,
         opened_entry_count: usize,
@@ -213,6 +188,7 @@ impl GuiPersistedConfigRuntimeOwner {
     ) -> Vec<(GuiPlaylistEntryId, String)> {
         if playlist_insert_slot.is_none() {
             return state
+                .playlist
                 .main_window
                 .playlist
                 .iter()
@@ -226,13 +202,14 @@ impl GuiPersistedConfigRuntimeOwner {
             .min(previous_row_count);
         let inserted_end = inserted_start
             .saturating_add(opened_entry_count)
-            .min(state.main_window.playlist.len());
+            .min(state.playlist.main_window.playlist.len());
         let mut used_indices = BTreeSet::new();
         let mut rows = Vec::new();
         for item in &dispatch.items {
             let selected_match = selected_playlist_index.filter(|index| {
                 !used_indices.contains(index)
                     && state
+                        .playlist
                         .main_window
                         .playlist
                         .get(*index)
@@ -241,6 +218,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let inserted_match = (inserted_start..inserted_end).find(|index| {
                 !used_indices.contains(index)
                     && state
+                        .playlist
                         .main_window
                         .playlist
                         .get(*index)
@@ -248,6 +226,7 @@ impl GuiPersistedConfigRuntimeOwner {
             });
             let matching_index = selected_match.or(inserted_match).or_else(|| {
                 state
+                    .playlist
                     .main_window
                     .playlist
                     .iter()
@@ -260,7 +239,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 continue;
             };
             used_indices.insert(index);
-            if let Some(row) = state.main_window.playlist.get(index) {
+            if let Some(row) = state.playlist.main_window.playlist.get(index) {
                 rows.push((row.entry_id, row.label.clone()));
             }
         }
@@ -269,10 +248,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn selected_playlist_local_origin(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         selected_playlist_index: Option<usize>,
     ) -> Option<String> {
         let entry_id = state
+            .playlist
             .main_window
             .playlist
             .get(selected_playlist_index?)?
@@ -282,7 +262,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn open_selected_playlist_media_after_shared_playlist_projection(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         selected_playlist_index: Option<usize>,
         selected_media_source_path: Option<String>,
     ) -> SelectedPlaylistMediaSyncOutcome {
@@ -290,6 +270,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };
         let Some((row_id, row_label, source_policy, preferred_provider)) = projected_state
+            .playlist
             .main_window
             .playlist
             .get(selected_index)
@@ -389,7 +370,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_main_window_user_containing_folder_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target: String,
     ) {
         let Some(target) = normalized_editable_text(&target) else {
@@ -457,7 +438,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_media_files_through_shared_playlist_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         paths: Vec<String>,
         playlist_insert_slot: Option<usize>,
     ) {
@@ -491,7 +472,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_shared_playlist_dispatch_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         selected_paths: Vec<String>,
         dispatch: GuiSharedPlaylistOpenDispatch,
         playlist_insert_slot: Option<usize>,
@@ -508,7 +489,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn open_shared_playlist_dispatch_after_prior_delivery_fence(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         selected_paths: Vec<String>,
         dispatch: GuiSharedPlaylistOpenDispatch,
         playlist_insert_slot: Option<usize>,
@@ -522,7 +503,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         }
 
-        let current_playlist_entry_count = projected_state.main_window.playlist.len();
+        let current_playlist_entry_count = projected_state.playlist.main_window.playlist.len();
         let current_playlist_index =
             self.shared_playlist_mutation_current_index(projected_state, false);
         let (playlist_entries, selected_playlist_index) = projected_state
@@ -562,7 +543,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.last_attached_media_resolution_trigger = None;
                 if source_changed {
                     handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                        MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                        MainWindowRuntimeSnapshot::from_shell_state(
+                            &projected_state.playlist.main_window,
+                        ),
                     ));
                 }
                 let selected_media_sync = self
@@ -632,7 +615,9 @@ impl GuiPersistedConfigRuntimeOwner {
                 handle,
                 projected_state,
                 vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                    MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                    MainWindowRuntimeSnapshot::from_shell_state(
+                        &projected_state.playlist.main_window,
+                    ),
                 )],
             );
 
@@ -732,7 +717,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.remember_local_shared_playlist_media_match_signature_path(path);
             }
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.playlist.main_window),
             ));
             let delivery_fence = if self.session_transport.is_some() {
                 session_result
@@ -796,7 +781,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn finish_shared_playlist_open_after_delivery(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         completion: GuiSharedPlaylistOpenCompletion,
     ) {
         let dispatch = completion.dispatch;
@@ -860,7 +845,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn resume_pending_shared_playlist_open_if_ready(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if self
             .pending_shared_playlist_open
@@ -905,7 +890,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn open_stream_helper_install_location_runtime_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         install_location: PathBuf,
     ) {
         if let Err(error) = fs::create_dir_all(&install_location) {

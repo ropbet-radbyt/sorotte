@@ -519,7 +519,6 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
         events: Some(ScriptedPlayerEvents::new(
             sorotte_player_api::PlayerAttachmentEpoch::new(1),
         )),
-        ..Default::default()
     }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
@@ -711,7 +710,6 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
         events: Some(ScriptedPlayerEvents::new(
             sorotte_player_api::PlayerAttachmentEpoch::new(1),
         )),
-        ..Default::default()
     }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")

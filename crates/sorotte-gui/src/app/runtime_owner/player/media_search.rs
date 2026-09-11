@@ -1,6 +1,11 @@
 use super::*;
 use crate::app::media_match_support::{MediaAliasMatchKind, MediaMatchInventoryExactResolution};
 use crate::app::runtime_owner::GuiPendingPlaylistSourceResolution;
+use crate::app::runtime_state::GuiRuntimeState;
+#[cfg(test)]
+use crate::app::shell_state::SorotteGuiShellAppState;
+#[cfg(test)]
+use crate::app::testing::support::runtime_state_for_shell;
 use std::time::SystemTime;
 
 use super::media_resolution::{
@@ -89,10 +94,11 @@ struct GuiPlaylistSourceStateUpdate<'a> {
 
 impl GuiPersistedConfigRuntimeOwner {
     fn playlist_source_resolution_index_for_state(
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         pending: &GuiPendingPlaylistSourceResolution,
     ) -> Option<usize> {
         if state
+            .playlist
             .main_window
             .playlist
             .get(pending.index)
@@ -102,6 +108,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -111,7 +118,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn retry_pending_playlist_source_resolution(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(pending) = self.pending_playlist_source_resolution.clone() else {
             return false;
@@ -154,7 +161,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn record_playlist_source_resolution_status(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         index: usize,
         target: &str,
         provider_id: &GuiMediaSourceProviderId,
@@ -163,6 +170,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.reconcile_local_shared_playlist_media_paths(state);
         if status == GuiPlaylistSourceStatus::Pending {
             let Some(entry_id) = state
+                .playlist
                 .main_window
                 .playlist
                 .get(index)
@@ -185,6 +193,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .is_some_and(|pending| {
                 state
+                    .playlist
                     .main_window
                     .playlist
                     .get(index)
@@ -423,7 +432,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn quick_resolve_main_window_user_media_alias(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         target_candidate: &str,
         excluded_current_path: Option<&str>,
@@ -460,7 +469,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn resolve_main_window_user_media_target_by_evidence_class(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         reset_retry_on_target_change: bool,
         include_exact_inventory: bool,
@@ -695,7 +704,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn resolve_main_window_user_media_target_from_index(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         reset_retry_on_target_change: bool,
     ) -> Result<GuiUserMediaTargetResolution, String> {
@@ -709,7 +718,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn resolve_main_window_user_media_target_for_automatic_sync(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> Result<GuiUserMediaTargetResolution, String> {
         self.resolve_main_window_user_media_target_from_index(state, target, true)
@@ -717,7 +726,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn resolve_main_window_user_media_target_local_only(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> Result<GuiUserMediaTargetResolution, String> {
         self.resolve_main_window_user_media_target_by_evidence_class(state, target, false, false)
@@ -725,7 +734,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn resolve_main_window_user_media_target(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> Result<GuiUserMediaTargetResolution, String> {
         self.resolve_main_window_user_media_target_from_index(state, target, false)
@@ -733,10 +742,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn plex_stream_resolution_config_for_target(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> Option<PlexClientConfig> {
         if !state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -771,7 +781,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn plex_resolution_miss_key(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         row_id: GuiPlaylistEntryId,
         policy: GuiPlaylistSourcePolicy,
@@ -790,13 +800,13 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn active_plex_miss_retry_due(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> bool {
         let Some((index, target)) = self.current_shared_playlist_index_and_target(state) else {
             self.plex_miss_state = None;
             return false;
         };
-        let Some(row) = state.main_window.playlist.get(index) else {
+        let Some(row) = state.playlist.main_window.playlist.get(index) else {
             self.plex_miss_state = None;
             return false;
         };
@@ -855,7 +865,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn pump_plex_stream_resolution_worker(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> bool {
         let Some(rx) = self.plex_stream_resolve_rx.take() else {
             return false;
@@ -929,7 +939,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn clear_plex_stream_resolution_state_for_target(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) {
         if self.plex_stream_resolution_state_matches_target(state, target) {
@@ -939,7 +949,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn plex_stream_resolution_state_matches_target(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> bool {
         let Some(config) = self.plex_stream_resolution_config_for_target(state, target) else {
@@ -955,7 +965,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn clear_orphaned_plex_stream_resolution_state(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         active_target: &str,
     ) {
         if !self.plex_stream_resolution_owns_cache_snapshot()
@@ -1003,7 +1013,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn cached_or_queue_plex_stream_target_for_media_target(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         consume_ready: bool,
     ) -> Result<GuiPlexStreamResolutionState, GuiPlexStreamResolveFailure> {
@@ -1130,7 +1140,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn open_media_resolution_candidate(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         requested_target: &str,
         candidate: GuiMediaResolutionCandidate,
         user_initiated: bool,
@@ -1303,7 +1313,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn sync_selected_shared_playlist_media_to_attached_player_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> SelectedPlaylistMediaSyncOutcome {
         // A shared-playlist open owns the selected-media side effect until its
         // transport receipt arrives. Background reconciliation runs on every
@@ -1330,6 +1340,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut plan = GuiMediaResolutionPlan::new(target);
         let Some((playlist_entry_id, source_state)) = state
+            .playlist
             .main_window
             .playlist
             .get(playlist_index)
@@ -1388,6 +1399,7 @@ impl GuiPersistedConfigRuntimeOwner {
         )
         .then(|| {
             state
+                .playlist
                 .main_window
                 .playlist
                 .get(playlist_index)
@@ -1678,7 +1690,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn sync_selected_playlist_source_override_to_attached_player(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         provider_id: &GuiMediaSourceProviderId,
     ) -> SelectedPlaylistMediaSyncOutcome {
@@ -1698,7 +1710,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn sync_selected_local_playlist_source_to_attached_player(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> SelectedPlaylistMediaSyncOutcome {
         let mut plan = GuiMediaResolutionPlan::new(target);
@@ -1740,7 +1752,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn sync_selected_preferred_media_match_playlist_source_to_attached_player(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> SelectedPlaylistMediaSyncOutcome {
         let mut local_plan = GuiMediaResolutionPlan::new(target);
@@ -1779,13 +1791,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn sync_selected_media_match_playlist_source_to_attached_player(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> SelectedPlaylistMediaSyncOutcome {
         if !state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
-            || !state.media_match.settings.fingerprinting_enabled
+            || !state.media_match.model.settings.fingerprinting_enabled
         {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
@@ -1820,7 +1833,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn sync_selected_plex_stream_playlist_source_to_attached_player(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> SelectedPlaylistMediaSyncOutcome {
         let mut plan = GuiMediaResolutionPlan::new(target);
@@ -1856,11 +1869,12 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_resolve_playlist_source_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
         provider_id: GuiMediaSourceProviderId,
     ) -> bool {
         let Some(target) = projected_state
+            .playlist
             .main_window
             .playlist
             .get(index)
@@ -1873,8 +1887,12 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return false;
         };
-        let Some((row_id, policy, source_status)) =
-            projected_state.main_window.playlist.get(index).map(|row| {
+        let Some((row_id, policy, source_status)) = projected_state
+            .playlist
+            .main_window
+            .playlist
+            .get(index)
+            .map(|row| {
                 (
                     row.entry_id,
                     row.source_state.policy,
@@ -1958,12 +1976,13 @@ impl GuiPersistedConfigRuntimeOwner {
     fn resolve_playlist_source_local(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
         target: &str,
     ) -> bool {
         let provider_id = GuiMediaSourceProviderId::local();
         let exact_origin = projected_state
+            .playlist
             .main_window
             .playlist
             .get(index)
@@ -2135,15 +2154,20 @@ impl GuiPersistedConfigRuntimeOwner {
     fn resolve_playlist_source_media_match(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
         target: &str,
     ) -> bool {
         let provider_id = GuiMediaSourceProviderId::media_matching();
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching)
-            || !projected_state.media_match.settings.fingerprinting_enabled
+            || !projected_state
+                .media_match
+                .model
+                .settings
+                .fingerprinting_enabled
         {
             self.publish_playlist_source_state(
                 handle,
@@ -2272,7 +2296,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn resolve_playlist_source_plex_stream(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
         target: &str,
     ) -> bool {
@@ -2430,7 +2454,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn publish_playlist_source_state(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         update: GuiPlaylistSourceStateUpdate<'_>,
     ) {
         let GuiPlaylistSourceStateUpdate {
@@ -2442,6 +2466,7 @@ impl GuiPersistedConfigRuntimeOwner {
             resolution_steps,
         } = update;
         let mut source_state = projected_state
+            .playlist
             .main_window
             .playlist
             .get(index)
@@ -2460,7 +2485,7 @@ impl GuiPersistedConfigRuntimeOwner {
         source_state.resolution_steps = resolution_steps;
         let _ = projected_state.set_playlist_source_state(index, source_state);
         handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-            MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+            MainWindowRuntimeSnapshot::from_shell_state(&projected_state.playlist.main_window),
         ));
     }
 
@@ -2480,7 +2505,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn open_selected_playlist_media_path_through_attached_player_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         player_paths: &[String],
     ) -> SelectedPlaylistMediaSyncOutcome {
         let Some(selected_path) = player_paths.first() else {
@@ -2488,8 +2513,8 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let mut selected_path = selected_path.clone();
         let requested_target = selected_path.clone();
-        if let Some(index) = state.main_window.active_playlist_index
-            && let Some(row) = state.main_window.playlist.get(index)
+        if let Some(index) = state.playlist.main_window.active_playlist_index
+            && let Some(row) = state.playlist.main_window.playlist.get(index)
         {
             self.ensure_playlist_resolution_attempt(
                 row.entry_id,
@@ -2505,6 +2530,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let selected_path_is_plex_uri = is_plex_playlist_uri(&selected_path);
         if browser_stream_target_kind(&selected_path, None) == GuiStreamTargetKind::ExtractorPageUrl
             && !state
+                .settings
                 .plugin_enablement
                 .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -2631,13 +2657,13 @@ mod plex_cache_coordination_tests {
         );
         assert_eq!(
             owner.open_selected_playlist_media_path_through_attached_player_impl(
-                &state,
+                &runtime_state_for_shell(&state),
                 std::slice::from_ref(&target)
             ),
             SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
         );
         let (_, source) = owner
-            .playlist_resolution_source_state_for_projection(&state)
+            .playlist_resolution_source_state_for_projection(&runtime_state_for_shell(&state))
             .unwrap();
         assert_eq!(source.current_label, "Local");
         assert_eq!(
@@ -2663,7 +2689,7 @@ mod plex_cache_coordination_tests {
         );
         assert_eq!(
             owner
-                .playlist_resolution_source_state_for_projection(&state)
+                .playlist_resolution_source_state_for_projection(&runtime_state_for_shell(&state))
                 .unwrap()
                 .1
                 .current_label,
@@ -2673,12 +2699,15 @@ mod plex_cache_coordination_tests {
         owner.player_local_file =
             Some(LocalFileUpdate::new("episode.mkv").with_path(target.clone()));
         assert_eq!(
-            owner.open_selected_playlist_media_path_through_attached_player_impl(&state, &[target]),
+            owner.open_selected_playlist_media_path_through_attached_player_impl(
+                &runtime_state_for_shell(&state),
+                &[target]
+            ),
             SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
         );
         assert_eq!(
             owner
-                .playlist_resolution_source_state_for_projection(&state)
+                .playlist_resolution_source_state_for_projection(&runtime_state_for_shell(&state))
                 .unwrap()
                 .1
                 .resolved_provider_id,
@@ -2732,7 +2761,8 @@ mod plex_cache_coordination_tests {
         let mut previous_settings = streaming_settings();
         previous_settings.plex_sync_enabled = Some(false);
         let next_settings = streaming_settings();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&next_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&next_settings);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let target = "episode.mkv";
@@ -2796,7 +2826,7 @@ mod plex_cache_coordination_tests {
     #[test]
     fn sync_and_stream_resolution_handoff_the_engine_without_competing_workers() {
         let settings = streaming_settings();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let config = super::super::super::plex::plex_config_from_settings(&settings);
@@ -2928,7 +2958,7 @@ mod plex_cache_coordination_tests {
         owner.plex_stream_resolve_trigger_key = Some(trigger_key);
         owner.plex_stream_resolve_context = Some(operation_context);
 
-        assert!(owner.pump_plex_stream_resolution_worker(&state));
+        assert!(owner.pump_plex_stream_resolution_worker(&runtime_state_for_shell(&state)));
         assert_eq!(
             PlexMatchCache::load_from_path(&cache_path)
                 .expect("original cache should remain readable before consumption"),
@@ -2937,7 +2967,11 @@ mod plex_cache_coordination_tests {
         );
 
         let resolution = owner
-            .cached_or_queue_plex_stream_target_for_media_target(&state, target, true)
+            .cached_or_queue_plex_stream_target_for_media_target(
+                &runtime_state_for_shell(&state),
+                target,
+                true,
+            )
             .expect("current-context stream result should apply");
         assert!(matches!(
             resolution,
@@ -3001,12 +3035,15 @@ mod plex_cache_coordination_tests {
         owner.plex_stream_resolve_trigger_key = Some(trigger_key);
         owner.plex_stream_resolve_context = Some(operation_context);
 
-        assert!(owner.pump_plex_stream_resolution_worker(&state));
-        let error =
-            match owner.cached_or_queue_plex_stream_target_for_media_target(&state, target, true) {
-                Ok(_) => panic!("the refreshed metadata failure must remain visible"),
-                Err(error) => error,
-            };
+        assert!(owner.pump_plex_stream_resolution_worker(&runtime_state_for_shell(&state)));
+        let error = match owner.cached_or_queue_plex_stream_target_for_media_target(
+            &runtime_state_for_shell(&state),
+            target,
+            true,
+        ) {
+            Ok(_) => panic!("the refreshed metadata failure must remain visible"),
+            Err(error) => error,
+        };
 
         assert!(error.message.contains("missing metadata"));
         assert_eq!(

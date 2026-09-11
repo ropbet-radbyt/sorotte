@@ -380,7 +380,7 @@ fn wait_until(timeout: Duration, description: &str, mut condition: impl FnMut() 
 fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly() {
     struct CountingRuntimeOwner {
         input_changes: Arc<AtomicUsize>,
-        projection_rebuilds: Arc<AtomicUsize>,
+        state_initializations: Arc<AtomicUsize>,
         polls: Arc<AtomicUsize>,
         requests: Arc<Mutex<Vec<GuiRuntimeRequest>>>,
     }
@@ -392,8 +392,8 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
             input: &crate::app::feature_slices::GuiRuntimeInput,
         ) {
             self.input_changes.fetch_add(1, Ordering::SeqCst);
-            let _projection = input.to_compatibility_projection();
-            self.projection_rebuilds.fetch_add(1, Ordering::SeqCst);
+            let _projection = input.to_runtime_state();
+            self.state_initializations.fetch_add(1, Ordering::SeqCst);
         }
 
         fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
@@ -406,7 +406,7 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
     }
 
     let input_changes = Arc::new(AtomicUsize::new(0));
-    let projection_rebuilds = Arc::new(AtomicUsize::new(0));
+    let state_initializations = Arc::new(AtomicUsize::new(0));
     let polls = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -414,7 +414,7 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
         handle.clone(),
         CountingRuntimeOwner {
             input_changes: input_changes.clone(),
-            projection_rebuilds: projection_rebuilds.clone(),
+            state_initializations: state_initializations.clone(),
             polls: polls.clone(),
             requests: requests.clone(),
         },
@@ -455,7 +455,7 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .latest_input_revision;
     assert_eq!(input_changes.load(Ordering::SeqCst), 1);
-    assert_eq!(projection_rebuilds.load(Ordering::SeqCst), 1);
+    assert_eq!(state_initializations.load(Ordering::SeqCst), 1);
     assert_eq!(second_revision, first_revision);
 
     handle.push_request(GuiRuntimeRequest::SeekOffset(1.0));
@@ -477,7 +477,7 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
         ]
     );
     assert_eq!(input_changes.load(Ordering::SeqCst), 1);
-    assert_eq!(projection_rebuilds.load(Ordering::SeqCst), 1);
+    assert_eq!(state_initializations.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -2,6 +2,7 @@ use super::*;
 use crate::app::runtime_owner::{
     GuiCorePlayerConfigurationHealth, GuiPlayerProcessTarget, GuiStreamingDegradationOrigin,
 };
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 
 struct StartupConfigFixture {
@@ -1609,11 +1610,12 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
 fn gui_persisted_config_runtime_owner_applies_deferred_startup_remote_actions_once() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let action = GuiShellAction::ApplyStartupPublicServerCache(vec![(
         "Deferred Primary".to_owned(),
         "deferred.example:8999".to_owned(),
     )]);
+    let mut state = runtime_state_for_shell(&state);
 
     owner.apply_deferred_startup_remote_actions_for_test(&handle, &mut state, vec![action.clone()]);
     owner.apply_deferred_startup_remote_actions_for_test(&handle, &mut state, vec![action]);
@@ -1621,13 +1623,13 @@ fn gui_persisted_config_runtime_owner_applies_deferred_startup_remote_actions_on
     let actions = handle.drain_actions();
     assert_eq!(actions.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].address,
         "deferred.example:8999"
     );
 }
 
-fn startup_public_server_test_state() -> SorotteGuiShellAppState {
-    SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+fn startup_public_server_test_state() -> crate::app::runtime_state::GuiRuntimeState {
+    crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(true),
         last_checked_for_updates: Some("2099-01-01 00:00:00.000".to_owned()),
         public_servers: None,
@@ -1639,11 +1641,12 @@ fn startup_public_server_test_state() -> SorotteGuiShellAppState {
 fn startup_public_server_hydration_preserves_explicit_empty_cache_without_fetching() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(false),
         public_servers: Some(Vec::new()),
         ..StoredClientSettings::default()
     });
+    let mut state = runtime_state_for_shell(&state);
 
     owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
         panic!("an explicitly empty public-server list must suppress deferred startup hydration")
@@ -1652,7 +1655,7 @@ fn startup_public_server_hydration_preserves_explicit_empty_cache_without_fetchi
     assert!(owner.startup_public_server_hydration.completed);
     assert_eq!(owner.startup_public_server_hydration.attempts_started, 0);
     assert!(owner.startup_remote_actions_rx.is_none());
-    assert!(state.public_servers.servers.is_empty());
+    assert!(state.session.public_servers.servers.is_empty());
     assert!(handle.drain_actions().is_empty());
 }
 
@@ -1662,7 +1665,7 @@ type StartupPublicServerResults =
 fn pump_startup_public_server_results_until(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
-    state: &mut SorotteGuiShellAppState,
+    state: &mut crate::app::runtime_state::GuiRuntimeState,
     results: &StartupPublicServerResults,
     completed: impl Fn(&GuiPersistedConfigRuntimeOwner) -> bool,
 ) {
@@ -1691,12 +1694,13 @@ fn pump_startup_public_server_results_until(
 fn startup_public_server_hydration_runs_without_starting_disabled_automatic_updates() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        check_for_updates_automatically: Some(false),
-        last_checked_for_updates: None,
-        public_servers: None,
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            check_for_updates_automatically: Some(false),
+            last_checked_for_updates: None,
+            public_servers: None,
+            ..StoredClientSettings::default()
+        });
     let results = Arc::new(Mutex::new(std::collections::VecDeque::from([Ok(vec![(
         "Hydrated".to_owned(),
         "hydrated.example:8999".to_owned(),
@@ -1721,9 +1725,9 @@ fn startup_public_server_hydration_runs_without_starting_disabled_automatic_upda
             .all(|action| !matches!(action, GuiShellAction::BeginUpdateCheck { .. })),
         "disabled automatic updates must not start while public servers hydrate"
     );
-    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].address,
         "hydrated.example:8999"
     );
     assert!(
@@ -1792,9 +1796,9 @@ fn startup_public_server_hydration_retries_transient_failure_and_suppresses_dupl
                 "recovered.example:8999".to_owned()
             )]
     )));
-    assert_eq!(state.public_servers.servers.len(), 1);
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].address,
         "recovered.example:8999"
     );
     assert!(
@@ -1864,10 +1868,13 @@ fn startup_public_server_unsaved_language_change_during_backoff_preserves_retry_
         owner.startup_public_server_hydration.attempts_started, 2,
         "the retry must continue in the original saved-language context"
     );
-    assert_eq!(state.public_servers.servers.len(), 1);
-    assert_eq!(state.public_servers.servers[0].label, "Saved Language");
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.saved_configuration.language, None,
+        state.session.public_servers.servers[0].label,
+        "Saved Language"
+    );
+    assert_eq!(
+        state.settings.saved.language, None,
         "the unsaved language edit must not replace the frozen startup settings"
     );
     assert!(
@@ -1901,7 +1908,7 @@ fn startup_public_server_saved_language_change_during_backoff_resets_retry_conte
     });
     let _ = handle.drain_actions();
 
-    let mut changed_settings = state.saved_configuration.clone();
+    let mut changed_settings = state.settings.saved.clone();
     changed_settings.language = Some("fr".to_owned());
     assert!(
         state.apply(GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(
@@ -1919,9 +1926,9 @@ fn startup_public_server_saved_language_change_during_backoff_resets_retry_conte
         "an authoritative saved-language change should receive a fresh retry budget"
     );
     assert_eq!(owner.startup_public_server_hydration.last_warning, None);
-    assert_eq!(state.public_servers.servers.len(), 1);
-    assert_eq!(state.public_servers.servers[0].label, "French");
-    assert_eq!(state.saved_configuration.language.as_deref(), Some("fr"));
+    assert_eq!(state.session.public_servers.servers.len(), 1);
+    assert_eq!(state.session.public_servers.servers[0].label, "French");
+    assert_eq!(state.settings.saved.language.as_deref(), Some("fr"));
     assert!(
         results
             .lock()
@@ -1971,13 +1978,16 @@ fn startup_public_server_failure_preserves_cache_added_while_worker_runs() {
         std::thread::yield_now();
     }
 
-    assert_eq!(state.public_servers.servers.len(), 1);
-    assert_eq!(state.public_servers.servers[0].label, "Manual Cache");
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].label,
+        "Manual Cache"
+    );
+    assert_eq!(
+        state.session.public_servers.servers[0].address,
         "manual.example:8999"
     );
-    assert!(state.commands.can_refresh_public_servers);
+    assert!(state.session.commands.can_refresh_public_servers);
 }
 
 #[test]
@@ -2008,10 +2018,12 @@ fn startup_public_server_manual_empty_refresh_during_worker_prevents_repopulatio
         .recv_timeout(std::time::Duration::from_secs(2))
         .expect("startup hydration should enter before timeout");
 
-    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    state.session.pending_operation = Some(crate::app::shell_state::GuiPendingOperationState {
+        kind: GuiPendingOperationKind::RefreshPublicServers,
+    });
     assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
     assert_eq!(
-        state.configuration.settings.public_servers,
+        state.settings.draft.settings.public_servers,
         Some(Vec::new())
     );
     release_tx
@@ -2027,7 +2039,7 @@ fn startup_public_server_manual_empty_refresh_during_worker_prevents_repopulatio
 
     assert!(owner.startup_public_server_hydration.completed);
     assert!(owner.startup_remote_actions_rx.is_none());
-    assert!(state.public_servers.servers.is_empty());
+    assert!(state.session.public_servers.servers.is_empty());
     assert!(handle.drain_actions().iter().all(|action| !matches!(
         action,
         GuiShellAction::ApplyStartupPublicServerCache(servers) if !servers.is_empty()
@@ -2053,7 +2065,9 @@ fn startup_public_server_manual_empty_refresh_during_backoff_prevents_retry() {
     });
     let _ = handle.drain_actions();
 
-    assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    state.session.pending_operation = Some(crate::app::shell_state::GuiPendingOperationState {
+        kind: GuiPendingOperationKind::RefreshPublicServers,
+    });
     assert!(state.apply(GuiShellAction::CompletePublicServerRefresh(Vec::new())));
     owner.startup_public_server_hydration.next_retry_at = Some(std::time::Instant::now());
     owner.run_deferred_startup_remote_actions_with_fetcher(&handle, &mut state, |_language| {
@@ -2068,9 +2082,9 @@ fn startup_public_server_manual_empty_refresh_during_backoff_prevents_retry() {
             .next_retry_at
             .is_none()
     );
-    assert!(state.public_servers.servers.is_empty());
+    assert!(state.session.public_servers.servers.is_empty());
     assert_eq!(
-        state.configuration.settings.public_servers,
+        state.settings.draft.settings.public_servers,
         Some(Vec::new())
     );
 }
@@ -2132,10 +2146,13 @@ fn startup_public_server_hydration_keeps_saved_language_worker_when_draft_change
         std::thread::yield_now();
     }
 
-    assert_eq!(state.public_servers.servers.len(), 1);
-    assert_eq!(state.public_servers.servers[0].label, "Old Language");
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].label,
+        "Old Language"
+    );
+    assert_eq!(
+        state.session.public_servers.servers[0].address,
         "old-language.example:8999"
     );
     assert!(handle.drain_actions().iter().any(|action| matches!(
@@ -2143,20 +2160,21 @@ fn startup_public_server_hydration_keeps_saved_language_worker_when_draft_change
         GuiShellAction::ApplyStartupPublicServerCache(servers)
             if servers.iter().any(|(label, _)| label == "Old Language")
     )));
-    assert_eq!(state.saved_configuration.language, None);
+    assert_eq!(state.settings.saved.language, None);
 }
 
 #[test]
 fn gui_persisted_config_runtime_owner_applies_deferred_stream_helper_snapshot_once() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let snapshot = crate::app::GuiStreamHelperRuntimeSnapshot {
         downloader_status: Some("yt-dlp checked after startup".to_owned()),
         js_runtime_status: Some("Deno checked after startup".to_owned()),
         integration_supported: true,
         ..Default::default()
     };
+    let mut state = runtime_state_for_shell(&state);
 
     owner.apply_deferred_startup_stream_helper_snapshot_for_test(
         &handle,
@@ -2168,7 +2186,7 @@ fn gui_persisted_config_runtime_owner_applies_deferred_stream_helper_snapshot_on
     let actions = handle.drain_actions();
     assert_eq!(actions.len(), 1);
     assert_eq!(
-        state.stream_helper.downloader_status.as_deref(),
+        state.player.stream_helper.downloader_status.as_deref(),
         Some("yt-dlp checked after startup")
     );
 }

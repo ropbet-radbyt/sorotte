@@ -54,6 +54,7 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ApplyGuiMediaMatchRemediationRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiPlexRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(_)
+            | GuiShellAction::ApplySharedPlaylistSelection(_)
             | GuiShellAction::ApplyGuiDraftRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiConfigurationDraftRuntimeSnapshot(_)
             | GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(_)

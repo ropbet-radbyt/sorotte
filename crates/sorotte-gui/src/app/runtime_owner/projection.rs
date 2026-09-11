@@ -1,3 +1,4 @@
+use crate::app::runtime_state::GuiRuntimeState;
 use std::path::Path;
 
 use sorotte_client_core::{
@@ -14,7 +15,7 @@ use super::super::shell_state::{
     GuiPlayerSetupRuntimeSnapshot, GuiPlaylistSourcePolicy, GuiSeekPreparationDegradedReason,
     GuiSeekPreparationPhase, GuiSeekPreparationRuntimeSnapshot, GuiSeekPreparationState,
     GuiShellAction, MainWindowRuntimeSnapshot, MenuActionId, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
+    MenuDialogRuntimeSnapshot,
 };
 use super::GuiPersistedConfigRuntimeOwner;
 
@@ -235,7 +236,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn command_availability_for_runtime_state_impl(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         player_attached: bool,
     ) -> GuiCommandAvailabilityState {
         let player_runtime_available =
@@ -245,13 +246,13 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .filter(|_| self.session_projects_to_shell)
             .map(|runtime_settings| runtime_settings.settings.clone())
-            .unwrap_or_else(|| state.configuration.to_stored_settings());
-        let busy = state.pending_operation.is_some();
+            .unwrap_or_else(|| state.settings.draft.to_stored_settings());
+        let busy = state.session.pending_operation.is_some();
         let chat_unavailable_reason =
             state.chat_send_unavailable_reason_from_settings(&settings, self.session.is_some());
         let command_availability = GuiCommandAvailabilityState {
             can_save_configuration: !busy
-                && state.validation.issues.is_empty()
+                && state.settings.validation.issues.is_empty()
                 && state.has_unsaved_configuration_changes(),
             can_reset_configuration: !busy && state.has_unsaved_configuration_changes(),
             can_reload_configuration: !busy,
@@ -259,9 +260,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 && state.saved_session_connect_target().is_some()
                 && !state.connect_blocked_by_player_setup_issue(),
             can_disconnect_session: !busy && self.session_active(),
-            can_connect_public_server: !busy && state.public_servers.can_connect,
-            can_refresh_public_servers: !busy && state.public_servers.can_refresh,
-            can_search_missing_media: !busy && state.media_search.can_search_missing_media,
+            can_connect_public_server: !busy && state.session.public_servers.can_connect,
+            can_refresh_public_servers: !busy && state.session.public_servers.can_refresh,
+            can_search_missing_media: !busy
+                && state.media_resolution.search.can_search_missing_media,
             can_toggle_pause: !busy && player_runtime_available,
             can_send_chat_message: chat_unavailable_reason.is_none(),
             chat_unavailable_reason,
@@ -298,7 +300,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn sync_player_runtime_state(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) {
         let pre_poll_media_index_status = self.projected_media_index_runtime_snapshot();
         let pre_poll_media_index_revision = self.attached_media_search_index_revision;
@@ -318,7 +320,7 @@ impl GuiPersistedConfigRuntimeOwner {
             std::mem::take(&mut self.plex_context_media_resolution_pending)
                 && self
                     .current_shared_playlist_index_and_target(state)
-                    .and_then(|(index, _)| state.main_window.playlist.get(index))
+                    .and_then(|(index, _)| state.playlist.main_window.playlist.get(index))
                     .is_some_and(|row| {
                         matches!(
                             row.source_state.policy,
@@ -349,6 +351,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .as_ref()
                 .is_some_and(|(index, desired)| {
                     state
+                        .playlist
                         .main_window
                         .playlist
                         .get(*index)
@@ -366,8 +369,9 @@ impl GuiPersistedConfigRuntimeOwner {
             None
         } else {
             let playlist = self.player_local_file_playlist_entries_impl();
-            let playlist_matches = state.main_window.playlist.len() == playlist.len()
+            let playlist_matches = state.playlist.main_window.playlist.len() == playlist.len()
                 && state
+                    .playlist
                     .main_window
                     .playlist
                     .iter()
@@ -376,21 +380,22 @@ impl GuiPersistedConfigRuntimeOwner {
             (!playlist_matches).then_some(playlist)
         };
         let desired_paused = player_attached.then_some(self.player_paused).flatten();
-        let main_window_changed = state.main_window.shared_playlist_enabled
+        let main_window_changed = state.playlist.main_window.shared_playlist_enabled
             != shared_playlist_enabled
-            || state.main_window.playback.can_toggle_pause != player_runtime_available
-            || state.main_window.playback.can_seek != player_runtime_available
-            || !state.main_window.playback.can_set_offset
-            || state.main_window.playback.can_manage_playlist != can_manage_playlist
+            || state.playlist.main_window.playback.can_toggle_pause != player_runtime_available
+            || state.playlist.main_window.playback.can_seek != player_runtime_available
+            || !state.playlist.main_window.playback.can_set_offset
+            || state.playlist.main_window.playback.can_manage_playlist != can_manage_playlist
             || desired_playlist.is_some()
             || attempt_source_state_changed
-            || desired_paused.is_some_and(|paused| state.main_window.playback_paused != paused)
-            || (state.main_window.user_offset_seconds - self.user_offset_seconds).abs()
+            || desired_paused
+                .is_some_and(|paused| state.playlist.main_window.playback_paused != paused)
+            || (state.playlist.main_window.user_offset_seconds - self.user_offset_seconds).abs()
                 > f64::EPSILON;
 
         if main_window_changed {
             let mut desired_main_window =
-                MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+                MainWindowRuntimeSnapshot::from_shell_state(&state.playlist.main_window);
             desired_main_window.shared_playlist_enabled = shared_playlist_enabled;
             desired_main_window.can_toggle_pause = player_runtime_available;
             desired_main_window.can_seek = player_runtime_available;
@@ -420,14 +425,15 @@ impl GuiPersistedConfigRuntimeOwner {
         if !desired_media_index_status.active
             && pre_poll_media_index_status.active
             && state
+                .session
                 .pending_operation
                 .as_ref()
                 .is_some_and(|pending| pending.kind == GuiPendingOperationKind::SearchMissingMedia)
         {
             desired_media_index_status = pre_poll_media_index_status;
         }
-        if state.media_index_status.active != desired_media_index_status.active
-            || state.media_index_status.message != desired_media_index_status.message
+        if state.media_resolution.index_status.active != desired_media_index_status.active
+            || state.media_resolution.index_status.message != desired_media_index_status.message
         {
             handle.push_action(GuiShellAction::ApplyGuiMediaIndexRuntimeSnapshot(
                 desired_media_index_status,
@@ -435,7 +441,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let desired_player_setup = self.player_setup_runtime_snapshot_impl();
-        if state.player_setup_issue != desired_player_setup.issue {
+        if state.player.setup_issue != desired_player_setup.issue {
             handle.push_action(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
                 desired_player_setup,
             ));
@@ -443,7 +449,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
         if self.pending_apply_requirements_refresh_required {
             let desired_pending_apply_requirements =
-                self.pending_apply_requirements_for_settings(state, &state.saved_configuration);
+                self.pending_apply_requirements_for_settings(state, &state.settings.saved);
             // Pending requirements are runtime-owned output and are intentionally absent from
             // the compact threaded input projection. A refresh request must therefore publish an
             // authoritative snapshot even when the compatibility projection happens to compare
@@ -455,8 +461,9 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let desired_seek_preparation = self.seek_preparation_runtime_snapshot_impl();
-        if state.seek_preparation != desired_seek_preparation.preparation
-            || state.seek_preparation_degraded_reason != desired_seek_preparation.degraded_reason
+        if state.player.seek_preparation != desired_seek_preparation.preparation
+            || state.player.seek_preparation_degraded_reason
+                != desired_seek_preparation.degraded_reason
         {
             handle.push_action(GuiShellAction::ApplyGuiSeekPreparationRuntimeSnapshot(
                 desired_seek_preparation,
@@ -464,17 +471,20 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let desired_stream_helper = self.stream_helper_runtime_snapshot.clone();
-        if state.stream_helper.health != desired_stream_helper.health
-            || state.stream_helper.message != desired_stream_helper.message
-            || state.stream_helper.target != desired_stream_helper.target
-            || state.stream_helper.install_supported != desired_stream_helper.install_supported
-            || state.stream_helper.integration_supported
+        if state.player.stream_helper.health != desired_stream_helper.health
+            || state.player.stream_helper.message != desired_stream_helper.message
+            || state.player.stream_helper.target != desired_stream_helper.target
+            || state.player.stream_helper.install_supported
+                != desired_stream_helper.install_supported
+            || state.player.stream_helper.integration_supported
                 != desired_stream_helper.integration_supported
-            || state.stream_helper.retry_available != desired_stream_helper.retry_available
-            || state.stream_helper.install_location != desired_stream_helper.install_location
-            || state.stream_helper.downloader_status != desired_stream_helper.downloader_status
-            || state.stream_helper.js_runtime_status != desired_stream_helper.js_runtime_status
-            || state.stream_helper.open_install_location_available
+            || state.player.stream_helper.retry_available != desired_stream_helper.retry_available
+            || state.player.stream_helper.install_location != desired_stream_helper.install_location
+            || state.player.stream_helper.downloader_status
+                != desired_stream_helper.downloader_status
+            || state.player.stream_helper.js_runtime_status
+                != desired_stream_helper.js_runtime_status
+            || state.player.stream_helper.open_install_location_available
                 != desired_stream_helper.open_install_location_available
         {
             handle.push_action(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
@@ -484,10 +494,12 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let desired_stream_helper_remediation =
             self.stream_helper_remediation_runtime_snapshot.clone();
-        if state.stream_helper_remediation.active != desired_stream_helper_remediation.active
-            || state.stream_helper_remediation.label != desired_stream_helper_remediation.label
-            || state.stream_helper_remediation.detail != desired_stream_helper_remediation.detail
-            || (state.stream_helper_remediation.progress_fraction
+        if state.player.stream_helper_remediation.active != desired_stream_helper_remediation.active
+            || state.player.stream_helper_remediation.label
+                != desired_stream_helper_remediation.label
+            || state.player.stream_helper_remediation.detail
+                != desired_stream_helper_remediation.detail
+            || (state.player.stream_helper_remediation.progress_fraction
                 - desired_stream_helper_remediation.progress_fraction)
                 .abs()
                 > f32::EPSILON
@@ -500,21 +512,22 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let desired_media_match = self.media_match_runtime_snapshot.clone();
-        if state.media_match.settings != desired_media_match.settings
-            || state.media_match.health != desired_media_match.health
-            || state.media_match.message != desired_media_match.message
-            || state.media_match.install_supported != desired_media_match.install_supported
-            || state.media_match.integration_supported != desired_media_match.integration_supported
-            || state.media_match.install_location != desired_media_match.install_location
-            || state.media_match.ffmpeg_status != desired_media_match.ffmpeg_status
-            || state.media_match.ffprobe_status != desired_media_match.ffprobe_status
-            || state.media_match.cache_status != desired_media_match.cache_status
-            || state.media_match.current_decision != desired_media_match.current_decision
-            || state.media_match.nearest_match != desired_media_match.nearest_match
-            || state.media_match.last_evidence != desired_media_match.last_evidence
-            || state.media_match.remote_status != desired_media_match.remote_status
-            || state.media_match.background_status != desired_media_match.background_status
-            || state.media_match.open_install_location_available
+        if state.media_match.model.settings != desired_media_match.settings
+            || state.media_match.model.health != desired_media_match.health
+            || state.media_match.model.message != desired_media_match.message
+            || state.media_match.model.install_supported != desired_media_match.install_supported
+            || state.media_match.model.integration_supported
+                != desired_media_match.integration_supported
+            || state.media_match.model.install_location != desired_media_match.install_location
+            || state.media_match.model.ffmpeg_status != desired_media_match.ffmpeg_status
+            || state.media_match.model.ffprobe_status != desired_media_match.ffprobe_status
+            || state.media_match.model.cache_status != desired_media_match.cache_status
+            || state.media_match.model.current_decision != desired_media_match.current_decision
+            || state.media_match.model.nearest_match != desired_media_match.nearest_match
+            || state.media_match.model.last_evidence != desired_media_match.last_evidence
+            || state.media_match.model.remote_status != desired_media_match.remote_status
+            || state.media_match.model.background_status != desired_media_match.background_status
+            || state.media_match.model.open_install_location_available
                 != desired_media_match.open_install_location_available
         {
             handle.push_action(GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
@@ -523,10 +536,10 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         let desired_media_match_remediation = self.media_match_remediation_runtime_snapshot.clone();
-        if state.media_match_remediation.active != desired_media_match_remediation.active
-            || state.media_match_remediation.label != desired_media_match_remediation.label
-            || state.media_match_remediation.detail != desired_media_match_remediation.detail
-            || (state.media_match_remediation.progress_fraction
+        if state.media_match.remediation.active != desired_media_match_remediation.active
+            || state.media_match.remediation.label != desired_media_match_remediation.label
+            || state.media_match.remediation.detail != desired_media_match_remediation.detail
+            || (state.media_match.remediation.progress_fraction
                 - desired_media_match_remediation.progress_fraction)
                 .abs()
                 > f32::EPSILON
@@ -538,8 +551,8 @@ impl GuiPersistedConfigRuntimeOwner {
             );
         }
 
-        let playback_controls_available =
-            state.pending_operation.is_none() && !state.main_window.playlist.is_empty();
+        let playback_controls_available = state.session.pending_operation.is_none()
+            && !state.playlist.main_window.playlist.is_empty();
         let mut action_overrides = Vec::new();
         for (id, enabled) in [
             (
@@ -560,21 +573,22 @@ impl GuiPersistedConfigRuntimeOwner {
             ),
             (
                 MenuActionId::UndoSeek,
-                playback_controls_available && state.main_window.playback.can_undo_seek,
+                playback_controls_available && state.playlist.main_window.playback.can_undo_seek,
             ),
             (MenuActionId::SharedPlaylist, can_manage_playlist),
         ] {
-            let current_enabled = state.menus.action(id).map(|action| action.enabled);
+            let current_enabled = state.session.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
                 action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
         }
         let current_offset_enabled = state
+            .session
             .menus
             .action(MenuActionId::SetOffset)
             .map(|action| action.enabled);
         let desired_offset_enabled =
-            playback_controls_available && state.main_window.playback.can_set_offset;
+            playback_controls_available && state.playlist.main_window.playback.can_set_offset;
         if current_offset_enabled
             .is_some_and(|current_enabled| current_enabled != desired_offset_enabled)
         {
@@ -587,20 +601,24 @@ impl GuiPersistedConfigRuntimeOwner {
             handle.push_action(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
                 MenuDialogRuntimeSnapshot {
                     action_overrides,
-                    tls_prompt_expected: state.menus.tls_prompt_expected,
-                    update_notice_expected: state.menus.update_notice_expected,
-                    about_dialog_available: state.menus.about_dialog_available,
+                    tls_prompt_expected: state.session.menus.tls_prompt_expected,
+                    update_notice_expected: state.session.menus.update_notice_expected,
+                    about_dialog_available: state.session.menus.about_dialog_available,
                 },
             ));
         }
 
         let desired_command_availability =
             self.command_availability_for_runtime_state_impl(state, player_attached);
-        if state.commands != desired_command_availability {
+        if state.session.commands != desired_command_availability {
             handle.push_action(GuiShellAction::ApplyGuiCommandRuntimeSnapshot(
                 GuiCommandRuntimeSnapshot {
                     command_availability: desired_command_availability,
-                    pending_operation: state.pending_operation.as_ref().map(|pending| pending.kind),
+                    pending_operation: state
+                        .session
+                        .pending_operation
+                        .as_ref()
+                        .map(|pending| pending.kind),
                 },
             ));
         }

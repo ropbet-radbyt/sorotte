@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 const V2_GATE_MEDIA_GENERATION: u64 = 7;
 
@@ -1341,7 +1342,7 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
         .push_event(transport_event(v2_gate_transport(true, 0.0)));
     owner.refresh_player_state_impl();
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("paused V2 baseline should synchronize");
     let _ = owner
         .session
@@ -1377,7 +1378,7 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
     }
     owner.refresh_player_state_impl();
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("gate-held native Play should synchronize");
 
     let outbound = owner
@@ -1456,7 +1457,11 @@ fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
         .clear();
 
     let (paused, sync_error) = owner
-        .apply_playback_pause_change_with_detached_session_impl(&state, true, false)
+        .apply_playback_pause_change_with_detached_session_impl(
+            &runtime_state_for_shell(&state),
+            true,
+            false,
+        )
         .expect("GUI Play should be handled by the V2 readiness gate");
     assert!(
         paused,
@@ -1673,7 +1678,7 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
         "allowed GUI unpause should resume the attached player exactly once"
     );
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()
@@ -1773,7 +1778,7 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
             crate::app::support::system_time_seconds(),
         )
         .expect("replacement media preparation should succeed");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         owner.pending_local_attached_pause_override, None,
         "a new media generation must not inherit stale GUI pause ownership"
@@ -1928,7 +1933,7 @@ fn assert_housekeeping_failure_does_not_suppress_playback_publication(
 
     let (effective_paused, sync_error) = owner
         .apply_playback_pause_change_with_detached_session_impl(
-            &state,
+            &runtime_state_for_shell(&state),
             previous_paused,
             target_paused,
         )
@@ -2113,7 +2118,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         .expect("scripted physical observations")
         .push_event(transport_event(transport(1, true, 10.0, 0.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     let _ = owner
         .session
         .as_mut()
@@ -2157,7 +2162,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         None,
         "a pause edge that also changes media scope is only a new baseline, not proven user input"
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -2187,7 +2192,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
             r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
         )
         .expect("direct play echo should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(owner.pending_local_attached_pause_override, None);
 
     player_state
@@ -2198,7 +2203,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         .expect("scripted physical observations")
         .push_event(transport_event(transport(2, false, 10.25, 2.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         owner
             .session
@@ -2280,7 +2285,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
             .push_event(transport_event(transport(1, true, 10.0, 0.0)));
     }
     controlled_owner.refresh_player_state_impl();
-    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    controlled_owner.sync_session_playstate_to_attached_player_impl(
+        &runtime_state_for_shell(&controlled_state),
+        false,
+    );
     controlled_owner.pending_attached_player_pause_command = None;
     {
         let mut recorded = controlled_player_state
@@ -2309,7 +2317,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         controlled_owner.pending_local_attached_pause_override, None,
         "the GUI compatibility flag must mirror core rejection for a non-controller"
     );
-    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    controlled_owner.sync_session_playstate_to_attached_player_impl(
+        &runtime_state_for_shell(&controlled_state),
+        false,
+    );
     assert!(
         controlled_player_state
             .lock()
@@ -2453,7 +2464,7 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
         .expect("scripted physical observations")
         .push_event(transport_event(autoplay_transport(true, 10.0, 0.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     owner
         .session
@@ -2479,7 +2490,7 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     );
 
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()

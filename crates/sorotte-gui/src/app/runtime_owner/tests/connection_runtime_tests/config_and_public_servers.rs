@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_persisted_config_runtime_owner_reports_runtime_gaps_explicitly() {
@@ -1060,7 +1061,7 @@ fn ordinary_save_promotes_media_library_fields_without_unpinning_session_setting
     assert_eq!(active.settings.shared_playlist_enabled, Some(false));
     assert_eq!(active.settings.language.as_deref(), Some("en"));
     assert_eq!(
-        owner.runtime_operation_settings(&state),
+        owner.runtime_operation_settings(&runtime_state_for_shell(&state)),
         active.settings,
         "connected runtime operations must consume the promoted, still-pinned snapshot",
     );
@@ -1269,6 +1270,7 @@ fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_p
     let fetch_calls = std::cell::Cell::new(0_u8);
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    let mut state = runtime_state_for_shell(&state);
     assert!(
         owner.handle_complete_public_server_refresh_request_with_fetcher(
             &handle,
@@ -1307,9 +1309,10 @@ fn gui_persisted_config_runtime_owner_manual_refresh_replaces_non_empty_cached_p
         1,
         "manual refresh must contact its fetcher"
     );
-    assert!(state.pending_operation.is_none());
+    assert!(state.session.pending_operation.is_none());
     assert_eq!(
         state
+            .session
             .public_servers
             .servers
             .iter()
@@ -1333,6 +1336,7 @@ fn gui_persisted_config_runtime_owner_manual_refresh_populates_explicitly_empty_
 
     assert!(state.public_servers.servers.is_empty());
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    let mut state = runtime_state_for_shell(&state);
     assert!(
         owner.handle_complete_public_server_refresh_request_with_fetcher(
             &handle,
@@ -1347,13 +1351,21 @@ fn gui_persisted_config_runtime_owner_manual_refresh_populates_explicitly_empty_
         )
     );
 
-    assert!(state.pending_operation.is_none());
-    assert_eq!(state.public_servers.servers.len(), 1);
+    assert!(state.session.pending_operation.is_none());
+    assert_eq!(state.session.public_servers.servers.len(), 1);
     assert_eq!(
-        state.public_servers.servers[0].address,
+        state.session.public_servers.servers[0].address,
         "remote.example:8999"
     );
-    assert_eq!(state.selected_public_server_index(), Some(0));
+    assert_eq!(
+        state
+            .session
+            .public_servers
+            .servers
+            .iter()
+            .position(|row| row.is_selected),
+        Some(0)
+    );
 }
 
 #[test]
@@ -1374,6 +1386,7 @@ fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_c
     let original_rows = state.public_servers.servers.clone();
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    let mut state = runtime_state_for_shell(&state);
     assert!(
         owner.handle_complete_public_server_refresh_request_with_fetcher(
             &handle,
@@ -1395,9 +1408,17 @@ fn gui_persisted_config_runtime_owner_failed_manual_refresh_preserves_rows_and_c
             message,
         } if message.contains("remote service unavailable")
     )));
-    assert!(state.pending_operation.is_none());
-    assert_eq!(state.public_servers.servers, original_rows);
-    assert_eq!(state.selected_public_server_index(), Some(1));
+    assert!(state.session.pending_operation.is_none());
+    assert_eq!(state.session.public_servers.servers, original_rows);
+    assert_eq!(
+        state
+            .session
+            .public_servers
+            .servers
+            .iter()
+            .position(|row| row.is_selected),
+        Some(1)
+    );
 }
 
 #[test]
@@ -1414,6 +1435,7 @@ fn gui_persisted_config_runtime_owner_manual_refresh_retains_selection_by_addres
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
+    let mut state = runtime_state_for_shell(&state);
     assert!(
         owner.handle_complete_public_server_refresh_request_with_fetcher(
             &handle,
@@ -1428,10 +1450,24 @@ fn gui_persisted_config_runtime_owner_manual_refresh_retains_selection_by_addres
         )
     );
 
-    assert!(state.pending_operation.is_none());
-    assert_eq!(state.selected_public_server_index(), Some(0));
+    assert!(state.session.pending_operation.is_none());
     assert_eq!(
-        state.selected_public_server_address(),
+        state
+            .session
+            .public_servers
+            .servers
+            .iter()
+            .position(|row| row.is_selected),
+        Some(0)
+    );
+    assert_eq!(
+        state
+            .session
+            .public_servers
+            .servers
+            .iter()
+            .find(|row| row.is_selected)
+            .map(|row| row.address.as_str()),
         Some("keep.example:9000")
     );
 }

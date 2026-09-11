@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(in crate::app) struct GuiSessionRoomPlaystate {
@@ -38,7 +39,7 @@ pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
     reason = "Session adapter hooks are exercised by concrete adapters and targeted GUI tests."
 )]
 pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
-    fn drain_gui_actions(&mut self, _state: &SorotteGuiShellAppState) -> Vec<GuiShellAction> {
+    fn drain_gui_actions(&mut self, _state: &GuiRuntimeState) -> Vec<GuiShellAction> {
         Vec::new()
     }
 
@@ -56,7 +57,7 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
 
     fn adjust_command_availability(
         &self,
-        _state: &SorotteGuiShellAppState,
+        _state: &GuiRuntimeState,
         command_availability: GuiCommandAvailabilityState,
     ) -> GuiCommandAvailabilityState {
         command_availability

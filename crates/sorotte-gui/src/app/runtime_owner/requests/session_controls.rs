@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::runtime_owner::GuiPendingSharedPlaylistOpen;
 use crate::app::runtime_stack::GuiPlaylistProtocolDeliveryFence;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn arm_playlist_player_effect_delivery_fence(
@@ -21,7 +22,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_local_ready_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         ready: bool,
     ) -> bool {
         if let Some(session) = self.session.as_mut()
@@ -38,7 +39,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_ready_for_user_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         username: String,
         ready: bool,
     ) -> bool {
@@ -56,7 +57,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_request_controller_auth_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         room: String,
         password: String,
     ) -> bool {
@@ -74,7 +75,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_queue_playlist_entry_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         entry: String,
         select_after_queue: bool,
     ) -> bool {
@@ -101,7 +102,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_playlist_index_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         index: usize,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
@@ -109,9 +110,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(delivery_fence) => {
                     self.arm_playlist_player_effect_delivery_fence(delivery_fence);
                     self.active_shared_playlist_index = Some(index);
-                    projected_state.main_window.active_playlist_index = Some(index);
+                    projected_state.playlist.main_window.active_playlist_index = Some(index);
                     handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                        MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                        MainWindowRuntimeSnapshot::from_shell_state(
+                            &projected_state.playlist.main_window,
+                        ),
                     ));
                 }
                 Err(error) => {
@@ -121,11 +124,17 @@ impl GuiPersistedConfigRuntimeOwner {
                     });
                 }
             }
-        } else if projected_state.main_window.playlist.get(index).is_some() {
+        } else if projected_state
+            .playlist
+            .main_window
+            .playlist
+            .get(index)
+            .is_some()
+        {
             self.active_shared_playlist_index = Some(index);
-            projected_state.main_window.active_playlist_index = Some(index);
+            projected_state.playlist.main_window.active_playlist_index = Some(index);
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.playlist.main_window),
             ));
             let selected_media_sync =
                 self.sync_selected_shared_playlist_media_to_attached_player_impl(projected_state);
@@ -149,7 +158,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_delete_playlist_index_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         index: usize,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
@@ -171,7 +180,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_undo_playlist_change_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
             match session.undo_playlist_change_with_delivery_fence() {
@@ -192,7 +201,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_shuffle_remaining_playlist_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
             match session.shuffle_remaining_playlist_with_delivery_fence() {
@@ -213,7 +222,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_shuffle_entire_playlist_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
             match session.shuffle_entire_playlist_with_delivery_fence() {
@@ -234,7 +243,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_advance_playlist_index_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if self.session.is_some() {
             if let Err(error) = self.advance_playlist_index_for_attached_player_impl() {
@@ -255,7 +264,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_replace_playlist_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut SorotteGuiShellAppState,
+        _projected_state: &mut GuiRuntimeState,
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> bool {
@@ -282,7 +291,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_send_chat_message_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {

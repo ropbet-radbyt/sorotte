@@ -1,3 +1,4 @@
+use crate::app::runtime_state::GuiRuntimeState;
 use std::path::Path;
 
 use serde_json::{Map, Value};
@@ -25,20 +26,20 @@ use super::shell_state::{
     GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
     GuiSavedSessionConnectTarget, GuiShellAction, GuiTransientNotificationLevel,
     MainWindowRuntimeSnapshot, MainWindowShellState, MenuActionId, MenuActionRuntimeOverride,
-    MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
+    MenuDialogRuntimeSnapshot,
 };
 use super::support::{autoplay_threshold_from_settings, system_time_seconds};
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> StoredClientSettingsRuntimeSnapshot {
-        stored_client_settings_runtime_snapshot(&state.saved_configuration)
+        stored_client_settings_runtime_snapshot(&state.settings.saved)
     }
 
     fn session_runtime_settings_for_state(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> StoredClientSettingsRuntimeSnapshot {
         if !self.session_projects_to_shell || self.session.is_none() {
             return Self::detached_runtime_settings_for_state(state);
@@ -86,7 +87,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn ensure_detached_client_core_chat_session(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Result<(), String> {
         if self.session.is_none() {
             let runtime_settings = Self::detached_runtime_settings_for_state(state);
@@ -151,11 +152,11 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn media_match_wire_signature_for_local_file(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         local_file: Option<&LocalFileUpdate>,
     ) -> Option<Value> {
-        if !state.media_match.settings.fingerprinting_enabled
-            || !state.media_match.settings.wire_sharing_enabled
+        if !state.media_match.model.settings.fingerprinting_enabled
+            || !state.media_match.model.settings.wire_sharing_enabled
         {
             return None;
         }
@@ -216,7 +217,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn sync_detached_session_preferences_and_player_state(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Result<(), String> {
         let runtime_settings = self.session_runtime_settings_for_state(state);
         if !self.session_projects_to_shell {
@@ -437,8 +438,8 @@ impl GuiPersistedConfigRuntimeOwner {
             )
         } else {
             (
-                state.main_window.autoplay_active,
-                state.main_window.autoplay_threshold,
+                state.playlist.main_window.autoplay_active,
+                state.playlist.main_window.autoplay_threshold,
             )
         };
         {
@@ -512,10 +513,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn detached_missing_media_target(
-        &self,
-        state: &SorotteGuiShellAppState,
-    ) -> Option<String> {
+    pub(super) fn detached_missing_media_target(&self, state: &GuiRuntimeState) -> Option<String> {
         if let Some(local_file) = self.player_local_file.as_ref() {
             if let Some(path) = local_file
                 .path
@@ -531,8 +529,8 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        if let Some(index) = state.selection.selected_main_window_playlist
-            && let Some(row) = state.main_window.playlist.get(index)
+        if let Some(index) = state.playlist.selection.selected_main_window_playlist
+            && let Some(row) = state.playlist.main_window.playlist.get(index)
         {
             let label = row.label.trim();
             if !label.is_empty() {
@@ -541,6 +539,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         state
+            .playlist
             .main_window
             .playlist
             .first()
@@ -551,7 +550,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn detached_missing_media_target_file_name(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Result<String, String> {
         let Some(target) = self.detached_missing_media_target(state) else {
             return Err(
@@ -590,9 +589,9 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn sessionless_main_window_snapshot(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> MainWindowRuntimeSnapshot {
-        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.playlist.main_window);
         snapshot.room_control_status = MainWindowShellState::room_control_status_without_session();
         let player_runtime_available = self.player_runtime_available_for_actions();
         snapshot.can_toggle_pause = player_runtime_available;
@@ -623,14 +622,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn sessionless_menu_dialog_runtime_snapshot(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let mut action_overrides = Vec::new();
         for (id, enabled) in [
             (MenuActionId::CreateControlledRoom, false),
             (MenuActionId::IdentifyAsController, false),
         ] {
-            let current_enabled = state.menus.action(id).map(|action| action.enabled);
+            let current_enabled = state.session.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
                 action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
@@ -640,19 +639,21 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         Some(MenuDialogRuntimeSnapshot {
             action_overrides,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
-            about_dialog_available: state.menus.about_dialog_available,
+            tls_prompt_expected: state.session.menus.tls_prompt_expected,
+            update_notice_expected: state.session.menus.update_notice_expected,
+            about_dialog_available: state.session.menus.about_dialog_available,
         })
     }
 
     pub(super) fn sessionless_projection_actions(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Vec<GuiShellAction> {
         let mut actions = Vec::new();
         let main_window_snapshot = self.sessionless_main_window_snapshot(state);
-        if main_window_snapshot != MainWindowRuntimeSnapshot::from_shell_state(&state.main_window) {
+        if main_window_snapshot
+            != MainWindowRuntimeSnapshot::from_shell_state(&state.playlist.main_window)
+        {
             actions.push(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
                 main_window_snapshot,
             ));
@@ -667,7 +668,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn push_runtime_error_notification(
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) {
         Self::push_actions_and_project(
@@ -682,7 +683,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn save_configuration_for_connect_runtime(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         intent: GuiSavedServerConnectIntent,
         submitted_settings: &StoredClientSettings,
     ) -> Result<(), String> {
@@ -704,10 +705,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn complete_saved_server_connect_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         clear_pending: bool,
     ) {
         let submitted = projected_state
+            .session
             .pending_saved_server_connect_intent
             .map(|intent| {
                 (
@@ -726,7 +728,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn complete_submitted_saved_server_connect_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         clear_pending: bool,
         intent: GuiSavedServerConnectIntent,
         submitted_settings: StoredClientSettings,
@@ -742,14 +744,14 @@ impl GuiPersistedConfigRuntimeOwner {
     fn complete_saved_server_connect_runtime_with_submission(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         clear_pending: bool,
         submitted: Option<(GuiSavedServerConnectIntent, StoredClientSettings)>,
     ) {
         let (connect_intent, active_settings) = submitted.unwrap_or_else(|| {
             (
                 GuiSavedServerConnectIntent::ConnectOnce,
-                projected_state.saved_configuration.clone(),
+                projected_state.settings.saved.clone(),
             )
         });
         match self.save_configuration_for_connect_runtime(
@@ -877,17 +879,19 @@ impl GuiPersistedConfigRuntimeOwner {
         if clear_pending {
             actions.push(GuiShellAction::CompleteSavedServerConnect);
         }
-        actions.push(self.pending_apply_requirements_action(
-            projected_state,
-            &projected_state.saved_configuration,
-        ));
+        actions.push(
+            self.pending_apply_requirements_action(
+                projected_state,
+                &projected_state.settings.saved,
+            ),
+        );
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
     pub(super) fn complete_session_disconnect_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let _ = self.interrupt_attached_playback_recovery_impl("session disconnect");
         let disconnect_error = if let Some(session) = self.session.as_mut() {
@@ -924,16 +928,18 @@ impl GuiPersistedConfigRuntimeOwner {
             });
         }
         actions.push(GuiShellAction::CompleteSessionDisconnect);
-        actions.push(self.pending_apply_requirements_action(
-            projected_state,
-            &projected_state.saved_configuration,
-        ));
+        actions.push(
+            self.pending_apply_requirements_action(
+                projected_state,
+                &projected_state.settings.saved,
+            ),
+        );
         Self::push_actions_and_project(handle, projected_state, actions);
     }
 
     pub(super) fn push_actions_and_project(
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         actions: Vec<GuiShellAction>,
     ) {
         if actions.is_empty() {
@@ -948,7 +954,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn clear_pending_operation_with_runtime_error(
         &self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) {
         let actions = vec![
@@ -964,7 +970,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn clear_pending_operation_runtime_state(
         &self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         Self::push_actions_and_project(
             handle,

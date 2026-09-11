@@ -3,6 +3,7 @@ use crate::app::GuiMediaSourceProviderId;
 use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
+use crate::app::testing::support::runtime_state_for_shell;
 
 use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
@@ -53,7 +54,7 @@ fn sessionless_snapshot_clears_metadata_for_different_length_disabled_playlist()
     let state = disabled_shared_playlist_state_with_two_rows();
     let owner = owner_with_attached_local_file();
 
-    let snapshot = owner.sessionless_main_window_snapshot(&state);
+    let snapshot = owner.sessionless_main_window_snapshot(&runtime_state_for_shell(&state));
 
     assert_disabled_playlist_replacement_snapshot(state, snapshot);
 }
@@ -64,7 +65,7 @@ fn player_sync_clears_metadata_for_different_length_disabled_playlist() {
     let mut owner = owner_with_attached_local_file();
     let handle = GuiQueuedRuntimeBridgeHandle::default();
 
-    owner.sync_player_runtime_state(&handle, &state);
+    owner.sync_player_runtime_state(&handle, &runtime_state_for_shell(&state));
     let snapshot = handle
         .drain_actions()
         .into_iter()
@@ -117,11 +118,10 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
         events: Some(active_player_events(1)),
-        ..Default::default()
     }));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,
@@ -723,10 +723,14 @@ fn gui_persisted_config_runtime_owner_sets_player_media_titles_for_plex_and_loca
         )
         .expect("Plex stream open should have a player")
         .expect("Plex stream open should succeed");
-    owner.open_media_files_through_attached_player_impl(
-        &GuiQueuedRuntimeBridgeHandle::default(),
-        vec!["C:/media/Local Episode.mkv".to_owned()],
-    );
+    owner.supersede_playlist_resolution_attempt();
+    owner
+        .open_media_files_through_attached_player_result_impl(
+            &["C:/media/Local Episode.mkv".to_owned()],
+            true,
+        )
+        .expect("the player should remain attached")
+        .expect("local media should load after Plex");
 
     let calls = player_state
         .lock()
@@ -873,7 +877,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
     );
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("detached session sync should withhold the optimistic Plex logical file");
     let outbound_lines = owner
         .session
@@ -1046,7 +1050,7 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     assert!(!owner.player_local_file_placeholder);
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("confirmed Plex identity should publish to the room");
     let outbound_lines = owner
         .session
@@ -1316,7 +1320,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
     assert!(owner.player_local_file_ready_for_attached_sync());
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("confirmed Plex identity should publish");
     let published = owner
         .session
@@ -1345,7 +1349,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
         )
         .expect("room play should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     owner
         .session
         .as_mut()
@@ -1354,7 +1358,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
         )
         .expect("room pause should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -1384,7 +1388,9 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
     assert!(owner.pending_logical_media_override.is_none());
 
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(&state)
+        ),
         SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
         "the resolver should adopt the matching local file without reopening Plex"
     );
@@ -1415,7 +1421,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
         )
         .expect("room play after local takeover should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()
@@ -1490,7 +1496,7 @@ fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_repo
         ..StoredClientSettings::default()
     });
     owner
-        .ensure_detached_client_core_chat_session(&state)
+        .ensure_detached_client_core_chat_session(&runtime_state_for_shell(&state))
         .expect("detached client-core session should bootstrap");
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

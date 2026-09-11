@@ -7,34 +7,27 @@ use sorotte_client_app::app_boundary::state::{
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::shell_state::{
     GuiPendingOperationKind, GuiPendingOperationState, GuiSavedServerConnectIntent, GuiShellView,
-    GuiTransientNotificationLevel, SecretDraft, SettingId, SorotteGuiShellAppState,
+    GuiTransientNotificationLevel, SorotteGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
     pub(in crate::app) fn connect_once_runtime_settings(&self) -> StoredClientSettings {
-        let draft = self.configuration.to_stored_settings();
-        let mut settings = self.saved_configuration.clone();
-        settings.host = draft.host;
-        settings.port = draft.port;
-        settings.username = draft.username;
-        settings.room = draft.room;
-        if !matches!(&self.configuration.server_password, SecretDraft::Unchanged) {
-            settings.server_password = draft.server_password;
-        }
-        settings
+        super::configuration_model::connect_once_runtime_settings(
+            &self.configuration,
+            &self.saved_configuration,
+        )
     }
-
     pub(in crate::app) fn submitted_saved_server_connect_settings(
         &self,
         intent: GuiSavedServerConnectIntent,
     ) -> StoredClientSettings {
-        match intent {
-            GuiSavedServerConnectIntent::ConnectOnce => self.connect_once_runtime_settings(),
-            GuiSavedServerConnectIntent::SaveAndConnect => self.configuration.to_stored_settings(),
-        }
+        super::configuration_model::submitted_saved_server_connect_settings(
+            &self.configuration,
+            &self.saved_configuration,
+            intent,
+        )
     }
-
     pub(in crate::app) fn submitted_saved_server_connect_target(
         &self,
         intent: GuiSavedServerConnectIntent,
@@ -63,44 +56,31 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn set_selected_public_server_index(&mut self, selected_index: Option<usize>) {
-        for (index, row) in self.public_servers.servers.iter_mut().enumerate() {
-            row.is_selected = selected_index == Some(index);
-        }
+        super::configuration_model::set_selected_public_server_index(
+            &mut self.public_servers,
+            selected_index,
+        );
     }
 
     pub(super) fn restore_selected_public_server_address(
         &mut self,
         selected_address: Option<&str>,
     ) {
-        let Some(selected_address) = selected_address else {
-            return;
-        };
-        let Some(selected_index) = self
-            .public_servers
-            .servers
-            .iter()
-            .position(|row| row.address == selected_address)
-        else {
-            return;
-        };
-        self.set_selected_public_server_index(Some(selected_index));
+        super::configuration_model::restore_selected_public_server_address(
+            &mut self.public_servers,
+            selected_address,
+        );
     }
 
     pub(super) fn apply_public_server_selection(&mut self, index: usize) -> bool {
-        let Some(row) = self.public_servers.servers.get(index).cloned() else {
-            return self.record_action_error("No public server exists at the requested index.");
-        };
-        self.set_selected_public_server_index(Some(index));
-
-        let (host, port) = parse_host_and_optional_port_from_host_arg(&row.address);
-        let _ = self
-            .configuration
-            .apply_text_value(SettingId::ConnectionHost, &host);
-        let _ = self.configuration.apply_text_value(
-            SettingId::ConnectionPort,
-            &port.map_or_else(String::new, |value| value.to_string()),
-        );
-        true
+        match super::configuration_model::apply_public_server_selection(
+            &mut self.public_servers,
+            &mut self.configuration,
+            index,
+        ) {
+            Ok(()) => true,
+            Err(message) => self.record_action_error(message),
+        }
     }
 
     pub(super) fn announce_public_server_selection_changed(&mut self, index: usize) -> bool {
@@ -339,20 +319,7 @@ impl SorotteGuiShellAppState {
             return self.record_action_error("No public server refresh is currently in progress.");
         }
 
-        let mut normalized = Vec::new();
-        for (label, address) in servers {
-            let Some(label) = normalized_editable_text(&label) else {
-                continue;
-            };
-            let Some(address) = normalized_editable_text(&address) else {
-                continue;
-            };
-            let (host, _) = parse_host_and_optional_port_from_host_arg(&address);
-            if host.trim().is_empty() {
-                continue;
-            }
-            normalized.push((label, address));
-        }
+        let normalized = super::configuration_model::normalize_public_servers(servers);
 
         let mut settings = self.configuration.to_stored_settings();
         settings.public_servers = Some(normalized);

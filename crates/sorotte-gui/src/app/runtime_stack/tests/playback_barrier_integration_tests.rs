@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
 use sorotte_client_core::{
@@ -510,7 +511,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
         ..StoredClientSettings::default()
     });
     let room_summary = adapter
-        .main_window_runtime_snapshot(&shell_state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&shell_state))
         .expect("authoritative buffering state should change the room summary");
     assert_eq!(
         room_summary.room_playback_intent.buffering_participants,
@@ -670,7 +671,7 @@ fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
         ..StoredClientSettings::default()
     });
     let before = adapter
-        .main_window_runtime_snapshot(&state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&state))
         .expect("buffering member should project");
     assert_eq!(before.room_playback_intent.buffering_participants, ["bob"]);
 
@@ -678,7 +679,7 @@ fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
         .apply_message_json(r#"{"Set":{"user":{"bob":{"room":{"name":"room2"}}}}}"#)
         .unwrap();
     let after = adapter
-        .main_window_runtime_snapshot(&state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&state))
         .expect("room leave should update the summary");
     assert!(
         after.room_playback_intent.buffering_participants.is_empty(),

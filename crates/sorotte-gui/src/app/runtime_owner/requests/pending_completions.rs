@@ -1,3 +1,4 @@
+use crate::app::runtime_state::GuiRuntimeState;
 use std::path::{Path, PathBuf};
 
 use crate::app::runtime_owner::GuiUserMediaTargetResolutionSource;
@@ -27,7 +28,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_public_server_connect_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         selected_server: (String, String),
         active_settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
@@ -133,7 +134,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 let pending_requirements = self.pending_apply_requirements_action(
                     projected_state,
-                    &projected_state.saved_configuration,
+                    &projected_state.settings.saved,
                 );
                 Self::push_actions_and_project(
                     handle,
@@ -158,7 +159,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_public_server_refresh_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         requested_servers: Vec<(String, String)>,
     ) -> bool {
         self.handle_complete_public_server_refresh_request_with_fetcher(
@@ -172,7 +173,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn handle_complete_public_server_refresh_request_with_fetcher<F>(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         requested_servers: Vec<(String, String)>,
         fetch_detached: F,
     ) -> bool
@@ -180,6 +181,7 @@ impl GuiPersistedConfigRuntimeOwner {
         F: FnOnce(Option<&str>) -> Result<Vec<(String, String)>, String>,
     {
         let current_servers = projected_state
+            .session
             .public_servers
             .servers
             .iter()
@@ -212,7 +214,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_missing_media_search_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let target_file_name_result = if let Some(session) = self.session.as_ref() {
             session.missing_media_search_target_file_name()
@@ -310,7 +312,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_send_chat_message_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
@@ -353,10 +355,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_configuration_save_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
-        let previous_settings = projected_state.saved_configuration.clone();
+        let previous_settings = projected_state.settings.saved.clone();
         let Some(path) = self.persisted_settings_config_path_for_request(projected_state) else {
             Self::push_actions_and_project(
                 handle,
@@ -417,7 +419,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_configuration_reset_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         self.invalidate_plex_operation_context(handle, projected_state);
@@ -434,7 +436,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_configuration_reload_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         fallback_settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let Some(path) = self.config_path.as_ref() else {
@@ -510,7 +512,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_clear_gui_data_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         match self.clear_gui_data() {
             Ok(()) => {
@@ -540,7 +542,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_config_storage_root_change_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target: GuiConfigStorageChangeTarget,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
@@ -568,7 +570,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = match relocate_sorotte_ini_stored_client_settings_at_path(
             source.as_deref(),
             &paths.config_path,
-            &projected_state.saved_configuration,
+            &projected_state.settings.saved,
             &settings,
             || persist_sorotte_client_install_locator(&install_root, &paths.storage_root),
         ) {
@@ -649,7 +651,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn cancel_config_storage_change_with_error(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) -> bool {
         Self::push_actions_and_project(

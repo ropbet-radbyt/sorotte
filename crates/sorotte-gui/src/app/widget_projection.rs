@@ -1,9 +1,8 @@
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 use super::shell_state::{
-    MainWindowChatRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
-    MainWindowUserRow, MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState,
-    MenuActionId, MenuDialogShellState, PublicServerBrowserRuntimeFlags,
+    MainWindowRuntimeSnapshot, MainWindowShellState, MediaSearchWorkflowRuntimeFlags,
+    MediaSearchWorkflowShellState, MenuDialogShellState, PublicServerBrowserRuntimeFlags,
     PublicServerBrowserShellState, SorotteGuiShellAppState,
 };
 
@@ -13,224 +12,42 @@ impl SorotteGuiShellAppState {
         previous_settings: &StoredClientSettings,
         current_snapshot: &MainWindowRuntimeSnapshot,
     ) {
-        let previous_baseline = MainWindowRuntimeSnapshot::from_shell_state(
-            &MainWindowShellState::from_stored_settings(previous_settings),
+        let sources = super::playlist_model::GuiPlaylistSources {
+            default_source: self
+                .main_window
+                .playlist_default_source
+                .current_source_id
+                .clone(),
+            media_match: &self.media_match,
+            plex: &self.plex,
+            plugin_enablement: self.plugin_enablement,
+        };
+        super::main_window_projection::GuiMainWindowProjection {
+            main_window: &mut self.main_window,
+            selection: &mut self.selection,
+            main_window_playlist_selection_is_local: &mut self
+                .main_window_playlist_selection_is_local,
+            playlist_undo_snapshot: &mut self.playlist_undo_snapshot,
+            playlist_source_undo_snapshot: &mut self.playlist_source_undo_snapshot,
+            playlist_entry_id_undo_snapshot: &mut self.playlist_entry_id_undo_snapshot,
+            pending_local_ready_target: &mut self.pending_local_ready_target,
+            menus: &mut self.menus,
+            sources,
+        }
+        .reapply_runtime_main_window_surface_from_snapshot(
+            self.commands.can_disconnect_session,
+            previous_settings,
+            current_snapshot,
         );
-        let preserve_connected_room_surface = self.commands.can_disconnect_session;
-        let configured_playlist = self
-            .main_window
-            .playlist
-            .iter()
-            .map(|row| row.label.clone())
-            .collect::<Vec<_>>();
-
-        if preserve_connected_room_surface
-            || current_snapshot.room_name != previous_baseline.room_name
-        {
-            self.main_window.room_name = current_snapshot.room_name.clone();
-        }
-        if preserve_connected_room_surface
-            || current_snapshot.room_control_status != previous_baseline.room_control_status
-        {
-            self.main_window.room_control_status = current_snapshot.room_control_status.clone();
-        }
-        if current_snapshot.shared_playlist_enabled != previous_baseline.shared_playlist_enabled {
-            self.main_window.shared_playlist_enabled = current_snapshot.shared_playlist_enabled;
-        }
-        if preserve_connected_room_surface
-            || current_snapshot.controlled_room_active != previous_baseline.controlled_room_active
-        {
-            self.main_window.controlled_room_active = current_snapshot.controlled_room_active;
-        }
-        if current_snapshot.hide_empty_rooms != previous_baseline.hide_empty_rooms {
-            self.main_window.hide_empty_rooms = current_snapshot.hide_empty_rooms;
-            self.set_menu_action_checked(
-                MenuActionId::ToggleHideEmptyRooms,
-                current_snapshot.hide_empty_rooms,
-            );
-        }
-        if preserve_connected_room_surface || current_snapshot.rooms != previous_baseline.rooms {
-            self.main_window.rooms = current_snapshot
-                .rooms
-                .iter()
-                .map(|room| MainWindowRoomRow {
-                    room_name: room.room_name.clone(),
-                    is_controlled: room.is_controlled,
-                    has_named_users: room.has_named_users,
-                })
-                .collect();
-        }
-        if preserve_connected_room_surface || current_snapshot.users != previous_baseline.users {
-            self.main_window.users = current_snapshot
-                .users
-                .iter()
-                .map(|user| MainWindowUserRow {
-                    username: user.username.clone(),
-                    room_name: user.room_name.clone(),
-                    is_self: user.is_self,
-                    is_ready: user.is_ready,
-                    is_controller: user.is_controller,
-                    has_file: user.has_file,
-                    file_name: user.file_name.clone(),
-                    file_name_label: user
-                        .file_name
-                        .clone()
-                        .unwrap_or_else(|| "No file".to_owned()),
-                    file_size_label: user.file_size_label.clone(),
-                    file_duration_label: user.file_duration_label.clone(),
-                    file_is_url: user.file_is_url,
-                    file_is_trusted: user.file_is_trusted,
-                    filename_differs: user.filename_differs,
-                    filesize_differs: user.filesize_differs,
-                    fileduration_differs: user.fileduration_differs,
-                    participant_status: user.participant_status.clone(),
-                    start_barrier_status: user.start_barrier_status.clone(),
-                    is_selected: false,
-                })
-                .collect();
-        }
-        if preserve_connected_room_surface
-            || current_snapshot.room_playback_intent != previous_baseline.room_playback_intent
-        {
-            self.main_window.room_playback_intent = current_snapshot.room_playback_intent.clone();
-        }
-        let preserve_runtime_playlist = current_snapshot.playlist != previous_baseline.playlist
-            || configured_playlist == previous_baseline.playlist;
-        if preserve_runtime_playlist {
-            self.remember_shared_playlist_undo_snapshot_if_changed(&current_snapshot.playlist);
-            let previous_rows = self.main_window.playlist.clone();
-            let mut used_previous_rows = vec![false; previous_rows.len()];
-            self.main_window.playlist = current_snapshot
-                .playlist
-                .iter()
-                .enumerate()
-                .map(|(index, label)| {
-                    let previous_row = Self::reconciled_playlist_row(
-                        &previous_rows,
-                        &mut used_previous_rows,
-                        index,
-                        label,
-                        current_snapshot.playlist_entry_ids.get(index).copied(),
-                    );
-                    let mut source_state = current_snapshot
-                        .playlist_source_states
-                        .get(index)
-                        .cloned()
-                        .map(|state| self.refreshed_playlist_source_state_for_entry(label, state))
-                        .or_else(|| {
-                            previous_row.as_ref().map(|row| {
-                                self.refreshed_playlist_source_state_for_entry(
-                                    label,
-                                    row.source_state.clone(),
-                                )
-                            })
-                        })
-                        .unwrap_or_else(|| self.playlist_source_state_for_entry(label));
-                    if let Some(entry_id) = current_snapshot.playlist_entry_ids.get(index).copied()
-                    {
-                        source_state.entry_id = entry_id;
-                    }
-                    super::shell_state::MainWindowPlaylistRow {
-                        entry_id: source_state.entry_id,
-                        label: label.clone(),
-                        is_selected: false,
-                        source_state,
-                    }
-                })
-                .collect();
-        }
-        if current_snapshot.playlist != previous_baseline.playlist
-            || current_snapshot.playlist_entry_ids != previous_baseline.playlist_entry_ids
-            || current_snapshot.active_playlist_index != previous_baseline.active_playlist_index
-        {
-            self.main_window.active_playlist_index = current_snapshot
-                .active_playlist_index
-                .filter(|index| *index < self.main_window.playlist.len());
-        }
-        if current_snapshot.chat != previous_baseline.chat {
-            self.main_window.chat = current_snapshot
-                .chat
-                .iter()
-                .map(|row| MainWindowChatRow {
-                    sender: row.sender.clone(),
-                    message: row.message.clone(),
-                })
-                .collect();
-        }
-        if current_snapshot.can_toggle_pause != previous_baseline.can_toggle_pause {
-            self.main_window.playback.can_toggle_pause = current_snapshot.can_toggle_pause;
-        }
-        if current_snapshot.can_seek != previous_baseline.can_seek {
-            self.main_window.playback.can_seek = current_snapshot.can_seek;
-        }
-        if current_snapshot.can_undo_seek != previous_baseline.can_undo_seek {
-            self.main_window.playback.can_undo_seek = current_snapshot.can_undo_seek;
-        }
-        if current_snapshot.can_set_offset != previous_baseline.can_set_offset {
-            self.main_window.playback.can_set_offset = current_snapshot.can_set_offset;
-        }
-        if current_snapshot.can_toggle_autoplay != previous_baseline.can_toggle_autoplay {
-            self.main_window.playback.can_toggle_autoplay = current_snapshot.can_toggle_autoplay;
-        }
-        if current_snapshot.can_adjust_autoplay_threshold
-            != previous_baseline.can_adjust_autoplay_threshold
-        {
-            self.main_window.playback.can_adjust_autoplay_threshold =
-                current_snapshot.can_adjust_autoplay_threshold;
-        }
-        if current_snapshot.can_set_ready != previous_baseline.can_set_ready {
-            self.main_window.playback.can_set_ready = current_snapshot.can_set_ready;
-        }
-        if current_snapshot.can_set_others_ready != previous_baseline.can_set_others_ready {
-            self.main_window.playback.can_set_others_ready = current_snapshot.can_set_others_ready;
-        }
-        if current_snapshot.can_manage_playlist != previous_baseline.can_manage_playlist {
-            self.main_window.playback.can_manage_playlist = current_snapshot.can_manage_playlist;
-        }
-        if current_snapshot.playback_paused != previous_baseline.playback_paused {
-            self.main_window.playback_paused = current_snapshot.playback_paused;
-        }
-        if current_snapshot.autoplay_active != previous_baseline.autoplay_active {
-            self.main_window.autoplay_active = current_snapshot.autoplay_active;
-        }
-        if current_snapshot.autoplay_threshold != previous_baseline.autoplay_threshold {
-            self.main_window.autoplay_threshold = current_snapshot.autoplay_threshold;
-        }
-        if current_snapshot.autoplay_countdown_seconds
-            != previous_baseline.autoplay_countdown_seconds
-        {
-            self.main_window.autoplay_countdown_seconds =
-                current_snapshot.autoplay_countdown_seconds;
-        }
-        if (current_snapshot.user_offset_seconds - previous_baseline.user_offset_seconds).abs()
-            > f64::EPSILON
-        {
-            self.main_window.user_offset_seconds = current_snapshot.user_offset_seconds;
-        }
-        if current_snapshot.show_playback_buttons != previous_baseline.show_playback_buttons {
-            self.main_window.show_playback_buttons = current_snapshot.show_playback_buttons;
-            self.set_menu_action_checked(
-                MenuActionId::TogglePlaybackButtons,
-                current_snapshot.show_playback_buttons,
-            );
-        }
-        if current_snapshot.show_autoplay_controls != previous_baseline.show_autoplay_controls {
-            self.main_window.show_autoplay_controls = current_snapshot.show_autoplay_controls;
-            self.set_menu_action_checked(
-                MenuActionId::ToggleAutoplayControls,
-                current_snapshot.show_autoplay_controls,
-            );
-        }
     }
 
     fn preserves_runtime_dialog_expectations(
         &self,
         previous_settings: &StoredClientSettings,
     ) -> (bool, bool) {
-        let previous_baseline = MenuDialogShellState::from_stored_settings(previous_settings);
-        (
-            self.menus.tls_prompt_expected != previous_baseline.tls_prompt_expected,
-            self.menus.update_notice_expected != previous_baseline.update_notice_expected,
+        super::configuration_model::preserves_runtime_dialog_expectations(
+            &self.menus,
+            previous_settings,
         )
     }
 
@@ -238,20 +55,20 @@ impl SorotteGuiShellAppState {
         &self,
         previous_settings: &StoredClientSettings,
     ) -> bool {
-        let previous_baseline =
-            PublicServerBrowserShellState::from_stored_settings(previous_settings);
-        PublicServerBrowserRuntimeFlags::from_shell_state(&self.public_servers)
-            != PublicServerBrowserRuntimeFlags::from_shell_state(&previous_baseline)
+        super::configuration_model::preserves_runtime_public_server_surface(
+            &self.public_servers,
+            previous_settings,
+        )
     }
 
     fn preserves_runtime_media_search_surface(
         &self,
         previous_settings: &StoredClientSettings,
     ) -> bool {
-        let previous_baseline =
-            MediaSearchWorkflowShellState::from_stored_settings(previous_settings);
-        MediaSearchWorkflowRuntimeFlags::from_shell_state(&self.media_search)
-            != MediaSearchWorkflowRuntimeFlags::from_shell_state(&previous_baseline)
+        super::configuration_model::preserves_runtime_media_search_surface(
+            &self.media_search,
+            previous_settings,
+        )
     }
 
     pub(super) fn sync_derived_surfaces_from_configuration_settings(

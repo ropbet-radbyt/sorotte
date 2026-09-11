@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::{GuiAttachedSystemSeekSource, GuiUpdateRuntime};
+use crate::app::testing::support::runtime_state_for_shell;
 use crate::app::{GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceStatus};
 
 #[test]
@@ -93,7 +94,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,
@@ -680,7 +681,7 @@ fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek
         ..StoredClientSettings::default()
     });
     owner
-        .ensure_detached_client_core_chat_session(&state)
+        .ensure_detached_client_core_chat_session(&runtime_state_for_shell(&state))
         .expect("detached client-core session should bootstrap");
 
     {

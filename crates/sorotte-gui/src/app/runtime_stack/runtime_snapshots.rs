@@ -1,16 +1,16 @@
 use super::super::DEFAULT_MAIN_WINDOW_AUTOPLAY_THRESHOLD;
 use super::super::shell_state::{
-    GuiInteractionRuntimeSnapshot, MainWindowParticipantStatusFreshness,
-    MainWindowParticipantStatusPresentation, MainWindowParticipantStatusReport,
-    MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot, MainWindowRuntimeUserSnapshot,
-    MainWindowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot,
-    SorotteGuiShellAppState, browser_format_duration_label, browser_format_size_label,
+    MainWindowParticipantStatusFreshness, MainWindowParticipantStatusPresentation,
+    MainWindowParticipantStatusReport, MainWindowRuntimeRoomSnapshot, MainWindowRuntimeSnapshot,
+    MainWindowRuntimeUserSnapshot, MainWindowShellState, MenuActionId, MenuActionRuntimeOverride,
+    MenuDialogRuntimeSnapshot, browser_format_duration_label, browser_format_size_label,
     browser_is_url, browser_uri_is_trusted,
 };
 use super::super::support::{
     nonempty_room_name_text, normalized_editable_text, system_time_seconds,
 };
 use super::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::runtime_state::GuiRuntimeState;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
 };
@@ -207,7 +207,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn session_runtime_rooms(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Vec<MainWindowRuntimeRoomSnapshot> {
         let session = self.runtime.session();
         let mut rooms = session
@@ -222,7 +222,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             })
             .collect::<Vec<_>>();
         if rooms.is_empty()
-            && let Some(room_name) = nonempty_room_name_text(&state.main_window.room_name)
+            && let Some(room_name) = nonempty_room_name_text(&state.playlist.main_window.room_name)
         {
             rooms.push(MainWindowRuntimeRoomSnapshot {
                 has_named_users: false,
@@ -386,19 +386,19 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
     pub(super) fn main_window_runtime_snapshot(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Option<MainWindowRuntimeSnapshot> {
         let baseline_main_window =
             MainWindowShellState::from_stored_settings(&self.runtime_settings.settings);
         let session = self.runtime.session();
         let shared_playlist_server_supported = self.shared_playlist_server_supported();
-        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
+        let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.playlist.main_window);
         snapshot.room_name = baseline_main_window.room_name.clone();
         snapshot.room_control_status = baseline_main_window.room_control_status.clone();
         snapshot.shared_playlist_enabled =
             shared_playlist_server_supported && baseline_main_window.shared_playlist_enabled;
         snapshot.controlled_room_active = baseline_main_window.controlled_room_active;
-        snapshot.hide_empty_rooms = state.main_window.hide_empty_rooms;
+        snapshot.hide_empty_rooms = state.playlist.main_window.hide_empty_rooms;
         snapshot.rooms = baseline_main_window
             .rooms
             .clone()
@@ -443,12 +443,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.can_set_ready = baseline_main_window.playback.can_set_ready;
         snapshot.can_set_others_ready = baseline_main_window.playback.can_set_others_ready;
         snapshot.playback_paused = baseline_main_window.playback_paused;
-        snapshot.autoplay_active = state.main_window.autoplay_active;
-        snapshot.autoplay_threshold = state.main_window.autoplay_threshold;
-        snapshot.autoplay_countdown_seconds = state.main_window.autoplay_countdown_seconds;
-        snapshot.user_offset_seconds = state.main_window.user_offset_seconds;
-        snapshot.show_playback_buttons = state.main_window.show_playback_buttons;
-        snapshot.show_autoplay_controls = state.main_window.show_autoplay_controls;
+        snapshot.autoplay_active = state.playlist.main_window.autoplay_active;
+        snapshot.autoplay_threshold = state.playlist.main_window.autoplay_threshold;
+        snapshot.autoplay_countdown_seconds = state.playlist.main_window.autoplay_countdown_seconds;
+        snapshot.user_offset_seconds = state.playlist.main_window.user_offset_seconds;
+        snapshot.show_playback_buttons = state.playlist.main_window.show_playback_buttons;
+        snapshot.show_autoplay_controls = state.playlist.main_window.show_autoplay_controls;
         if let Some(room_name) = session
             .room()
             .map(str::trim)
@@ -585,7 +585,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .retain(|username| current_room_usernames.contains(username.as_str()));
         snapshot.room_playback_intent.buffering_participants =
             buffering_participants.into_iter().collect();
-        (!snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.main_window))
+        (!snapshot.matches_shell_state_with_omitted_playlist_metadata(&state.playlist.main_window))
             .then_some(snapshot)
     }
 
@@ -596,31 +596,31 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             .filter(|&index| index < playlist_len)
     }
 
-    pub(super) fn interaction_runtime_snapshot(
+    pub(super) fn playlist_selection_update(
         &self,
-        _state: &SorotteGuiShellAppState,
-        interaction_state: &SorotteGuiShellAppState,
+        interaction_state: &GuiRuntimeState,
         playlist_len: usize,
-    ) -> Option<GuiInteractionRuntimeSnapshot> {
-        if interaction_state.main_window_playlist_selection_is_local {
+    ) -> Option<Option<usize>> {
+        if interaction_state.playlist.selection_is_local {
             return None;
         }
 
         let selected_main_window_playlist = self.session_playlist_selection_index(playlist_len);
-        if interaction_state.selection.selected_main_window_playlist
+        if interaction_state
+            .playlist
+            .selection
+            .selected_main_window_playlist
             == selected_main_window_playlist
         {
             return None;
         }
 
-        let mut snapshot = GuiInteractionRuntimeSnapshot::from_shell_state(interaction_state);
-        snapshot.selection.selected_main_window_playlist = selected_main_window_playlist;
-        Some(snapshot)
+        Some(selected_main_window_playlist)
     }
 
     pub(super) fn menu_dialog_runtime_snapshot(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         shared_playlist_enabled: bool,
     ) -> Option<MenuDialogRuntimeSnapshot> {
         let mut action_overrides = Vec::new();
@@ -636,6 +636,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let identify_as_controller_enabled = managed_rooms_server_supported
             && session_room_name.is_some_and(|room_name| room_name.starts_with('+'));
         let current_playlist_actions_enabled = state
+            .session
             .menus
             .action(MenuActionId::SharedPlaylist)
             .map(|action| action.enabled);
@@ -660,7 +661,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
                 identify_as_controller_enabled,
             ),
         ] {
-            let current_enabled = state.menus.action(id).map(|action| action.enabled);
+            let current_enabled = state.session.menus.action(id).map(|action| action.enabled);
             if current_enabled.is_some_and(|current_enabled| current_enabled != enabled) {
                 action_overrides.push(MenuActionRuntimeOverride { id, enabled });
             }
@@ -672,9 +673,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
 
         Some(MenuDialogRuntimeSnapshot {
             action_overrides,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
-            about_dialog_available: state.menus.about_dialog_available,
+            tls_prompt_expected: state.session.menus.tls_prompt_expected,
+            update_notice_expected: state.session.menus.update_notice_expected,
+            about_dialog_available: state.session.menus.about_dialog_available,
         })
     }
 }

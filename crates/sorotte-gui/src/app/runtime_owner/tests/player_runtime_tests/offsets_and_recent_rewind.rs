@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
 use sorotte_player_api::{
     PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange, PlayerTransportPhase,
@@ -221,7 +222,7 @@ fn real_gui_positive_offset_normalizes_barrier_readiness_on_the_room_timeline() 
         Some(10.0),
         "positive-offset player telemetry must be stored on the room timeline"
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let outbound = owner
         .session
@@ -293,7 +294,7 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
             PlayerSeekableRange::new(0.0, 16.0),
         )));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         owner.player_position_seconds,
         Some(10.0),
@@ -346,7 +347,7 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
             ),
         ),
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -424,7 +425,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,

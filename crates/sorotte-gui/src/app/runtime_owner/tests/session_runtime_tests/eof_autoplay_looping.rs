@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
 #[test]
@@ -135,7 +136,6 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
         events: Some(active_player_events(1)),
-        ..Default::default()
     }));
     {
         let mut player_state = player_state
@@ -274,7 +274,9 @@ fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_sett
         value: false,
     }));
     assert_eq!(
-        owner.current_shared_playlist_target(&state).as_deref(),
+        owner
+            .current_shared_playlist_target(&runtime_state_for_shell(&state))
+            .as_deref(),
         Some("episode.mkv"),
         "an unsaved disable must not hide the active session playlist target"
     );
@@ -290,7 +292,7 @@ fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_sett
         value: true,
     }));
     assert_eq!(
-        owner.current_shared_playlist_target(&state),
+        owner.current_shared_playlist_target(&runtime_state_for_shell(&state)),
         None,
         "an unsaved enable must not activate playlist lookup for a disabled session"
     );
@@ -368,7 +370,9 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         Some(0),
         false,
     );
-    let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+    );
 
     assert_eq!(opened, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
@@ -505,7 +509,7 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
         shared_playlist_enabled: Some(true),
         ..StoredClientSettings::default()
     });
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     assert_eq!(
         player_state

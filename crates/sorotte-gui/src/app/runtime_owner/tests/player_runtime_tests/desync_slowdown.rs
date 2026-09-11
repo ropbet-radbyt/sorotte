@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands() {
@@ -78,7 +79,7 @@ fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands()
         .sync_local_playback_telemetry(Some(false), Some(10.0))
         .expect("initial local telemetry should sync");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -98,8 +99,8 @@ fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .fail_next_playback_rate = true;
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     owner
         .session
@@ -114,8 +115,8 @@ fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .fail_next_playback_rate = true;
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()

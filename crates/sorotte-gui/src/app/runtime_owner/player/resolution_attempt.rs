@@ -1,4 +1,9 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
+#[cfg(test)]
+use crate::app::shell_state::SorotteGuiShellAppState;
+#[cfg(test)]
+use crate::app::testing::support::runtime_state_for_shell;
 
 fn emit_media_resolution_transition(
     transition: &'static str,
@@ -80,7 +85,7 @@ fn transient_candidate_retry_delay(failure_count: u32) -> Option<Duration> {
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn bind_started_local_media_load_to_current_playlist(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         resolved_path: String,
         source: GuiUserMediaTargetResolutionSource,
         started: &StartedMediaLoad,
@@ -90,7 +95,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return;
         };
         self.reconcile_local_shared_playlist_media_paths(state);
-        let Some(row) = state.main_window.playlist.get(playlist_index) else {
+        let Some(row) = state.playlist.main_window.playlist.get(playlist_index) else {
             return;
         };
         self.ensure_playlist_resolution_attempt(
@@ -370,7 +375,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn candidate_failure_evidence_for_state(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         candidate: &media_resolution::GuiMediaResolutionCandidate,
     ) -> CandidateFailureEvidence {
         CandidateFailureEvidence {
@@ -452,7 +457,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn reconcile_failed_playlist_candidates(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         now: Instant,
     ) -> bool {
         let rearmed_candidates = self
@@ -1304,7 +1309,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn playlist_resolution_source_state_for_projection(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Option<(
         usize,
         super::super::super::shell_state::GuiPlaylistSourceState,
@@ -1316,11 +1321,14 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         let index = state
+            .playlist
             .main_window
             .playlist
             .iter()
             .position(|row| row.entry_id == attempt.row_id)?;
-        let mut source_state = state.main_window.playlist[index].source_state.clone();
+        let mut source_state = state.playlist.main_window.playlist[index]
+            .source_state
+            .clone();
         let Some(provider_id) = attempt.candidate_provider.clone() else {
             source_state.clear_resolved_provider();
             let matching_plex_miss = self.plex_miss_state.as_ref().filter(|miss| {
@@ -1515,7 +1523,7 @@ mod tests {
             );
             assert_eq!(
                 owner.open_media_resolution_candidate(
-                    &shell_state(),
+                    &runtime_state_for_shell(&shell_state()),
                     "MixedCaseEpisode.MKV",
                     candidate.clone(),
                     false,
@@ -1707,7 +1715,10 @@ mod tests {
         assert_eq!(failure.failure_count, 1);
         let deadline = failure.next_retry_at.expect("transient retry deadline");
 
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), deadline));
+        assert!(owner.reconcile_failed_playlist_candidates(
+            &runtime_state_for_shell(&shell_state()),
+            deadline
+        ));
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Resolving);
         assert_eq!(attempt.candidate_failures[0].failure_count, 1);
@@ -1725,7 +1736,7 @@ mod tests {
         assert!(failure.next_retry_at.is_none());
 
         assert!(!owner.reconcile_failed_playlist_candidates(
-            &shell_state(),
+            &runtime_state_for_shell(&shell_state()),
             Instant::now() + Duration::from_secs(3_600),
         ));
         let failure = &owner
@@ -1750,7 +1761,10 @@ mod tests {
         assert!(failure.next_retry_at.is_none());
 
         owner.player_attachment_epoch = owner.player_attachment_epoch.wrapping_add(1);
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), Instant::now()));
+        assert!(owner.reconcile_failed_playlist_candidates(
+            &runtime_state_for_shell(&shell_state()),
+            Instant::now()
+        ));
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Resolving);
         assert!(attempt.candidate_failures.is_empty());
@@ -1781,7 +1795,10 @@ mod tests {
             Duration::from_secs(60),
             Duration::from_secs(600),
         ] {
-            assert!(!owner.reconcile_failed_playlist_candidates(&state, failed_at + elapsed));
+            assert!(!owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&state),
+                failed_at + elapsed
+            ));
             let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
             assert_eq!(attempt.state, PlaylistResolutionAttemptState::Failed);
             assert_eq!(attempt.candidate_failures.len(), 1);
@@ -1823,13 +1840,16 @@ mod tests {
                 deadline.duration_since(failure_time),
                 Duration::from_secs(expected_delay)
             );
+            assert!(!owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&state),
+                deadline - Duration::from_millis(1)
+            ));
             assert!(
-                !owner.reconcile_failed_playlist_candidates(
-                    &state,
-                    deadline - Duration::from_millis(1)
+                owner.reconcile_failed_playlist_candidates(
+                    &runtime_state_for_shell(&state),
+                    deadline
                 )
             );
-            assert!(owner.reconcile_failed_playlist_candidates(&state, deadline));
             failure_time = deadline;
         }
 
@@ -1847,7 +1867,7 @@ mod tests {
         assert!(terminal.next_retry_at.is_none());
         assert!(!owner.active_playlist_candidate_retry_due());
         assert!(!owner.reconcile_failed_playlist_candidates(
-            &state,
+            &runtime_state_for_shell(&state),
             failure_time + Duration::from_secs(3_600)
         ));
         assert_eq!(
@@ -1881,7 +1901,12 @@ mod tests {
             now - Duration::from_secs(3),
         );
 
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
         assert_eq!(
             owner.failed_playlist_resolution_candidates(),
             vec![permanent]
@@ -1941,7 +1966,12 @@ mod tests {
             now,
         );
         assert!(owner.active_playlist_candidate_retry_due());
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
         assert_eq!(
             owner.failed_playlist_resolution_candidates(),
             vec![fallback],
@@ -1969,7 +1999,12 @@ mod tests {
         );
         owner.player_attachment_epoch = owner.player_attachment_epoch.wrapping_add(1);
 
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Resolving);
         assert!(attempt.candidate_failures.is_empty());
@@ -1992,7 +2027,12 @@ mod tests {
             now,
         );
         local_owner.stream_helper_runtime_snapshot.health = GuiStreamHelperHealth::Broken;
-        assert!(!local_owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            !local_owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
 
         let mut extractor_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         extractor_owner.playlist_resolution.generation = 4;
@@ -2008,7 +2048,12 @@ mod tests {
             now,
         );
         extractor_owner.stream_helper_runtime_snapshot.health = GuiStreamHelperHealth::Broken;
-        assert!(extractor_owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            extractor_owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
     }
 
     #[test]
@@ -2041,9 +2086,19 @@ mod tests {
             now,
         );
 
-        assert!(!owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            !owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
         std::fs::write(&path, b"repaired with different length").unwrap();
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
         assert!(
             owner
                 .playlist_resolution_attempt
@@ -2075,7 +2130,12 @@ mod tests {
         );
         owner.attached_media_search_index_revision =
             owner.attached_media_search_index_revision.wrapping_add(1);
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
 
         owner.fail_playlist_resolution_candidate_at(
             media_match_candidate("C:/media/matched.mkv"),
@@ -2086,7 +2146,12 @@ mod tests {
             trigger_key: "changed-result".to_owned(),
             candidate_path: Some("C:/media/matched.mkv".to_owned()),
         });
-        assert!(owner.reconcile_failed_playlist_candidates(&shell_state(), now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&shell_state()),
+                now
+            )
+        );
     }
 
     #[test]
@@ -2102,8 +2167,9 @@ mod tests {
             GuiPlaylistSourcePolicy::ForcePlex,
         );
         let initial_state = shell_state();
-        let initial_context =
-            owner.plex_operation_context(&owner.runtime_operation_settings(&initial_state));
+        let initial_context = owner.plex_operation_context(
+            &owner.runtime_operation_settings(&runtime_state_for_shell(&initial_state)),
+        );
         owner.last_attached_media_resolution_trigger = Some(GuiAutomaticMediaResolutionTrigger {
             target: "episode.mkv".to_owned(),
             playlist_entry_id: Some(row_id),
@@ -2122,7 +2188,12 @@ mod tests {
             CandidateFailureDisposition::ContextDependent,
             now,
         );
-        assert!(!owner.reconcile_failed_playlist_candidates(&initial_state, now));
+        assert!(
+            !owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&initial_state),
+                now
+            )
+        );
 
         let changed_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             plex_plugin_enabled: Some(true),
@@ -2133,7 +2204,12 @@ mod tests {
             plex_selected_server_token: Some("different-server-token".into()),
             ..StoredClientSettings::default()
         });
-        assert!(owner.reconcile_failed_playlist_candidates(&changed_state, now));
+        assert!(
+            owner.reconcile_failed_playlist_candidates(
+                &runtime_state_for_shell(&changed_state),
+                now
+            )
+        );
     }
 
     #[test]
@@ -2158,11 +2234,17 @@ mod tests {
             plex_selected_server_token: Some("server-token".into()),
             ..StoredClientSettings::default()
         });
-        let initial_context =
-            owner.plex_operation_context(&owner.runtime_operation_settings(&initial_state));
+        let initial_context = owner.plex_operation_context(
+            &owner.runtime_operation_settings(&runtime_state_for_shell(&initial_state)),
+        );
 
         assert_eq!(
-            owner.open_media_resolution_candidate(&initial_state, "episode.mkv", candidate, true,),
+            owner.open_media_resolution_candidate(
+                &runtime_state_for_shell(&initial_state),
+                "episode.mkv",
+                candidate,
+                true,
+            ),
             SelectedPlaylistMediaSyncOutcome::NoChange
         );
         let attempt = owner
@@ -2192,7 +2274,10 @@ mod tests {
             plex_selected_server_token: Some("different-server-token".into()),
             ..StoredClientSettings::default()
         });
-        assert!(owner.reconcile_failed_playlist_candidates(&changed_state, Instant::now()));
+        assert!(owner.reconcile_failed_playlist_candidates(
+            &runtime_state_for_shell(&changed_state),
+            Instant::now()
+        ));
         let attempt = owner
             .playlist_resolution_attempt
             .as_ref()
@@ -2459,7 +2544,7 @@ mod tests {
             .expect("session should exist")
             .note_local_playlist_index_reset_intent(true);
 
-        owner.reconcile_local_shared_playlist_media_paths(&state);
+        owner.reconcile_local_shared_playlist_media_paths(&runtime_state_for_shell(&state));
         let playlist_generation = owner.playlist_resolution.generation;
         owner.ensure_playlist_resolution_attempt(
             row_id,
@@ -2488,8 +2573,10 @@ mod tests {
             )
             .expect("post-selection State should apply");
 
-        let selected_media_sync =
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+        let selected_media_sync = owner
+            .sync_selected_shared_playlist_media_to_attached_player_impl(&runtime_state_for_shell(
+                &state,
+            ));
         assert_eq!(
             selected_media_sync,
             SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
@@ -2504,7 +2591,10 @@ mod tests {
         );
         assert!(handoff_ready);
 
-        owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, handoff_ready);
+        owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+            &runtime_state_for_shell(&state),
+            handoff_ready,
+        );
 
         assert!(
             !owner
@@ -3052,7 +3142,12 @@ mod tests {
         );
 
         assert_eq!(
-            owner.open_media_resolution_candidate(&shell_state(), "episode.mkv", candidate, false),
+            owner.open_media_resolution_candidate(
+                &runtime_state_for_shell(&shell_state()),
+                "episode.mkv",
+                candidate,
+                false
+            ),
             SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
         );
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
@@ -3077,7 +3172,7 @@ mod tests {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
         owner.active_shared_playlist_index = Some(0);
-        owner.reconcile_local_shared_playlist_media_paths(&state);
+        owner.reconcile_local_shared_playlist_media_paths(&runtime_state_for_shell(&state));
         let row_id = state.main_window.playlist[0].entry_id;
         owner.ensure_playlist_resolution_attempt(
             row_id,
@@ -3095,7 +3190,9 @@ mod tests {
         owner.player_local_file_placeholder = false;
 
         assert_eq!(
-            owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+                &runtime_state_for_shell(&state)
+            ),
             SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
         );
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();

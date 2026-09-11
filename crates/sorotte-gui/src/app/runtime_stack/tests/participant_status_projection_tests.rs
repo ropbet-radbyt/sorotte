@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
 use sorotte_client_core::ExternalPlayerAvailability;
@@ -96,7 +97,7 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
         .expect("room playstate and complete member snapshot should apply");
 
     let snapshot = adapter
-        .main_window_runtime_snapshot(&state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&state))
         .expect("new room/member state should project into a GUI snapshot");
     assert_eq!(snapshot.room_playback_intent.paused, Some(true));
     assert_eq!(snapshot.room_playback_intent.position_seconds, Some(755.03));
@@ -213,7 +214,7 @@ fn compact_and_stale_exact_statuses_do_not_invent_scope_mismatches() {
         .unwrap();
 
     let snapshot = adapter
-        .main_window_runtime_snapshot(&state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&state))
         .expect("compact status rows should project");
     let user = |username: &str| {
         snapshot
@@ -271,7 +272,7 @@ fn legacy_uncorrelated_wire_rows_never_project_precise_room_offsets() {
         .unwrap();
 
     let snapshot = adapter
-        .main_window_runtime_snapshot(&state)
+        .main_window_runtime_snapshot(&runtime_state_for_shell(&state))
         .expect("legacy-compatible status should project");
     let bob = snapshot
         .users

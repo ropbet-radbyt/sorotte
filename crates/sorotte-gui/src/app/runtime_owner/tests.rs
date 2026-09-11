@@ -1,4 +1,6 @@
 use super::player_event_test_support::*;
+
+mod runtime_state_tests;
 use std::{
     io::{BufRead, Read, Write},
     net::TcpListener,

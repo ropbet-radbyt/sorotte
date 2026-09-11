@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::feature_slices::player::Command;
 use crate::app::runtime_owner::GuiCorePlayerConfigurationHealth;
+use crate::app::testing::support::runtime_state_for_shell;
 
 fn active_option_properties(commands: &Arc<Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
     commands
@@ -477,9 +478,10 @@ fn queued_hook_degradation_remains_observable_when_same_pump_explicit_retry_fail
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
-    assert!(owner.handle_player_command(&handle, &mut state, Command::RetrySettings));
+    let mut worker = runtime_state_for_shell(&state);
+    assert!(owner.handle_player_command(&handle, &mut worker, Command::RetrySettings));
     let mut retry_actions = handle.drain_actions();
-    owner.sync_player_runtime_state(&handle, &state);
+    owner.sync_player_runtime_state(&handle, &runtime_state_for_shell(&state));
     let projection_actions = handle.drain_actions();
     for action in &projection_actions {
         assert!(
@@ -599,7 +601,10 @@ fn superseded_retry_keeps_baseline_issue_and_footer_until_authoritative_result()
     let projected_state = SorotteGuiShellAppState::from_stored_settings(&settings);
     assert!(
         owner
-            .pending_apply_requirements_for_settings(&projected_state, &settings)
+            .pending_apply_requirements_for_settings(
+                &runtime_state_for_shell(&projected_state),
+                &settings
+            )
             .contains(&GuiSettingApplyRequirement::PlayerSettingsRetryAvailable),
         "the footer retry requirement must remain while the authoritative result is pending"
     );
@@ -746,7 +751,8 @@ fn superseded_launch_completion_reports_pending_and_refreshes_footer() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
     state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
-    owner.finish_retry_player_launch_request(&handle, &mut state, &settings);
+    let mut worker = runtime_state_for_shell(&state);
+    owner.finish_retry_player_launch_request(&handle, &mut worker, &settings);
     let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     assert!(
@@ -1172,6 +1178,7 @@ fn credential_bearing_media_targets_never_reach_gui_issue_notification_or_chat_s
             "resolved target: file URL",
         ),
     ];
+    let mut worker = runtime_state_for_shell(&state);
 
     for (index, (label, canary, source_path, resolved_target, source_kind, resolved_kind)) in
         cases.into_iter().enumerate()
@@ -1222,7 +1229,7 @@ fn credential_bearing_media_targets_never_reach_gui_issue_notification_or_chat_s
             resolved_target,
         );
 
-        owner.finish_retry_player_launch_request(&handle, &mut state, &settings);
+        owner.finish_retry_player_launch_request(&handle, &mut worker, &settings);
         let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         let notification_message = actions
             .iter()

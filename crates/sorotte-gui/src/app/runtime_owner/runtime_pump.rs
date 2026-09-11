@@ -2,6 +2,7 @@ use super::super::feature_slices::GuiClientCommand;
 use super::super::remote_services;
 use super::super::shell_state::MainWindowRuntimeSnapshot;
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl Default for GuiPersistedConfigRuntimeOwner {
     fn default() -> Self {
@@ -11,18 +12,18 @@ impl Default for GuiPersistedConfigRuntimeOwner {
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn poll_cached_runtime(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
-        let Some(mut projected_state) = self.legacy_projection.take() else {
+        let Some(mut projected_state) = self.runtime_state.take() else {
             return;
         };
         projected_state = self.pump_runtime_projection_owned(handle, projected_state);
-        self.legacy_projection = Some(projected_state);
+        self.runtime_state = Some(projected_state);
     }
 
     fn pump_runtime_projection_owned(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        mut projected_state: SorotteGuiShellAppState,
-    ) -> SorotteGuiShellAppState {
+        mut projected_state: GuiRuntimeState,
+    ) -> GuiRuntimeState {
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
         self.poll_managed_mpv_process();
         self.pump_sorotte_bridge_health_transitions();
@@ -54,7 +55,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {
             self.startup_saved_connect_attempted = true;
-            if projected_state.pending_operation.is_none()
+            if projected_state.session.pending_operation.is_none()
                 && !self.session_active()
                 && projected_state.saved_session_connect_target().is_some()
             {
@@ -177,12 +178,12 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn reconcile_playlist_resolution_scope(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.reconcile_local_shared_playlist_media_paths(projected_state);
         if self.apply_pending_playlist_row_scope_reset(projected_state) {
             handle.push_action(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
-                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.main_window),
+                MainWindowRuntimeSnapshot::from_shell_state(&projected_state.playlist.main_window),
             ));
         }
     }
@@ -190,7 +191,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn run_deferred_startup_remote_actions(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.run_deferred_startup_remote_actions_with_fetcher(
             handle,
@@ -202,7 +203,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn run_deferred_startup_remote_actions_with_fetcher<FPublicServers>(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         fetch_public_servers: FPublicServers,
     ) where
         FPublicServers: Fn(&str) -> Result<Vec<(String, String)>, String> + Send + 'static,
@@ -210,7 +211,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let now = Instant::now();
         if !self.startup_remote_actions_attempted {
             self.startup_remote_actions_attempted = true;
-            let settings = projected_state.saved_configuration.clone();
+            let settings = projected_state.settings.saved.clone();
             if remote_services::should_run_automatic_update_check(
                 Some(&settings),
                 std::time::SystemTime::now(),
@@ -224,11 +225,12 @@ impl GuiPersistedConfigRuntimeOwner {
             }
         }
 
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let current_context = StartupPublicServerHydrationContext::from_settings(&settings);
         self.reconcile_startup_public_server_hydration_context(current_context.clone(), now);
         if projected_state
-            .configuration
+            .settings
+            .draft
             .settings
             .public_servers
             .is_some()
@@ -297,7 +299,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn pump_startup_public_server_outcome(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         now: Instant,
     ) {
         let Some(rx) = self.startup_remote_actions_rx.take() else {
@@ -307,7 +309,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(StartupPublicServerOutcome::Loaded(servers)) => {
                 self.startup_public_server_hydration.completed = true;
                 self.startup_public_server_hydration.next_retry_at = None;
-                if projected_state.public_servers.servers.is_empty() {
+                if projected_state.session.public_servers.servers.is_empty() {
                     let actions = vec![GuiShellAction::ApplyStartupPublicServerCache(servers)];
                     self.update_runtime.observe_actions(&actions);
                     Self::push_actions_and_project(handle, projected_state, actions);
@@ -353,7 +355,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn handle_startup_public_server_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         error: String,
         now: Instant,
     ) {
@@ -383,9 +385,10 @@ impl GuiPersistedConfigRuntimeOwner {
     fn run_deferred_startup_stream_helper_probe(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -457,7 +460,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn apply_deferred_startup_remote_actions_for_test(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         actions: Vec<GuiShellAction>,
     ) {
         if self.startup_remote_actions_attempted {
@@ -472,7 +475,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn apply_deferred_startup_stream_helper_snapshot_for_test(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         snapshot: GuiStreamHelperRuntimeSnapshot,
     ) {
         if self.startup_stream_helper_probe_completed {
@@ -491,7 +494,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn sync_detached_session_runtime_state_or_notify(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.refresh_player_state();
         self.flush_pending_stream_feedback(handle, projected_state);

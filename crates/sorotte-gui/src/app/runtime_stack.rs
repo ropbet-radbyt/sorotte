@@ -49,7 +49,6 @@ use self::player::GuiNoopClientRuntimePlayer;
 use super::remote_services;
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiShellAction, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState,
 };
 use super::support::{chat_input_enabled, system_time_seconds};
 

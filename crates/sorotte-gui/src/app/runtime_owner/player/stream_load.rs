@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 use sorotte_plex::{PlexStreamTarget, redact_plex_token};
 
@@ -85,7 +86,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn room_stream_target_kind(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> GuiStreamTargetKind {
         let settings = self.runtime_operation_settings(state);
@@ -211,7 +212,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn preflight_room_stream_target(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
     ) -> bool {
         match self.room_stream_target_kind(state, target) {
@@ -225,6 +226,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             GuiStreamTargetKind::ExtractorPageUrl => {
                 if !state
+                    .settings
                     .plugin_enablement
                     .enabled_for(GuiPluginSelection::StreamSupport)
                 {
@@ -545,19 +547,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 ))
             }
         })
-    }
-
-    pub(in crate::app::runtime_owner) fn open_media_files_through_attached_player_impl(
-        &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        paths: Vec<String>,
-    ) {
-        self.supersede_playlist_resolution_attempt();
-        match self.open_media_files_through_attached_player_result_impl(&paths, true) {
-            Some(Ok(started)) => Self::push_player_success_impl(handle, started.feedback_message),
-            Some(Err(message)) => Self::push_player_error_impl(handle, message),
-            None => {}
-        }
     }
 }
 

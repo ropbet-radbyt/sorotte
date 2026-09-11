@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_controls_live() {
@@ -103,7 +104,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
         ..StoredClientSettings::default()
     });
     owner
-        .sync_detached_session_preferences_and_player_state(&state_a)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_a))
         .expect("first detached-session preference sync should succeed");
 
     let state_b = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -118,7 +119,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
         ..StoredClientSettings::default()
     });
     owner
-        .sync_detached_session_preferences_and_player_state(&state_b)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_b))
         .expect("second detached-session preference sync should succeed");
 
     let mut recorded_state = recorded
@@ -192,7 +193,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state_b);
     owner
-        .sync_detached_session_preferences_and_player_state(&state_a)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_a))
         .expect("explicit autoplay controls should survive the next active-session sync");
 
     let recorded_state = recorded
@@ -318,7 +319,6 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
         events: Some(active_player_events(1)),
-        ..Default::default()
     }));
     {
         let mut player_state = player_state

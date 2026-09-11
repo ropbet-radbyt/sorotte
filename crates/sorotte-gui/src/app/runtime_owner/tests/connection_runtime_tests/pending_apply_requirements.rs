@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
 use crate::app::runtime_owner::GuiStreamingDegradationOrigin;
+use crate::app::testing::support::runtime_state_for_shell;
 
 fn save_current_draft(
     owner: &mut GuiPersistedConfigRuntimeOwner,
@@ -699,7 +700,7 @@ fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
     let state = SorotteGuiShellAppState::from_stored_settings(&desired);
 
     assert_eq!(
-        owner.pending_apply_requirements_for_settings(&state, &desired),
+        owner.pending_apply_requirements_for_settings(&runtime_state_for_shell(&state), &desired),
         vec![GuiSettingApplyRequirement::RestartPlayer],
         "a bridge warning must not mask a process-target change"
     );
@@ -729,7 +730,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     let state = SorotteGuiShellAppState::from_stored_settings(&initial);
 
     assert_eq!(
-        owner.pending_apply_requirements_for_settings(&state, &initial),
+        owner.pending_apply_requirements_for_settings(&runtime_state_for_shell(&state), &initial),
         vec![GuiSettingApplyRequirement::RestartPlayer],
         "a non-retryable streaming failure must retain restart guidance"
     );
@@ -741,7 +742,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     };
     owner.player = None;
     assert_eq!(
-        owner.pending_apply_requirements_for_settings(&state, &initial),
+        owner.pending_apply_requirements_for_settings(&runtime_state_for_shell(&state), &initial),
         vec![GuiSettingApplyRequirement::RestartPlayer],
         "an absent player cannot offer an in-place settings retry"
     );
@@ -759,7 +760,10 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
         ..initial.clone()
     };
     assert_eq!(
-        owner.pending_apply_requirements_for_settings(&state, &changed_process_arguments),
+        owner.pending_apply_requirements_for_settings(
+            &runtime_state_for_shell(&state),
+            &changed_process_arguments
+        ),
         vec![GuiSettingApplyRequirement::RestartPlayer],
         "changed managed-player arguments must override retryable streaming degradation"
     );
@@ -799,7 +803,9 @@ fn failed_streaming_settings_retry_replaces_retry_requirement_with_restart_playe
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&desired);
-    assert!(state.apply(owner.pending_apply_requirements_action(&state, &desired)));
+    assert!(state.apply(
+        owner.pending_apply_requirements_action(&runtime_state_for_shell(&state), &desired)
+    ));
     assert_eq!(
         state.pending_apply_requirements,
         vec![GuiSettingApplyRequirement::PlayerSettingsRetryAvailable]
@@ -907,7 +913,7 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&desired);
     assert_eq!(
-        owner.pending_apply_requirements_for_settings(&state, &desired),
+        owner.pending_apply_requirements_for_settings(&runtime_state_for_shell(&state), &desired),
         vec![GuiSettingApplyRequirement::PlayerSettingsRetryAvailable],
         "an attached same-target streaming rejection should offer an in-place retry"
     );
@@ -961,7 +967,7 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
     assert!(owner.player_unavailability_reason.is_none());
     assert!(
         owner
-            .pending_apply_requirements_for_settings(&state, &desired)
+            .pending_apply_requirements_for_settings(&runtime_state_for_shell(&state), &desired)
             .is_empty(),
         "the successful streaming apply should clear only the remaining core requirement"
     );
@@ -1030,9 +1036,10 @@ fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected()
     assert!(!player.syncplay_ui_settings().chat_input_enabled);
 
     install_active_settings_baseline(&mut owner, &state.saved_configuration);
-    assert!(
-        state.apply(owner.pending_apply_requirements_action(&state, &state.saved_configuration,))
-    );
+    assert!(state.apply(owner.pending_apply_requirements_action(
+        &runtime_state_for_shell(&state),
+        &state.saved_configuration,
+    )));
     assert!(state.pending_apply_requirements.is_empty());
     let _ = std::fs::remove_dir_all(root);
 }

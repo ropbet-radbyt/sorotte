@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifications() {
@@ -44,7 +45,9 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
     assert_eq!(outbound_lines.len(), 1);
     assert!(outbound_lines[0].contains("\"Chat\""));
     assert!(outbound_lines[0].contains("hello room"));
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -52,13 +55,16 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
         .apply_message_json(r#"{"Chat":{"username":"alice","message":"hello room"}}"#)
         .expect("inbound server echo should apply");
     assert_eq!(
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state),
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state)),
         vec![GuiShellAction::PushChatMessage {
             sender: "alice".to_owned(),
             message: "hello room".to_owned(),
         }]
     );
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -116,7 +122,9 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -133,7 +141,8 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
             r#"{"State":{"playstate":{"position":10.0,"paused":true,"doSeek":false,"setBy":"alice"}}}"#,
         )
         .expect("playstate message should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 3);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("session state changes should become a main-window runtime snapshot");
@@ -149,10 +158,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
         vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()]
     );
     assert!(snapshot.playback_paused);
-    let GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(interaction) = &actions[1] else {
-        panic!("session playlist index should become a GUI interaction runtime snapshot");
+    let GuiShellAction::ApplySharedPlaylistSelection(selection) = &actions[1] else {
+        panic!("session playlist index should become a playlist selection action");
     };
-    assert_eq!(interaction.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(*selection, Some(1));
     let GuiShellAction::ApplyMenuDialogRuntimeSnapshot(menu_snapshot) = &actions[2] else {
         panic!("session playlist availability should become a menu runtime snapshot");
     };
@@ -174,7 +183,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
             .action(MenuActionId::SharedPlaylist)
             .is_some_and(|action| action.enabled)
     );
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -193,7 +205,9 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selecti
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -205,7 +219,9 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selecti
     adapter
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
         .expect("initial playlist-index set message should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
     assert_eq!(state.selection.selected_main_window_playlist, Some(0));
@@ -217,7 +233,8 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selecti
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
         .expect("follow-up playlist-index set message should apply");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().all(|action| !matches!(
             action,
@@ -253,7 +270,9 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -262,7 +281,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
             r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"controller":true}}}}"#,
         )
         .expect("user join message should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("user changes should still refresh the main-window runtime snapshot");

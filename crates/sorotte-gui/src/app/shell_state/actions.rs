@@ -51,6 +51,7 @@ pub(in crate::app) enum GuiShellAction {
     ApplyGuiMediaMatchRemediationRuntimeSnapshot(GuiMediaMatchRemediationRuntimeSnapshot),
     ApplyGuiPlexRuntimeSnapshot(GuiPlexRuntimeSnapshot),
     ApplyGuiInteractionRuntimeSnapshot(GuiInteractionRuntimeSnapshot),
+    ApplySharedPlaylistSelection(Option<usize>),
     ApplyGuiDraftRuntimeSnapshot(GuiDraftRuntimeSnapshot),
     ApplyGuiConfigurationDraftRuntimeSnapshot(GuiConfigurationDraftRuntimeSnapshot),
     ApplyGuiSavedConfigurationRuntimeSnapshot(GuiSavedConfigurationRuntimeSnapshot),

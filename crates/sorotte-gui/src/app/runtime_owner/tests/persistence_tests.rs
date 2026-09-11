@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::GuiPersistedSettingsPatch;
 use crate::app::runtime_owner::{GuiActivePlexPlaylistResolveJob, GuiActivePlexPlaylistSearchJob};
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
 
@@ -1103,7 +1104,8 @@ fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
         .expect("initial Plex streaming settings should persist");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&saved_settings);
 
     assert!(owner.handle_toggle_plex_streaming_request(&handle, &mut state, true));
 
@@ -1111,12 +1113,12 @@ fn plex_streaming_toggle_persists_disk_saved_draft_and_feature_runtime() {
         .expect("Plex streaming config should be readable")
         .expect("Plex streaming config should exist");
     assert_eq!(disk.plex_streaming_enabled, Some(true));
-    assert_eq!(state.saved_configuration.plex_streaming_enabled, Some(true));
+    assert_eq!(state.settings.saved.plex_streaming_enabled, Some(true));
     assert_eq!(
-        state.configuration.settings.plex_streaming_enabled,
+        state.settings.draft.settings.plex_streaming_enabled,
         Some(true)
     );
-    assert!(state.plex.streaming_enabled);
+    assert!(state.plex.model.streaming_enabled);
     assert!(owner.plex_runtime_snapshot.streaming_enabled);
     assert_eq!(
         disk.server_password
@@ -1148,7 +1150,12 @@ fn plex_sync_persistence_patch_preserves_unrelated_draft_and_secret_intent() {
     let focused_before = state.focused_configuration_control.clone();
     let edit_before = state.text_edit_session.clone();
 
-    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut state, true));
+    let mut worker = runtime_state_for_shell(&state);
+    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut worker, true));
+    let emitted_actions = handle.drain_actions();
+    for action in &emitted_actions {
+        state.apply(action.clone());
+    }
 
     let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
@@ -1203,12 +1210,17 @@ fn plex_server_selection_patch_preserves_unrelated_draft_and_secret_intent() {
     let focused_before = state.focused_configuration_control.clone();
     let edit_before = state.text_edit_session.clone();
 
+    let mut worker = runtime_state_for_shell(&state);
     assert!(owner.handle_select_plex_server_request(
         &handle,
-        &mut state,
+        &mut worker,
         "raptor-machine".to_owned(),
         "https://raptor.example:32400".to_owned(),
     ));
+    let emitted_actions = handle.drain_actions();
+    for action in &emitted_actions {
+        state.apply(action.clone());
+    }
 
     let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
@@ -1330,7 +1342,12 @@ fn plex_disconnect_patch_preserves_unrelated_draft_and_secret_intent() {
     let focused_before = state.focused_configuration_control.clone();
     let edit_before = state.text_edit_session.clone();
 
-    assert!(owner.handle_disconnect_plex_request(&handle, &mut state));
+    let mut worker = runtime_state_for_shell(&state);
+    assert!(owner.handle_disconnect_plex_request(&handle, &mut worker));
+    let emitted_actions = handle.drain_actions();
+    for action in &emitted_actions {
+        state.apply(action.clone());
+    }
 
     let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("Plex config should be readable")
@@ -1389,7 +1406,12 @@ fn plex_persistence_failure_preserves_disk_saved_draft_and_runtime_state() {
     let edit_before = state.text_edit_session.clone();
     let runtime_before = state.plex.clone();
 
-    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut state, true));
+    let mut worker = runtime_state_for_shell(&state);
+    assert!(owner.handle_toggle_plex_sync_request(&handle, &mut worker, true));
+    let emitted_actions = handle.drain_actions();
+    for action in &emitted_actions {
+        state.apply(action.clone());
+    }
 
     assert_eq!(state.saved_configuration, saved_before);
     assert_eq!(state.configuration.settings, draft_before);
@@ -1399,7 +1421,7 @@ fn plex_persistence_failure_preserves_disk_saved_draft_and_runtime_state() {
     assert_eq!(state.plex, runtime_before);
     assert_eq!(owner.plex_sync_next_tick_due_at, runtime_due_before);
     assert!(state.has_unsaved_configuration_changes());
-    assert!(handle.drain_actions().iter().any(|action| matches!(
+    assert!(emitted_actions.clone().iter().any(|action| matches!(
         action,
         GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Warning,

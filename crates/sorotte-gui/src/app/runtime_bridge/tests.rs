@@ -1,4 +1,5 @@
 use super::{GuiNativeRuntimeBridge, GuiPreviewRuntimeBridge};
+use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::testing::support::test_temp_root;
 use crate::app::{
@@ -129,7 +130,7 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
 
     assert_eq!(
         GuiPreviewRuntimeBridge::preview_open_media_file_actions(
-            Some(&state),
+            Some(&runtime_state_for_shell(&state)),
             vec![media_path.to_string_lossy().into_owned()],
             true,
             Some(1),

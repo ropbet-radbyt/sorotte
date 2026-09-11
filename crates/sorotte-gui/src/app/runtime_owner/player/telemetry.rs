@@ -5,6 +5,7 @@ use crate::app::runtime_owner::{
     GuiAttachedSystemSeekOwnershipState, GuiAttachedSystemSeekSource,
     GuiCorePlayerConfigurationHealth, GuiStreamingDegradationOrigin,
 };
+use crate::app::runtime_state::GuiRuntimeState;
 use sorotte_player_api::{
     PlayerCommandFailureKind, PlayerCommandOutcome, PlayerObservationTimestamp,
     PlayerTransportPhase, PlayerTransportTelemetryUpdate,
@@ -957,11 +958,10 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         };
-        if let Some(ownership) = self.attached_system_seek_ownership.get_mut(index) {
-            if ownership.media_generation.is_none() {
-                ownership.media_generation =
-                    outcome.media_generation.map(PlayerMediaGeneration::get);
-            }
+        if let Some(ownership) = self.attached_system_seek_ownership.get_mut(index)
+            && ownership.media_generation.is_none()
+        {
+            ownership.media_generation = outcome.media_generation.map(PlayerMediaGeneration::get);
         }
         match outcome.result {
             PlayerCommandSemanticResult::Completed => {
@@ -1305,7 +1305,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn drain_player_chat_input_impl(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let mut errors = Vec::new();
         let chat_ready = self
@@ -4182,7 +4182,7 @@ mod ordered_delivery_tests {
                                 sorotte_player_api::PlayerCommandOutcome {
                                     attachment_epoch:
                                         sorotte_player_api::PlayerAttachmentEpoch::new(1),
-                                    command_id: command_id,
+                                    command_id,
                                     media_generation: Some(GENERATION),
                                     result: PlayerCommandSemanticResult::Failed(
                                         PlayerCommandFailureKind::TimedOut,

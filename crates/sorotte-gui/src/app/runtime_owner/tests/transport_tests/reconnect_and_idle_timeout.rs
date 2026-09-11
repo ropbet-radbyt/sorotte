@@ -3,6 +3,8 @@ use crate::app::runtime_stack::{
     GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
     GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
 };
+use crate::app::testing::support::pump_worker_state;
+use crate::app::testing::support::runtime_state_for_shell;
 
 struct ReceiptTimeRecordingSession {
     received_at_seconds: Arc<Mutex<Vec<f64>>>,
@@ -59,7 +61,9 @@ fn queued_inbound_line_keeps_network_receipt_time_until_owner_drain() {
     );
     owner.session_transport = Some(session_transport.clone());
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+        &StoredClientSettings::default(),
+    );
 
     session_transport.push_inbound_protocol_line_at("{}", 123.5);
     owner.drain_session_transport_inbound(&handle, &mut state);
@@ -410,12 +414,13 @@ fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cle
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some("room1".to_owned()),
-        ..StoredClientSettings::default()
-    });
-    state.pending_operation = Some(crate::app::GuiPendingOperationState {
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            ..StoredClientSettings::default()
+        });
+    state.session.pending_operation = Some(crate::app::GuiPendingOperationState {
         kind: GuiPendingOperationKind::DisconnectSession,
     });
 
@@ -424,11 +429,11 @@ fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cle
         &mut state,
         "Session transport TCP received an invalid protocol line: invalid JSON payload".to_owned(),
     );
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_worker_state(&mut owner, &handle, &mut state);
 
     assert!(owner.session.is_none());
     assert!(
-        state.pending_operation.is_none(),
+        state.session.pending_operation.is_none(),
         "transport cleanup must complete a pending disconnect operation instead of leaving the UI stuck"
     );
 }
@@ -752,11 +757,16 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_when_re
         .send(())
         .expect("room-change reconnect test server should be releasable");
 
+    let mut worker = runtime_state_for_shell(&state);
     owner.handle_session_transport_failure(
         &handle,
-        &mut state,
+        &mut worker,
         "Session transport TCP connection closed by the server.".to_owned(),
     );
+    let emitted_actions = handle.drain_actions();
+    for action in &emitted_actions {
+        state.apply(action.clone());
+    }
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }

@@ -1305,6 +1305,24 @@ impl PlayerAdapter for MpvAdapter {
     }
 }
 
+impl MpvAdapter {
+    /// Returns a complete cache observation for diagnostics; omitted metrics clear prior values.
+    pub fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+        self.maintain_runtime_integrations();
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
+        let mut update = self.pending_cache_telemetry_updates.pop_front()?;
+        if let Some(observed_at) = update.observed_at {
+            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+                observed_at.elapsed_since_adapter_start(),
+                self.observation_clock_origin.elapsed(),
+            ));
+        }
+        Some(update)
+    }
+}
+
 #[cfg(test)]
 mod nonblocking_maintenance_tests {
     use super::super::command_ack_tests::active_projection;
@@ -3970,23 +3988,5 @@ mod nonblocking_maintenance_tests {
                 .is_none(),
             "the accepted transition must clear the replacement generation's expectation"
         );
-    }
-}
-
-impl MpvAdapter {
-    /// Returns a complete cache observation for diagnostics; omitted metrics clear prior values.
-    pub fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        self.observe_unhealthy_ipc_transport();
-        let mut update = self.pending_cache_telemetry_updates.pop_front()?;
-        if let Some(observed_at) = update.observed_at {
-            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
-                observed_at.elapsed_since_adapter_start(),
-                self.observation_clock_origin.elapsed(),
-            ));
-        }
-        Some(update)
     }
 }
