@@ -68,13 +68,15 @@ fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate()
             .expect("remote state should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default().with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default().with_paused(true)),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()
@@ -98,19 +100,14 @@ fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate()
             .pending_cache_room_playstate_resync,
         "IPC acceptance alone must not acknowledge the desired room unpause"
     );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![PlayerPlaybackTelemetryUpdate::default().with_paused(true)],
-        "room pause sync should preserve synced telemetry for diagnostics drains"
-    );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(5.0)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(5.0)
+                .with_paused(false),
+        );
     runtime
         .run_room_pause_sync_if_needed()
         .expect("stationary observed unpause should not fail");
@@ -124,12 +121,12 @@ fn client_runtime_room_pause_sync_applies_remote_pause_mismatch_from_playstate()
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(5.25)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(5.25)
+                .with_paused(false),
+        );
     runtime
         .run_room_pause_sync_if_needed()
         .expect("advancing observed unpause should not fail");
@@ -202,13 +199,15 @@ fn client_runtime_room_pause_sync_skips_when_room_playstate_set_by_local_user() 
             .expect("self-originated state should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default().with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default().with_paused(true)),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()

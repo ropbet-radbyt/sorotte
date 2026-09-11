@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn with_config_path(config_path: Option<PathBuf>) -> Self {
@@ -7,7 +8,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(|path| path.parent().map(Path::to_path_buf));
         Self {
             config_path,
-            legacy_projection: None,
+            runtime_state: None,
             session: None,
             active_session_settings: None,
             active_session_configured_settings: None,
@@ -72,7 +73,6 @@ impl GuiPersistedConfigRuntimeOwner {
             attached_native_seek_tracker: GuiAttachedNativeSeekTracker::default(),
             attached_system_seek_ownership: VecDeque::new(),
             attached_system_seek_fail_closed: None,
-            attached_transport_telemetry_authority: Default::default(),
             player_position_seconds: None,
             player_paused: None,
             player_paused_for_cache: None,
@@ -226,7 +226,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
-        self.attached_transport_telemetry_authority = Default::default();
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.nearest_match = None;
@@ -288,7 +287,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
-        self.attached_transport_telemetry_authority = Default::default();
     }
 
     pub(in crate::app) fn clear_session_causal_player_effect_state(&mut self) {
@@ -1255,7 +1253,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn update_media_match_remediation_runtime_snapshot(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
     ) {
         self.media_match_remediation_runtime_snapshot = snapshot.clone();
@@ -1269,7 +1267,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn report_media_match_remediation_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         label: impl Into<String>,
         detail: Option<String>,
         progress_fraction: f32,
@@ -1289,7 +1287,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn clear_media_match_remediation_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.update_media_match_remediation_runtime_snapshot(
             handle,
@@ -1308,17 +1306,14 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn flush_pending_stream_feedback(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         while let Some(actions) = self.pending_stream_feedback.pop_front() {
             Self::push_actions_and_project(handle, projected_state, actions);
         }
     }
 
-    pub(super) fn stream_helper_target_candidate(
-        &self,
-        state: &SorotteGuiShellAppState,
-    ) -> Option<String> {
+    pub(super) fn stream_helper_target_candidate(&self, state: &GuiRuntimeState) -> Option<String> {
         self.pending_stream_retry_target
             .clone()
             .or_else(|| self.current_shared_playlist_target(state))
@@ -1333,7 +1328,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn recheck_stream_helper_runtime_snapshot(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> GuiStreamHelperRuntimeSnapshot {
         let target = self.stream_helper_target_candidate(state);
         self.refresh_stream_helper_runtime_snapshot_for_target(target.as_deref())
@@ -1342,7 +1337,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn update_stream_helper_remediation_runtime_snapshot(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         snapshot: GuiStreamHelperRemediationRuntimeSnapshot,
     ) {
         self.stream_helper_remediation_runtime_snapshot = snapshot.clone();
@@ -1356,7 +1351,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn report_stream_helper_remediation_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         label: impl Into<String>,
         detail: Option<String>,
         progress_fraction: f32,
@@ -1376,7 +1371,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn clear_stream_helper_remediation_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.update_stream_helper_remediation_runtime_snapshot(
             handle,

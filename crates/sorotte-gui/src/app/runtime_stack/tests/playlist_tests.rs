@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_operations() {
@@ -323,7 +324,8 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
         !GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
         "playlist controls should remain unavailable when the server disables shared playlists"
     );
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let snapshot = actions
         .iter()
         .find_map(|action| match action {
@@ -400,7 +402,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         )
         .expect("inbound server hello should apply");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("stale shared-playlist state should be corrected through a main-window snapshot");
@@ -446,7 +449,10 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
             })
             .is_some_and(|action| !action.enabled)
     );
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -471,7 +477,9 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -482,7 +490,8 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     )
     .expect("playlist replace should dispatch");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("local playlist replace should project a main-window runtime snapshot");
@@ -530,7 +539,9 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     adapter
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
         .expect("existing playlist index should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -541,13 +552,14 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     )
     .expect("playlist replace should dispatch");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let main_snapshot = actions.iter().find_map(|action| match action {
         GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
         _ => None,
     });
-    let interaction_snapshot = actions.iter().find_map(|action| match action {
-        GuiShellAction::ApplyGuiInteractionRuntimeSnapshot(snapshot) => Some(snapshot),
+    let selection_update = actions.iter().find_map(|action| match action {
+        GuiShellAction::ApplySharedPlaylistSelection(index) => Some(index),
         _ => None,
     });
 
@@ -558,9 +570,9 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
         snapshot.playlist,
         vec!["episode3.mkv".to_owned(), "episode4.mkv".to_owned()]
     );
-    let interaction = interaction_snapshot
+    let selection = selection_update
         .expect("local playlist replace should project the new selection immediately");
-    assert_eq!(interaction.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(*selection, Some(1));
 }
 
 #[test]
@@ -599,7 +611,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     expected_snapshot.room_playback_intent.participant_count = 1;
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(
         actions,
         vec![
@@ -619,7 +632,10 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
         assert!(state.apply(action));
     }
     assert!(!state.main_window.playback_paused);
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -658,7 +674,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     expected_snapshot.room_playback_intent.participant_count = 1;
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(
         actions,
         vec![
@@ -678,5 +695,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
         assert!(state.apply(action));
     }
     assert!(!state.main_window.autoplay_active);
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_plex::{
     PlexCachedMatch, PlexClientConfig, PlexMatchCache, PlexMediaType, parse_plex_playlist_uri,
     server_scoped_cache_key_for_file,
@@ -211,7 +212,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_existing_m3u
     });
     let dispatch = owner
         .shared_playlist_open_dispatch_for_selected_paths_impl(
-            &state,
+            &runtime_state_for_shell(&state),
             vec![playlist_path.to_string_lossy().into_owned()],
         )
         .expect("cached Plex M3U should be imported");
@@ -343,7 +344,10 @@ fn gui_persisted_config_runtime_owner_treats_local_hls_m3u8_as_one_media_target(
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let dispatch = owner
-        .shared_playlist_open_dispatch_for_selected_paths_impl(&state, vec![manifest_path.clone()])
+        .shared_playlist_open_dispatch_for_selected_paths_impl(
+            &runtime_state_for_shell(&state),
+            vec![manifest_path.clone()],
+        )
         .expect("HLS manifest should be dispatched as media");
 
     assert!(!dispatch.imported_from_file);

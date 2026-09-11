@@ -1,5 +1,8 @@
 use super::runtime_bridge::GuiSharedPlaylistOpenDispatch;
+use crate::app::runtime_state::GuiRuntimeState;
 
+#[cfg(test)]
+mod player_event_test_support;
 #[cfg(test)]
 mod tests;
 
@@ -37,9 +40,7 @@ use sorotte_client_app::app_boundary::{
     },
 };
 use sorotte_client_core::{CoordinatorCommandId, ExternalPlayerAvailability, PlayerCommandCause};
-use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerEventSequence, PlayerTransportPhase,
-};
+use sorotte_player_api::{LocalFileUpdate, PlayerAdapter, PlayerCommandId, PlayerTransportPhase};
 use sorotte_player_mpv::{MpvAdapter, SorotteBridgeHealth, SyncplayUiSettings};
 use sorotte_plex::{
     PlexClientConfig, PlexMatchCacheStagedWrite, SecretPlexPlaybackUrl,
@@ -83,7 +84,6 @@ use super::shell_state::{
     GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
     GuiSettingApplyRequirement, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
     GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SettingId,
-    SorotteGuiShellAppState,
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
@@ -383,7 +383,7 @@ impl GuiPlayerApplyState {
 
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
-    pub(super) legacy_projection: Option<SorotteGuiShellAppState>,
+    pub(super) runtime_state: Option<GuiRuntimeState>,
     pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
     pub(super) active_session_settings: Option<StoredClientSettingsRuntimeSnapshot>,
     pub(super) active_session_configured_settings: Option<StoredClientSettingsRuntimeSnapshot>,
@@ -453,7 +453,6 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) attached_native_seek_tracker: GuiAttachedNativeSeekTracker,
     pub(super) attached_system_seek_ownership: VecDeque<GuiAttachedSystemSeekOwnership>,
     pub(super) attached_system_seek_fail_closed: Option<GuiAttachedSystemSeekFailClosedGuard>,
-    pub(super) attached_transport_telemetry_authority: GuiAttachedTransportTelemetryAuthority,
     pub(super) player_position_seconds: Option<f64>,
     pub(super) player_paused: Option<bool>,
     pub(super) player_paused_for_cache: Option<bool>,
@@ -521,11 +520,9 @@ pub(super) struct GuiAttachedPlayerPositionObservation {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct GuiAttachedMediaObservationCursor {
     pub(super) media_generation: Option<u64>,
     pub(super) last_observed_at_seconds: Option<f64>,
-    pub(super) last_ordered_event_sequence: Option<PlayerEventSequence>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -587,14 +584,6 @@ pub(super) struct GuiAttachedSystemSeekFailClosedGuard {
     pub(super) retire_after: Instant,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct GuiAttachedTransportTelemetryAuthority {
-    pub(super) position: bool,
-    pub(super) logical_pause: bool,
-    pub(super) paused_for_cache: bool,
-    pub(super) cache_buffering_percent: bool,
-}
-
 impl GuiPersistedConfigRuntimeOwner {
     /// Settings that are allowed to influence ordinary runtime work right now.
     ///
@@ -604,17 +593,17 @@ impl GuiPersistedConfigRuntimeOwner {
     /// immediate feature action applies a scoped patch.
     pub(in crate::app::runtime_owner) fn runtime_operation_settings(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> StoredClientSettings {
         self.active_session_settings
             .as_ref()
             .map(|runtime_settings| runtime_settings.settings.clone())
-            .unwrap_or_else(|| state.saved_configuration.clone())
+            .unwrap_or_else(|| state.settings.saved.clone())
     }
 
     pub(in crate::app::runtime_owner) fn runtime_shared_playlist_enabled(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> bool {
         stored_client_settings_runtime_snapshot(&self.runtime_operation_settings(state))
             .config
@@ -773,7 +762,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn pending_apply_requirements_for_settings(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         saved_settings: &StoredClientSettings,
     ) -> Vec<GuiSettingApplyRequirement> {
         let mut requirements = BTreeSet::new();
@@ -851,6 +840,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .and_then(normalized_runtime_language_tag)
             .unwrap_or("en");
         let active_language = projected_state
+            .settings
             .active_application_language
             .as_deref()
             .and_then(normalized_runtime_language_tag)
@@ -858,6 +848,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if saved_language != active_language
             || saved_settings.force_gui_prompt.unwrap_or(false)
                 != projected_state
+                    .settings
                     .active_application_force_gui_prompt
                     .unwrap_or(false)
         {
@@ -869,7 +860,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn pending_apply_requirements_action(
         &self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         saved_settings: &StoredClientSettings,
     ) -> GuiShellAction {
         GuiShellAction::ApplyPendingApplyRequirementsSnapshot(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app) fn note_local_attached_player_pause_command(&mut self, target_paused: bool) {
@@ -169,7 +170,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn sync_manual_seek_into_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         previous_position_seconds: f64,
         target_position_seconds: f64,
     ) -> Result<bool, String> {
@@ -189,7 +190,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn sync_playback_pause_into_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         previous_paused: bool,
         target_paused: bool,
     ) -> Result<(), String> {
@@ -208,7 +209,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn apply_playback_pause_change_with_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         previous_paused: bool,
         target_paused: bool,
     ) -> Result<(bool, Option<String>), String> {
@@ -412,7 +413,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn preflight_local_player_unpause_against_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         previous_paused: bool,
     ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
         self.ensure_detached_client_core_chat_session(state)?;
@@ -430,7 +431,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn undo_seek_target_position_from_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Result<Option<f64>, String> {
         self.ensure_detached_client_core_chat_session(state)?;
         let Some(session) = self.session.as_mut() else {
@@ -442,7 +443,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn commit_undo_seek_into_detached_session_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target_position_seconds: f64,
     ) -> Result<(), String> {
         self.ensure_detached_client_core_chat_session(state)?;

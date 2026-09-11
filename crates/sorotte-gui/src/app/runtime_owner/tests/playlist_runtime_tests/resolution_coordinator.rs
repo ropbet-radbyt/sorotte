@@ -3,6 +3,7 @@ use crate::app::runtime_owner::{
     GuiPendingPlaylistSourceResolution,
     player::{PlaylistResolutionAttemptState, SelectedPlaylistMediaSyncOutcome},
 };
+use crate::app::testing::support::pump_worker_state;
 use crate::app::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
     GuiPlaylistSourceStatus,
@@ -20,25 +21,26 @@ fn detached_playlist_owner_and_state(
 ) -> (
     GuiPersistedConfigRuntimeOwner,
     GuiQueuedRuntimeBridgeHandle,
-    SorotteGuiShellAppState,
+    crate::app::runtime_state::GuiRuntimeState,
 ) {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(config_path);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some(room.to_owned()),
-        player_path: Some("mpv".to_owned()),
-        shared_playlist_enabled: Some(true),
-        plex_plugin_enabled: Some(plex_enabled),
-        plex_sync_enabled: Some(plex_enabled),
-        plex_streaming_enabled: Some(plex_enabled),
-        plex_user_token: plex_enabled.then(|| "user-token".into()),
-        plex_selected_server_id: plex_enabled.then(|| "machine-1".to_owned()),
-        plex_selected_server_url: plex_enabled.then(|| "http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: plex_enabled.then(|| "server-token".into()),
-        ..StoredClientSettings::default()
-    });
+    let state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some(room.to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            plex_plugin_enabled: Some(plex_enabled),
+            plex_sync_enabled: Some(plex_enabled),
+            plex_streaming_enabled: Some(plex_enabled),
+            plex_user_token: plex_enabled.then(|| "user-token".into()),
+            plex_selected_server_id: plex_enabled.then(|| "machine-1".to_owned()),
+            plex_selected_server_url: plex_enabled.then(|| "http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: plex_enabled.then(|| "server-token".into()),
+            ..StoredClientSettings::default()
+        });
     (owner, handle, state)
 }
 
@@ -62,7 +64,7 @@ fn active_client_core_playlist_adapter() -> GuiClientCoreChatSessionRuntimeAdapt
 
 fn apply_session_runtime_actions(
     owner: &mut GuiPersistedConfigRuntimeOwner,
-    state: &mut SorotteGuiShellAppState,
+    state: &mut crate::app::runtime_state::GuiRuntimeState,
 ) {
     let actions = owner
         .session
@@ -126,11 +128,12 @@ fn seed_cached_plex_versions(root: &std::path::Path, media_paths: &[std::path::P
 }
 
 fn round_trip_main_window_runtime_snapshot(
-    state: &SorotteGuiShellAppState,
-) -> SorotteGuiShellAppState {
-    let snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
-    let mut round_tripped =
-        SorotteGuiShellAppState::from_stored_settings(&state.configuration.to_stored_settings());
+    state: &crate::app::runtime_state::GuiRuntimeState,
+) -> crate::app::runtime_state::GuiRuntimeState {
+    let snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.playlist.main_window);
+    let mut round_tripped = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+        &state.settings.draft.to_stored_settings(),
+    );
     assert!(round_tripped.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot,)));
     round_tripped
 }
@@ -138,7 +141,7 @@ fn round_trip_main_window_runtime_snapshot(
 fn activate_playlist_row_and_assert_exact_local_origin(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
-    state: &mut SorotteGuiShellAppState,
+    state: &mut crate::app::runtime_state::GuiRuntimeState,
     index: usize,
     expected_path: &std::path::Path,
 ) {
@@ -146,7 +149,7 @@ fn activate_playlist_row_and_assert_exact_local_origin(
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(index));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while std::time::Instant::now() < deadline {
-        pump_and_apply_runtime_owner_actions(owner, handle, state);
+        pump_worker_state(owner, handle, state);
         if owner
             .player_local_file
             .as_ref()
@@ -168,7 +171,10 @@ fn activate_playlist_row_and_assert_exact_local_origin(
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    assert_eq!(state.main_window.active_playlist_index, Some(index));
+    assert_eq!(
+        state.playlist.main_window.active_playlist_index,
+        Some(index)
+    );
     assert_eq!(
         owner
             .player_local_file
@@ -203,8 +209,8 @@ fn full_replacement_binds_same_basename_local_paths_to_distinct_row_ids() {
         state.current_shared_playlist_entries(),
         vec!["episode.mkv".to_owned(), "episode.mkv".to_owned()]
     );
-    let first_id = state.main_window.playlist[0].entry_id;
-    let second_id = state.main_window.playlist[1].entry_id;
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
+    let second_id = state.playlist.main_window.playlist[1].entry_id;
     assert_ne!(first_id, second_id);
     assert_eq!(
         owner
@@ -223,8 +229,8 @@ fn full_replacement_binds_same_basename_local_paths_to_distinct_row_ids() {
 
     state = round_trip_main_window_runtime_snapshot(&state);
     owner.reconcile_local_shared_playlist_media_paths(&state);
-    assert_eq!(state.main_window.playlist[0].entry_id, first_id);
-    assert_eq!(state.main_window.playlist[1].entry_id, second_id);
+    assert_eq!(state.playlist.main_window.playlist[0].entry_id, first_id);
+    assert_eq!(state.playlist.main_window.playlist[1].entry_id, second_id);
 
     owner.player_local_file = None;
     owner.last_attached_media_resolution_trigger = None;
@@ -260,13 +266,14 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some("room1".to_owned()),
-        player_path: Some("mpv".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
@@ -274,7 +281,7 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         vec![first_path.to_string_lossy().into_owned()],
         None,
     );
-    let first_id = state.main_window.playlist[0].entry_id;
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
     assert_eq!(
         owner
             .playlist_resolution
@@ -306,7 +313,7 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         state.current_shared_playlist_entries(),
         vec!["episode.mkv".to_owned()]
     );
-    let second_id = state.main_window.playlist[0].entry_id;
+    let second_id = state.playlist.main_window.playlist[0].entry_id;
     assert_ne!(
         second_id, first_id,
         "a full replacement must allocate a fresh local provenance identity"
@@ -320,7 +327,10 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         "the fresh row must bind the newly dropped exact path"
     );
     assert_eq!(
-        state.main_window.playlist[0].source_state.detail.as_deref(),
+        state.playlist.main_window.playlist[0]
+            .source_state
+            .detail
+            .as_deref(),
         Some("Added from the local filesystem.")
     );
 
@@ -352,7 +362,7 @@ fn same_label_full_replacement_undo_restores_immediately_previous_exact_origin()
         vec![first_path.to_string_lossy().into_owned()],
         None,
     );
-    let first_id = state.main_window.playlist[0].entry_id;
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
     assert_eq!(
         owner
             .playlist_resolution
@@ -367,7 +377,7 @@ fn same_label_full_replacement_undo_restores_immediately_previous_exact_origin()
         vec![second_path.to_string_lossy().into_owned()],
         None,
     );
-    let second_id = state.main_window.playlist[0].entry_id;
+    let second_id = state.playlist.main_window.playlist[0].entry_id;
     assert_ne!(second_id, first_id);
     assert_eq!(
         owner
@@ -376,11 +386,16 @@ fn same_label_full_replacement_undo_restores_immediately_previous_exact_origin()
             .get(&second_id),
         Some(&second_path)
     );
-    assert_eq!(state.playlist_entry_id_undo_snapshot, Some(vec![first_id]));
+    assert_eq!(state.playlist.entry_id_undo_snapshot, Some(vec![first_id]));
 
-    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert!(
+        state
+            .playlist_edit_model()
+            .undo_shared_playlist_change()
+            .expect("local undo should succeed")
+    );
     owner.reconcile_local_shared_playlist_media_paths(&state);
-    assert_eq!(state.main_window.playlist[0].entry_id, first_id);
+    assert_eq!(state.playlist.main_window.playlist[0].entry_id, first_id);
     assert_eq!(
         owner
             .playlist_resolution
@@ -389,7 +404,7 @@ fn same_label_full_replacement_undo_restores_immediately_previous_exact_origin()
         Some(&first_path),
         "undo must restore the immediately previous A-row origin, not an older same-label snapshot"
     );
-    assert_ne!(state.main_window.playlist[0].entry_id, second_id);
+    assert_ne!(state.playlist.main_window.playlist[0].entry_id, second_id);
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -399,7 +414,7 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
     let root = test_temp_root("playlist-row-origin-duplicate-reorder-undo");
     let (first_path, second_path) = same_basename_media_paths(&root);
     let (mut owner, handle, mut state) = detached_playlist_owner_and_state(None, "room1", false);
-    state.main_window.playback.can_manage_playlist = true;
+    state.playlist.main_window.playback.can_manage_playlist = true;
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
@@ -416,11 +431,17 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
         state.current_shared_playlist_entries(),
         vec!["episode.mkv".to_owned(), "episode.mkv".to_owned()]
     );
-    let first_id = state.main_window.playlist[0].entry_id;
-    let second_id = state.main_window.playlist[1].entry_id;
-    state.main_window.active_playlist_index = Some(1);
-    state.set_main_window_playlist_selection(Some(1), true);
-    state.apply_selection_to_surfaces();
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
+    let second_id = state.playlist.main_window.playlist[1].entry_id;
+    state.playlist.main_window.active_playlist_index = Some(1);
+    state.playlist.selection.selected_main_window_playlist = Some(1);
+    state.playlist.selection_is_local = true;
+    crate::app::selection_projection::apply_selection_to_surfaces(
+        &state.playlist.selection,
+        &mut state.playlist.main_window,
+        &mut state.session.menus,
+        &mut state.media_resolution.search,
+    );
     let generation = owner.playlist_resolution.generation;
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
         index: 1,
@@ -430,10 +451,12 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
         provider_id: GuiMediaSourceProviderId::plex_stream(),
     });
 
-    assert!(state.apply(GuiShellAction::MoveMainWindowPlaylistRow {
-        from_index: 1,
-        to_index: 0,
-    }));
+    assert!(
+        state
+            .playlist_edit_model()
+            .move_main_window_playlist_row(1, 0)
+            .expect("local row movement should succeed")
+    );
     owner.reconcile_local_shared_playlist_media_paths(&state);
 
     assert_eq!(
@@ -443,6 +466,7 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
     );
     assert_eq!(
         state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -450,19 +474,22 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
             .collect::<Vec<_>>(),
         vec![second_id, first_id]
     );
-    assert_eq!(state.main_window.active_playlist_index, Some(0));
-    assert_eq!(state.selection.selected_main_window_playlist, Some(0));
+    assert_eq!(state.playlist.main_window.active_playlist_index, Some(0));
     assert_eq!(
-        state.main_window.playlist[0].entry_id, second_id,
+        state.playlist.selection.selected_main_window_playlist,
+        Some(0)
+    );
+    assert_eq!(
+        state.playlist.main_window.playlist[0].entry_id, second_id,
         "the active and selected duplicate must follow its identity during reorder"
     );
     assert_eq!(
-        state.playlist_entry_id_undo_snapshot,
+        state.playlist.entry_id_undo_snapshot,
         Some(vec![first_id, second_id]),
         "the reorder must snapshot row identity even though its labels are unchanged"
     );
     assert_eq!(
-        state.playlist_source_undo_snapshot.as_ref().map(|sources| {
+        state.playlist.source_undo_snapshot.as_ref().map(|sources| {
             sources
                 .iter()
                 .map(|source| source.entry_id)
@@ -492,11 +519,17 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
         "pending resolution must follow the duplicate row by identity during reorder"
     );
 
-    assert!(state.apply(GuiShellAction::UndoSharedPlaylistChange));
+    assert!(
+        state
+            .playlist_edit_model()
+            .undo_shared_playlist_change()
+            .expect("local undo should succeed")
+    );
     owner.reconcile_local_shared_playlist_media_paths(&state);
 
     assert_eq!(
         state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -504,10 +537,13 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
             .collect::<Vec<_>>(),
         vec![first_id, second_id]
     );
-    assert_eq!(state.main_window.active_playlist_index, Some(1));
-    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
+    assert_eq!(state.playlist.main_window.active_playlist_index, Some(1));
     assert_eq!(
-        state.main_window.playlist[1].entry_id, second_id,
+        state.playlist.selection.selected_main_window_playlist,
+        Some(1)
+    );
+    assert_eq!(
+        state.playlist.main_window.playlist[1].entry_id, second_id,
         "undo must keep the active and selected duplicate attached to its restored exact origin"
     );
     assert_eq!(
@@ -571,8 +607,8 @@ fn duplicate_plex_identity_versions_bind_their_distinct_local_origins() {
     assert_eq!(first_uri.machine_identifier, second_uri.machine_identifier);
     assert_eq!(first_uri.rating_key, second_uri.rating_key);
 
-    let first_id = state.main_window.playlist[0].entry_id;
-    let second_id = state.main_window.playlist[1].entry_id;
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
+    let second_id = state.playlist.main_window.playlist[1].entry_id;
     assert_ne!(first_id, second_id);
     assert_eq!(
         owner
@@ -591,8 +627,8 @@ fn duplicate_plex_identity_versions_bind_their_distinct_local_origins() {
 
     state = round_trip_main_window_runtime_snapshot(&state);
     owner.reconcile_local_shared_playlist_media_paths(&state);
-    assert_eq!(state.main_window.playlist[0].entry_id, first_id);
-    assert_eq!(state.main_window.playlist[1].entry_id, second_id);
+    assert_eq!(state.playlist.main_window.playlist[0].entry_id, first_id);
+    assert_eq!(state.playlist.main_window.playlist[1].entry_id, second_id);
 
     owner.player_local_file = None;
     owner.last_attached_media_resolution_trigger = None;
@@ -633,8 +669,8 @@ fn room_runtime_snapshot_change_clears_same_basename_local_origin() {
         vec![first_path_text],
         None,
     );
-    let entry_id = state.main_window.playlist[0].entry_id;
-    assert_eq!(state.main_window.playlist[0].label, "episode.mkv");
+    let entry_id = state.playlist.main_window.playlist[0].entry_id;
+    assert_eq!(state.playlist.main_window.playlist[0].label, "episode.mkv");
     assert_eq!(
         owner
             .playlist_resolution
@@ -646,24 +682,25 @@ fn room_runtime_snapshot_change_clears_same_basename_local_origin() {
     // later Room B pump must not be the first consumer of Room A telemetry.
     owner.refresh_player_state_impl();
 
-    let mut room_two_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some("room2".to_owned()),
-        player_path: Some("mpv".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut room_two_state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some("room2".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     room_two_state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
-    room_two_state.main_window.active_playlist_index = Some(0);
+    room_two_state.playlist.main_window.active_playlist_index = Some(0);
     let room_two_snapshot =
-        MainWindowRuntimeSnapshot::from_shell_state(&room_two_state.main_window);
+        MainWindowRuntimeSnapshot::from_shell_state(&room_two_state.playlist.main_window);
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         room_two_snapshot,
     )));
-    let room_two_entry_id = state.main_window.playlist[0].entry_id;
+    let room_two_entry_id = state.playlist.main_window.playlist[0].entry_id;
     assert_ne!(room_two_entry_id, entry_id);
-    assert_eq!(state.main_window.room_name, "room2");
-    assert_eq!(state.main_window.playlist[0].label, "episode.mkv");
+    assert_eq!(state.playlist.main_window.room_name, "room2");
+    assert_eq!(state.playlist.main_window.playlist[0].label, "episode.mkv");
 
     owner.reconcile_local_shared_playlist_media_paths(&state);
 
@@ -677,7 +714,7 @@ fn room_runtime_snapshot_change_clears_same_basename_local_origin() {
     owner.last_attached_media_resolution_trigger = None;
     let _ = handle.drain_actions();
     handle.push_request(GuiRuntimeRequest::SetPlaylistIndex(0));
-    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    pump_worker_state(&mut owner, &handle, &mut state);
     assert!(
         owner.player_local_file.is_none(),
         "a fresh same-basename row in another room must not consume Room A's origin"
@@ -704,12 +741,13 @@ fn undo_collision_does_not_bind_unrelated_same_label_row_to_retained_origin() {
         vec![first_path.to_string_lossy().into_owned()],
         None,
     );
-    let original_id = state.main_window.playlist[0].entry_id;
+    let original_id = state.playlist.main_window.playlist[0].entry_id;
 
     assert!(
-        state.apply(GuiShellAction::ReplaceSharedPlaylistEntries(vec![
-            "replacement.mkv".to_owned(),
-        ]))
+        state
+            .playlist_edit_model()
+            .replace_shared_playlist_entries_locally(vec!["replacement.mkv".to_owned(),])
+            .expect("local replacement should succeed")
     );
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(
@@ -721,8 +759,8 @@ fn undo_collision_does_not_bind_unrelated_same_label_row_to_retained_origin() {
     );
 
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
-    state.main_window.active_playlist_index = Some(0);
-    let unrelated_id = state.main_window.playlist[0].entry_id;
+    state.playlist.main_window.active_playlist_index = Some(0);
+    let unrelated_id = state.playlist.main_window.playlist[0].entry_id;
     assert_ne!(unrelated_id, original_id);
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert_eq!(
@@ -743,7 +781,7 @@ fn undo_collision_does_not_bind_unrelated_same_label_row_to_retained_origin() {
     owner.last_attached_media_resolution_trigger = None;
     let _ = handle.drain_actions();
     owner.active_shared_playlist_index = Some(0);
-    state.main_window.active_playlist_index = Some(0);
+    state.playlist.main_window.active_playlist_index = Some(0);
     let _ = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     assert!(
         owner.player_local_file.is_none(),
@@ -751,14 +789,17 @@ fn undo_collision_does_not_bind_unrelated_same_label_row_to_retained_origin() {
     );
 
     assert!(
-        state.apply(GuiShellAction::UndoSharedPlaylistChange),
+        state
+            .playlist_edit_model()
+            .undo_shared_playlist_change()
+            .expect("local undo should succeed"),
         "undo should remain available after the runtime snapshot collision: error={:?}, snapshot={:?}, current={:?}",
-        state.validation.last_action_error,
-        state.playlist_undo_snapshot,
+        state.settings.validation.last_action_error,
+        state.playlist.undo_snapshot,
         state.current_shared_playlist_entries(),
     );
     owner.reconcile_local_shared_playlist_media_paths(&state);
-    assert_eq!(state.main_window.playlist[0].entry_id, original_id);
+    assert_eq!(state.playlist.main_window.playlist[0].entry_id, original_id);
     assert_eq!(
         owner
             .playlist_resolution
@@ -816,19 +857,21 @@ fn typed_origin_deleted_before_projection_is_not_bound_marked_or_opened() {
     assert_eq!(state.current_shared_playlist_entries(), expected_entries);
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
     assert_eq!(
-        state.main_window.playlist[0].source_state.selection_origin,
+        state.playlist.main_window.playlist[0]
+            .source_state
+            .selection_origin,
         GuiPlaylistSourceSelectionOrigin::Inferred
     );
     assert_eq!(
-        state.main_window.playlist[0].source_state.status,
+        state.playlist.main_window.playlist[0].source_state.status,
         GuiPlaylistSourceStatus::Missing
     );
     assert!(
-        state.main_window.playlist[0]
+        state.playlist.main_window.playlist[0]
             .source_state
             .current_provider_id
             != GuiMediaSourceProviderId::local()
-            || state.main_window.playlist[0].source_state.status
+            || state.playlist.main_window.playlist[0].source_state.status
                 != GuiPlaylistSourceStatus::Available,
         "a deleted typed origin must never be projected as Local/Available"
     );
@@ -880,9 +923,9 @@ fn mixed_deduplicated_and_new_drop_binds_both_rows_by_identity() {
     std::fs::write(&new_path, b"new").expect("new fixture should be written");
     let (mut owner, handle, mut state) = detached_playlist_owner_and_state(None, "room1", false);
     state.apply_shared_playlist_entries(vec!["existing.mkv".to_owned()], Some(0), false);
-    state.main_window.active_playlist_index = Some(0);
+    state.playlist.main_window.active_playlist_index = Some(0);
     owner.active_shared_playlist_index = Some(0);
-    let existing_id = state.main_window.playlist[0].entry_id;
+    let existing_id = state.playlist.main_window.playlist[0].entry_id;
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
@@ -898,7 +941,7 @@ fn mixed_deduplicated_and_new_drop_binds_both_rows_by_identity() {
         state.current_shared_playlist_entries(),
         vec!["existing.mkv".to_owned(), "new.mkv".to_owned()]
     );
-    let new_id = state.main_window.playlist[1].entry_id;
+    let new_id = state.playlist.main_window.playlist[1].entry_id;
     assert_ne!(existing_id, new_id);
     assert_eq!(
         owner
@@ -925,12 +968,13 @@ fn rejected_full_replacement_does_not_advance_scope_or_cancel_pending_row() {
         .expect("replacement fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     state.apply_shared_playlist_entries(vec!["current.mkv".to_owned()], Some(0), false);
-    let entry_id = state.main_window.playlist[0].entry_id;
+    let entry_id = state.playlist.main_window.playlist[0].entry_id;
     owner.reconcile_local_shared_playlist_media_paths(&state);
     let generation = owner.playlist_resolution.generation;
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
@@ -1015,13 +1059,14 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
             revision: revision.clone(),
         }),
     );
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        room: Some("room1".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
-    let entry_id = state.main_window.playlist[0].entry_id;
+    let entry_id = state.playlist.main_window.playlist[0].entry_id;
     owner.reconcile_local_shared_playlist_media_paths(&state);
     owner
         .playlist_resolution
@@ -1044,9 +1089,9 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
     assert!(owner.playlist_resolution.generation > prior_generation);
     assert_eq!(owner.playlist_resolution.playlist_revision, Some(2));
     assert!(owner.apply_pending_playlist_row_scope_reset(&mut state));
-    assert_ne!(state.main_window.playlist[0].entry_id, entry_id);
+    assert_ne!(state.playlist.main_window.playlist[0].entry_id, entry_id);
     assert_eq!(
-        state.main_window.playlist[0].source_state.policy,
+        state.playlist.main_window.playlist[0].source_state.policy,
         GuiPlaylistSourcePolicy::Automatic
     );
 
@@ -1064,13 +1109,14 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some("room1".to_owned()),
-        player_path: Some("mpv".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
@@ -1085,8 +1131,8 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
         state.current_shared_playlist_entries(),
         vec!["episode.mkv".to_owned(), "old.mkv".to_owned()]
     );
-    let episode_id = state.main_window.playlist[0].entry_id;
-    let old_id = state.main_window.playlist[1].entry_id;
+    let episode_id = state.playlist.main_window.playlist[0].entry_id;
+    let old_id = state.playlist.main_window.playlist[1].entry_id;
     let local_revision = owner
         .session
         .as_ref()
@@ -1101,7 +1147,10 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
         0
     );
     assert_eq!(
-        state.main_window.playlist[0].source_state.detail.as_deref(),
+        state.playlist.main_window.playlist[0]
+            .source_state
+            .detail
+            .as_deref(),
         Some("Added from the local filesystem.")
     );
 
@@ -1125,8 +1174,8 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
             .and_then(|session| session.current_room_playlist_revision()),
         Some(local_revision)
     );
-    assert_eq!(state.main_window.playlist[0].entry_id, episode_id);
-    assert_eq!(state.main_window.playlist[1].entry_id, old_id);
+    assert_eq!(state.playlist.main_window.playlist[0].entry_id, episode_id);
+    assert_eq!(state.playlist.main_window.playlist[1].entry_id, old_id);
     assert_eq!(
         owner
             .playlist_resolution
@@ -1139,16 +1188,17 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
         Some(&old_path)
     );
 
-    state.playlist_undo_snapshot = Some(vec!["stale.mkv".to_owned()]);
-    state.playlist_source_undo_snapshot = Some(
+    state.playlist.undo_snapshot = Some(vec!["stale.mkv".to_owned()]);
+    state.playlist.source_undo_snapshot = Some(
         state
+            .playlist
             .main_window
             .playlist
             .iter()
             .map(|row| row.source_state.clone())
             .collect(),
     );
-    state.playlist_entry_id_undo_snapshot = Some(vec![episode_id, old_id]);
+    state.playlist.entry_id_undo_snapshot = Some(vec![episode_id, old_id]);
     owner
         .session
         .as_mut()
@@ -1163,16 +1213,16 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
         vec!["episode.mkv".to_owned(), "new.mkv".to_owned()]
     );
     assert_eq!(
-        state.main_window.playlist[0].entry_id, episode_id,
+        state.playlist.main_window.playlist[0].entry_id, episode_id,
         "the metadata-free wire snapshot demonstrates the stale-ID migration risk before scope reconciliation"
     );
 
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(owner.apply_pending_playlist_row_scope_reset(&mut state));
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
-    assert_ne!(state.main_window.playlist[0].entry_id, episode_id);
-    assert_ne!(state.main_window.playlist[1].entry_id, old_id);
-    for row in &state.main_window.playlist {
+    assert_ne!(state.playlist.main_window.playlist[0].entry_id, episode_id);
+    assert_ne!(state.playlist.main_window.playlist[1].entry_id, old_id);
+    for row in &state.playlist.main_window.playlist {
         assert_eq!(row.source_state.policy, GuiPlaylistSourcePolicy::Automatic);
         assert_eq!(
             row.source_state.selection_origin,
@@ -1183,9 +1233,9 @@ fn client_core_self_echo_preserves_origins_but_partial_remote_replacement_freshe
             Some("Waiting for playlist activation.")
         );
     }
-    assert!(state.playlist_undo_snapshot.is_none());
-    assert!(state.playlist_source_undo_snapshot.is_none());
-    assert!(state.playlist_entry_id_undo_snapshot.is_none());
+    assert!(state.playlist.undo_snapshot.is_none());
+    assert!(state.playlist.source_undo_snapshot.is_none());
+    assert!(state.playlist.entry_id_undo_snapshot.is_none());
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1205,13 +1255,14 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        username: Some("alice".to_owned()),
-        room: Some("room1".to_owned()),
-        player_path: Some("mpv".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            player_path: Some("mpv".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
 
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
@@ -1247,18 +1298,19 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
             "newest.mkv".to_owned(),
         ]
     );
-    let optimistic_active_index = state.main_window.active_playlist_index;
+    let optimistic_active_index = state.playlist.main_window.active_playlist_index;
     assert_eq!(optimistic_active_index, Some(0));
     let row_ids = state
+        .playlist
         .main_window
         .playlist
         .iter()
         .map(|row| row.entry_id)
         .collect::<Vec<_>>();
     let newest_id = row_ids[2];
-    let undo_entries = state.playlist_undo_snapshot.clone();
-    let undo_sources = state.playlist_source_undo_snapshot.clone();
-    let undo_entry_ids = state.playlist_entry_id_undo_snapshot.clone();
+    let undo_entries = state.playlist.undo_snapshot.clone();
+    let undo_sources = state.playlist.source_undo_snapshot.clone();
+    let undo_entry_ids = state.playlist.entry_id_undo_snapshot.clone();
     let optimistic_revision = owner
         .session
         .as_ref()
@@ -1294,11 +1346,12 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
         "an older echo must not roll back the newer optimistic playlist"
     );
     assert_eq!(
-        state.main_window.active_playlist_index, optimistic_active_index,
+        state.playlist.main_window.active_playlist_index, optimistic_active_index,
         "an older playlist echo must not change the optimistic active index"
     );
     assert_eq!(
         state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -1314,9 +1367,9 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
         Some(&newest_path),
         "the newest row must retain its exact client-local origin"
     );
-    assert_eq!(state.playlist_undo_snapshot, undo_entries);
-    assert_eq!(state.playlist_source_undo_snapshot, undo_sources);
-    assert_eq!(state.playlist_entry_id_undo_snapshot, undo_entry_ids);
+    assert_eq!(state.playlist.undo_snapshot, undo_entries);
+    assert_eq!(state.playlist.source_undo_snapshot, undo_sources);
+    assert_eq!(state.playlist.entry_id_undo_snapshot, undo_entry_ids);
     assert_eq!(
         owner
             .session
@@ -1345,10 +1398,10 @@ fn older_self_echo_preserves_newer_gui_row_identity_and_exact_origin() {
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(!owner.apply_pending_playlist_row_scope_reset(&mut state));
     assert_eq!(
-        state.main_window.active_playlist_index,
+        state.playlist.main_window.active_playlist_index,
         optimistic_active_index
     );
-    assert_eq!(state.main_window.playlist[2].entry_id, newest_id);
+    assert_eq!(state.playlist.main_window.playlist[2].entry_id, newest_id);
     assert_eq!(
         owner
             .playlist_resolution
@@ -1367,17 +1420,18 @@ fn separated_session_remove_and_install_each_freshen_same_label_row_scope() {
     std::fs::write(&media_path, b"episode").expect("session generation fixture should be written");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        room: Some("room1".to_owned()),
-        shared_playlist_enabled: Some(true),
-        plex_plugin_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            plex_plugin_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(!owner.apply_pending_playlist_row_scope_reset(&mut state));
 
-    let original_id = state.main_window.playlist[0].entry_id;
+    let original_id = state.playlist.main_window.playlist[0].entry_id;
     assert!(state.set_playlist_source_state(
         0,
         GuiPlaylistSourceState::for_provider(GuiMediaSourceProviderId::plex_stream()),
@@ -1392,10 +1446,10 @@ fn separated_session_remove_and_install_each_freshen_same_label_row_scope() {
     assert!(owner.session_generation > installed_generation);
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(owner.apply_pending_playlist_row_scope_reset(&mut state));
-    let disconnected_id = state.main_window.playlist[0].entry_id;
+    let disconnected_id = state.playlist.main_window.playlist[0].entry_id;
     assert_ne!(disconnected_id, original_id);
     assert_eq!(
-        state.main_window.playlist[0].source_state.policy,
+        state.playlist.main_window.playlist[0].source_state.policy,
         GuiPlaylistSourcePolicy::Automatic
     );
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
@@ -1407,13 +1461,18 @@ fn separated_session_remove_and_install_each_freshen_same_label_row_scope() {
     owner.install_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(owner.apply_pending_playlist_row_scope_reset(&mut state));
-    assert_ne!(state.main_window.playlist[0].entry_id, disconnected_id);
+    assert_ne!(
+        state.playlist.main_window.playlist[0].entry_id,
+        disconnected_id
+    );
     assert_eq!(
-        state.main_window.playlist[0].source_state.policy,
+        state.playlist.main_window.playlist[0].source_state.policy,
         GuiPlaylistSourcePolicy::Automatic
     );
     assert_eq!(
-        state.main_window.playlist[0].source_state.selection_origin,
+        state.playlist.main_window.playlist[0]
+            .source_state
+            .selection_origin,
         GuiPlaylistSourceSelectionOrigin::Inferred
     );
 
@@ -1434,15 +1493,16 @@ fn same_room_detached_to_connected_session_replacement_resets_row_scope() {
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        host: Some(address.ip().to_string()),
-        port: Some(address.port()),
-        username: Some("alice".to_owned()),
-        room: Some("room1".to_owned()),
-        shared_playlist_enabled: Some(true),
-        plex_plugin_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            host: Some(address.ip().to_string()),
+            port: Some(address.port()),
+            username: Some("alice".to_owned()),
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            plex_plugin_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     owner
         .ensure_detached_client_core_chat_session(&state)
         .expect("detached session should bootstrap");
@@ -1455,7 +1515,7 @@ fn same_room_detached_to_connected_session_replacement_resets_row_scope() {
     ));
     owner.reconcile_local_shared_playlist_media_paths(&state);
     let detached_generation = owner.session_generation;
-    let stale_entry_id = state.main_window.playlist[0].entry_id;
+    let stale_entry_id = state.playlist.main_window.playlist[0].entry_id;
     owner
         .playlist_resolution
         .local_origins_by_row
@@ -1474,15 +1534,18 @@ fn same_room_detached_to_connected_session_replacement_resets_row_scope() {
         owner.session_generation > detached_generation,
         "replacing the detached session must advance the explicit session generation"
     );
-    assert_eq!(state.main_window.room_name, "room1");
+    assert_eq!(state.playlist.main_window.room_name, "room1");
 
     owner.reconcile_local_shared_playlist_media_paths(&state);
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
     assert!(owner.pending_playlist_source_resolution.is_none());
     assert!(owner.apply_pending_playlist_row_scope_reset(&mut state));
-    assert_ne!(state.main_window.playlist[0].entry_id, stale_entry_id);
+    assert_ne!(
+        state.playlist.main_window.playlist[0].entry_id,
+        stale_entry_id
+    );
     assert_eq!(
-        state.main_window.playlist[0].source_state.policy,
+        state.playlist.main_window.playlist[0].source_state.policy,
         GuiPlaylistSourcePolicy::Automatic
     );
 
@@ -1502,11 +1565,12 @@ fn intervening_remote_revision_is_not_hidden_by_a_later_local_mutation() {
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        room: Some("room1".to_owned()),
-        shared_playlist_enabled: Some(true),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            ..StoredClientSettings::default()
+        });
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
         &mut state,
@@ -1517,6 +1581,7 @@ fn intervening_remote_revision_is_not_hidden_by_a_later_local_mutation() {
         None,
     );
     let old_ids = state
+        .playlist
         .main_window
         .playlist
         .iter()
@@ -1564,6 +1629,7 @@ fn intervening_remote_revision_is_not_hidden_by_a_later_local_mutation() {
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
     assert!(
         state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -1584,25 +1650,26 @@ fn remote_scope_is_reset_before_a_following_local_drop_binds_its_fresh_row() {
         .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-        room: Some("room1".to_owned()),
-        shared_playlist_enabled: Some(true),
-        plex_plugin_enabled: Some(true),
-        plex_sync_enabled: Some(true),
-        plex_streaming_enabled: Some(true),
-        plex_user_token: Some("user-token".into()),
-        plex_selected_server_id: Some("machine-1".to_owned()),
-        plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
-        plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettings::default()
-    });
+    let mut state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            room: Some("room1".to_owned()),
+            shared_playlist_enabled: Some(true),
+            plex_plugin_enabled: Some(true),
+            plex_sync_enabled: Some(true),
+            plex_streaming_enabled: Some(true),
+            plex_user_token: Some("user-token".into()),
+            plex_selected_server_id: Some("machine-1".to_owned()),
+            plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
+            plex_selected_server_token: Some("server-token".into()),
+            ..StoredClientSettings::default()
+        });
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
         &mut state,
         vec![original_path.to_string_lossy().into_owned()],
         None,
     );
-    let original_id = state.main_window.playlist[0].entry_id;
+    let original_id = state.playlist.main_window.playlist[0].entry_id;
     owner
         .session
         .as_mut()
@@ -1624,9 +1691,9 @@ fn remote_scope_is_reset_before_a_following_local_drop_binds_its_fresh_row() {
         .expect("same-label remote replacement should apply");
     apply_session_runtime_actions(&mut owner, &mut state);
     owner.reconcile_playlist_resolution_scope(&handle, &mut state);
-    assert_ne!(state.main_window.playlist[0].entry_id, original_id);
+    assert_ne!(state.playlist.main_window.playlist[0].entry_id, original_id);
     assert_eq!(
-        state.main_window.playlist[0].source_state.policy,
+        state.playlist.main_window.playlist[0].source_state.policy,
         GuiPlaylistSourcePolicy::Automatic,
         "the remote scope must be reset before any following command can consume ForcePlex"
     );
@@ -1645,6 +1712,7 @@ fn remote_scope_is_reset_before_a_following_local_drop_binds_its_fresh_row() {
         Some(1),
     );
     let dropped_row = state
+        .playlist
         .main_window
         .playlist
         .iter()
@@ -1685,11 +1753,13 @@ fn remote_duplicate_reorder_and_insert_freshen_every_occurrence_identity() {
             .with_session_runtime(Box::new(active_client_core_playlist_adapter()));
         owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            room: Some("room1".to_owned()),
-            shared_playlist_enabled: Some(true),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                room: Some("room1".to_owned()),
+                shared_playlist_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
         owner.open_media_files_through_shared_playlist_runtime_impl(
             &handle,
             &mut state,
@@ -1700,6 +1770,7 @@ fn remote_duplicate_reorder_and_insert_freshen_every_occurrence_identity() {
             None,
         );
         let old_ids = state
+            .playlist
             .main_window
             .playlist
             .iter()
@@ -1738,13 +1809,14 @@ fn remote_duplicate_reorder_and_insert_freshen_every_occurrence_identity() {
         assert!(owner.playlist_resolution.local_origins_by_row.is_empty());
         assert!(
             state
+                .playlist
                 .main_window
                 .playlist
                 .iter()
                 .all(|row| !old_ids.contains(&row.entry_id)),
             "remote duplicate {scenario} must not migrate any occurrence identity"
         );
-        assert!(state.main_window.playlist.iter().all(|row| {
+        assert!(state.playlist.main_window.playlist.iter().all(|row| {
             row.source_state.policy == GuiPlaylistSourcePolicy::Automatic
                 && row.source_state.selection_origin == GuiPlaylistSourceSelectionOrigin::Inferred
         }));
@@ -1780,7 +1852,7 @@ fn append_preserves_prior_row_exact_origin_for_later_reactivation() {
         vec![first_path.to_string_lossy().into_owned()],
         None,
     );
-    let first_id = state.main_window.playlist[0].entry_id;
+    let first_id = state.playlist.main_window.playlist[0].entry_id;
     owner.open_media_files_through_shared_playlist_runtime_impl(
         &handle,
         &mut state,

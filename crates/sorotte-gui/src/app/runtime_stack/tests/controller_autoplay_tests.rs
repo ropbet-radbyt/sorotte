@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transitions_as_notifications()
@@ -26,7 +27,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
             r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    let hello_actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let hello_actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         hello_actions.iter().any(|action| matches!(
             action,
@@ -62,7 +64,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
             r#"{"Set":{"controllerAuth":{"user":"alice","room":"+room:ABCDEF123456","success":true}}}"#,
         )
         .expect("controller auth success should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -117,7 +120,9 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -126,7 +131,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
             r#"{"Set":{"newControlledRoom":{"roomName":"+room:ABCDEF123456","password":"ab 123 456"}}}"#,
         )
         .expect("new controlled room message should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let created_notice_index = actions
         .iter()
         .position(|action| {
@@ -231,7 +237,8 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
             r#"{"Hello":{"username":"alice","room":{"name":"+room:ABCDEF123456"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    let hello_actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let hello_actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         hello_actions.iter().any(|action| matches!(
             action,
@@ -332,7 +339,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    let hello_actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let hello_actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     for action in hello_actions {
         assert!(state.apply(action));
     }
@@ -374,7 +382,8 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         .tick_autoplay(true, true, false, false)
         .expect("second autoplay tick should emit notification");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -460,7 +469,9 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
                 .with_position_seconds(0.0),
         );
 
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
     assert!(
@@ -471,7 +482,10 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
     for _ in 0..4 {
         adapter.next_autoplay_tick_at =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
-        for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+        for action in GuiSessionRuntimeAdapter::drain_gui_actions(
+            &mut adapter,
+            &runtime_state_for_shell(&state),
+        ) {
             assert!(state.apply(action));
         }
     }

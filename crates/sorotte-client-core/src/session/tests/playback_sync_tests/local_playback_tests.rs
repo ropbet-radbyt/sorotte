@@ -154,15 +154,17 @@ fn client_runtime_room_pause_sync_seeks_before_pausing_remote_pause() {
             .expect("remote paused state should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(3.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(false)),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()
@@ -207,15 +209,17 @@ fn client_runtime_room_pause_sync_applies_remote_seek_without_pause_change() {
         .insert("room1".to_owned(), now_seconds - 2.0);
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(3.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(false)),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()
@@ -260,16 +264,18 @@ fn client_runtime_room_pause_sync_does_not_seek_or_replay_unpause_on_cache_relea
             .expect("remote seek state should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(3.0)
-                .with_paused(true)
-                .with_paused_for_cache(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(true)
+                .with_paused_for_cache(true)),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()
@@ -306,9 +312,10 @@ fn client_runtime_room_pause_sync_does_not_seek_or_replay_unpause_on_cache_relea
             )
             .expect("post-seek room playstate should apply");
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update =
-        Some(PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(false));
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default().with_paused_for_cache(false),
+        );
 
     runtime
         .run_room_pause_sync_if_needed()
@@ -334,12 +341,12 @@ fn client_runtime_room_pause_sync_does_not_seek_or_replay_unpause_on_cache_relea
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(initial_seek_position)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(initial_seek_position)
+                .with_paused(false),
+        );
     runtime
         .run_room_pause_sync_if_needed()
         .expect("first post-cache position observation should not fail");
@@ -353,12 +360,12 @@ fn client_runtime_room_pause_sync_does_not_seek_or_replay_unpause_on_cache_relea
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(initial_seek_position + 0.25)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(initial_seek_position + 0.25)
+                .with_paused(false),
+        );
     runtime
         .run_room_pause_sync_if_needed()
         .expect("advancing post-cache position observation should not fail");
@@ -403,15 +410,18 @@ fn client_runtime_room_pause_sync_does_not_mirror_failed_seek_corrections() {
 
     let player = RecordingPlayer {
         fail_set_position: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(3.0)
-                .with_paused(false),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(false)),
+        );
 
     let error = runtime
         .run_room_pause_sync_if_needed()
@@ -446,15 +456,18 @@ fn client_runtime_room_pause_sync_rolls_back_seek_when_pause_fails() {
 
     let player = RecordingPlayer {
         fail_set_paused: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(3.0)
-                .with_paused(false),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(3.0)
+                .with_paused(false)),
+        );
 
     let error = runtime
         .run_room_pause_sync_if_needed()
@@ -556,15 +569,17 @@ fn client_runtime_explicit_pause_is_not_masked_by_cache_pause_projection() {
         .expect("local ready should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_paused_for_cache(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_paused_for_cache(true)),
+        );
 
     assert!(
         runtime
@@ -1116,9 +1131,9 @@ fn client_runtime_toggle_pause_pre_syncs_pending_telemetry_and_preserves_drain()
     let mut session = ClientSession::default();
     session.model.playback.local_paused = Some(true);
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
+        events: Some(RecordingPlayerScript::with_playback(
             PlayerPlaybackTelemetryUpdate::default().with_paused(false),
-        ),
+        )),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
@@ -1148,9 +1163,9 @@ fn client_runtime_seek_by_offset_pre_syncs_pending_telemetry_position() {
     let mut session = ClientSession::default();
     session.model.playback.local_position = Some(1.0);
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
+        events: Some(RecordingPlayerScript::with_playback(
             PlayerPlaybackTelemetryUpdate::default().with_position_seconds(12.5),
-        ),
+        )),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();

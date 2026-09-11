@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 use sorotte_plex::{is_plex_playlist_uri, parse_plex_playlist_uri};
 
@@ -51,7 +52,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn playlist_target_for_index(
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         index: usize,
         shared_playlist_enabled: bool,
     ) -> Option<String> {
@@ -60,6 +61,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         state
+            .playlist
             .main_window
             .playlist
             .get(index)
@@ -68,7 +70,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn current_shared_playlist_target(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Option<String> {
         self.current_shared_playlist_index_and_target(state)
             .map(|(_, target)| target)
@@ -76,7 +78,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn current_shared_playlist_index_and_target(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Option<(usize, String)> {
         let shared_playlist_enabled = self.runtime_shared_playlist_enabled(state);
         self.session
@@ -87,10 +89,14 @@ impl GuiPersistedConfigRuntimeOwner {
                     .map(|target| (index, target))
             })
             .or_else(|| {
-                state.main_window.active_playlist_index.and_then(|index| {
-                    Self::playlist_target_for_index(state, index, shared_playlist_enabled)
-                        .map(|target| (index, target))
-                })
+                state
+                    .playlist
+                    .main_window
+                    .active_playlist_index
+                    .and_then(|index| {
+                        Self::playlist_target_for_index(state, index, shared_playlist_enabled)
+                            .map(|target| (index, target))
+                    })
             })
             .or_else(|| {
                 self.active_shared_playlist_index.and_then(|index| {

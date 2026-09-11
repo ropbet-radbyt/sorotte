@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn push_runtime_unavailable(handle: &GuiQueuedRuntimeBridgeHandle, message: String) {
@@ -11,7 +12,7 @@ impl GuiPersistedConfigRuntimeOwner {
         ]);
     }
 
-    fn default_room_for_fallback(&self, projected_state: &SorotteGuiShellAppState) -> String {
+    fn default_room_for_fallback(&self, projected_state: &GuiRuntimeState) -> String {
         self.session_default_room
             .clone()
             .or_else(|| {
@@ -41,10 +42,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn augment_runtime_actions_for_room_transitions(
         &mut self,
-        projected_state: &SorotteGuiShellAppState,
+        projected_state: &GuiRuntimeState,
         actions: Vec<GuiShellAction>,
     ) -> Vec<GuiShellAction> {
-        let mut current_room = projected_state.main_window.room_name.clone();
+        let mut current_room = projected_state.playlist.main_window.room_name.clone();
         let mut augmented_actions = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -90,7 +91,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn request_room_join_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         room: String,
     ) {
         let Some(session) = self.session.as_mut() else {
@@ -119,9 +120,9 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn request_room_leave_runtime(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
-        let previous_room = projected_state.main_window.room_name.clone();
+        let previous_room = projected_state.playlist.main_window.room_name.clone();
         let default_room = self.default_room_for_fallback(projected_state);
         let Some(session) = self.session.as_mut() else {
             self.pending_room_change_request = None;

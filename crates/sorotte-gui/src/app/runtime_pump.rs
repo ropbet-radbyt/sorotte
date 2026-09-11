@@ -13,9 +13,9 @@ use super::shell_state::SorotteGuiShellAppState;
     all(test, feature = "live-python-interop")
 ))]
 impl GuiPersistedConfigRuntimeOwner {
-    /// Compatibility entry point for direct, single-threaded semantic adapters.
+    /// Direct shell-input entry point for direct, single-threaded semantic adapters.
     /// Production's threaded bridge submits compact input only when it changes.
-    pub(in crate::app) fn pump_compatibility_state(
+    pub(in crate::app) fn pump_shell_input(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         state: &SorotteGuiShellAppState,
@@ -39,7 +39,7 @@ impl GuiQueuedRuntimeOwner for GuiPersistedConfigRuntimeOwner {
 
     fn input_changed(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle, input: &GuiRuntimeInput) {
         self.update_runtime.reconcile(input.updates());
-        self.legacy_projection = Some(input.to_compatibility_projection());
+        self.runtime_state = Some(input.to_runtime_state());
     }
 
     fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {

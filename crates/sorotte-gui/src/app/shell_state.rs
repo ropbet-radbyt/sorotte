@@ -1303,6 +1303,7 @@ pub(super) struct GuiInteractionRuntimeSnapshot {
     pub(super) media_url_edit_session: Option<GuiUrlEditSessionRuntimeSnapshot>,
 }
 
+#[cfg(any(test, feature = "gui-semantic-smoke"))]
 impl GuiInteractionRuntimeSnapshot {
     pub(super) fn from_shell_state(state: &SorotteGuiShellAppState) -> Self {
         Self {

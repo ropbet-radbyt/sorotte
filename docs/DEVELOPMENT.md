@@ -71,6 +71,26 @@ for hypothetical downstream Rust consumers. Syncplay protocol interoperability
 and settings import remain supported compatibility contracts and retain their
 behavioral tests.
 
+Player observations use one acknowledged `PlayerEventBatch` stream. Attachment
+epochs, media generations, load attempts, event sequences and observation clocks
+have separate meanings. A snapshot replaces the complete retained projection;
+an omitted field in a delta leaves that field unchanged. Apply batches before
+acknowledging them, and preserve replay, gap and recovery handling. Chat input is
+a separate command stream. The concrete mpv cache snapshot is diagnostic state;
+it is not an alternate lifecycle delivery API. Event-free command sinks do not
+manufacture observations or clocks.
+
+The GUI worker owns `GuiRuntimeState`, composed of the eight feature views in
+`feature_slices.rs`. `GuiRuntimeInput` copies those views directly into the worker.
+Ordinary polls retain worker changes, and changed input replaces the supplied
+feature state. Apply output feature effects before handling the next queued
+command. Shared model operations own playlist identity/undo, validation and
+configuration projection rules; focus, editors, navigation and notifications
+remain in `SorotteGuiShellAppState`. Worker playlist selection uses
+`ApplySharedPlaylistSelection` and must preserve newer local selection and UI
+edits. Test worker state across multiple calls, and deliver actual queued actions
+to a separate shell fixture when checking UI projection.
+
 Use [the terminology glossary](../CONTEXT.md) and the
 [compatibility cleanup audit](audits/compatibility-terminology-cleanup-2026-09-11.md)
 to distinguish supported Syncplay behavior, missing peer capabilities, and

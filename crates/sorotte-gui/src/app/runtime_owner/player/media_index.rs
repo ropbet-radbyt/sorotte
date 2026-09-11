@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 const DEFAULT_FOLDER_SEARCH_TIMEOUT_SECONDS_DEFAULT: f64 = 20.0;
 const DEFAULT_FOLDER_SEARCH_DOUBLE_CHECK_INTERVAL_SECONDS_DEFAULT: f64 = 30.0;
@@ -25,7 +26,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn automatic_media_search_roots(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         let mut seen = BTreeSet::new();
@@ -110,7 +111,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(super) fn automatic_media_resolution_trigger(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         target: &str,
         playlist_entry_id: Option<GuiPlaylistEntryId>,
         source_policy: GuiPlaylistSourcePolicy,
@@ -194,10 +195,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
     }
 
-    pub(super) fn automatic_media_search_timeout(
-        &self,
-        state: &SorotteGuiShellAppState,
-    ) -> Duration {
+    pub(super) fn automatic_media_search_timeout(&self, state: &GuiRuntimeState) -> Duration {
         let settings = self.runtime_operation_settings(state);
         Self::positive_duration_from_seconds_or_default(
             settings.folder_search_timeout_seconds,
@@ -207,7 +205,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn automatic_media_search_retry_interval(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) -> Duration {
         let settings = self.runtime_operation_settings(state);
         Self::positive_duration_from_seconds_or_default(

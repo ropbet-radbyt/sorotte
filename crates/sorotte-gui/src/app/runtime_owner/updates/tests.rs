@@ -544,7 +544,8 @@ fn assert_startup_remote_jobs_complete_independently(update_completes_first: boo
         public_servers: None,
         ..StoredClientSettings::default()
     };
-    let mut projected_state = SorotteGuiShellAppState::from_stored_settings(&settings);
+    let mut projected_state =
+        crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
     let mut observed_state = SorotteGuiShellAppState::from_stored_settings(&settings);
     let mut observed_actions = Vec::new();
 
@@ -663,7 +664,7 @@ fn assert_startup_remote_jobs_complete_independently(update_completes_first: boo
 fn pump_startup_remote_jobs_until(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     handle: &GuiQueuedRuntimeBridgeHandle,
-    projected_state: &mut SorotteGuiShellAppState,
+    projected_state: &mut crate::app::runtime_state::GuiRuntimeState,
     observed_state: &mut SorotteGuiShellAppState,
     observed_actions: &mut Vec<GuiShellAction>,
     completed: impl Fn(&GuiShellAction) -> bool,

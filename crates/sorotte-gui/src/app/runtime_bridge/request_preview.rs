@@ -47,7 +47,7 @@ impl GuiRuntimeRequest {
 
     pub(in crate::app) fn preview_actions_for_state(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &crate::app::runtime_state::GuiRuntimeState,
     ) -> Vec<GuiShellAction> {
         if let Some(actions) = self.preview_persisted_settings_actions() {
             return actions;
@@ -63,12 +63,12 @@ impl GuiRuntimeRequest {
             Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,
-                load_into_shared_playlist,
                 playlist_insert_slot,
+                ..
             } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
                 Some(state),
                 paths.clone(),
-                *load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
+                true,
                 *playlist_insert_slot,
             ),
             Self::ImportSharedPlaylistFile { path, shuffled } => {
@@ -82,7 +82,7 @@ impl GuiRuntimeRequest {
                 GuiPreviewRuntimeBridge::preview_open_media_file_actions(
                     Some(state),
                     vec![target.clone()],
-                    state.playlist_backed_media_opens_preferred(),
+                    true,
                     None,
                 )
             }
@@ -252,7 +252,7 @@ impl GuiRuntimeRequest {
             }
             Self::AdvancePlaylistIndex => Vec::new(),
             Self::SetPlaybackPaused(paused) => {
-                if state.main_window.playback_paused == *paused {
+                if state.playlist.main_window.playback_paused == *paused {
                     Vec::new()
                 } else {
                     vec![if *paused {

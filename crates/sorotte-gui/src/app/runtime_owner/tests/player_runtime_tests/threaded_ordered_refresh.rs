@@ -5,20 +5,15 @@ use std::{
 };
 
 use sorotte_player_api::{
-    LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
-    PlayerCacheTelemetryUpdate, PlayerCommandId, PlayerCommandProgress,
-    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventDeliveryMode,
-    PlayerLocalFileObservation, PlayerMediaGeneration, PlayerMediaLoadObservation,
-    PlayerMediaLoadOutcome, PlayerObservationBatch, PlayerPlaybackTelemetryUpdate,
-    PlayerSequenceBoundary, PlayerTransportPhase, PlayerTransportSnapshot,
-    PlayerTransportTelemetryUpdate, SnapshotField,
+    LoadAttemptId, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch, PlayerCommandId,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerMediaGeneration,
+    PlayerSequenceBoundary, PlayerTransportPhase, PlayerTransportSnapshot, SnapshotField,
 };
 
 use super::*;
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const ORDERED_PATH: &str = "C:\\ordered\\fresh.mkv";
-const STALE_PATH: &str = "C:\\legacy\\stale.mkv";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcknowledgementResult {
@@ -30,7 +25,7 @@ enum AcknowledgementResult {
 struct AdapterProbeState {
     acknowledgement_results: Vec<AcknowledgementResult>,
     empty_batch_reads: usize,
-    legacy_getter_calls: Vec<&'static str>,
+
     dropped: bool,
 }
 
@@ -61,10 +56,9 @@ impl AdapterProbe {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
                 !remaining.is_zero(),
-                "timed out waiting for {description}; acknowledgements={:?}, empty_batch_reads={}, legacy_getter_calls={:?}, dropped={}",
+                "timed out waiting for {description}; acknowledgements={:?}, empty_batch_reads={}, dropped={}",
                 state.acknowledgement_results,
                 state.empty_batch_reads,
-                state.legacy_getter_calls,
                 state.dropped,
             );
             let (next_state, wait_result) = self
@@ -74,10 +68,9 @@ impl AdapterProbe {
             state = next_state;
             assert!(
                 !wait_result.timed_out() || condition(&state),
-                "timed out waiting for {description}; acknowledgements={:?}, empty_batch_reads={}, legacy_getter_calls={:?}, dropped={}",
+                "timed out waiting for {description}; acknowledgements={:?}, empty_batch_reads={}, dropped={}",
                 state.acknowledgement_results,
                 state.empty_batch_reads,
-                state.legacy_getter_calls,
                 state.dropped,
             );
         }
@@ -90,85 +83,6 @@ impl AdapterProbe {
             .acknowledgement_results
             .clone()
     }
-
-    fn legacy_getter_calls(&self) -> Vec<&'static str> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .legacy_getter_calls
-            .clone()
-    }
-}
-
-#[derive(Clone, Copy)]
-enum LegacyGetterBehavior {
-    Panic,
-    ContradictoryResponses,
-}
-
-struct LegacyGetterPayloads {
-    local_file_update: Option<LocalFileUpdate>,
-    local_file_observation: Option<PlayerLocalFileObservation>,
-    playback: Option<PlayerPlaybackTelemetryUpdate>,
-    transport: Option<PlayerTransportTelemetryUpdate>,
-    cache: Option<PlayerCacheTelemetryUpdate>,
-    command_progress: Option<PlayerCommandProgress>,
-    media_load_outcome: Option<PlayerMediaLoadOutcome>,
-    media_load_observation: Option<PlayerMediaLoadObservation>,
-    ordered_observation_batch: Option<PlayerObservationBatch>,
-}
-
-impl LegacyGetterPayloads {
-    fn contradictory() -> Self {
-        let generation = PlayerMediaGeneration::new(99);
-        let stale_file = LocalFileUpdate::new("stale.mkv").with_path(STALE_PATH);
-        Self {
-            local_file_update: Some(stale_file.clone()),
-            local_file_observation: Some(PlayerLocalFileObservation::new(
-                stale_file,
-                Some(generation),
-                None,
-            )),
-            playback: Some(
-                PlayerPlaybackTelemetryUpdate::default()
-                    .with_paused(false)
-                    .with_position_seconds(999.0),
-            ),
-            transport: Some(
-                PlayerTransportTelemetryUpdate::default()
-                    .with_phase(PlayerTransportPhase::Playing)
-                    .with_position_seconds(999.0)
-                    .with_logical_pause(false),
-            ),
-            cache: Some(PlayerCacheTelemetryUpdate {
-                media_generation: Some(generation),
-                buffered_ahead_seconds: Some(999.0),
-                ..PlayerCacheTelemetryUpdate::default()
-            }),
-            command_progress: Some(PlayerCommandProgress::accepted(
-                PlayerCommandId::new(99),
-                Some(generation),
-                None,
-            )),
-            media_load_outcome: Some(PlayerMediaLoadOutcome::success(
-                STALE_PATH,
-                Some(STALE_PATH.to_owned()),
-            )),
-            media_load_observation: Some(PlayerMediaLoadObservation::new(
-                PlayerMediaLoadOutcome::success(STALE_PATH, Some(STALE_PATH.to_owned())),
-                Some(generation),
-                None,
-            )),
-            ordered_observation_batch: Some(PlayerObservationBatch {
-                playback_telemetry: Some(
-                    PlayerPlaybackTelemetryUpdate::default()
-                        .with_paused(false)
-                        .with_position_seconds(999.0),
-                ),
-                ..PlayerObservationBatch::default()
-            }),
-        }
-    }
 }
 
 struct OrderedAdapterScript {
@@ -179,20 +93,6 @@ struct OrderedAdapterScript {
 struct ThreadedOrderedPlayerAdapter {
     script: Arc<Mutex<OrderedAdapterScript>>,
     probe: Arc<AdapterProbe>,
-    legacy_behavior: LegacyGetterBehavior,
-    legacy_payloads: LegacyGetterPayloads,
-}
-
-impl ThreadedOrderedPlayerAdapter {
-    fn record_legacy_getter_call(&self, getter: &'static str) {
-        self.probe
-            .record(|state| state.legacy_getter_calls.push(getter));
-        if matches!(self.legacy_behavior, LegacyGetterBehavior::Panic) {
-            panic!(
-                "TC-GUI-ORDERED-001: acknowledged refresh called poisoned legacy getter {getter}"
-            );
-        }
-    }
 }
 
 impl Drop for ThreadedOrderedPlayerAdapter {
@@ -204,10 +104,6 @@ impl Drop for ThreadedOrderedPlayerAdapter {
 impl PlayerAdapter for ThreadedOrderedPlayerAdapter {
     fn name(&self) -> &'static str {
         "threaded-ordered-refresh-test"
-    }
-
-    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        PlayerEventDeliveryMode::OrderedAcknowledgedBatches
     }
 
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
@@ -261,55 +157,6 @@ impl PlayerAdapter for ThreadedOrderedPlayerAdapter {
                 .push(AcknowledgementResult::Accepted(token));
         });
         Ok(())
-    }
-
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
-        self.record_legacy_getter_call("take_ordered_event_batch");
-        self.legacy_payloads.ordered_observation_batch.take()
-    }
-
-    fn request_ordered_event_reacquisition(&mut self) {
-        self.record_legacy_getter_call("request_ordered_event_reacquisition");
-    }
-
-    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-        self.record_legacy_getter_call("take_command_progress");
-        self.legacy_payloads.command_progress.take()
-    }
-
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.record_legacy_getter_call("take_playback_telemetry_update");
-        self.legacy_payloads.playback.take()
-    }
-
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        self.record_legacy_getter_call("take_transport_telemetry_update");
-        self.legacy_payloads.transport.take()
-    }
-
-    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        self.record_legacy_getter_call("take_cache_telemetry_update");
-        self.legacy_payloads.cache.take()
-    }
-
-    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        self.record_legacy_getter_call("take_media_load_outcome");
-        self.legacy_payloads.media_load_outcome.take()
-    }
-
-    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
-        self.record_legacy_getter_call("take_media_load_observation");
-        self.legacy_payloads.media_load_observation.take()
-    }
-
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.record_legacy_getter_call("take_local_file_update");
-        self.legacy_payloads.local_file_update.take()
-    }
-
-    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
-        self.record_legacy_getter_call("take_local_file_observation");
-        self.legacy_payloads.local_file_observation.take()
     }
 }
 
@@ -365,7 +212,6 @@ fn ordered_snapshot_batch(
 }
 
 fn threaded_runtime(
-    legacy_behavior: LegacyGetterBehavior,
     acknowledgement_failures_remaining: usize,
 ) -> (
     GuiQueuedRuntimeBridge,
@@ -381,8 +227,6 @@ fn threaded_runtime(
     let adapter = ThreadedOrderedPlayerAdapter {
         script,
         probe: probe.clone(),
-        legacy_behavior,
-        legacy_payloads: LegacyGetterPayloads::contradictory(),
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
@@ -464,16 +308,6 @@ fn assert_ordered_projection_is_atomic(actions: &[GuiShellAction], expected_paus
             .all(|snapshot| snapshot.playback_paused == expected_paused),
         "file identity and pause state must come from the same ordered projection"
     );
-    assert!(
-        actions.iter().all(|action| match action {
-            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => snapshot
-                .playlist
-                .iter()
-                .all(|entry| !entry.contains("stale.mkv")),
-            _ => true,
-        }),
-        "contradictory legacy identity must never leak into the shell projection"
-    );
 }
 
 fn shutdown_and_assert_bounded(pump: &mut GuiThreadedRuntimeOwnerPump, probe: &AdapterProbe) {
@@ -489,9 +323,8 @@ fn shutdown_and_assert_bounded(pump: &mut GuiThreadedRuntimeOwnerPump, probe: &A
 }
 
 #[test]
-fn threaded_ordered_refresh_projects_success_without_calling_poisoned_legacy_getters() {
-    let (mut runtime, mut pump, probe, repaint_rx) =
-        threaded_runtime(LegacyGetterBehavior::Panic, 0);
+fn threaded_ordered_refresh_projects_one_acknowledged_snapshot() {
+    let (mut runtime, mut pump, probe, repaint_rx) = threaded_runtime(0);
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
@@ -499,14 +332,9 @@ fn threaded_ordered_refresh_projects_success_without_calling_poisoned_legacy_get
 
     GuiNativeRuntimePump::pump(&mut pump, &state);
     probe.wait_until("ordered batch acknowledgement", |probe_state| {
-        !probe_state.acknowledgement_results.is_empty()
-            || !probe_state.legacy_getter_calls.is_empty()
-            || probe_state.dropped
+        !probe_state.acknowledgement_results.is_empty() || probe_state.dropped
     });
-    assert!(
-        probe.legacy_getter_calls().is_empty(),
-        "acknowledged refresh touched a poisoned legacy getter"
-    );
+
     assert_eq!(
         probe.acknowledgement_results(),
         vec![AcknowledgementResult::Accepted(
@@ -531,15 +359,13 @@ fn threaded_ordered_refresh_projects_success_without_calling_poisoned_legacy_get
         },
     );
     assert_ordered_projection_is_atomic(&actions, true);
-    assert!(probe.legacy_getter_calls().is_empty());
 
     shutdown_and_assert_bounded(&mut pump, &probe);
 }
 
 #[test]
 fn threaded_ordered_refresh_recovers_ack_failure_without_mixed_or_stale_delivery() {
-    let (mut runtime, mut pump, probe, repaint_rx) =
-        threaded_runtime(LegacyGetterBehavior::ContradictoryResponses, 1);
+    let (mut runtime, mut pump, probe, repaint_rx) = threaded_runtime(1);
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
@@ -549,11 +375,7 @@ fn threaded_ordered_refresh_recovers_ack_failure_without_mixed_or_stale_delivery
     GuiNativeRuntimePump::pump(&mut pump, &state);
     probe.wait_until(
         "failed acknowledgement replay and recovery",
-        |probe_state| {
-            probe_state.acknowledgement_results.len() >= 2
-                || !probe_state.legacy_getter_calls.is_empty()
-                || probe_state.dropped
-        },
+        |probe_state| probe_state.acknowledgement_results.len() >= 2 || probe_state.dropped,
     );
     assert_eq!(
         probe.acknowledgement_results(),
@@ -562,10 +384,6 @@ fn threaded_ordered_refresh_recovers_ack_failure_without_mixed_or_stale_delivery
             AcknowledgementResult::Accepted(token),
         ],
         "the same unacknowledged batch should be replayed and then accepted"
-    );
-    assert!(
-        probe.legacy_getter_calls().is_empty(),
-        "acknowledged refresh mixed in contradictory legacy responses"
     );
 
     let actions = drain_and_apply_until(
@@ -587,21 +405,21 @@ fn threaded_ordered_refresh_recovers_ack_failure_without_mixed_or_stale_delivery
     assert_ordered_projection_is_atomic(&actions, true);
 
     probe.wait_until("post-recovery empty ordered refresh", |probe_state| {
-        probe_state.empty_batch_reads >= 2 || !probe_state.legacy_getter_calls.is_empty()
+        probe_state.empty_batch_reads >= 2
     });
-    let trailing_actions = GuiNativeRuntimeBridge::drain_runtime_actions(&mut runtime);
-    assert_ordered_projection_is_atomic(&actions, true);
-    assert!(
-        trailing_actions.iter().all(|action| match action {
-            GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => snapshot
-                .playlist
-                .iter()
-                .all(|entry| !entry.contains("stale.mkv")),
-            _ => true,
-        }),
-        "post-recovery polling must not deliver stale legacy state"
+    for action in GuiNativeRuntimeBridge::drain_runtime_actions(&mut runtime) {
+        state.apply(action);
+    }
+    assert_eq!(
+        state
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fresh.mkv"]
     );
-    assert!(probe.legacy_getter_calls().is_empty());
+    assert!(state.main_window.playback_paused);
 
     shutdown_and_assert_bounded(&mut pump, &probe);
 }

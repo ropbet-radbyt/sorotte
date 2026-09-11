@@ -6,7 +6,8 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
-        local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
+        events: Option<ScriptedPlayerEvents>,
+        generation: u64,
         set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
@@ -26,7 +27,14 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.opened_paths.push(path.to_owned());
-            state.local_file_updates.push(
+            state.generation += 1;
+            let generation = state.generation;
+            let events = state.events.get_or_insert_with(|| {
+                ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1))
+            });
+            events.push_event(active_player_event(generation));
+            events.push_event(file_event(
+                generation,
                 sorotte_player_api::LocalFileUpdate::new(
                     std::path::Path::new(path)
                         .file_name()
@@ -34,16 +42,29 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
                         .unwrap_or(path),
                 )
                 .with_path(path.to_owned()),
-            );
+            ));
             Ok(())
         }
 
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_position(
@@ -236,7 +257,8 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
-        local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
+        events: Option<ScriptedPlayerEvents>,
+        generation: u64,
         set_positions: Vec<f64>,
     }
 
@@ -255,7 +277,14 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.opened_paths.push(path.to_owned());
-            state.local_file_updates.push(
+            state.generation += 1;
+            let generation = state.generation;
+            let events = state.events.get_or_insert_with(|| {
+                ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1))
+            });
+            events.push_event(active_player_event(generation));
+            events.push_event(file_event(
+                generation,
                 sorotte_player_api::LocalFileUpdate::new(
                     std::path::Path::new(path)
                         .file_name()
@@ -263,16 +292,29 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
                         .unwrap_or(path),
                 )
                 .with_path(path.to_owned()),
-            );
+            ));
             Ok(())
         }
 
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_position(

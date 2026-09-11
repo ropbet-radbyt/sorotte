@@ -74,15 +74,6 @@ impl fmt::Debug for MpvAdapter {
                     .network_options
                     .network_media_options_runtime_health_revision,
             )
-            .field("pending_local_file_update", &self.pending_local_file_update)
-            .field(
-                "pending_playback_telemetry_update",
-                &self.pending_playback_telemetry_update,
-            )
-            .field(
-                "pending_transport_telemetry_updates",
-                &self.pending_transport_telemetry_updates,
-            )
             .field(
                 "pending_cache_telemetry_updates",
                 &self.pending_cache_telemetry_updates,
@@ -91,30 +82,6 @@ impl fmt::Debug for MpvAdapter {
             .field(
                 "last_finished_tracked_command",
                 &self.last_finished_tracked_command_debug,
-            )
-            .field(
-                "pending_command_progress_updates",
-                &self.pending_command_progress_updates,
-            )
-            .field(
-                "last_delivered_ordered_command_progress",
-                &self.last_delivered_ordered_command_progress,
-            )
-            .field(
-                "last_delivered_ordered_media_load_outcomes",
-                &self.last_delivered_ordered_media_load_outcomes,
-            )
-            .field(
-                "unacknowledged_terminal_command_progress",
-                &self.unacknowledged_terminal_command_progress,
-            )
-            .field(
-                "unacknowledged_media_load_outcomes",
-                &self.unacknowledged_media_load_outcomes,
-            )
-            .field(
-                "pending_media_load_outcomes",
-                &self.pending_media_load_outcomes,
             )
             .field("pending_chat_requests", &self.pending_chat_requests)
             .field(
@@ -143,14 +110,6 @@ impl fmt::Debug for MpvAdapter {
             .field(
                 "last_polled_local_file_update",
                 &self.last_polled_local_file_update,
-            )
-            .field(
-                "last_paused_position_poll_at",
-                &self.last_paused_position_poll_at,
-            )
-            .field(
-                "last_paused_position_telemetry_at",
-                &self.last_paused_position_telemetry_at,
             )
             .field("last_ipc_event_fence_at", &self.last_ipc_event_fence_at)
             .field(
@@ -279,31 +238,16 @@ impl Default for MpvAdapter {
             window_maximized: false,
             window_minimized: false,
             current_path: None,
-            pending_local_file_update: None,
-            pending_local_file_generation: None,
-            pending_local_file_observed_at: None,
-            pending_playback_telemetry_update: None,
-            pending_transport_telemetry_updates: VecDeque::new(),
             pending_cache_telemetry_updates: VecDeque::new(),
             pending_tracked_commands: VecDeque::new(),
             last_finished_tracked_command_debug: None,
-            pending_command_progress_updates: VecDeque::new(),
-            pending_media_load_outcomes: VecDeque::new(),
-            next_ordered_player_event_sequence: 1,
-            pending_ordered_player_events: VecDeque::new(),
-            ordered_player_event_reacquisition_required: false,
-            ordered_player_event_reacquisition_requested_by_consumer: false,
-            last_delivered_ordered_command_progress: Vec::new(),
-            last_delivered_ordered_media_load_outcomes: Vec::new(),
-            unacknowledged_terminal_command_progress: BTreeMap::new(),
-            unacknowledged_media_load_outcomes: VecDeque::new(),
             pending_chat_requests: VecDeque::new(),
             pending_load_request: None,
             pending_load_generation: None,
             last_polled_local_file_update: None,
-            last_paused_position_poll_at: None,
+
             transport_readback: transport_readback::TransportReadbackState::default(),
-            last_paused_position_telemetry_at: None,
+
             last_ipc_event_fence_at: None,
             pending_ipc_event_fence_command_id: None,
             pending_cache_pause_readback: None,
@@ -481,7 +425,7 @@ mod credential_debug_tests {
                 duration_seconds: 120.0,
                 position_seconds: 30.0,
             });
-        adapter.pending_local_file_update =
+        adapter.last_polled_local_file_update =
             Some(sorotte_player_api::LocalFileUpdate::new(target.clone()).with_path(target));
 
         let debug = format!("{adapter:?}");

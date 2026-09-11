@@ -3,6 +3,7 @@ use crate::app::GuiMediaSourceProviderId;
 use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
+use crate::app::testing::support::runtime_state_for_shell;
 
 use sorotte_plex::{
     PlexMatchedItem, PlexMediaType, PlexPlaylistUri, PlexStreamTarget, SecretPlexPlaybackUrl,
@@ -53,7 +54,7 @@ fn sessionless_snapshot_clears_metadata_for_different_length_disabled_playlist()
     let state = disabled_shared_playlist_state_with_two_rows();
     let owner = owner_with_attached_local_file();
 
-    let snapshot = owner.sessionless_main_window_snapshot(&state);
+    let snapshot = owner.sessionless_main_window_snapshot(&runtime_state_for_shell(&state));
 
     assert_disabled_playlist_replacement_snapshot(state, snapshot);
 }
@@ -64,7 +65,7 @@ fn player_sync_clears_metadata_for_different_length_disabled_playlist() {
     let mut owner = owner_with_attached_local_file();
     let handle = GuiQueuedRuntimeBridgeHandle::default();
 
-    owner.sync_player_runtime_state(&handle, &state);
+    owner.sync_player_runtime_state(&handle, &runtime_state_for_shell(&state));
     let snapshot = handle
         .drain_actions()
         .into_iter()
@@ -81,8 +82,7 @@ fn player_sync_clears_metadata_for_different_length_disabled_playlist() {
 fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct TelemetryPlayerAdapter {
@@ -94,29 +94,34 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
             "telemetry"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        events: Some(active_player_events(1)),
+    }));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,
@@ -183,7 +188,6 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -324,12 +328,15 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .local_file_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(file_event(
+            1,
             sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
                 .with_duration_seconds(93.5)
                 .with_size_bytes(734003200),
-        );
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let local_file_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
@@ -378,8 +385,13 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let paused_actions = without_media_match_runtime_snapshots(handle.drain_actions());
     assert_eq!(
@@ -436,9 +448,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
 
 #[test]
 fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failure() {
-    #[derive(Default)]
     struct FailingLoadPlayerAdapter {
-        outcomes: Vec<sorotte_player_api::PlayerMediaLoadOutcome>,
+        events: ScriptedPlayerEvents,
     }
 
     impl PlayerAdapter for FailingLoadPlayerAdapter {
@@ -446,22 +457,29 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
             "failing-load"
         }
 
-        fn take_media_load_outcome(
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.events.peek()
+        }
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
-            self.outcomes.pop()
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.events.acknowledge(token)
         }
     }
 
     let requested_target = "https://cdn.example.com/broken.m3u8".to_owned();
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let mut events = ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1));
+    events.push_outcome(load_failed(
+        1,
+        None,
+        requested_target.clone(),
+        None,
+        sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
+    ));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(FailingLoadPlayerAdapter {
-        outcomes: vec![sorotte_player_api::PlayerMediaLoadOutcome::failure(
-            requested_target.clone(),
-            None,
-            sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
-            "network timeout",
-        )],
+        events,
     })));
     owner.player_local_file =
         Some(GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path(&requested_target));
@@ -492,14 +510,14 @@ fn gui_persisted_config_runtime_owner_clears_placeholder_after_media_load_failur
         GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Error,
             message,
-        } if message.contains("network timeout")
+        } if message.contains("load attempt failed")
     )));
 }
 
 #[test]
-fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_context() {
+fn authoritative_rebase_delivers_early_load_failure_and_resolves_pending_context() {
     struct ReacquiredFailurePlayer {
-        batch: Option<sorotte_player_api::PlayerObservationBatch>,
+        events: ScriptedPlayerEvents,
     }
 
     impl PlayerAdapter for ReacquiredFailurePlayer {
@@ -507,50 +525,39 @@ fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_contex
             "reacquired-failure"
         }
 
-        fn take_ordered_event_batch(
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.events.peek()
+        }
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerObservationBatch> {
-            self.batch.take()
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.events.acknowledge(token)
         }
     }
 
     let requested_target = "https://cdn.example.com/early-failure.m3u8".to_owned();
-    let generation = sorotte_player_api::PlayerMediaGeneration::new(1);
-    let failure = sorotte_player_api::PlayerMediaLoadObservation::new(
-        sorotte_player_api::PlayerMediaLoadOutcome::failure(
-            requested_target.clone(),
-            None,
-            sorotte_player_api::PlayerMediaLoadFailureKind::Network,
-            "network failed before start-file",
-        ),
-        Some(generation),
-        None,
-    );
-    let batch = sorotte_player_api::PlayerObservationBatch {
-        dropped_events_through: Some(sorotte_player_api::PlayerEventSequence::new(10)),
-        ordered_events: vec![
-            sorotte_player_api::PlayerOrderedEvent::new(
-                sorotte_player_api::PlayerEventSequence::new(11),
-                sorotte_player_api::PlayerOrderedEventKind::MediaLoad(failure),
-            ),
-            sorotte_player_api::PlayerOrderedEvent::new(
-                sorotte_player_api::PlayerEventSequence::new(12),
-                sorotte_player_api::PlayerOrderedEventKind::Transport(
-                    sorotte_player_api::PlayerTransportTelemetryUpdate::new(
-                        generation,
-                        sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
-                            std::time::Duration::from_secs(1),
-                        ),
-                    )
-                    .with_phase(sorotte_player_api::PlayerTransportPhase::Failed),
-                ),
-            ),
-        ],
-        playback_telemetry: None,
+    let epoch = sorotte_player_api::PlayerAttachmentEpoch::new(1);
+    let mut events = ScriptedPlayerEvents::new(epoch);
+    let snapshot = sorotte_player_api::PlayerAuthoritativeSnapshot {
+        attachment_epoch: epoch,
+        sequence_boundary: sorotte_player_api::PlayerSequenceBoundary::new(epoch, 10),
+        active_load: sorotte_player_api::SnapshotField::KnownAbsent,
+        current_path: sorotte_player_api::SnapshotField::KnownAbsent,
+        transport: sorotte_player_api::PlayerTransportSnapshot::default(),
+        current_playlist_entry_id: sorotte_player_api::SnapshotField::KnownAbsent,
     };
+    events.push_snapshot(snapshot);
+    events.push_outcome(load_failed(
+        1,
+        None,
+        requested_target.clone(),
+        None,
+        sorotte_player_api::PlayerMediaLoadFailureKind::Network,
+    ));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(ReacquiredFailurePlayer {
-        batch: Some(batch),
+        events,
     })));
     owner.player_local_file =
         Some(GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path(&requested_target));
@@ -581,7 +588,7 @@ fn ordered_reacquisition_delivers_early_load_failure_and_resolves_pending_contex
         GuiShellAction::PushTransientNotification {
             level: GuiTransientNotificationLevel::Error,
             message,
-        } if message.contains("network failed before start-file")
+        } if message.contains("load attempt failed")
     )));
 }
 
@@ -716,10 +723,14 @@ fn gui_persisted_config_runtime_owner_sets_player_media_titles_for_plex_and_loca
         )
         .expect("Plex stream open should have a player")
         .expect("Plex stream open should succeed");
-    owner.open_media_files_through_attached_player_impl(
-        &GuiQueuedRuntimeBridgeHandle::default(),
-        vec!["C:/media/Local Episode.mkv".to_owned()],
-    );
+    owner.supersede_playlist_resolution_attempt();
+    owner
+        .open_media_files_through_attached_player_result_impl(
+            &["C:/media/Local Episode.mkv".to_owned()],
+            true,
+        )
+        .expect("the player should remain attached")
+        .expect("local media should load after Plex");
 
     let calls = player_state
         .lock()
@@ -866,7 +877,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
     );
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("detached session sync should withhold the optimistic Plex logical file");
     let outbound_lines = owner
         .session
@@ -894,10 +905,8 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
  {
     #[derive(Debug, Default)]
     struct PlexStreamTelemetryState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        playback_updates:
-            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
-        media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+        events: Option<ScriptedPlayerEvents>,
+        generation: u64,
     }
 
     struct PlexStreamTelemetryAdapter {
@@ -910,49 +919,48 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
         }
 
         fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
-                .local_file_updates
-                .push_back(sorotte_player_api::LocalFileUpdate::new(path).with_path(path));
-            state.media_load_outcomes.push_back(
-                sorotte_player_api::PlayerMediaLoadOutcome::success(path, Some(path.to_owned())),
-            );
-            state.playback_updates.push_back(
+            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            state.generation += 1;
+            let generation = state.generation;
+            let events = state.events.as_mut().unwrap();
+            events.push_event(active_player_event(generation));
+            events.push_event(file_event(
+                generation,
+                sorotte_player_api::LocalFileUpdate::new(path).with_path(path),
+            ));
+            events.push_outcome(load_succeeded(
+                generation,
+                None,
+                path,
+                Some(path.to_owned()),
+            ));
+            events.push_event(playback_event(
+                generation,
                 sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                     .with_position_seconds(0.0),
-            );
+            ));
             Ok(())
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_media_load_outcome(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .media_load_outcomes
-                .pop_front()
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
@@ -983,8 +991,12 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
         logical_file: logical_file.clone(),
         playback_url: SecretPlexPlaybackUrl::new(loaded_url),
     };
-    let player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(PlexStreamTelemetryState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(PlexStreamTelemetryState {
+        events: Some(ScriptedPlayerEvents::new(
+            sorotte_player_api::PlayerAttachmentEpoch::new(1),
+        )),
+        ..Default::default()
+    }));
     let stored_settings = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -1038,7 +1050,7 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     assert!(!owner.player_local_file_placeholder);
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("confirmed Plex identity should publish to the room");
     let outbound_lines = owner
         .session
@@ -1065,13 +1077,16 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .local_file_updates
-        .push_back(
+        .events
+        .as_mut()
+        .expect("scripted ingress")
+        .push_event(file_event(
+            1,
             sorotte_player_api::LocalFileUpdate::new(loaded_url)
                 .with_path(loaded_url)
                 .with_duration_seconds(90.0)
                 .with_size_bytes(123_456),
-        );
+        ));
     owner.refresh_player_state_impl();
 
     assert_eq!(owner.player_local_file, Some(logical_file.clone()));
@@ -1082,13 +1097,15 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     );
     assert!(owner.pending_logical_media_override.is_some());
 
-    player_state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .local_file_updates
-        .push_back(
+    {
+        let mut script = player_state.lock().unwrap();
+        let events = script.events.as_mut().unwrap();
+        events.push_event(active_player_event(2));
+        events.push_event(file_event(
+            2,
             sorotte_player_api::LocalFileUpdate::new(redirected_url).with_path(redirected_url),
-        );
+        ));
+    }
     owner.refresh_player_state_impl();
 
     assert_eq!(
@@ -1108,11 +1125,10 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
 fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() {
     #[derive(Debug, Default)]
     struct TrackedPlexPlayerState {
+        events: Option<ScriptedPlayerEvents>,
+
         opened_paths: Vec<String>,
         set_paused_values: Vec<bool>,
-        command_progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
     }
 
     struct TrackedPlexPlayer {
@@ -1140,35 +1156,27 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.opened_paths.push(path.clone());
-            // Legacy typed queues deliberately deliver file-loaded before the
-            // tracked command terminal. This is the sequence that v0.2.6
-            // incorrectly left fenced in Loading after projecting the private
-            // physical URL to its logical Plex identity.
-            state.media_load_outcomes.push_back(
-                sorotte_player_api::PlayerMediaLoadOutcome::success(
-                    path.clone(),
-                    Some(path.clone()),
-                ),
-            );
-            state
-                .local_file_updates
-                .push_back(sorotte_player_api::LocalFileUpdate::new(&path).with_path(path.clone()));
-            state
-                .command_progress
-                .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
-                    command_id,
-                    Some(media_generation),
-                    None,
-                ));
-            state
-                .command_progress
-                .push_back(sorotte_player_api::PlayerCommandProgress::finished(
-                    command_id,
-                    Some(media_generation),
-                    None,
-                    None,
-                    sorotte_player_api::PlayerCommandResult::Completed,
-                ));
+            // Physical file metadata arrives before the tracked command terminal.
+            let events = state.events.as_mut().unwrap();
+            events.push_event(starting_player_event(
+                media_generation.get(),
+                Some(command_id),
+            ));
+            events.push_outcome(load_succeeded(
+                media_generation.get(),
+                Some(command_id),
+                path.clone(),
+                Some(path.clone()),
+            ));
+            events.push_event(file_event(
+                media_generation.get(),
+                sorotte_player_api::LocalFileUpdate::new(&path).with_path(path),
+            ));
+            events.push_outcome(command_outcome(
+                command_id,
+                Some(media_generation),
+                sorotte_player_api::PlayerCommandSemanticResult::Completed,
+            ));
             Ok(command_id)
         }
 
@@ -1192,30 +1200,25 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             Ok(())
         }
 
-        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .command_progress
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_media_load_outcome(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .media_load_outcomes
-                .pop_front()
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
@@ -1260,8 +1263,12 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         .first()
         .expect("shared Plex playlist row")
         .clone();
-    let player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(TrackedPlexPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TrackedPlexPlayerState {
+        events: Some(ScriptedPlayerEvents::new(
+            sorotte_player_api::PlayerAttachmentEpoch::new(1),
+        )),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1313,7 +1320,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
     assert!(owner.player_local_file_ready_for_attached_sync());
 
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("confirmed Plex identity should publish");
     let published = owner
         .session
@@ -1342,7 +1349,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":12.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
         )
         .expect("room play should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     owner
         .session
         .as_mut()
@@ -1351,7 +1358,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":12.5,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
         )
         .expect("room pause should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -1366,11 +1373,12 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         .with_path(local_path)
         .with_duration_seconds(90.0)
         .with_size_bytes(123_456);
-    player_state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .local_file_updates
-        .push_back(local_file.clone());
+    {
+        let mut state = player_state.lock().unwrap();
+        let events = state.events.as_mut().unwrap();
+        events.push_event(active_player_event(10));
+        events.push_event(file_event(10, local_file.clone()));
+    }
     owner.refresh_player_state_impl();
     assert_eq!(owner.player_local_file, Some(local_file));
     assert!(
@@ -1380,7 +1388,9 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
     assert!(owner.pending_logical_media_override.is_none());
 
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(&state)
+        ),
         SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
         "the resolver should adopt the matching local file without reopening Plex"
     );
@@ -1411,7 +1421,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
             r#"{"State":{"playstate":{"position":20.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#,
         )
         .expect("room play after local takeover should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()
@@ -1427,7 +1437,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
 fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_reports_a_new_file() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct TelemetryPlayerAdapter {
@@ -1439,20 +1449,35 @@ fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_repo
             "telemetry"
         }
 
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
+    let mut events = active_player_events(2);
+    events.push_event(file_event(
+        2,
+        sorotte_player_api::LocalFileUpdate::new("episode2.mkv").with_path("C:/Media/episode2.mkv"),
+    ));
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque::from([
-            sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
-                .with_path("C:/Media/episode2.mkv"),
-        ]),
+        events: Some(events),
     }));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
@@ -1471,7 +1496,7 @@ fn gui_persisted_config_runtime_owner_resets_stale_position_when_the_player_repo
         ..StoredClientSettings::default()
     });
     owner
-        .ensure_detached_client_core_chat_session(&state)
+        .ensure_detached_client_core_chat_session(&runtime_state_for_shell(&state))
         .expect("detached client-core session should bootstrap");
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

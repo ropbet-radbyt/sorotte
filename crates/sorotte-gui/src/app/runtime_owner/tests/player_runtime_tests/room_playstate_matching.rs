@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
 use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::application::ClientCommand;
 use sorotte_client_core::{CoordinatorPlayerCommand, PlaybackCoordinationSnapshot};
 
@@ -147,7 +148,7 @@ fn run_self_attributed_coordinator_actions(
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
     let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-    owner.sync_session_playstate_to_attached_player_impl(&shell, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&shell), false);
     state
 }
 
@@ -401,7 +402,7 @@ fn gui_persisted_config_runtime_owner_skips_self_origin_room_position_sync_for_a
         )
         .expect("self-origin room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, true);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), true);
 
     let recorded = player_state
         .lock()
@@ -491,7 +492,7 @@ fn gui_persisted_config_runtime_owner_ignores_unattributed_room_playstate_when_n
         .apply_message_json(r#"{"State":{"playstate":{"position":0.0,"paused":true}}}"#)
         .expect("unattributed room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()
@@ -576,7 +577,7 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
         )
         .expect("room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     {
         let recorded = player_state
             .lock()
@@ -590,7 +591,7 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()
@@ -609,7 +610,7 @@ fn gui_persisted_config_runtime_owner_waits_for_local_file_before_applying_room_
 fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_cache_release() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_positions: Vec<f64>,
         set_paused_values: Vec<bool>,
     }
@@ -623,14 +624,25 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_position(
@@ -655,7 +667,10 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -699,7 +714,7 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
         )
         .expect("room seek should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     {
         let mut recorded = player_state
             .lock()
@@ -736,11 +751,14 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused_for_cache(false),
-        );
+        ));
     owner.refresh_player_state_impl();
     owner
         .session
@@ -751,7 +769,7 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
         )
         .expect("post-cache room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     {
         let recorded = player_state
@@ -775,14 +793,17 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_position_seconds(30.0)
                 .with_paused(false),
-        );
+        ));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         owner.pending_attached_room_unpause_observation.is_some(),
         "one stationary post-cache sample must keep desired play pending"
@@ -792,14 +813,17 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_position_seconds(30.25)
                 .with_paused(false),
-        );
+        ));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         owner.pending_attached_room_unpause_observation.is_none(),
         "fresh forward position advancement should acknowledge desired play"
@@ -827,7 +851,7 @@ fn gui_persisted_config_runtime_owner_waits_for_advancement_without_seeking_on_c
 fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_ipc_acceptance() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_positions: Vec<f64>,
         set_paused_values: Vec<bool>,
     }
@@ -841,14 +865,25 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_position(
@@ -873,7 +908,10 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -909,7 +947,7 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
         )
         .expect("room play should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     let baseline_position_seconds = owner
         .player_position_seconds
         .expect("room sync should retain an observation baseline");
@@ -934,14 +972,17 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_position_seconds(baseline_position_seconds)
                 .with_paused(false),
-        );
+        ));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         owner.pending_attached_room_unpause_observation.is_some(),
         "a pause=false property without forward motion is not observed playback"
@@ -951,14 +992,17 @@ fn gui_persisted_config_runtime_owner_retains_room_play_until_advancement_after_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_position_seconds(baseline_position_seconds + 0.25)
                 .with_paused(false),
-        );
+        ));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     assert!(owner.pending_attached_room_unpause_observation.is_none());
     assert!(owner.last_applied_attached_room_playstate.is_some());
@@ -1067,7 +1111,7 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
         )
         .expect("room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     {
         let mut recorded = player_state
             .lock()
@@ -1077,8 +1121,9 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
     }
     owner.player_position_seconds = Some(42.0);
 
-    let selected_media_sync =
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let selected_media_sync = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+    );
     assert_eq!(
         selected_media_sync,
         SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
@@ -1097,10 +1142,13 @@ fn gui_persisted_config_runtime_owner_does_not_force_room_sync_for_matched_playl
     );
 
     owner.apply_pending_playlist_index_reset_to_attached_player_impl(
-        &state,
+        &runtime_state_for_shell(&state),
         selection_handoff_ready,
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, selection_handoff_ready);
+    owner.sync_session_playstate_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+        selection_handoff_ready,
+    );
 
     let recorded = player_state
         .lock()

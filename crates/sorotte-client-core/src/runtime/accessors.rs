@@ -715,10 +715,7 @@ where
 {
     pub fn new(session: ClientSession, player: P, control: C) -> Self {
         let mut playback_coordination = RuntimePlaybackCoordination::default();
-        if player
-            .capabilities()
-            .contains(sorotte_player_api::PlayerCapability::Telemetry)
-        {
+        if player.supports_transport_telemetry() {
             playback_coordination.mark_transport_telemetry_available();
         }
         Self {

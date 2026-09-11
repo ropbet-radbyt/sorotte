@@ -648,9 +648,10 @@ impl RuntimePlaybackCoordination {
             known_live_seekable_window: None,
             core_idle: delta.core_idle,
             playback_restart_sequence: None,
-            cache_buffering_percent: None,
-            buffered_ahead_seconds: None,
-            input_rate_bytes_per_second: None,
+            // Only fields present in this delta acquire a fresh participant-status clock.
+            cache_buffering_percent: delta.cache_percentage,
+            buffered_ahead_seconds: delta.buffered_duration_seconds,
+            input_rate_bytes_per_second: delta.input_rate_bytes_per_second,
         }
     }
 
@@ -1162,7 +1163,7 @@ where
         self.apply_ordered_player_event_batch(batch, now_seconds)
     }
 
-    pub(super) fn drain_ordered_player_events(
+    pub(in crate::runtime) fn drain_ordered_player_events(
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {

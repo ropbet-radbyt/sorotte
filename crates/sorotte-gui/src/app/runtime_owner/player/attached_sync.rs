@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_localization::localize_gui_runtime_message;
+use crate::app::runtime_state::GuiRuntimeState;
 use sorotte_client_core::DesyncCorrectionDispatchSnapshot;
 
 const ATTACHED_UNPAUSE_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
@@ -425,7 +426,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn sync_session_playstate_to_attached_player_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         force: bool,
     ) {
         if self

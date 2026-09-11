@@ -29,4 +29,5 @@ thiserror.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+sorotte-player-api = { path = "../sorotte-player-api", features = ["test-support"] }
 proptest.workspace = true

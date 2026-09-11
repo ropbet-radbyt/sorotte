@@ -5,7 +5,7 @@ pub(in crate::app) struct GuiPreviewRuntimeBridge;
 
 impl GuiPreviewRuntimeBridge {
     pub(in crate::app) fn preview_open_media_file_actions(
-        state: Option<&SorotteGuiShellAppState>,
+        state: Option<&crate::app::runtime_state::GuiRuntimeState>,
         paths: Vec<String>,
         load_into_shared_playlist: bool,
         playlist_insert_slot: Option<usize>,
@@ -20,7 +20,7 @@ impl GuiPreviewRuntimeBridge {
     }
 
     pub(in crate::app) fn preview_import_shared_playlist_file_actions(
-        state: Option<&SorotteGuiShellAppState>,
+        state: Option<&crate::app::runtime_state::GuiRuntimeState>,
         path: String,
         shuffled: bool,
     ) -> Vec<GuiShellAction> {
@@ -28,7 +28,7 @@ impl GuiPreviewRuntimeBridge {
     }
 
     fn preview_open_media_file_actions_with_shuffle(
-        state: Option<&SorotteGuiShellAppState>,
+        state: Option<&crate::app::runtime_state::GuiRuntimeState>,
         paths: Vec<String>,
         load_into_shared_playlist: bool,
         playlist_insert_slot: Option<usize>,
@@ -50,13 +50,12 @@ impl GuiPreviewRuntimeBridge {
                     }
                     let (playlist_entries, opened_entry_count) = state
                         .map(|state| {
-                            let current_count = state.main_window.playlist.len();
-                            let current_index = state
-                                .main_window
+                            let current_count = state.playlist.main_window.playlist.len();
+                            let current_index = state.playlist.main_window
                                 .active_playlist_index
                                 .or_else(|| {
-                                    (!state.main_window_playlist_selection_is_local)
-                                        .then_some(state.selection.selected_main_window_playlist)
+                                    (!state.playlist.selection_is_local)
+                                        .then_some(state.playlist.selection.selected_main_window_playlist)
                                         .flatten()
                                 });
                             let (playlist_entries, _) = state
@@ -178,6 +177,9 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         state: &SorotteGuiShellAppState,
         request: GuiRuntimeRequest,
     ) -> Vec<GuiShellAction> {
+        let input = crate::app::feature_slices::GuiRuntimeInput::from_shell(state);
+        let state = &input.to_runtime_state();
+
         request.preview_actions_for_state(state)
     }
 
@@ -185,14 +187,12 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         &mut self,
         state: &SorotteGuiShellAppState,
         paths: Vec<String>,
-        load_into_shared_playlist: bool,
+        _load_into_shared_playlist: bool,
     ) -> Vec<GuiShellAction> {
-        Self::preview_open_media_file_actions(
-            Some(state),
-            paths,
-            load_into_shared_playlist || state.playlist_backed_media_opens_preferred(),
-            None,
-        )
+        let input = crate::app::feature_slices::GuiRuntimeInput::from_shell(state);
+        let state = &input.to_runtime_state();
+
+        Self::preview_open_media_file_actions(Some(state), paths, true, None)
     }
 
     fn actions_for_seek_offset(&mut self, offset_seconds: f64) -> Vec<GuiShellAction> {
@@ -218,12 +218,10 @@ impl GuiNativeRuntimeBridge for GuiPreviewRuntimeBridge {
         state: &SorotteGuiShellAppState,
         target: String,
     ) -> Vec<GuiShellAction> {
-        Self::preview_open_media_file_actions(
-            Some(state),
-            vec![target],
-            state.playlist_backed_media_opens_preferred(),
-            None,
-        )
+        let input = crate::app::feature_slices::GuiRuntimeInput::from_shell(state);
+        let state = &input.to_runtime_state();
+
+        Self::preview_open_media_file_actions(Some(state), vec![target], true, None)
     }
 
     fn actions_for_main_window_user_folder_open(

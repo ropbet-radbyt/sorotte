@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
@@ -90,7 +91,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_befor
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let snapshot = actions
         .iter()
         .find_map(|action| match action {
@@ -437,7 +439,8 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
     adapter
         .apply_message_json(&outbound_lines[0])
         .expect("ready-at-start echo should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let snapshot = actions
         .iter()
         .find_map(|action| match action {
@@ -470,7 +473,8 @@ fn gui_client_core_chat_session_runtime_adapter_applies_batched_top_level_comman
         )
         .expect("batched server message should apply");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -608,7 +612,9 @@ fn gui_client_core_chat_session_runtime_adapter_projects_remote_user_after_playl
             .apply_message_json(line)
             .expect("inbound missing-media seed line should apply");
     }
-    for action in GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state) {
+    for action in
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+    {
         assert!(state.apply(action));
     }
 
@@ -665,7 +671,8 @@ fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_t
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
         )
         .expect("inbound server hello should apply");
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -744,7 +751,8 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_reconnect_playlist_re
         .apply_message_json(r#"{"Set":{"playlistChange":{"files":[]}}}"#)
         .expect("empty reconnect playlist snapshot should apply");
 
-    let _ = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let _ =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let outbound_lines = adapter
         .flush_outbound_protocol_lines()
         .expect("reconnect playlist restore lines should encode");
@@ -907,7 +915,8 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
     expected_snapshot.room_playback_intent.participant_count = 1;
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(
         actions,
         vec![
@@ -927,7 +936,10 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
         assert!(state.apply(action));
     }
     assert!(state.main_window.playback.can_set_ready);
-    assert!(GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state).is_empty());
+    assert!(
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -951,7 +963,8 @@ fn gui_client_core_chat_session_runtime_adapter_disables_remote_readiness_withou
         )
         .expect("inbound server hello should apply");
 
-    let actions = GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &state);
+    let actions =
+        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let snapshot = actions
         .iter()
         .find_map(|action| match action {

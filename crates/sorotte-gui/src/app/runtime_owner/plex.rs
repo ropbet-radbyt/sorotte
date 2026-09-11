@@ -1,3 +1,8 @@
+use crate::app::runtime_state::GuiRuntimeState;
+#[cfg(test)]
+use crate::app::shell_state::SorotteGuiShellAppState;
+#[cfg(test)]
+use crate::app::testing::support::runtime_state_for_shell;
 use std::{
     hash::BuildHasher,
     process::Command,
@@ -127,14 +132,14 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn cancel_plex_playlist_jobs(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         reason: GuiPlexPlaylistJobCancellationReason,
     ) {
         let _ = self.begin_plex_playlist_job_generation();
         self.plex_playlist_search_job = None;
         self.plex_playlist_resolve_job = None;
         if reason == GuiPlexPlaylistJobCancellationReason::OperationContextInvalidated
-            && projected_state.plex_playlist_search.is_some()
+            && projected_state.plex.playlist_search.is_some()
         {
             Self::push_actions_and_project(
                 handle,
@@ -147,7 +152,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn invalidate_plex_operation_context(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         self.cancel_plex_playlist_jobs(
             handle,
@@ -165,7 +170,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn invalidate_plex_operation_context_if_settings_changed(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         previous: &StoredClientSettings,
         next: &StoredClientSettings,
     ) {
@@ -198,9 +203,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_start_plex_auth_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -246,9 +252,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_poll_plex_auth_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -266,9 +273,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_plex_auth_poll(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -291,7 +299,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_plex_auth_start(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(rx) = self.plex_auth_start_rx.take() else {
             return;
@@ -339,15 +347,16 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_startup_plex_server_refresh(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
             return;
         }
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         if !self.startup_plex_server_refresh_attempted
             && settings
                 .plex_user_token
@@ -377,9 +386,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_plex_server_refresh(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -390,7 +400,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match job.receiver.try_recv() {
             Ok(worker_result) => {
-                let mut settings = projected_state.saved_configuration.clone();
+                let mut settings = projected_state.settings.saved.clone();
                 let previous_settings = settings.clone();
                 let current_operation_context = self.plex_operation_context(&settings);
                 if !self.plex_server_discovery.accepts(
@@ -506,7 +516,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.plex_server_discovery.restore_if_current(job);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                let current_settings = projected_state.saved_configuration.clone();
+                let current_settings = projected_state.settings.saved.clone();
                 if job.generation == self.plex_server_discovery.generation
                     && job.operation_context == self.plex_operation_context(&current_settings)
                 {
@@ -528,7 +538,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn poll_plex_auth(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         user_initiated: bool,
     ) {
         if self.plex_auth_poll_rx.is_some() {
@@ -588,7 +598,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_plex_auth_poll(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(rx) = self.plex_auth_poll_rx.take() else {
             return;
@@ -620,7 +630,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn apply_plex_auth_poll_result(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         user_initiated: bool,
         result: PlexAuthPollResult,
     ) {
@@ -639,7 +649,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             return;
         };
-        let previous_settings = projected_state.saved_configuration.clone();
+        let previous_settings = projected_state.settings.saved.clone();
         let account_changed = previous_settings.plex_user_token.as_ref() != Some(&token);
         let patch = GuiPersistedSettingsPatch::PlexAuthenticated {
             user_token: token,
@@ -700,9 +710,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_refresh_plex_servers_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -713,7 +724,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         if let Err(error) =
             self.start_plex_server_refresh_worker(&settings, GuiPlexServerRefreshContext::Manual)
         {
@@ -737,11 +748,12 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_select_plex_server_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         machine_identifier: String,
         uri: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -765,7 +777,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         };
-        let previous_settings = projected_state.saved_configuration.clone();
+        let previous_settings = projected_state.settings.saved.clone();
         let patch = GuiPersistedSettingsPatch::PlexServerSelected {
             machine_identifier: server.machine_identifier,
             uri: server.uri,
@@ -793,10 +805,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_toggle_plex_sync_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -807,7 +820,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let previous_settings = projected_state.saved_configuration.clone();
+        let previous_settings = projected_state.settings.saved.clone();
         let patch = GuiPersistedSettingsPatch::PlexSyncEnabled(enabled);
         let Some(settings) = self.persist_plex_patch(
             handle,
@@ -830,10 +843,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_toggle_plex_streaming_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -844,7 +858,7 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        let previous_settings = projected_state.saved_configuration.clone();
+        let previous_settings = projected_state.settings.saved.clone();
         let patch = GuiPersistedSettingsPatch::PlexStreamingEnabled(enabled);
         let Some(settings) = self.persist_plex_patch(
             handle,
@@ -867,7 +881,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_disconnect_plex_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(_settings) = self.persist_plex_patch(
             handle,
@@ -891,10 +905,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_search_selected_plex_server_media_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         query: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -906,7 +921,8 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         }
         let picker = projected_state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .get_or_insert_with(Default::default);
         picker.query.clone_from(&query);
         picker.searching = true;
@@ -929,7 +945,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return true;
             }
         };
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let operation_context = self.plex_operation_context(&settings);
         let config = plex_config_from_settings(&settings);
         let worker_query = query.clone();
@@ -975,10 +991,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_resolve_plex_playlist_item_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         rating_key: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -990,7 +1007,8 @@ impl GuiPersistedConfigRuntimeOwner {
             return true;
         }
         let picker = projected_state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .get_or_insert_with(Default::default);
         picker.adding_rating_key = Some(rating_key.clone());
         picker.error = None;
@@ -1008,7 +1026,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return true;
             }
         };
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let operation_context = self.plex_operation_context(&settings);
         let config = plex_config_from_settings(&settings);
         let worker_rating_key = rating_key.clone();
@@ -1065,9 +1083,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn sync_plex_watch_state(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -1083,7 +1102,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.plex_sync_rx.is_some() {
             return false;
         }
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let operation_context = self.plex_operation_context(&settings);
         let config = plex_config_from_settings(&settings);
         if !config.enabled || !config.has_selected_server() {
@@ -1155,9 +1174,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn pump_plex_playlist_workers(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::Plex)
         {
@@ -1201,7 +1221,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_plex_sync_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(rx) = self.plex_sync_rx.take() else {
             return false;
@@ -1209,7 +1229,7 @@ impl GuiPersistedConfigRuntimeOwner {
         match rx.try_recv() {
             Ok(result)
                 if result.operation_context
-                    == self.plex_operation_context(&projected_state.saved_configuration) =>
+                    == self.plex_operation_context(&projected_state.settings.saved) =>
             {
                 let cache_save_error = result.staged_cache_write.and_then(|staged| match staged {
                     Ok(staged) => staged
@@ -1245,7 +1265,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_plex_playlist_search_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(job) = self.plex_playlist_search_job.take() else {
             return;
@@ -1254,9 +1274,10 @@ impl GuiPersistedConfigRuntimeOwner {
             let (restore_job, actions) = match job.result_rx.try_recv() {
                 Ok(result) => {
                     let current_context =
-                        self.plex_operation_context(&projected_state.saved_configuration);
+                        self.plex_operation_context(&projected_state.settings.saved);
                     let picker_accepts = projected_state
-                        .plex_playlist_search
+                        .plex
+                        .playlist_search
                         .as_ref()
                         .is_some_and(|search| search.searching && search.query == job.query);
                     if result.id != job.id
@@ -1284,9 +1305,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(mpsc::TryRecvError::Empty) => (true, Vec::new()),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let current_context =
-                        self.plex_operation_context(&projected_state.saved_configuration);
+                        self.plex_operation_context(&projected_state.settings.saved);
                     let picker_accepts = projected_state
-                        .plex_playlist_search
+                        .plex
+                        .playlist_search
                         .as_ref()
                         .is_some_and(|search| search.searching && search.query == job.query);
                     let actions = if job.operation_context == current_context && picker_accepts {
@@ -1321,7 +1343,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn drain_plex_playlist_resolve_worker(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) {
         let Some(job) = self.plex_playlist_resolve_job.take() else {
             return;
@@ -1330,9 +1352,10 @@ impl GuiPersistedConfigRuntimeOwner {
             let (restore_job, actions, requests) = match job.result_rx.try_recv() {
                 Ok(result) => {
                     let current_context =
-                        self.plex_operation_context(&projected_state.saved_configuration);
+                        self.plex_operation_context(&projected_state.settings.saved);
                     let picker_accepts = projected_state
-                        .plex_playlist_search
+                        .plex
+                        .playlist_search
                         .as_ref()
                         .and_then(|search| search.adding_rating_key.as_deref())
                         == Some(job.rating_key.as_str());
@@ -1386,9 +1409,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(mpsc::TryRecvError::Empty) => (true, Vec::new(), Vec::new()),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let current_context =
-                        self.plex_operation_context(&projected_state.saved_configuration);
+                        self.plex_operation_context(&projected_state.settings.saved);
                     let picker_accepts = projected_state
-                        .plex_playlist_search
+                        .plex
+                        .playlist_search
                         .as_ref()
                         .and_then(|search| search.adding_rating_key.as_deref())
                         == Some(job.rating_key.as_str());
@@ -1423,7 +1447,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn complete_plex_playlist_search_with_error(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         query: String,
         error: String,
     ) {
@@ -1441,7 +1465,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn complete_plex_playlist_resolve_with_error(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         rating_key: String,
         error: String,
     ) {
@@ -1502,7 +1526,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn persist_plex_patch(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         patch: GuiPersistedSettingsPatch,
         failure_context: &str,
     ) -> Option<StoredClientSettings> {
@@ -1531,13 +1555,13 @@ impl GuiPersistedConfigRuntimeOwner {
     fn sync_plex_runtime_snapshot(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         status: Option<PlexSyncStatus>,
     ) {
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let status = status.or_else(|| self.plex_sync_engine.as_ref().map(PlexSyncEngine::status));
         let snapshot = self.plex_snapshot_from_settings_and_status(&settings, status.as_ref());
-        if GuiPlexRuntimeSnapshot::from(&projected_state.plex) != snapshot {
+        if GuiPlexRuntimeSnapshot::from(&projected_state.plex.model) != snapshot {
             self.plex_runtime_snapshot = snapshot.clone();
             Self::push_actions_and_project(
                 handle,
@@ -1646,12 +1670,12 @@ impl GuiPersistedConfigRuntimeOwner {
     fn apply_plex_error(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         message: String,
     ) {
         self.plex_runtime_snapshot.last_error = Some(message.clone());
         let mut snapshot =
-            self.plex_snapshot_from_settings_and_status(&projected_state.saved_configuration, None);
+            self.plex_snapshot_from_settings_and_status(&projected_state.settings.saved, None);
         snapshot.status = "error".to_owned();
         snapshot.last_error = Some(message.clone());
         Self::push_actions_and_project(
@@ -1901,6 +1925,7 @@ fn open_system_url_command(url: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::runtime_owner::player_event_test_support::*;
     use crate::app::testing::support::test_temp_root;
     use crate::app::{GuiOwnedPlayer, SecretDraft};
 
@@ -1908,7 +1933,7 @@ mod tests {
     fn accepted_then_rejected_plex_load_never_enters_watch_sync() {
         #[derive(Default)]
         struct AcceptedPlexState {
-            outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+            events: Option<ScriptedPlayerEvents>,
         }
 
         struct AcceptedPlexPlayer {
@@ -1932,14 +1957,25 @@ mod tests {
                 Ok(sorotte_player_api::PlayerCommandId::new(17))
             }
 
-            fn take_media_load_outcome(
-                &mut self,
-            ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
                 self.state
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .outcomes
-                    .pop_front()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .events
+                    .as_ref()
+                    .and_then(ScriptedPlayerEvents::peek)
+            }
+            fn acknowledge_player_event_batch(
+                &mut self,
+                token: sorotte_player_api::PlayerEventAcknowledgementToken,
+            ) -> Result<(), sorotte_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .events
+                    .as_mut()
+                    .expect("scripted ingress")
+                    .acknowledge(token)
             }
         }
 
@@ -1970,7 +2006,11 @@ mod tests {
             logical_file: logical_file.clone(),
             playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(playback_url),
         };
-        let player_state = std::sync::Arc::new(std::sync::Mutex::new(AcceptedPlexState::default()));
+        let player_state = std::sync::Arc::new(std::sync::Mutex::new(AcceptedPlexState {
+            events: Some(ScriptedPlayerEvents::new(
+                sorotte_player_api::PlayerAttachmentEpoch::new(1),
+            )),
+        }));
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(AcceptedPlexPlayer {
             state: player_state.clone(),
@@ -1995,12 +2035,15 @@ mod tests {
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .outcomes
-            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::failure(
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .push_outcome(load_failed(
+                1,
+                Some(sorotte_player_api::PlayerCommandId::new(17)),
                 playback_url,
                 None,
                 sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
-                "player rejected the Plex stream",
             ));
         owner.refresh_player_state_impl();
 
@@ -2324,13 +2367,14 @@ mod tests {
     }
 
     fn mark_plex_picker_busy(
-        state: &mut SorotteGuiShellAppState,
+        state: &mut GuiRuntimeState,
         query: &str,
         adding_rating_key: Option<&str>,
     ) {
-        state.plex_playlist_search = Some(Default::default());
+        state.plex.playlist_search = Some(Default::default());
         let picker = state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_mut()
             .expect("test Plex picker should exist");
         picker.query = query.to_owned();
@@ -2368,7 +2412,7 @@ mod tests {
 
     fn install_blocked_plex_playlist_jobs(
         owner: &mut GuiPersistedConfigRuntimeOwner,
-        state: &mut SorotteGuiShellAppState,
+        state: &mut GuiRuntimeState,
         query: &str,
         rating_key: &str,
     ) -> (
@@ -2377,7 +2421,7 @@ mod tests {
     ) {
         mark_plex_picker_busy(state, query, Some(rating_key));
         let operation_context =
-            owner.plex_operation_context(&state.configuration.to_stored_settings());
+            owner.plex_operation_context(&state.settings.draft.to_stored_settings());
         let search_id = owner.begin_plex_playlist_job_generation();
         let resolve_id = owner.begin_plex_playlist_job_generation();
         let (search_tx, search_rx) = mpsc::channel();
@@ -2399,11 +2443,11 @@ mod tests {
 
     fn assert_plex_playlist_jobs_cancelled(
         owner: &GuiPersistedConfigRuntimeOwner,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
     ) {
         assert!(owner.plex_playlist_search_job.is_none());
         assert!(owner.plex_playlist_resolve_job.is_none());
-        assert!(state.plex_playlist_search.is_none());
+        assert!(state.plex.playlist_search.is_none());
     }
 
     #[test]
@@ -2418,7 +2462,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         mark_plex_picker_busy(&mut state, "movie", Some("rating-a"));
         let operation_context = owner.plex_operation_context(&settings);
         let id = owner.begin_plex_playlist_job_generation();
@@ -2455,7 +2499,7 @@ mod tests {
         owner.pump_plex_playlist_workers(&handle, &mut state);
 
         assert!(owner.plex_playlist_resolve_job.is_none());
-        assert!(state.plex_playlist_search.is_none());
+        assert!(state.plex.playlist_search.is_none());
         assert_eq!(state.current_shared_playlist_entries(), playlist_before);
         assert!(handle.drain_requests().is_empty());
         assert!(handle.drain_actions().is_empty());
@@ -2473,7 +2517,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         mark_plex_picker_busy(&mut state, "movie", Some("rating-a"));
         let operation_context = owner.plex_operation_context(&settings);
         let id = owner.begin_plex_playlist_job_generation();
@@ -2531,8 +2575,9 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut stale_projection = SorotteGuiShellAppState::from_stored_settings(&settings);
-        assert!(stale_projection.plex_playlist_search.is_none());
+        let mut stale_projection =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
+        assert!(stale_projection.plex.playlist_search.is_none());
         let handle = GuiQueuedRuntimeBridgeHandle::default();
 
         assert!(owner.handle_search_selected_plex_server_media_request(
@@ -2564,7 +2609,8 @@ mod tests {
         owner.drain_plex_playlist_search_worker(&handle, &mut stale_projection);
 
         let picker = stale_projection
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_ref()
             .expect("request intent should create the runtime picker projection");
         assert!(!picker.searching);
@@ -2585,8 +2631,9 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut stale_projection = SorotteGuiShellAppState::from_stored_settings(&settings);
-        assert!(stale_projection.plex_playlist_search.is_none());
+        let mut stale_projection =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
+        assert!(stale_projection.plex.playlist_search.is_none());
         let handle = GuiQueuedRuntimeBridgeHandle::default();
 
         assert!(owner.handle_resolve_plex_playlist_item_request(
@@ -2639,7 +2686,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         mark_plex_picker_busy(&mut state, "search-a", None);
         let operation_context = owner.plex_operation_context(&settings);
         let old_id = owner.begin_plex_playlist_job_generation();
@@ -2653,10 +2700,7 @@ mod tests {
         let handle = GuiQueuedRuntimeBridgeHandle::default();
 
         assert!(state.apply(GuiShellAction::CancelPlexPlaylistSearch));
-        assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
-        assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
-            query: "search-b".to_owned(),
-        }));
+        mark_plex_picker_busy(&mut state, "search-b", None);
         assert!(owner.handle_runtime_request(
             &handle,
             &mut state,
@@ -2666,7 +2710,8 @@ mod tests {
         ));
 
         let reopened = state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_ref()
             .expect("a delayed picker-close cancellation must not close the reopened picker");
         assert_eq!(reopened.query, "search-b");
@@ -2711,7 +2756,8 @@ mod tests {
         owner.drain_plex_playlist_search_worker(&handle, &mut state);
 
         let completed = state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_ref()
             .expect("search B picker should remain open");
         assert_eq!(completed.query, "search-b");
@@ -2738,7 +2784,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         mark_plex_picker_busy(&mut state, "movie", Some("rating-a"));
         let operation_context = owner.plex_operation_context(&settings);
         let old_id = owner.begin_plex_playlist_job_generation();
@@ -2750,7 +2796,8 @@ mod tests {
             old_rx,
         ));
         state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_mut()
             .expect("Plex picker should exist")
             .adding_rating_key = Some("rating-b".to_owned());
@@ -2829,7 +2876,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         mark_plex_picker_busy(&mut state, "search-b", None);
         let operation_context = owner.plex_operation_context(&settings);
         let old_id = owner.begin_plex_playlist_job_generation();
@@ -2896,7 +2943,7 @@ mod tests {
             GuiPlexServerReachability::Reachable,
         );
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         let previous_context = owner.plex_operation_context(&settings);
         let (_search_tx, _resolve_tx) =
             install_blocked_plex_playlist_jobs(&mut owner, &mut state, "old-query", "old-rating");
@@ -2945,7 +2992,8 @@ mod tests {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let old_context = owner.plex_operation_context(&old_settings);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&old_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&old_settings);
         mark_plex_picker_busy(&mut state, "movie", None);
         let (old_tx, old_rx) = mpsc::channel();
         owner.plex_playlist_search_job = Some(active_plex_search_job(
@@ -2961,12 +3009,9 @@ mod tests {
             &old_settings,
             &new_settings,
         );
-        assert!(state.plex_playlist_search.is_none());
-        state = SorotteGuiShellAppState::from_stored_settings(&new_settings);
-        assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
-        assert!(state.apply(GuiShellAction::SubmitPlexPlaylistSearch {
-            query: "movie".to_owned(),
-        }));
+        assert!(state.plex.playlist_search.is_none());
+        state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&new_settings);
+        mark_plex_picker_busy(&mut state, "movie", None);
         let new_context = owner.plex_operation_context(&new_settings);
         let (new_tx, new_rx) = mpsc::channel();
         new_tx
@@ -2984,7 +3029,8 @@ mod tests {
 
         assert_eq!(
             state
-                .plex_playlist_search
+                .plex
+                .playlist_search
                 .as_ref()
                 .and_then(|search| search.results.first())
                 .map(|result| result.rating_key.as_str()),
@@ -3023,7 +3069,8 @@ mod tests {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let old_context = owner.plex_operation_context(&old_settings);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&old_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&old_settings);
         owner.invalidate_plex_operation_context_if_settings_changed(
             &handle,
             &mut state,
@@ -3031,7 +3078,7 @@ mod tests {
             &new_settings,
         );
         let new_context = owner.plex_operation_context(&new_settings);
-        state = SorotteGuiShellAppState::from_stored_settings(&new_settings);
+        state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&new_settings);
         mark_plex_picker_busy(&mut state, "movie", Some("new-rating"));
 
         let (new_tx, new_rx) = mpsc::channel();
@@ -3053,7 +3100,8 @@ mod tests {
         assert_eq!(handle.drain_requests().len(), 1);
 
         state
-            .plex_playlist_search
+            .plex
+            .playlist_search
             .as_mut()
             .expect("Plex picker should remain open")
             .adding_rating_key = Some("old-rating".to_owned());
@@ -3105,7 +3153,7 @@ mod tests {
             ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         let (_search_tx, _resolve_tx) =
             install_blocked_plex_playlist_jobs(&mut owner, &mut state, "movie", "rating-a");
         let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -3142,7 +3190,8 @@ mod tests {
         let engine = owner
             .take_plex_sync_engine(plex_config_from_settings(&old_settings))
             .expect("test sync engine should be created");
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&old_settings);
+        let mut state =
+            crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&old_settings);
         let (_search_tx, _resolve_tx) =
             install_blocked_plex_playlist_jobs(&mut owner, &mut state, "movie", "rating-a");
         let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -3195,7 +3244,7 @@ mod tests {
             .plex_cache_path()
             .expect("configured owner should provide a Plex cache path");
         let old_context = owner.plex_operation_context(&settings);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&settings);
         let (_search_tx, _resolve_tx) =
             install_blocked_plex_playlist_jobs(&mut owner, &mut state, "movie", "rating-a");
         let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -3249,13 +3298,15 @@ mod tests {
         let (_resolve_tx, resolve_rx) = mpsc::channel();
         let (_stream_tx, stream_rx) = mpsc::channel();
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
-            plex_plugin_enabled: Some(true),
-            plex_user_token: Some("user-token".into()),
-            ..StoredClientSettings::default()
-        });
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                plex_plugin_enabled: Some(true),
+                plex_user_token: Some("user-token".into()),
+                ..StoredClientSettings::default()
+            },
+        );
         mark_plex_picker_busy(&mut state, "old-query", Some("old-rating"));
-        let old_context = owner.plex_operation_context(&state.configuration.to_stored_settings());
+        let old_context = owner.plex_operation_context(&state.settings.draft.to_stored_settings());
         owner.plex_sync_rx = Some(sync_rx);
         owner.plex_sync_next_tick_due_at = Some(Instant::now());
         owner.plex_playlist_search_job = Some(active_plex_search_job(
@@ -3284,12 +3335,13 @@ mod tests {
         assert!(owner.plex_sync_next_tick_due_at.is_none());
         assert!(owner.plex_playlist_search_job.is_none());
         assert!(owner.plex_playlist_resolve_job.is_none());
-        assert!(state.plex_playlist_search.is_none());
+        assert!(state.plex.playlist_search.is_none());
         assert!(owner.plex_stream_resolve_rx.is_none());
         assert!(owner.plex_stream_resolve_trigger_key.is_none());
         assert_eq!(
             state
-                .configuration
+                .settings
+                .draft
                 .settings
                 .plex_selected_server_url
                 .as_deref(),
@@ -3305,7 +3357,7 @@ mod tests {
         let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
         assert_eq!(
-            owner.persisted_settings_config_path_for_request(&state),
+            owner.persisted_settings_config_path_for_request(&runtime_state_for_shell(&state)),
             None,
             "an explicitly pathless runtime owner must never discover and write the user's profile"
         );
@@ -3357,15 +3409,20 @@ mod tests {
         let focused_before = state.focused_configuration_control.clone();
         let edit_before = state.text_edit_session.clone();
 
+        let mut worker = runtime_state_for_shell(&state);
         owner.apply_plex_auth_poll_result(
             &handle,
-            &mut state,
+            &mut worker,
             true,
             PlexAuthPollResult {
                 auth_token: Some("new-account-token".into()),
                 expires_at: None,
             },
         );
+        let emitted_actions = handle.drain_actions();
+        for action in &emitted_actions {
+            state.apply(action.clone());
+        }
 
         let disk = sorotte_client_app::app_boundary::persistence::load_sorotte_ini_stored_client_settings_from_path(
             &config_path,
@@ -3423,7 +3480,7 @@ mod tests {
         assert!(state.plex.authenticated);
         assert!(owner.plex_runtime_snapshot.authenticated);
         assert_eq!(state.plex.status, "ready");
-        assert!(handle.drain_actions().iter().any(|action| matches!(
+        assert!(emitted_actions.clone().iter().any(|action| matches!(
             action,
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Success,
@@ -3482,15 +3539,20 @@ mod tests {
         let focused_before = state.focused_configuration_control.clone();
         let edit_before = state.text_edit_session.clone();
 
+        let mut worker = runtime_state_for_shell(&state);
         owner.apply_plex_auth_poll_result(
             &handle,
-            &mut state,
+            &mut worker,
             true,
             PlexAuthPollResult {
                 auth_token: Some("new-account-token".into()),
                 expires_at: None,
             },
         );
+        let emitted_actions = handle.drain_actions();
+        for action in &emitted_actions {
+            state.apply(action.clone());
+        }
 
         assert_eq!(state.saved_configuration, saved_before);
         assert_eq!(state.configuration.settings, draft_before);
@@ -3504,7 +3566,7 @@ mod tests {
         }));
         assert_eq!(owner.plex_servers.len(), 1);
         assert!(state.has_unsaved_configuration_changes());
-        assert!(handle.drain_actions().iter().any(|action| matches!(
+        assert!(emitted_actions.clone().iter().any(|action| matches!(
             action,
             GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Warning,

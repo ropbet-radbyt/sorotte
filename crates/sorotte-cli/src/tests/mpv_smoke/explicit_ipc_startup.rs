@@ -159,14 +159,28 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
         let mut last_telemetry = None;
 
         while started.elapsed() < timeout {
-            if let Some(update) = adapter.take_local_file_update() {
+            let mut files = Vec::new();
+            while let Some(batch) = adapter.take_player_event_batch() {
+                for event in &batch.events {
+                    match &event.event {
+                        sorotte_player_api::PlayerEvent::LocalFileChanged { update, .. } => {
+                            files.push(update.clone())
+                        }
+                        sorotte_player_api::PlayerEvent::TransportDelta(delta) => {
+                            last_telemetry = Some(delta.clone())
+                        }
+                        _ => {}
+                    }
+                }
+                adapter
+                    .acknowledge_player_event_batch(batch.acknowledgement_token)
+                    .expect("native metadata receipt");
+            }
+            for update in files {
                 if update.name == expected_name {
                     saw_local_file = true;
                 }
                 last_update = Some(update);
-            }
-            while let Some(telemetry) = adapter.take_playback_telemetry_update() {
-                last_telemetry = Some(telemetry);
             }
 
             if adapter.paused() {

@@ -471,7 +471,6 @@ impl SeekFixture {
         let mut runtime = ClientRuntime::new(
             participant_status_session(),
             CoordinatedTestPlayer {
-                ordered_delivery: true,
                 ..CoordinatedTestPlayer::default()
             },
             QueuedRuntimeControl::default(),

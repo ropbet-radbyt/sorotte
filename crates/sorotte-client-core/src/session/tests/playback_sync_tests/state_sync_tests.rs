@@ -86,15 +86,17 @@ fn first_remote_room_revision_waits_for_physical_convergence_before_echo() {
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(12.5)
-                .with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(true)),
+        );
 
     let sent = runtime.run_state_sync_reconcile_with_inbound_state(
         StatePayload::new()
@@ -168,12 +170,12 @@ fn first_remote_room_revision_waits_for_physical_convergence_before_echo() {
 
     runtime.flush_queued_protocol_messages();
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(12.6)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.6)
+                .with_paused(false),
+        );
     assert!(
         runtime.run_state_sync_reconcile_with_inbound_state(
             StatePayload::new().with_playstate(
@@ -216,14 +218,16 @@ fn observed_explicit_pause_intent_can_mutate_the_first_remote_room_baseline() {
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(12.5)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false)),
+        );
     runtime.prepare_playback_media(
         LogicalMediaId::new("pre-baseline-explicit-play").expect("logical ID should be valid"),
         MediaTransportKind::LocalFile,
@@ -274,14 +278,16 @@ fn staged_pause_intent_overrides_stale_playing_telemetry_in_state_response() {
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(12.5)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false)),
+        );
     runtime.prepare_playback_media(
         LogicalMediaId::new("pause-command-before-player-edge")
             .expect("logical ID should be valid"),
@@ -347,14 +353,16 @@ fn heartbeat_publishes_pending_pause_instead_of_pre_command_player_sample() {
         .expect("canonical playing state should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(12.5)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(false)),
+        );
     runtime.prepare_playback_media(
         LogicalMediaId::new("pause-heartbeat-before-player-edge")
             .expect("logical ID should be valid"),
@@ -393,14 +401,16 @@ fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() 
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(true)),
+        );
     let canonical_playing = || {
         StatePayload::new().with_playstate(
             PlaystatePayload::new()
@@ -421,12 +431,12 @@ fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() 
     // The room baseline has arrived, but the external player has not applied
     // its correction yet. This physical lag is observation, not user intent.
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(10.0)
-            .with_paused(true),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(true),
+        );
     assert!(runtime.run_state_sync_reconcile_with_inbound_state(
         canonical_playing(),
         0.0,
@@ -633,14 +643,16 @@ fn blocked_state_write_coalesces_repeated_heartbeats_to_the_latest_pending_state
         )
         .expect("room playback state should apply");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false)),
+        );
 
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     runtime
@@ -653,12 +665,12 @@ fn blocked_state_write_coalesces_repeated_heartbeats_to_the_latest_pending_state
 
     for position in [20.0, 30.0, 40.0] {
         runtime
-            .player_mut_for_test()
-            .pending_playback_telemetry_update = Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(position)
-                .with_paused(false),
-        );
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(position)
+                    .with_paused(false),
+            );
         assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     }
 
@@ -695,14 +707,16 @@ fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
         )
         .expect("room playback state should apply");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false)),
+        );
 
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let staged_line = runtime
@@ -712,12 +726,12 @@ fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
 
     for position in [20.0, 30.0] {
         runtime
-            .player_mut_for_test()
-            .pending_playback_telemetry_update = Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(position)
-                .with_paused(false),
-        );
+            .session_mut()
+            .apply_player_playback_telemetry_update(
+                &PlayerPlaybackTelemetryUpdate::default()
+                    .with_position_seconds(position)
+                    .with_paused(false),
+            );
         assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     }
 
@@ -767,15 +781,17 @@ fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down
         .insert("room1".to_owned(), now_seconds - 2.0);
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(15.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(15.0)
+                .with_paused(false)),
+        );
 
     assert!(
         runtime.run_state_sync_heartbeat_with_ping(true),
@@ -817,11 +833,16 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
     fn runtime_fixture() -> ClientRuntime<RecordingPlayer, QueuedRuntimeControl> {
         let session = desync_session_with_remote_state(5.0, false, false, "bob");
         let player = RecordingPlayer {
-            pending_playback_telemetry_update: Some(local_unpaused_telemetry(0.2)),
             ..RecordingPlayer::default()
         };
         let control = QueuedRuntimeControl::default();
-        ClientRuntime::new(session, player, control)
+        {
+            let mut observed_runtime = ClientRuntime::new(session, player, control);
+            observed_runtime
+                .session_mut()
+                .apply_player_playback_telemetry_update(&(local_unpaused_telemetry(0.2)));
+            observed_runtime
+        }
     }
 
     let mut baseline_runtime = runtime_fixture();
@@ -829,8 +850,8 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
         .run_desync_correction_if_needed(0.0, false, false, false)
         .expect("initial behind detection should not fail");
     baseline_runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
+        .session_mut()
+        .apply_player_playback_telemetry_update(&local_unpaused_telemetry(0.2));
     baseline_runtime
         .run_desync_correction_if_needed(4.0, false, false, false)
         .expect("borderline fastforward check should not fail");
@@ -846,8 +867,8 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
         .run_desync_correction_if_needed(0.0, false, false, false)
         .expect("initial behind detection with forward delay should not fail");
     compensated_runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(local_unpaused_telemetry(0.2));
+        .session_mut()
+        .apply_player_playback_telemetry_update(&local_unpaused_telemetry(0.2));
     compensated_runtime
         .run_desync_correction_if_needed(4.0, false, false, false)
         .expect("compensated fastforward check should not fail");

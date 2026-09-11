@@ -47,14 +47,16 @@ fn ping_only_reconcile_rejects_partial_playstate_updates() {
 fn telemetry_reconcile_rejects_partial_playstate_updates() {
     let session = session_with_paused_room_state();
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(true)),
+        );
 
     let sent = runtime.run_state_sync_reconcile_with_inbound_state(
         StatePayload::new().with_playstate(PlaystatePayload::new().with_position(99.0)),
@@ -178,12 +180,12 @@ fn ping_only_first_tagged_revision_retains_player_evidence_fence() {
 
     runtime.flush_queued_protocol_messages();
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(0.0)
-            .with_paused(true),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(0.0)
+                .with_paused(true),
+        );
     assert!(runtime.run_state_sync_reconcile_with_inbound_state(
         first_revision.clone(),
         100.0,
@@ -201,12 +203,12 @@ fn ping_only_first_tagged_revision_retains_player_evidence_fence() {
 
     runtime.flush_queued_protocol_messages();
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(0.2)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(0.2)
+                .with_paused(false),
+        );
     assert!(runtime.run_state_sync_reconcile_with_inbound_state(
         first_revision,
         100.0,

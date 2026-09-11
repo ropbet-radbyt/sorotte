@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 fn complete_detached_missing_media_search(
     owner: &mut GuiPersistedConfigRuntimeOwner,
@@ -71,14 +72,16 @@ fn detached_missing_media_search_uses_saved_directories_until_draft_is_saved() {
     }));
 
     assert_eq!(
-        owner.automatic_media_search_roots(&state),
+        owner.automatic_media_search_roots(&runtime_state_for_shell(&state)),
         vec![saved_root.clone()],
         "detached runtime roots must ignore the unsaved directory B"
     );
     assert_eq!(
-        GuiPersistedConfigRuntimeOwner::detached_runtime_settings_for_state(&state)
-            .settings
-            .media_search_directories,
+        GuiPersistedConfigRuntimeOwner::detached_runtime_settings_for_state(
+            &runtime_state_for_shell(&state)
+        )
+        .settings
+        .media_search_directories,
         saved_settings.media_search_directories,
         "detached session snapshots must also ignore the unsaved directory B"
     );
@@ -99,14 +102,16 @@ fn detached_missing_media_search_uses_saved_directories_until_draft_is_saved() {
     }
     assert_eq!(state.saved_configuration, submitted_settings);
     assert_eq!(
-        owner.automatic_media_search_roots(&state),
+        owner.automatic_media_search_roots(&runtime_state_for_shell(&state)),
         vec![draft_root.clone()],
         "directory B must become the detached runtime root after Save"
     );
     assert_eq!(
-        GuiPersistedConfigRuntimeOwner::detached_runtime_settings_for_state(&state)
-            .settings
-            .media_search_directories,
+        GuiPersistedConfigRuntimeOwner::detached_runtime_settings_for_state(
+            &runtime_state_for_shell(&state)
+        )
+        .settings
+        .media_search_directories,
         submitted_settings.media_search_directories,
         "detached session snapshots must adopt directory B after Save"
     );

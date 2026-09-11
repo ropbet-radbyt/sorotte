@@ -3,9 +3,9 @@ use super::ordered_events::OrderedLoadInstall;
 use super::ordered_events::snapshot_known_copy;
 use super::*;
 use sorotte_player_api::{
-    DisconnectedPlayer, PlayerAdapter, PlayerCapabilities, PlayerCapability, PlayerCommand,
-    PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerObservationTimestamp,
-    PlayerPhysicalLoadOutcome, PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    DisconnectedPlayer, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerError,
+    PlayerMediaGeneration, PlayerObservationTimestamp, PlayerPhysicalLoadOutcome,
+    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
 };
 use sorotte_protocol::{
     CommitStartPayload, ParticipantPlaybackPhase, ParticipantPlayerConnection,
@@ -853,7 +853,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
     playing.playback_rate = Some(1.0);
     playing.cache_buffering_percent = Some(67.0);
     playing.buffered_ahead_seconds = Some(8.25);
-    runtime.player.transport_updates.push_back(playing);
+    runtime.player.queue_from_started_media(playing);
 
     runtime
         .drain_player_transport_coordination(base_now)
@@ -888,12 +888,9 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
     assert_eq!(reports[0].report_sequence, 2);
     assert_eq!(reports[0].position_seconds, Some(42.5));
 
-    runtime.player.transport_updates.push_back(transport(
-        1,
-        2.0,
-        PlayerTransportPhase::Playing,
-        43.5,
-    ));
+    runtime
+        .player
+        .queue_from_started_media(transport(1, 2.0, PlayerTransportPhase::Playing, 43.5));
     runtime
         .drain_player_transport_coordination(base_now + 1.0)
         .expect("same coarse phase should drain");
@@ -904,7 +901,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
 
     let mut buffering = transport(1, 3.0, PlayerTransportPhase::Rebuffering, 43.5);
     buffering.buffered_ahead_seconds = Some(0.25);
-    runtime.player.transport_updates.push_back(buffering);
+    runtime.player.queue_from_started_media(buffering);
     runtime
         .drain_player_transport_coordination(base_now + 2.0)
         .expect("rebuffering transition should drain");
@@ -2129,12 +2126,9 @@ fn runtime_never_reports_when_server_did_not_negotiate_participant_status() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.player.transport_updates.push_back(transport(
-        1,
-        1.0,
-        PlayerTransportPhase::Playing,
-        5.0,
-    ));
+    runtime
+        .player
+        .queue_from_started_media(transport(1, 1.0, PlayerTransportPhase::Playing, 5.0));
     runtime.drain_player_transport_coordination(1.0).unwrap();
     assert!(runtime.flush_queued_protocol_messages().is_empty());
 
@@ -2693,11 +2687,10 @@ fn has_pause_play_or_seek(actions: &[PlaybackCoordinatorAction]) -> bool {
 
 #[derive(Default)]
 struct CoordinatedTestPlayer {
-    transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
-    command_progress_updates: VecDeque<sorotte_player_api::PlayerCommandProgress>,
     ordered_batches: VecDeque<PlayerEventBatch>,
     acknowledged_batches: Vec<PlayerEventAcknowledgementToken>,
-    ordered_delivery: bool,
+    scripted_sequence: u64,
+    scripted_generation: Option<PlayerMediaGeneration>,
     reject_next_acknowledgement: bool,
     commands: Vec<PlayerCommand>,
     next_command_id: u64,
@@ -2708,17 +2701,82 @@ struct CoordinatedTestPlayer {
     ordered_batch_after_rejected_seek: Option<PlayerEventBatch>,
 }
 
+impl CoordinatedTestPlayer {
+    fn queue_delivery(
+        &mut self,
+        event: Option<PlayerEvent>,
+        outcome: Option<PlayerSemanticOutcome>,
+    ) {
+        self.scripted_sequence += 1;
+        let epoch = PlayerAttachmentEpoch::new(1);
+        let order = PlayerEventOrder::new(epoch, self.scripted_sequence);
+        self.ordered_batches.push_back(PlayerEventBatch {
+            attachment_epoch: epoch,
+            sequence_boundary: PlayerSequenceBoundary::new(epoch, order.sequence),
+            authoritative_snapshot: None,
+            events: event
+                .into_iter()
+                .map(|event| SequencedPlayerEvent { order, event })
+                .collect(),
+            semantic_outcomes: outcome
+                .into_iter()
+                .map(|outcome| SequencedPlayerSemanticOutcome { order, outcome })
+                .collect(),
+            acknowledgement_token: PlayerEventAcknowledgementToken::new(epoch, order.sequence),
+        });
+    }
+
+    // These scenarios explicitly observe media that has started. Subsequent deltas
+    // keep their own generation and optional clock, including stale evidence.
+    fn queue_from_started_media(&mut self, update: PlayerTransportTelemetryUpdate) {
+        let generation = update
+            .media_generation
+            .expect("the scenario identifies its physical media");
+        if self.scripted_generation.is_none() {
+            self.scripted_generation = Some(generation);
+            self.queue_delivery(
+                Some(PlayerEvent::LoadAttemptStarting {
+                    attempt_id: LoadAttemptId::new(1),
+                    media_generation: generation,
+                    command_id: None,
+                    playlist_entry_id: 1,
+                    owns_transport: true,
+                }),
+                None,
+            );
+        }
+        let mut delta = PlayerTransportDelta::from(update);
+        delta.load_attempt_id = Some(LoadAttemptId::new(1));
+        self.queue_delivery(Some(PlayerEvent::TransportDelta(delta)), None);
+    }
+
+    fn queue_command_outcome(
+        &mut self,
+        command_id: PlayerCommandId,
+        media_generation: Option<PlayerMediaGeneration>,
+        result: PlayerCommandSemanticResult,
+    ) {
+        self.queue_delivery(
+            None,
+            Some(PlayerSemanticOutcome::Command(
+                sorotte_player_api::PlayerCommandOutcome {
+                    attachment_epoch: PlayerAttachmentEpoch::new(1),
+                    command_id,
+                    media_generation,
+                    result,
+                },
+            )),
+        );
+    }
+}
+
 impl PlayerAdapter for CoordinatedTestPlayer {
     fn name(&self) -> &'static str {
         "coordinated-test-player"
     }
 
-    fn capabilities(&self) -> PlayerCapabilities {
-        if self.advertises_telemetry {
-            PlayerCapabilities::from_capabilities([PlayerCapability::Telemetry])
-        } else {
-            PlayerCapabilities::NONE
-        }
+    fn supports_transport_telemetry(&self) -> bool {
+        self.advertises_telemetry
     }
 
     fn execute(&mut self, command: PlayerCommand) -> Result<(), PlayerError> {
@@ -2782,22 +2840,6 @@ impl PlayerAdapter for CoordinatedTestPlayer {
         Ok(PlayerCommandId::new(self.next_command_id))
     }
 
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        self.transport_updates.pop_front()
-    }
-
-    fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
-        self.command_progress_updates.pop_front()
-    }
-
-    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        if self.ordered_delivery {
-            PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-        } else {
-            PlayerEventDeliveryMode::TypedQueues
-        }
-    }
-
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         self.ordered_batches.front().cloned()
     }
@@ -2832,7 +2874,6 @@ fn ordered_runtime() -> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeContro
     ClientRuntime::new(
         ClientSession::default(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -2921,7 +2962,6 @@ fn ordered_player_batch_emits_participant_status_without_waiting_for_heartbeat()
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -2968,7 +3008,6 @@ fn ordered_delivery_reconciles_new_room_authority_without_waiting_for_another_pl
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3034,7 +3073,6 @@ fn ordered_state_sync_drains_physical_seek_before_publishing_response() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3143,7 +3181,6 @@ fn adjacent_pause_then_seek_rejects_a_late_pre_pause_play_projection() {
     let mut runtime = ClientRuntime::new(
         session,
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3255,7 +3292,6 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3397,7 +3433,6 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3604,7 +3639,6 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3746,7 +3780,6 @@ fn ordered_local_seek_preserves_an_adjacent_physical_pause() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -3891,7 +3924,6 @@ fn ordered_player_batch_reports_status_before_returning_application_error() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             reject_pause_commands: true,
             ..CoordinatedTestPlayer::default()
         },
@@ -3971,7 +4003,6 @@ fn participant_status_ordered_terminal_records_precise_pause_evidence() {
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -4072,7 +4103,6 @@ fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
             r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":4}}}"#,
         )
         .expect("the canonical first row should be selected");
-    runtime.player.ordered_delivery = true;
     runtime.prepare_playback_media(
         LogicalMediaId::new("episode.mkv").unwrap(),
         MediaTransportKind::LocalFile,
@@ -4802,7 +4832,6 @@ fn ordered_attachment_replacement_reports_starting_until_new_epoch_snapshot_has_
     let mut runtime = ClientRuntime::new(
         participant_status_session(),
         CoordinatedTestPlayer {
-            ordered_delivery: true,
             ..CoordinatedTestPlayer::default()
         },
         QueuedRuntimeControl::default(),
@@ -8238,8 +8267,7 @@ fn reconnect_correction_waits_through_loading_cache_pause_and_seek() {
         let mut runtime = reconnect_runtime(true, 100.0, true, 0.0);
         runtime
             .player_mut_for_test()
-            .transport_updates
-            .push_back(paused_transport(1, 1.0, phase, 0.0));
+            .queue_from_started_media(paused_transport(1, 1.0, phase, 0.0));
 
         runtime
             .run_reconnect_state_restore_validation_if_needed_at(10.0)
@@ -8361,8 +8389,7 @@ fn accepted_reconnect_command_needs_matching_transport_observation() {
     let mut runtime = reconnect_runtime(true, 100.0, true, 0.0);
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             1.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8404,8 +8431,7 @@ fn accepted_reconnect_command_needs_matching_transport_observation() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             2.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8441,8 +8467,7 @@ fn reconnect_reconciliation_corrects_self_attributed_room_state() {
         .unwrap();
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             1.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8467,8 +8492,7 @@ fn reconnect_reconciliation_corrects_self_attributed_room_state() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             2.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8491,8 +8515,7 @@ fn newer_room_state_supersedes_stale_reconnect_seek() {
     let mut runtime = reconnect_runtime(true, 100.0, true, 0.0);
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             1.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8519,8 +8542,7 @@ fn newer_room_state_supersedes_stale_reconnect_seek() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             2.0,
             PlayerTransportPhase::ReadyPaused,
@@ -8540,8 +8562,7 @@ fn newer_room_state_supersedes_stale_reconnect_seek() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             3.0,
             PlayerTransportPhase::ReadyPaused,
@@ -11397,16 +11418,11 @@ fn rejected_preparation_seek_projects_runtime_transport_failure() {
 #[test]
 fn tracked_seek_timeout_retains_preparation_through_extended_deadline_and_late_success() {
     let mut runtime = runtime_with_tracked_fetch_seek();
-    runtime
-        .player_mut_for_test()
-        .command_progress_updates
-        .push_back(sorotte_player_api::PlayerCommandProgress::finished(
-            PlayerCommandId::new(1),
-            Some(PlayerMediaGeneration::new(1)),
-            None,
-            None,
-            PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
-        ));
+    runtime.player_mut_for_test().queue_command_outcome(
+        PlayerCommandId::new(1),
+        Some(PlayerMediaGeneration::new(1)),
+        PlayerCommandSemanticResult::CompletionNotObserved,
+    );
     runtime.drain_player_transport_coordination(15.1).unwrap();
     assert!(
         runtime
@@ -11440,8 +11456,7 @@ fn tracked_seek_timeout_retains_preparation_through_extended_deadline_and_late_s
     ready.buffered_ahead_seconds = Some(4.0);
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(ready);
+        .queue_from_started_media(ready);
     runtime.drain_player_transport_coordination(25.0).unwrap();
     assert_eq!(
         runtime
@@ -11455,23 +11470,17 @@ fn tracked_seek_timeout_retains_preparation_through_extended_deadline_and_late_s
 #[test]
 fn transport_failure_remains_terminal_after_tracked_seek_timeout() {
     let mut runtime = runtime_with_tracked_fetch_seek();
-    runtime
-        .player_mut_for_test()
-        .command_progress_updates
-        .push_back(sorotte_player_api::PlayerCommandProgress::finished(
-            PlayerCommandId::new(1),
-            Some(PlayerMediaGeneration::new(1)),
-            None,
-            None,
-            PlayerCommandResult::Failed(PlayerCommandFailureKind::TimedOut),
-        ));
+    runtime.player_mut_for_test().queue_command_outcome(
+        PlayerCommandId::new(1),
+        Some(PlayerMediaGeneration::new(1)),
+        PlayerCommandSemanticResult::CompletionNotObserved,
+    );
     runtime.drain_player_transport_coordination(15.1).unwrap();
 
     let failed = transport(1, 16.0, PlayerTransportPhase::Failed, 5.0);
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(failed);
+        .queue_from_started_media(failed);
     runtime.drain_player_transport_coordination(16.0).unwrap();
     let snapshot = runtime.playback_coordination.snapshot();
     assert_eq!(snapshot.diagnostic, PlaybackDiagnostic::Failed);
@@ -11494,8 +11503,7 @@ fn adapter_ready_paused_update_waits_for_delayed_cache_pause_and_release() {
     transient.playback_restart_sequence = Some(1);
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(transient);
+        .queue_from_started_media(transient);
     runtime.drain_player_transport_coordination(2.0).unwrap();
     assert!(
         runtime
@@ -11514,8 +11522,7 @@ fn adapter_ready_paused_update_waits_for_delayed_cache_pause_and_release() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             2.1,
             PlayerTransportPhase::Rebuffering,
@@ -11532,8 +11539,7 @@ fn adapter_ready_paused_update_waits_for_delayed_cache_pause_and_release() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             3.0,
             PlayerTransportPhase::ReadyPaused,
@@ -12420,8 +12426,7 @@ fn managed_player_single_native_play_edge_emits_one_ready_before_gate_hold_pause
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             0.0,
             PlayerTransportPhase::ReadyPaused,
@@ -12435,8 +12440,7 @@ fn managed_player_single_native_play_edge_emits_one_ready_before_gate_hold_pause
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
+        .queue_from_started_media(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
     runtime
         .drain_player_transport_coordination(0.1)
         .expect("one native Playing edge should be preserved before correction");
@@ -12563,8 +12567,7 @@ fn assert_managed_native_play_survives_manual_v2_phase(
     runtime.flush_queued_protocol_messages();
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             0.0,
             PlayerTransportPhase::ReadyPaused,
@@ -12578,8 +12581,7 @@ fn assert_managed_native_play_survives_manual_v2_phase(
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
+        .queue_from_started_media(transport(1, 0.1, PlayerTransportPhase::Playing, 1.0));
     runtime
         .drain_player_transport_coordination(0.1)
         .expect("the native Play should become controller-owned");
@@ -12710,8 +12712,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             0.0,
             PlayerTransportPhase::ReadyPaused,
@@ -12728,8 +12729,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(paused_transport(
+        .queue_from_started_media(paused_transport(
             1,
             0.1,
             PlayerTransportPhase::ReadyPaused,
@@ -12757,8 +12757,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
 
     runtime
         .player_mut_for_test()
-        .transport_updates
-        .push_back(transport(1, 0.2, PlayerTransportPhase::Playing, 11.0));
+        .queue_from_started_media(transport(1, 0.2, PlayerTransportPhase::Playing, 11.0));
     runtime
         .drain_player_transport_coordination(0.2)
         .expect("native Play should supersede stale canonical pause correction");
@@ -13274,18 +13273,11 @@ fn asynchronous_pause_failure_reports_a_technical_block() {
     runtime
         .execute_causal_pause_command(true, PlayerCommandCause::LocalUserPlaybackControl, 0.05)
         .expect("the tracked pause should initially be accepted");
-    runtime
-        .player_mut_for_test()
-        .command_progress_updates
-        .push_back(sorotte_player_api::PlayerCommandProgress::finished(
-            PlayerCommandId::new(1),
-            Some(PlayerMediaGeneration::new(1)),
-            Some(PlayerObservationTimestamp::from_adapter_start(
-                Duration::from_secs_f64(0.1),
-            )),
-            None,
-            PlayerCommandResult::Failed(PlayerCommandFailureKind::TransportDisconnected),
-        ));
+    runtime.player_mut_for_test().queue_command_outcome(
+        PlayerCommandId::new(1),
+        Some(PlayerMediaGeneration::new(1)),
+        PlayerCommandSemanticResult::TransportDisconnected,
+    );
 
     runtime
         .drain_player_transport_coordination(0.1)

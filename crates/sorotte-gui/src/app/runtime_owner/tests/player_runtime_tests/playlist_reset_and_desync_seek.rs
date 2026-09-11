@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
+use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_attached_player() {
@@ -70,7 +71,7 @@ fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_atta
         )
         .expect("live room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()
@@ -177,7 +178,10 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
             .with_path("C:/Media/episode2.mkv".to_owned()),
     );
     owner.player_local_file_placeholder = true;
-    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+        true,
+    );
     {
         let recorded = player_state
             .lock()
@@ -196,7 +200,9 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
 
     owner.player_local_file_placeholder = false;
     assert_eq!(
-        owner.current_shared_playlist_target(&state).as_deref(),
+        owner
+            .current_shared_playlist_target(&runtime_state_for_shell(&state))
+            .as_deref(),
         Some("episode2.mkv")
     );
     assert!(owner.player_local_file_ready_for_attached_sync());
@@ -207,7 +213,10 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
             .expect("session should exist")
             .pending_playlist_index_reset_has_post_selection_playstate()
     );
-    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+        true,
+    );
 
     let recorded = player_state
         .lock()
@@ -329,7 +338,10 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
             .with_path("C:/Media/episode2.mkv".to_owned()),
     );
-    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+        true,
+    );
     {
         let recorded = player_state
             .lock()
@@ -347,7 +359,10 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
         "transient rewind failures should leave the playlist reset intent pending for a later retry"
     );
 
-    owner.apply_pending_playlist_index_reset_to_attached_player_impl(&state, true);
+    owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+        true,
+    );
 
     let recorded = player_state
         .lock()
@@ -442,7 +457,7 @@ fn gui_persisted_config_runtime_owner_applies_desync_seek_when_room_playstate_is
         .sync_local_playback_telemetry(Some(false), Some(10.0))
         .expect("initial local telemetry should sync");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -457,7 +472,7 @@ fn gui_persisted_config_runtime_owner_applies_desync_seek_when_room_playstate_is
         .sync_local_playback_telemetry(Some(false), Some(20.0))
         .expect("desynced local telemetry should sync");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()
@@ -544,7 +559,7 @@ fn gui_persisted_config_runtime_owner_retries_attached_player_seek_after_transie
         )
         .expect("room playstate should apply");
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     {
         let recorded = player_state
             .lock()
@@ -554,7 +569,7 @@ fn gui_persisted_config_runtime_owner_retries_attached_player_seek_after_transie
     }
     assert_eq!(owner.player_position_seconds, Some(0.0));
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let recorded = player_state
         .lock()

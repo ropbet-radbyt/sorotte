@@ -172,7 +172,7 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ClearGuiData,
         ));
-        owner.pump_compatibility_state(&handle, &clear_state);
+        owner.pump_shell_input(&handle, &clear_state);
         let actions = handle.drain_actions();
         if !actions
             .iter()
@@ -273,7 +273,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
     ) -> Result<T, String> {
         let deadline = Instant::now() + timeout;
         loop {
-            owner.pump_compatibility_state(handle, state);
+            owner.pump_shell_input(handle, state);
             let actions = handle.drain_actions();
             for action in actions {
                 if !state.apply(action) {
@@ -371,7 +371,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             GuiPendingCompletionRequest::from_state(&connect_state)
                 .expect("staged semantic connect should capture its submitted public server"),
         ));
-        connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
+        connect_owner.pump_shell_input(&connect_handle, &connect_state);
         let connect_actions = connect_handle.drain_actions();
         if !connect_actions
             .iter()
@@ -407,7 +407,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             ));
         }
 
-        connect_owner.pump_compatibility_state(&connect_handle, &connect_state);
+        connect_owner.pump_shell_input(&connect_handle, &connect_state);
         for action in connect_handle.drain_actions() {
             if !connect_state.apply(action) {
                 return Err(
@@ -437,7 +437,9 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
             .map(|row| (row.label.clone(), row.address.clone()))
             .collect();
         let fetch_calls = std::cell::Cell::new(0_u8);
-        let mut projected_refresh_state = refresh_state.clone();
+        let mut projected_refresh_state =
+            crate::app::feature_slices::GuiRuntimeInput::from_shell(&refresh_state)
+                .to_runtime_state();
         if !refresh_owner.handle_complete_public_server_refresh_request_with_fetcher(
             &refresh_handle,
             &mut projected_refresh_state,
@@ -511,7 +513,7 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         search_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::SearchMissingMedia,
         ));
-        search_owner.pump_compatibility_state(&search_handle, &search_state);
+        search_owner.pump_shell_input(&search_handle, &search_state);
         let search_actions = search_handle.drain_actions();
         if !search_actions.iter().any(|action| {
             matches!(

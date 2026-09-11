@@ -75,7 +75,7 @@ fn gui_feature_patch_uses_current_disk_state_after_an_independent_credential_cle
     upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &baseline).unwrap();
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&baseline);
+    let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&baseline);
     edit_sorotte_ini_stored_client_settings_at_path(&config_path, |settings| {
         settings.room = Some("independent-room".into());
         settings.plex_user_token = None;

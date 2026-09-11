@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::testing::support::runtime_state_for_shell;
 
 const V2_GATE_MEDIA_GENERATION: u64 = 7;
 
@@ -142,8 +143,8 @@ fn configure_v2_waiting_gate(owner: &mut GuiPersistedConfigRuntimeOwner, logical
 
 #[derive(Debug, Default)]
 struct V2GatePlayerState {
-    playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
-    transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+    events: Option<ScriptedPlayerEvents>,
+
     set_paused_values: Vec<bool>,
 }
 
@@ -156,24 +157,25 @@ impl PlayerAdapter for V2GatePlayer {
         "v2-gate"
     }
 
-    fn take_playback_telemetry_update(
-        &mut self,
-    ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .playback_updates
-            .pop()
+            .unwrap_or_else(|p| p.into_inner())
+            .events
+            .as_ref()
+            .and_then(ScriptedPlayerEvents::peek)
     }
-
-    fn take_transport_telemetry_update(
+    fn acknowledge_player_event_batch(
         &mut self,
-    ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .transport_updates
-            .pop()
+            .unwrap_or_else(|p| p.into_inner())
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .acknowledge(token)
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -221,7 +223,7 @@ fn v2_gate_transport(
 fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_player_unpauses() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -234,14 +236,25 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -261,7 +274,10 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -296,8 +312,13 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
@@ -322,7 +343,7 @@ fn gui_persisted_config_runtime_owner_marks_local_user_ready_when_attached_playe
 fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_player_pauses() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -335,14 +356,25 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -362,7 +394,10 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -404,8 +439,13 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+        ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
@@ -449,7 +489,7 @@ fn gui_persisted_config_runtime_owner_marks_local_user_not_ready_when_attached_p
 fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_for_cache() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -462,14 +502,25 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_fo
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -489,7 +540,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_fo
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -531,13 +585,16 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_fo
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_paused_for_cache(true)
                 .with_cache_buffering_percent(50.0),
-        );
+        ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -569,7 +626,7 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_attached_player_pauses_fo
 fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_startup_pause() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -582,14 +639,25 @@ fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -602,7 +670,10 @@ fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -644,8 +715,13 @@ fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(true),
+        ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
     assert!(
@@ -665,8 +741,13 @@ fn gui_persisted_config_runtime_owner_keeps_ready_for_transient_attached_player_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
@@ -1082,7 +1163,7 @@ fn gui_persisted_config_runtime_owner_keeps_ready_when_host_pauses_uncontrolled_
 fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fails() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -1095,14 +1176,25 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
             "recording"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -1115,7 +1207,10 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1186,8 +1281,13 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        ));
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert_eq!(owner.player_paused, Some(true));
     assert_eq!(
@@ -1211,7 +1311,10 @@ fn gui_persisted_config_runtime_owner_blocks_gui_unpause_when_readiness_gate_fai
 
 #[test]
 fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1233,11 +1336,13 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(v2_gate_transport(true, 0.0));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(v2_gate_transport(true, 0.0)));
     owner.refresh_player_state_impl();
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("paused V2 baseline should synchronize");
     let _ = owner
         .session
@@ -1255,18 +1360,25 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
         let mut recorded = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        recorded.playback_updates.push(
-            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(10.0),
-        );
         recorded
-            .transport_updates
-            .push(v2_gate_transport(false, 1.0));
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(playback_event(
+                1,
+                sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(10.0),
+            ));
+        recorded
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(transport_event(v2_gate_transport(false, 1.0)));
     }
     owner.refresh_player_state_impl();
     owner
-        .sync_detached_session_preferences_and_player_state(&state)
+        .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state))
         .expect("gate-held native Play should synchronize");
 
     let outbound = owner
@@ -1302,7 +1414,10 @@ fn v2_native_player_play_emits_ready_once_and_remains_physically_gate_held() {
 
 #[test]
 fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(V2GatePlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1324,8 +1439,10 @@ fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(v2_gate_transport(true, 0.0));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(v2_gate_transport(true, 0.0)));
     owner.refresh_player_state_impl();
     let _ = owner
         .session
@@ -1340,7 +1457,11 @@ fn v2_gui_play_emits_one_sorotte_intent_without_a_duplicate_native_intent() {
         .clear();
 
     let (paused, sync_error) = owner
-        .apply_playback_pause_change_with_detached_session_impl(&state, true, false)
+        .apply_playback_pause_change_with_detached_session_impl(
+            &runtime_state_for_shell(&state),
+            true,
+            false,
+        )
         .expect("GUI Play should be handled by the V2 readiness gate");
     assert!(
         paused,
@@ -1391,7 +1512,8 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         set_paused_values: Vec<bool>,
-        transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct RecordingPlayerAdapter {
@@ -1403,14 +1525,25 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
             "recording"
         }
 
-        fn take_transport_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .transport_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -1420,12 +1553,16 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.set_paused_values.push(paused);
             if !paused {
-                state.transport_updates.push(attached_transport_update(
-                    false,
-                    10.0,
-                    1.0,
-                    sorotte_player_api::PlayerTransportPhase::Playing,
-                ));
+                state
+                    .events
+                    .as_mut()
+                    .expect("scripted physical observations")
+                    .push_event(transport_event(attached_transport_update(
+                        false,
+                        10.0,
+                        1.0,
+                        sorotte_player_api::PlayerTransportPhase::Playing,
+                    )));
             }
             Ok(())
         }
@@ -1453,7 +1590,10 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
         update
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1495,13 +1635,15 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(attached_transport_update(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(attached_transport_update(
             true,
             10.0,
             0.0,
             sorotte_player_api::PlayerTransportPhase::ReadyPaused,
-        ));
+        )));
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#
@@ -1536,7 +1678,7 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
         "allowed GUI unpause should resume the attached player exactly once"
     );
 
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()
@@ -1594,13 +1736,15 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(attached_transport_update(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(attached_transport_update(
             false,
             10.25,
             2.0,
             sorotte_player_api::PlayerTransportPhase::Playing,
-        ));
+        )));
     let _ = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     assert_eq!(owner.player_paused, Some(false));
@@ -1634,7 +1778,7 @@ fn gui_persisted_config_runtime_owner_emits_immediate_state_update_when_gui_unpa
             crate::app::support::system_time_seconds(),
         )
         .expect("replacement media preparation should succeed");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         owner.pending_local_attached_pause_override, None,
         "a new media generation must not inherit stale GUI pause ownership"
@@ -1789,7 +1933,7 @@ fn assert_housekeeping_failure_does_not_suppress_playback_publication(
 
     let (effective_paused, sync_error) = owner
         .apply_playback_pause_change_with_detached_session_impl(
-            &state,
+            &runtime_state_for_shell(&state),
             previous_paused,
             target_paused,
         )
@@ -1833,9 +1977,8 @@ fn gui_play_and_pause_publish_even_when_independent_housekeeping_fails() {
 fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     #[derive(Debug, Default)]
     struct DirectTogglePlayerState {
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
-        transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
-        local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
+        events: Option<ScriptedPlayerEvents>,
+
         set_paused_values: Vec<bool>,
     }
 
@@ -1848,32 +1991,25 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
             "direct-toggle"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_transport_telemetry_update(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .transport_updates
-                .pop()
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -1912,8 +2048,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         update
     }
 
-    let player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(DirectTogglePlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(DirectTogglePlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -1975,10 +2113,12 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(transport(1, true, 10.0, 0.0));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(transport(1, true, 10.0, 0.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     let _ = owner
         .session
         .as_mut()
@@ -1990,18 +2130,25 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         let mut recorded = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        recorded.playback_updates.push(
-            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(10.0),
-        );
-        recorded.local_file_updates.push(
-            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-                .with_path("C:/Media/episode1.mkv".to_owned()),
-        );
         recorded
-            .transport_updates
-            .push(transport(2, false, 10.0, 1.0));
+            .events
+            .as_mut()
+            .unwrap()
+            .push_event(active_player_event(2));
+        recorded
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(file_event(
+                2,
+                sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_path("C:/Media/episode1.mkv".to_owned()),
+            ));
+        recorded
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(transport_event(transport(2, false, 10.0, 1.0)));
     }
 
     owner.refresh_player_state_impl();
@@ -2015,7 +2162,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         None,
         "a pause edge that also changes media scope is only a new baseline, not proven user input"
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -2045,16 +2192,18 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
             r#"{"State":{"playstate":{"position":10.0,"paused":false,"doSeek":false,"setBy":"alice"}}}"#,
         )
         .expect("direct play echo should apply");
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(owner.pending_local_attached_pause_override, None);
 
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(transport(2, false, 10.25, 2.0));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(transport(2, false, 10.25, 2.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         owner
             .session
@@ -2064,7 +2213,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
     );
 
     let controlled_player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(DirectTogglePlayerState::default()));
+        std::sync::Arc::new(std::sync::Mutex::new(DirectTogglePlayerState {
+            events: Some(active_player_events(1)),
+            ..Default::default()
+        }));
     let (mut controlled_owner, _controlled_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(None)
             .with_client_core_chat_session_runtime("alice", "+room:ABCDEF123456")
@@ -2127,25 +2279,37 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         recorded
-            .transport_updates
-            .push(transport(1, true, 10.0, 0.0));
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(transport_event(transport(1, true, 10.0, 0.0)));
     }
     controlled_owner.refresh_player_state_impl();
-    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    controlled_owner.sync_session_playstate_to_attached_player_impl(
+        &runtime_state_for_shell(&controlled_state),
+        false,
+    );
     controlled_owner.pending_attached_player_pause_command = None;
     {
         let mut recorded = controlled_player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         recorded.set_paused_values.clear();
-        recorded.playback_updates.push(
-            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(10.0),
-        );
         recorded
-            .transport_updates
-            .push(transport(1, false, 10.0, 1.0));
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(playback_event(
+                1,
+                sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(10.0),
+            ));
+        recorded
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(transport_event(transport(1, false, 10.0, 1.0)));
     }
 
     controlled_owner.refresh_player_state_impl();
@@ -2153,7 +2317,10 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
         controlled_owner.pending_local_attached_pause_override, None,
         "the GUI compatibility flag must mirror core rejection for a non-controller"
     );
-    controlled_owner.sync_session_playstate_to_attached_player_impl(&controlled_state, false);
+    controlled_owner.sync_session_playstate_to_attached_player_impl(
+        &runtime_state_for_shell(&controlled_state),
+        false,
+    );
     assert!(
         controlled_player_state
             .lock()
@@ -2168,7 +2335,7 @@ fn gui_ambiguous_unpause_during_media_change_does_not_claim_user_authority() {
 fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     #[derive(Debug, Default)]
     struct AutoplayPlayerState {
-        transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         set_paused_values: Vec<bool>,
     }
 
@@ -2181,14 +2348,25 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
             "autoplay"
         }
 
-        fn take_transport_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .transport_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
@@ -2199,8 +2377,10 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
             state.set_paused_values.push(paused);
             if !paused {
                 state
-                    .transport_updates
-                    .push(autoplay_transport(false, 10.0, 1.0));
+                    .events
+                    .as_mut()
+                    .expect("scripted physical observations")
+                    .push_event(transport_event(autoplay_transport(false, 10.0, 1.0)));
             }
             Ok(())
         }
@@ -2231,7 +2411,10 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
         update
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(AutoplayPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(AutoplayPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -2276,10 +2459,12 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push(autoplay_transport(true, 10.0, 0.0));
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(autoplay_transport(true, 10.0, 0.0)));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     owner
         .session
@@ -2305,7 +2490,7 @@ fn gui_automatic_start_unpause_never_stages_local_user_transport_intent() {
     );
 
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         player_state
             .lock()

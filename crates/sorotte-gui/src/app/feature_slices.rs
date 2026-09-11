@@ -8,6 +8,7 @@ use super::remote_services;
 #[cfg(test)]
 use super::runtime_bridge::GuiPlexPlaylistJobCancellationReason;
 use super::runtime_bridge::GuiRuntimeRequest;
+use super::runtime_state::GuiRuntimeState;
 use super::shell_state::{
     FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
     GuiCommandAvailabilityState, GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot,
@@ -24,7 +25,7 @@ use sorotte_client_app::app_boundary::{commands::LocalOffsetCommand, state::Stor
 
 /// Feature routing for commands sent from the shell to the application layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum GuiFeature {
+pub(in crate::app) enum GuiFeature {
     Session,
     Playlist,
     MediaResolution,
@@ -38,7 +39,7 @@ pub(super) enum GuiFeature {
 /// `GuiRuntimeRequest` remains the shell action façade at call sites;
 /// requests are classified once when they cross into the application layer.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum GuiClientCommand {
+pub(in crate::app) enum GuiClientCommand {
     Player(player::Command),
     Updates(Box<updates::Command>),
     Routed {
@@ -48,7 +49,7 @@ pub(super) enum GuiClientCommand {
 }
 
 impl GuiClientCommand {
-    pub(super) fn from_runtime_request(request: GuiRuntimeRequest) -> Self {
+    pub(in crate::app) fn from_runtime_request(request: GuiRuntimeRequest) -> Self {
         use GuiRuntimeRequest as Request;
 
         match request {
@@ -185,7 +186,7 @@ impl GuiClientCommand {
         }
     }
 
-    pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
+    pub(in crate::app) fn into_runtime_request(self) -> GuiRuntimeRequest {
         match self {
             Self::Player(command) => command.into_runtime_request(),
             Self::Updates(command) => (*command).into_runtime_request(),
@@ -194,24 +195,24 @@ impl GuiClientCommand {
     }
 }
 
-pub(super) mod session {
+pub(in crate::app) mod session {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) commands: GuiCommandAvailabilityState,
-        pub(super) command_overrides: GuiCommandAvailabilityRuntimeOverride,
-        pub(super) menu_overrides: Vec<MenuActionRuntimeOverride>,
-        pub(super) menus: MenuDialogShellState,
-        pub(super) pending_operation: Option<GuiPendingOperationState>,
-        pub(super) pending_local_ready_target: Option<bool>,
-        pub(super) pending_saved_server_connect_intent: Option<GuiSavedServerConnectIntent>,
-        pub(super) outgoing_chat_message: Option<String>,
-        pub(super) public_servers: PublicServerBrowserShellState,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) commands: GuiCommandAvailabilityState,
+        pub(in crate::app) command_overrides: GuiCommandAvailabilityRuntimeOverride,
+        pub(in crate::app) menu_overrides: Vec<MenuActionRuntimeOverride>,
+        pub(in crate::app) menus: MenuDialogShellState,
+        pub(in crate::app) pending_operation: Option<GuiPendingOperationState>,
+        pub(in crate::app) pending_local_ready_target: Option<bool>,
+        pub(in crate::app) pending_saved_server_connect_intent: Option<GuiSavedServerConnectIntent>,
+        pub(in crate::app) outgoing_chat_message: Option<String>,
+        pub(in crate::app) public_servers: PublicServerBrowserShellState,
     }
 }
 
-pub(super) mod player {
+pub(in crate::app) mod player {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +234,7 @@ pub(super) mod player {
     }
 
     impl Command {
-        pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
+        pub(in crate::app) fn into_runtime_request(self) -> GuiRuntimeRequest {
             match self {
                 Self::UndoSeek => GuiRuntimeRequest::UndoSeek,
                 Self::SetOffset(command) => GuiRuntimeRequest::SetOffset(command),
@@ -262,81 +263,82 @@ pub(super) mod player {
     }
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) setup_issue: Option<GuiPlayerSetupIssue>,
-        pub(super) seek_preparation: Option<GuiSeekPreparationState>,
-        pub(super) seek_preparation_degraded_reason: Option<GuiSeekPreparationDegradedReason>,
-        pub(super) stream_helper: GuiStreamHelperState,
-        pub(super) stream_helper_remediation: GuiStreamHelperRemediationState,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) setup_issue: Option<GuiPlayerSetupIssue>,
+        pub(in crate::app) seek_preparation: Option<GuiSeekPreparationState>,
+        pub(in crate::app) seek_preparation_degraded_reason:
+            Option<GuiSeekPreparationDegradedReason>,
+        pub(in crate::app) stream_helper: GuiStreamHelperState,
+        pub(in crate::app) stream_helper_remediation: GuiStreamHelperRemediationState,
     }
 }
 
-pub(super) mod playlist {
+pub(in crate::app) mod playlist {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) main_window: MainWindowShellState,
-        pub(super) selection: GuiSelectionState,
-        pub(super) selection_is_local: bool,
-        pub(super) undo_snapshot: Option<Vec<String>>,
-        pub(super) source_undo_snapshot:
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) main_window: MainWindowShellState,
+        pub(in crate::app) selection: GuiSelectionState,
+        pub(in crate::app) selection_is_local: bool,
+        pub(in crate::app) undo_snapshot: Option<Vec<String>>,
+        pub(in crate::app) source_undo_snapshot:
             Option<Vec<super::super::shell_state::GuiPlaylistSourceState>>,
-        pub(super) entry_id_undo_snapshot:
+        pub(in crate::app) entry_id_undo_snapshot:
             Option<Vec<super::super::shell_state::GuiPlaylistEntryId>>,
-        pub(super) shuffle_nonce: u64,
+        pub(in crate::app) shuffle_nonce: u64,
     }
 }
 
-pub(super) mod media_resolution {
+pub(in crate::app) mod media_resolution {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) index_status: GuiMediaIndexStatusState,
-        pub(super) search: MediaSearchWorkflowShellState,
-        pub(super) last_dialog_directory: Option<String>,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) index_status: GuiMediaIndexStatusState,
+        pub(in crate::app) search: MediaSearchWorkflowShellState,
+        pub(in crate::app) last_dialog_directory: Option<String>,
     }
 }
 
-pub(super) mod media_match {
+pub(in crate::app) mod media_match {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) model: GuiMediaMatchState,
-        pub(super) remediation: GuiMediaMatchRemediationState,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) model: GuiMediaMatchState,
+        pub(in crate::app) remediation: GuiMediaMatchRemediationState,
     }
 }
 
-pub(super) mod plex {
+pub(in crate::app) mod plex {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) model: GuiPlexState,
-        pub(super) playlist_search: Option<GuiPlexPlaylistSearchState>,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) model: GuiPlexState,
+        pub(in crate::app) playlist_search: Option<GuiPlexPlaylistSearchState>,
     }
 }
 
-pub(super) mod settings {
+pub(in crate::app) mod settings {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub(super) struct RuntimeView {
-        pub(super) active_application_language: Option<String>,
-        pub(super) active_application_force_gui_prompt: Option<bool>,
-        pub(super) plugin_enablement: GuiPluginEnablementState,
-        pub(super) config_storage: GuiConfigStorageRuntimeSnapshot,
-        pub(super) pending_storage_target: Option<GuiConfigStorageChangeTarget>,
-        pub(super) saved: StoredClientSettings,
-        pub(super) draft: FirstRunConfigurationDialogDraft,
-        pub(super) validation: GuiValidationState,
-        pub(super) runtime_validation_issues: Vec<GuiValidationIssue>,
+    pub(in crate::app) struct RuntimeView {
+        pub(in crate::app) active_application_language: Option<String>,
+        pub(in crate::app) active_application_force_gui_prompt: Option<bool>,
+        pub(in crate::app) plugin_enablement: GuiPluginEnablementState,
+        pub(in crate::app) config_storage: GuiConfigStorageRuntimeSnapshot,
+        pub(in crate::app) pending_storage_target: Option<GuiConfigStorageChangeTarget>,
+        pub(in crate::app) saved: StoredClientSettings,
+        pub(in crate::app) draft: FirstRunConfigurationDialogDraft,
+        pub(in crate::app) validation: GuiValidationState,
+        pub(in crate::app) runtime_validation_issues: Vec<GuiValidationIssue>,
     }
 }
 
-pub(super) mod updates {
+pub(in crate::app) mod updates {
     use super::*;
 
     #[derive(Clone, PartialEq)]
@@ -381,7 +383,7 @@ pub(super) mod updates {
     }
 
     impl Command {
-        pub(super) fn into_runtime_request(self) -> GuiRuntimeRequest {
+        pub(in crate::app) fn into_runtime_request(self) -> GuiRuntimeRequest {
             match self {
                 Self::CheckForUpdates {
                     language,
@@ -424,191 +426,140 @@ pub(super) mod updates {
 /// browser-only fields. Equality therefore also acts as runtime invalidation:
 /// changing UI-only state does not allocate or submit another worker snapshot.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct GuiRuntimeInput {
-    session: session::RuntimeView,
-    player: player::RuntimeView,
-    playlist: playlist::RuntimeView,
-    media_resolution: media_resolution::RuntimeView,
-    media_match: media_match::RuntimeView,
-    plex: plex::RuntimeView,
-    settings: settings::RuntimeView,
-    updates: updates::RuntimeView,
+pub(in crate::app) struct GuiRuntimeInput {
+    state: GuiRuntimeState,
 }
 
 impl GuiRuntimeInput {
-    pub(super) fn from_shell(state: &SorotteGuiShellAppState) -> Self {
+    pub(in crate::app) fn from_shell(state: &SorotteGuiShellAppState) -> Self {
         Self {
-            session: session::RuntimeView {
-                commands: state.commands.clone(),
-                command_overrides: state.runtime_command_availability_override.clone(),
-                menu_overrides: state.runtime_menu_action_overrides.clone(),
-                menus: state.menus.clone(),
-                pending_operation: state.pending_operation.clone(),
-                pending_local_ready_target: state.pending_local_ready_target,
-                pending_saved_server_connect_intent: state.pending_saved_server_connect_intent,
-                outgoing_chat_message: state.outgoing_chat_message.clone(),
-                public_servers: state.public_servers.clone(),
-            },
-            player: player::RuntimeView {
-                setup_issue: state.player_setup_issue.clone(),
-                seek_preparation: state.seek_preparation.clone(),
-                seek_preparation_degraded_reason: state.seek_preparation_degraded_reason,
-                stream_helper: state.stream_helper.clone(),
-                stream_helper_remediation: state.stream_helper_remediation.clone(),
-            },
-            playlist: playlist::RuntimeView {
-                main_window: state.main_window.clone(),
-                selection: state.selection.clone(),
-                selection_is_local: state.main_window_playlist_selection_is_local,
-                undo_snapshot: state.playlist_undo_snapshot.clone(),
-                source_undo_snapshot: state.playlist_source_undo_snapshot.clone(),
-                entry_id_undo_snapshot: state.playlist_entry_id_undo_snapshot.clone(),
-                shuffle_nonce: state.playlist_shuffle_nonce,
-            },
-            media_resolution: media_resolution::RuntimeView {
-                index_status: state.media_index_status.clone(),
-                search: state.media_search.clone(),
-                last_dialog_directory: state.last_media_dialog_directory.clone(),
-            },
-            media_match: media_match::RuntimeView {
-                model: state.media_match.clone(),
-                remediation: state.media_match_remediation.clone(),
-            },
-            plex: plex::RuntimeView {
-                model: state.plex.clone(),
-                playlist_search: state.plex_playlist_search.clone(),
-            },
-            settings: settings::RuntimeView {
-                active_application_language: state.active_application_language.clone(),
-                active_application_force_gui_prompt: state.active_application_force_gui_prompt,
-                plugin_enablement: state.plugin_enablement,
-                config_storage: state.config_storage.clone(),
-                pending_storage_target: state.pending_config_storage_target.clone(),
-                saved: state.saved_configuration.clone(),
-                draft: state.configuration.clone(),
-                validation: state.validation.clone(),
-                runtime_validation_issues: state.runtime_validation_issues.clone(),
-            },
-            updates: updates::RuntimeView {
-                model: state.update_check.clone(),
-                policy: updates::RuntimePolicy {
-                    automatic: state.saved_configuration.check_for_updates_automatically
-                        == Some(true),
-                    last_checked_for_updates: state
-                        .saved_configuration
-                        .last_checked_for_updates
-                        .clone(),
-                    language: state.update_check_language(),
-                    channel: state.update_check_channel(),
+            state: GuiRuntimeState {
+                session: session::RuntimeView {
+                    commands: state.commands.clone(),
+                    command_overrides: state.runtime_command_availability_override.clone(),
+                    menu_overrides: state.runtime_menu_action_overrides.clone(),
+                    menus: state.menus.clone(),
+                    pending_operation: state.pending_operation.clone(),
+                    pending_local_ready_target: state.pending_local_ready_target,
+                    pending_saved_server_connect_intent: state.pending_saved_server_connect_intent,
+                    outgoing_chat_message: state.outgoing_chat_message.clone(),
+                    public_servers: state.public_servers.clone(),
+                },
+                player: player::RuntimeView {
+                    setup_issue: state.player_setup_issue.clone(),
+                    seek_preparation: state.seek_preparation.clone(),
+                    seek_preparation_degraded_reason: state.seek_preparation_degraded_reason,
+                    stream_helper: state.stream_helper.clone(),
+                    stream_helper_remediation: state.stream_helper_remediation.clone(),
+                },
+                playlist: playlist::RuntimeView {
+                    main_window: state.main_window.clone(),
+                    selection: state.selection.clone(),
+                    selection_is_local: state.main_window_playlist_selection_is_local,
+                    undo_snapshot: state.playlist_undo_snapshot.clone(),
+                    source_undo_snapshot: state.playlist_source_undo_snapshot.clone(),
+                    entry_id_undo_snapshot: state.playlist_entry_id_undo_snapshot.clone(),
+                    shuffle_nonce: state.playlist_shuffle_nonce,
+                },
+                media_resolution: media_resolution::RuntimeView {
+                    index_status: state.media_index_status.clone(),
+                    search: state.media_search.clone(),
+                    last_dialog_directory: state.last_media_dialog_directory.clone(),
+                },
+                media_match: media_match::RuntimeView {
+                    model: state.media_match.clone(),
+                    remediation: state.media_match_remediation.clone(),
+                },
+                plex: plex::RuntimeView {
+                    model: state.plex.clone(),
+                    playlist_search: state.plex_playlist_search.clone(),
+                },
+                settings: settings::RuntimeView {
+                    active_application_language: state.active_application_language.clone(),
+                    active_application_force_gui_prompt: state.active_application_force_gui_prompt,
+                    plugin_enablement: state.plugin_enablement,
+                    config_storage: state.config_storage.clone(),
+                    pending_storage_target: state.pending_config_storage_target.clone(),
+                    saved: state.saved_configuration.clone(),
+                    draft: state.configuration.clone(),
+                    validation: state.validation.clone(),
+                    runtime_validation_issues: state.runtime_validation_issues.clone(),
+                },
+                updates: updates::RuntimeView {
+                    model: state.update_check.clone(),
+                    policy: updates::RuntimePolicy {
+                        automatic: state.saved_configuration.check_for_updates_automatically
+                            == Some(true),
+                        last_checked_for_updates: state
+                            .saved_configuration
+                            .last_checked_for_updates
+                            .clone(),
+                        language: state.update_check_language(),
+                        channel: state.update_check_channel(),
+                    },
                 },
             },
         }
     }
 
-    pub(super) fn matches_shell(&self, state: &SorotteGuiShellAppState) -> bool {
-        self.session.commands == state.commands
-            && self.session.command_overrides == state.runtime_command_availability_override
-            && self.session.menu_overrides == state.runtime_menu_action_overrides
-            && self.session.menus == state.menus
-            && self.session.pending_operation == state.pending_operation
-            && self.session.pending_local_ready_target == state.pending_local_ready_target
-            && self.session.pending_saved_server_connect_intent
+    pub(in crate::app) fn matches_shell(&self, state: &SorotteGuiShellAppState) -> bool {
+        self.state.session.commands == state.commands
+            && self.state.session.command_overrides == state.runtime_command_availability_override
+            && self.state.session.menu_overrides == state.runtime_menu_action_overrides
+            && self.state.session.menus == state.menus
+            && self.state.session.pending_operation == state.pending_operation
+            && self.state.session.pending_local_ready_target == state.pending_local_ready_target
+            && self.state.session.pending_saved_server_connect_intent
                 == state.pending_saved_server_connect_intent
-            && self.session.outgoing_chat_message == state.outgoing_chat_message
-            && self.session.public_servers == state.public_servers
-            && self.player.setup_issue == state.player_setup_issue
-            && self.player.seek_preparation == state.seek_preparation
-            && self.player.seek_preparation_degraded_reason
+            && self.state.session.outgoing_chat_message == state.outgoing_chat_message
+            && self.state.session.public_servers == state.public_servers
+            && self.state.player.setup_issue == state.player_setup_issue
+            && self.state.player.seek_preparation == state.seek_preparation
+            && self.state.player.seek_preparation_degraded_reason
                 == state.seek_preparation_degraded_reason
-            && self.player.stream_helper == state.stream_helper
-            && self.player.stream_helper_remediation == state.stream_helper_remediation
-            && self.playlist.main_window == state.main_window
-            && self.playlist.selection == state.selection
-            && self.playlist.selection_is_local == state.main_window_playlist_selection_is_local
-            && self.playlist.undo_snapshot == state.playlist_undo_snapshot
-            && self.playlist.source_undo_snapshot == state.playlist_source_undo_snapshot
-            && self.playlist.entry_id_undo_snapshot == state.playlist_entry_id_undo_snapshot
-            && self.playlist.shuffle_nonce == state.playlist_shuffle_nonce
-            && self.media_resolution.index_status == state.media_index_status
-            && self.media_resolution.search == state.media_search
-            && self.media_resolution.last_dialog_directory == state.last_media_dialog_directory
-            && self.media_match.model == state.media_match
-            && self.media_match.remediation == state.media_match_remediation
-            && self.plex.model == state.plex
-            && self.plex.playlist_search == state.plex_playlist_search
-            && self.settings.active_application_language == state.active_application_language
-            && self.settings.active_application_force_gui_prompt
+            && self.state.player.stream_helper == state.stream_helper
+            && self.state.player.stream_helper_remediation == state.stream_helper_remediation
+            && self.state.playlist.main_window == state.main_window
+            && self.state.playlist.selection == state.selection
+            && self.state.playlist.selection_is_local
+                == state.main_window_playlist_selection_is_local
+            && self.state.playlist.undo_snapshot == state.playlist_undo_snapshot
+            && self.state.playlist.source_undo_snapshot == state.playlist_source_undo_snapshot
+            && self.state.playlist.entry_id_undo_snapshot == state.playlist_entry_id_undo_snapshot
+            && self.state.playlist.shuffle_nonce == state.playlist_shuffle_nonce
+            && self.state.media_resolution.index_status == state.media_index_status
+            && self.state.media_resolution.search == state.media_search
+            && self.state.media_resolution.last_dialog_directory
+                == state.last_media_dialog_directory
+            && self.state.media_match.model == state.media_match
+            && self.state.media_match.remediation == state.media_match_remediation
+            && self.state.plex.model == state.plex
+            && self.state.plex.playlist_search == state.plex_playlist_search
+            && self.state.settings.active_application_language == state.active_application_language
+            && self.state.settings.active_application_force_gui_prompt
                 == state.active_application_force_gui_prompt
-            && self.settings.plugin_enablement == state.plugin_enablement
-            && self.settings.config_storage == state.config_storage
-            && self.settings.pending_storage_target == state.pending_config_storage_target
-            && self.settings.saved == state.saved_configuration
-            && self.settings.draft == state.configuration
-            && self.settings.validation == state.validation
-            && self.settings.runtime_validation_issues == state.runtime_validation_issues
-            && self.updates.model == state.update_check
-            && self.updates.policy.automatic
+            && self.state.settings.plugin_enablement == state.plugin_enablement
+            && self.state.settings.config_storage == state.config_storage
+            && self.state.settings.pending_storage_target == state.pending_config_storage_target
+            && self.state.settings.saved == state.saved_configuration
+            && self.state.settings.draft == state.configuration
+            && self.state.settings.validation == state.validation
+            && self.state.settings.runtime_validation_issues == state.runtime_validation_issues
+            && self.state.updates.model == state.update_check
+            && self.state.updates.policy.automatic
                 == (state.saved_configuration.check_for_updates_automatically == Some(true))
-            && self.updates.policy.last_checked_for_updates
+            && self.state.updates.policy.last_checked_for_updates
                 == state.saved_configuration.last_checked_for_updates
-            && self.updates.policy.language == state.update_check_language()
-            && self.updates.policy.channel == state.update_check_channel()
+            && self.state.updates.policy.language == state.update_check_language()
+            && self.state.updates.policy.channel == state.update_check_channel()
     }
 
-    /// Builds the temporary shell-shaped projection used by the compatibility
-    /// reducer. No UI-owned shell aggregate crosses the thread boundary.
-    pub(super) fn to_compatibility_projection(&self) -> SorotteGuiShellAppState {
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&self.settings.saved);
-        state.commands = self.session.commands.clone();
-        state.runtime_command_availability_override = self.session.command_overrides.clone();
-        state.runtime_menu_action_overrides = self.session.menu_overrides.clone();
-        state.menus = self.session.menus.clone();
-        state.pending_operation = self.session.pending_operation.clone();
-        state.pending_local_ready_target = self.session.pending_local_ready_target;
-        state.pending_saved_server_connect_intent =
-            self.session.pending_saved_server_connect_intent;
-        state.outgoing_chat_message = self.session.outgoing_chat_message.clone();
-        state.public_servers = self.session.public_servers.clone();
-
-        state.player_setup_issue = self.player.setup_issue.clone();
-        state.seek_preparation = self.player.seek_preparation.clone();
-        state.seek_preparation_degraded_reason = self.player.seek_preparation_degraded_reason;
-        state.stream_helper = self.player.stream_helper.clone();
-        state.stream_helper_remediation = self.player.stream_helper_remediation.clone();
-
-        state.main_window = self.playlist.main_window.clone();
-        state.selection = self.playlist.selection.clone();
-        state.main_window_playlist_selection_is_local = self.playlist.selection_is_local;
-        state.playlist_undo_snapshot = self.playlist.undo_snapshot.clone();
-        state.playlist_source_undo_snapshot = self.playlist.source_undo_snapshot.clone();
-        state.playlist_entry_id_undo_snapshot = self.playlist.entry_id_undo_snapshot.clone();
-        state.playlist_shuffle_nonce = self.playlist.shuffle_nonce;
-
-        state.media_index_status = self.media_resolution.index_status.clone();
-        state.media_search = self.media_resolution.search.clone();
-        state.last_media_dialog_directory = self.media_resolution.last_dialog_directory.clone();
-
-        state.media_match = self.media_match.model.clone();
-        state.media_match_remediation = self.media_match.remediation.clone();
-        state.plex = self.plex.model.clone();
-        state.plex_playlist_search = self.plex.playlist_search.clone();
-
-        state.active_application_language = self.settings.active_application_language.clone();
-        state.active_application_force_gui_prompt =
-            self.settings.active_application_force_gui_prompt;
-        state.plugin_enablement = self.settings.plugin_enablement;
-        state.config_storage = self.settings.config_storage.clone();
-        state.pending_config_storage_target = self.settings.pending_storage_target.clone();
-        state.saved_configuration = self.settings.saved.clone();
-        state.configuration = self.settings.draft.clone();
-        state.validation = self.settings.validation.clone();
-        state.runtime_validation_issues = self.settings.runtime_validation_issues.clone();
-        state.update_check = self.updates.model.clone();
-        state
+    pub(in crate::app) fn to_runtime_state(&self) -> GuiRuntimeState {
+        self.state.clone()
     }
 
-    pub(super) fn updates(&self) -> &updates::RuntimeView {
-        &self.updates
+    pub(in crate::app) fn updates(&self) -> &updates::RuntimeView {
+        &self.state.updates
     }
 }
 
@@ -632,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_projection_preserves_runtime_feature_views() {
+    fn runtime_state_preserves_supplied_feature_values() {
         let mut state =
             SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         state.pending_local_ready_target = Some(true);
@@ -640,13 +591,17 @@ mod tests {
         state.last_media_dialog_directory = Some("C:/media".to_owned());
 
         let input = GuiRuntimeInput::from_shell(&state);
-        let projected = input.to_compatibility_projection();
-
-        assert_eq!(GuiRuntimeInput::from_shell(&projected), input);
+        let projected = input.to_runtime_state();
+        assert_eq!(projected.session.pending_local_ready_target, Some(true));
+        assert_eq!(projected.playlist.shuffle_nonce, 42);
+        assert_eq!(
+            projected.media_resolution.last_dialog_directory.as_deref(),
+            Some("C:/media")
+        );
     }
 
     #[test]
-    fn compatibility_commands_are_routed_to_feature_owners() {
+    fn runtime_commands_are_routed_to_feature_owners() {
         assert!(matches!(
             GuiClientCommand::from_runtime_request(GuiRuntimeRequest::SetRoom("room".to_owned(),)),
             GuiClientCommand::Routed {

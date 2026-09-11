@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::{GuiAttachedSystemSeekSource, GuiUpdateRuntime};
+use crate::app::testing::support::runtime_state_for_shell;
 use crate::app::{GuiMediaSourceProviderId, GuiPlaylistResolutionStep, GuiPlaylistSourceStatus};
 
 #[test]
@@ -7,8 +8,8 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
         opened_paths: Vec<String>,
-        local_file_updates: Vec<sorotte_player_api::LocalFileUpdate>,
-        playback_updates: Vec<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
+        generation: u64,
         set_paused_values: Vec<bool>,
         set_positions: Vec<f64>,
     }
@@ -28,7 +29,14 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.opened_paths.push(path.to_owned());
-            state.local_file_updates.push(
+            state.generation += 1;
+            let generation = state.generation;
+            let events = state.events.get_or_insert_with(|| {
+                ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1))
+            });
+            events.push_event(active_player_event(generation));
+            events.push_event(file_event(
+                generation,
                 sorotte_player_api::LocalFileUpdate::new(
                     std::path::Path::new(path)
                         .file_name()
@@ -36,26 +44,29 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
                         .unwrap_or(path),
                 )
                 .with_path(path.to_owned()),
-            );
+            ));
             Ok(())
         }
 
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_playback_telemetry_update(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
 
         fn set_position(
@@ -83,7 +94,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,
@@ -150,7 +161,6 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: None,
         player_paused: None,
         player_paused_for_cache: None,
@@ -203,6 +213,9 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
+        // Keep asynchronous startup service results out of this player-command fixture.
+        check_for_updates_automatically: Some(false),
+        public_servers: Some(Vec::new()),
         ..StoredClientSettings::default()
     });
     let media_root = test_temp_root("attached-media-open-seek");
@@ -517,8 +530,13 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push(sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false));
+        .events
+        .as_mut()
+        .expect("opened media ingress")
+        .push_event(playback_event(
+            1,
+            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default().with_paused(false),
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let _ = handle.drain_actions();
     assert_eq!(
@@ -666,7 +684,7 @@ fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek
         ..StoredClientSettings::default()
     });
     owner
-        .ensure_detached_client_core_chat_session(&state)
+        .ensure_detached_client_core_chat_session(&runtime_state_for_shell(&state))
         .expect("detached client-core session should bootstrap");
 
     {

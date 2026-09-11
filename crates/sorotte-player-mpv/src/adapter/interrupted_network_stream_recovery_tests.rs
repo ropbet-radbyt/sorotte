@@ -1,5 +1,7 @@
 use super::*;
 use crate::lifecycle::LoadAttemptState;
+use crate::tests::player_delivery::collect_player_delivery;
+use sorotte_player_api::PlayerEvent;
 use std::io;
 
 const NETWORK_PATH: &str = "https://media.example.invalid/premature-eof";
@@ -126,15 +128,13 @@ fn premature_network_eof_uses_a_new_attempt_in_the_same_generation() {
         generation
     );
     assert_eq!(adapter.transport_phase, PlayerTransportPhase::Empty);
+    let delivery = collect_player_delivery(&mut adapter);
     assert!(
-        adapter
-            .pending_transport_telemetry_updates
-            .iter()
-            .all(|update| {
-                update.phase != Some(PlayerTransportPhase::Loading)
-                    && update.phase != Some(PlayerTransportPhase::Ended)
-                    && update.eof_reached != Some(true)
-            }),
+        delivery.transport_deltas().all(|update| {
+            update.phase != Some(PlayerTransportPhase::Loading)
+                && update.phase != Some(PlayerTransportPhase::Ended)
+                && update.eof_reached != Some(true)
+        }),
         "the successor cannot publish transport before its start-file"
     );
 }
@@ -591,7 +591,13 @@ fn rejected_recovery_preserves_old_physical_owner_and_total_budget() {
         assert_eq!(adapter.network_stream_recovery_attempt_count(), attempt);
         assert_eq!(adapter.transport_phase, PlayerTransportPhase::Playing);
         assert_eq!(adapter.observed_state.eof_reached, Some(true));
-        assert_eq!(adapter.pending_transport_telemetry_updates.len(), 1);
+        let batch = adapter
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("terminal delivery retained on rejected recovery");
+        assert_eq!(batch.events.iter().filter(|item| matches!(&item.event,
+            PlayerEvent::TransportDelta(delta) if delta.phase == Some(PlayerTransportPhase::Ended)
+        )).count(), 1);
         assert_eq!(adapter.pending_cache_telemetry_updates.len(), 1);
         assert_eq!(
             adapter.player_lifecycle.active_load_attempt,
@@ -644,12 +650,12 @@ fn keep_open_premature_eof_property_starts_bounded_recovery_without_end_file() {
         Some(recovery.latest_attempt_id)
     );
     let provisional = adapter
-        .take_ordered_event_batch()
+        .take_player_event_batch()
         .expect("the recovery transition remains pump-visible");
-    assert!(provisional.ordered_events.iter().all(|event| {
+    assert!(provisional.events.iter().all(|event| {
         !matches!(
-            &event.kind,
-            PlayerOrderedEventKind::Transport(update)
+            &event.event,
+            PlayerEvent::TransportDelta(update)
                 if update.media_generation == Some(generation)
                     && (matches!(
                         update.phase,
@@ -694,16 +700,12 @@ fn progress_seek_and_restart_cancel_provisional_eof_without_a_terminal() {
     assert_eq!(adapter.player_lifecycle.provisional_eof_attempt(), None);
     assert_ne!(adapter.transport_phase, PlayerTransportPhase::Ended);
     assert_eq!(adapter.player_lifecycle.logical_terminal, None);
-    assert!(
-        adapter
-            .pending_transport_telemetry_updates
-            .iter()
-            .all(|update| {
-                update.phase != Some(PlayerTransportPhase::Ended)
-                    && update.phase != Some(PlayerTransportPhase::Failed)
-                    && update.eof_reached != Some(true)
-            })
-    );
+    let delivery = collect_player_delivery(&mut adapter);
+    assert!(delivery.transport_deltas().all(|update| {
+        update.phase != Some(PlayerTransportPhase::Ended)
+            && update.phase != Some(PlayerTransportPhase::Failed)
+            && update.eof_reached != Some(true)
+    }));
 }
 
 #[test]

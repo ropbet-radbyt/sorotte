@@ -22,15 +22,18 @@ fn client_runtime_reconnect_state_restore_validation_honors_retry_budget() {
 
     let player = RecordingPlayer {
         fail_set_position: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -119,15 +122,18 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_retry_cooldow
 
     let player = RecordingPlayer {
         fail_set_position: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -209,15 +215,18 @@ fn client_runtime_reconnect_state_restore_validation_honors_exponential_retry_ba
 
     let player = RecordingPlayer {
         fail_set_position: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()

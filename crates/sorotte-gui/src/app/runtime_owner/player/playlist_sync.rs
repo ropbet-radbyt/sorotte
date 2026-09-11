@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 const PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS: f64 = 10.0;
 const PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS: f64 = 5.0;
@@ -114,7 +115,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(crate) fn take_playlist_auto_advance_eof_trigger_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         playlist_control_available: bool,
         can_auto_advance_to_next_playlist_item: bool,
     ) -> bool {
@@ -148,7 +149,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app::runtime_owner) fn apply_pending_playlist_index_reset_to_attached_player_impl(
         &mut self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         opened_selected_media: bool,
     ) {
         if !opened_selected_media {

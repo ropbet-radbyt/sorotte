@@ -36,7 +36,6 @@ where
         local_can_control: bool,
         is_playing_music: bool,
     ) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         let session_snapshot = self.session.snapshot_local_action_state();
         let current_gate_holds_play = self.readiness_gate_holds_current_playback();
         let actions = self
@@ -62,7 +61,6 @@ where
         is_playing_music: bool,
         recently_advanced: bool,
     ) {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         self.session.autoplay_check(
             readiness_supported,
             local_can_control,
@@ -78,7 +76,6 @@ where
         is_playing_music: bool,
         recently_advanced: bool,
     ) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         let session_snapshot = self.session.snapshot_local_action_state();
         let actions = self.session.autoplay_countdown_tick(
             readiness_supported,
@@ -219,7 +216,6 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         let validation_pending = self
             .session
             .model
@@ -230,11 +226,7 @@ where
             return Ok(());
         }
         if validation_pending {
-            if self
-                .player
-                .capabilities()
-                .contains(sorotte_player_api::PlayerCapability::Telemetry)
-            {
+            if self.player.supports_transport_telemetry() {
                 self.playback_coordination
                     .mark_transport_telemetry_available();
             }
@@ -379,7 +371,6 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         self.drain_player_transport_coordination(now_seconds)?;
 
         // Reconnect validation owns correction immediately after reconnect
@@ -500,7 +491,6 @@ where
         dont_slow_down_with_me: bool,
         speed_supported: bool,
     ) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         if let Err(error) = self.drain_player_transport_coordination(now_seconds) {
             if self.refresh_terminal_playback_after_desync_error(now_seconds) {
                 return Ok(());

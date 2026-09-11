@@ -1,10 +1,11 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
     fn apply_stream_helper_remediation_progress(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         progress: StreamHelperRemediationProgress,
     ) {
         self.report_stream_helper_remediation_progress(
@@ -19,7 +20,7 @@ impl GuiPersistedConfigRuntimeOwner {
     fn finish_stream_helper_remediation_success(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         success_message: String,
     ) {
         self.report_stream_helper_remediation_progress(
@@ -77,9 +78,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_install_stream_helper_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -122,9 +124,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_open_stream_helper_install_location_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let install_location = projected_state
+            .player
             .stream_helper
             .install_location
             .as_ref()
@@ -160,10 +163,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_integrate_stream_helper_downloader_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         source_path: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -210,10 +214,11 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_integrate_stream_helper_js_runtime_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         source_path: String,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -260,9 +265,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_recheck_stream_helper_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {
@@ -298,9 +304,10 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_retry_pending_stream_media_open_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if !projected_state
+            .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::StreamSupport)
         {

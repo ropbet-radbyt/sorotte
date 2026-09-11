@@ -276,6 +276,19 @@ Every scoped audit task maps to source ownership, a normative contract, an execu
 - Capability: **implemented**. Local evidence: The index maps every A01-A22 task to current source/proof/environment ownership; CLI write/check coverage handles LF and CRLF checkouts. The implementation ledger records current working-tree evidence and superseded runs separately from future release provenance.
 - Remaining proof: For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted.
 
+### GUI feature state and player delivery (A20)
+
+Player lifecycle observations have one acknowledged stream. GUI worker state consists of feature views, retains changes across polls, and applies output effects before the next command; UI edits remain shell-owned.
+
+- Owners: [crates/sorotte-player-api/src/lib.rs](../crates/sorotte-player-api/src/lib.rs), [crates/sorotte-gui/src/app/feature_slices.rs](../crates/sorotte-gui/src/app/feature_slices.rs), [crates/sorotte-gui/src/app/runtime_state.rs](../crates/sorotte-gui/src/app/runtime_state.rs), [crates/sorotte-gui/src/app/runtime_detached.rs](../crates/sorotte-gui/src/app/runtime_detached.rs), [crates/sorotte-gui/src/app/main_window_projection.rs](../crates/sorotte-gui/src/app/main_window_projection.rs).
+- Normative: [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md), [docs/PLAYBACK_LIFECYCLE_ASSURANCE.md](../docs/PLAYBACK_LIFECYCLE_ASSURANCE.md).
+- Proof: [worker_applies_pending_completion_before_the_next_settings_action](../crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs); `cargo test --locked -p sorotte-gui --lib runtime_state_tests`.
+- Proof: [ordinary_polls_keep_worker_changes_and_changed_input_replaces_them](../crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs); `cargo test --locked -p sorotte-gui --lib runtime_state_tests`.
+- Proof: [playlist_selection_output_preserves_ui_edit_and_focus_and_respects_local_selection](../crates/sorotte-gui/src/app/runtime_owner/tests/runtime_state_tests.rs); `cargo test --locked -p sorotte-gui --lib runtime_state_tests`.
+- Environment: Windows and Linux Rust suites; Live Syncplay interoperability; GUI semantic and isolated native qualification.
+- Capability: **implemented**. Local evidence: Strict all-feature workspace Clippy and 1,201 all-feature GUI library tests passed, including seven focused worker-state regressions for input replacement, pending completion and cancellation, UI edit preservation, public-server refresh, Plex search results, room edits and updates. Player migration passed the default CLI, client-app, client-core, GUI, API and mpv library suites before the GUI state extraction.
+- Remaining proof: The bundled cleanup still requires complete workspace, hosted and exact-head native qualification; earlier source checkpoints do not qualify this PR.
+
 ## Historical material
 
 The chronological [coverage findings](../docs/TEST_COVERAGE_FINDINGS.md), [coverage strategy](../docs/TEST_COVERAGE_STRATEGY.md), and [coverage ledger](../coverage/README.md) retain earlier decisions and evidence. Their old counts and remaining-work notes describe their recorded revisions. Use this current map and [DEVELOPMENT](../docs/DEVELOPMENT.md) to locate today's owner and required execution command.

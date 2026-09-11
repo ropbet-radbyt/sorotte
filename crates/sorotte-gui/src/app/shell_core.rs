@@ -1,62 +1,42 @@
 use std::path::Path;
 
-use sorotte_client_app::app_boundary::state::{
-    StoredClientSettings, parse_host_and_optional_port_from_host_arg,
-    stored_client_settings_runtime_snapshot,
-};
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 use super::shell_state::{
-    FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
-    GuiMediaMatchState, GuiPlayerSetupIssueKind, GuiPlexState, GuiPluginEnablementState,
-    GuiPluginSelection, GuiSavedSessionConnectTarget, GuiSelectionState, GuiShellAction,
-    GuiShellModal, GuiShellView, GuiValidationState, MainWindowShellState,
-    MediaSearchWorkflowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState,
-    PublicServerBrowserShellState, SettingId, SorotteGuiShellAppState,
+    GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind, GuiPluginSelection,
+    GuiSavedSessionConnectTarget, GuiShellAction, GuiShellModal, GuiShellView, MenuActionId,
+    SettingId, SorotteGuiShellAppState,
 };
-use super::support::{chat_input_enabled, configured_room_name_text, normalized_editable_text};
-use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
+use super::support::normalized_editable_text;
+use super::ui_state::GuiPersistedUiState;
 
 impl SorotteGuiShellAppState {
     pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
-        let runtime_settings = stored_client_settings_runtime_snapshot(settings);
-        let mut shell_settings = settings.clone();
-        shell_settings.room = runtime_settings
-            .config
-            .connection
-            .room
-            .as_ref()
-            .map(|room| room.as_str().to_owned())
-            .map(|room| {
-                runtime_settings
-                    .config
-                    .connection
-                    .controlled_room_password
-                    .as_ref()
-                    .map_or(room.clone(), |password| {
-                        format!("{room}:{}", password.expose_secret())
-                    })
-            });
-        let mut state = Self {
+        let runtime = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(settings);
+        Self {
             active_view: GuiShellView::Setup,
-            active_application_language: shell_settings.language.clone(),
-            active_application_force_gui_prompt: shell_settings.force_gui_prompt,
+            active_application_language: runtime.settings.active_application_language,
+            active_application_force_gui_prompt: runtime
+                .settings
+                .active_application_force_gui_prompt,
             selected_configuration_tab: GuiConfigurationTab::Connection,
             selected_plugin: GuiPluginSelection::default(),
-            plugin_enablement: GuiPluginEnablementState::from_stored_settings(&shell_settings),
+            plugin_enablement: runtime.settings.plugin_enablement,
             open_modal: None,
-            selection: GuiSelectionState::default(),
-            main_window_playlist_selection_is_local: false,
-            runtime_menu_action_overrides: Vec::new(),
-            runtime_command_availability_override: GuiCommandAvailabilityRuntimeOverride::default(),
-            config_storage: GuiConfigStorageRuntimeSnapshot::default(),
-            commands: GuiCommandAvailabilityState::default(),
-            pending_operation: None,
+            selection: runtime.playlist.selection,
+            main_window_playlist_selection_is_local: runtime.playlist.selection_is_local,
+            runtime_menu_action_overrides: runtime.session.menu_overrides,
+            runtime_command_availability_override: runtime.session.command_overrides,
+            config_storage: runtime.settings.config_storage,
+            commands: runtime.session.commands,
+            pending_operation: runtime.session.pending_operation,
             clear_gui_data_confirmation_visible: false,
-            pending_config_storage_target: None,
-            pending_local_ready_target: None,
-            pending_saved_server_connect_intent: None,
-            outgoing_chat_message: None,
+            pending_config_storage_target: runtime.settings.pending_storage_target,
+            pending_local_ready_target: runtime.session.pending_local_ready_target,
+            pending_saved_server_connect_intent: runtime
+                .session
+                .pending_saved_server_connect_intent,
+            outgoing_chat_message: runtime.session.outgoing_chat_message,
             main_window_room_change_expanded: false,
             new_main_window_user_draft: String::new(),
             focused_configuration_control: None,
@@ -65,114 +45,42 @@ impl SorotteGuiShellAppState {
             text_edit_session: None,
             playlist_text_edit_session: None,
             playlist_url_edit_session: None,
-            plex_playlist_search: None,
+            plex_playlist_search: runtime.plex.playlist_search,
             media_url_edit_session: None,
             controlled_room_create_session: None,
             controller_auth_edit_session: None,
             room_history_edit_session: None,
-            update_check: GuiUpdateCheckState::default(),
-            runtime_validation_issues: Vec::new(),
+            update_check: runtime.updates.model,
+            runtime_validation_issues: runtime.settings.runtime_validation_issues,
             notifications: Vec::new(),
             pending_apply_requirements: Vec::new(),
-            validation: GuiValidationState::default(),
-            last_media_dialog_directory: None,
-            playlist_undo_snapshot: None,
-            playlist_source_undo_snapshot: None,
-            playlist_entry_id_undo_snapshot: None,
-            playlist_shuffle_nonce: 0,
-            media_index_status: Default::default(),
-            player_setup_issue: None,
-            seek_preparation: None,
-            seek_preparation_degraded_reason: None,
-            stream_helper: Default::default(),
-            stream_helper_remediation: Default::default(),
-            media_match: GuiMediaMatchState::from_stored_settings(&shell_settings),
-            media_match_remediation: Default::default(),
-            plex: GuiPlexState::from_stored_settings(&shell_settings),
-            saved_configuration: shell_settings.clone(),
-            configuration: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
-            main_window: MainWindowShellState::from_stored_settings(&shell_settings),
-            menus: MenuDialogShellState::from_stored_settings(&shell_settings),
-            public_servers: PublicServerBrowserShellState::from_stored_settings(&shell_settings),
-            media_search: MediaSearchWorkflowShellState::from_stored_settings(&shell_settings),
-        };
-        state.refresh_playlist_source_states();
-        state.default_selection_from_surfaces();
-        state.apply_selection_to_surfaces();
-        state.refresh_validation();
-        state
+            validation: runtime.settings.validation,
+            last_media_dialog_directory: runtime.media_resolution.last_dialog_directory,
+            playlist_undo_snapshot: runtime.playlist.undo_snapshot,
+            playlist_source_undo_snapshot: runtime.playlist.source_undo_snapshot,
+            playlist_entry_id_undo_snapshot: runtime.playlist.entry_id_undo_snapshot,
+            playlist_shuffle_nonce: runtime.playlist.shuffle_nonce,
+            media_index_status: runtime.media_resolution.index_status,
+            player_setup_issue: runtime.player.setup_issue,
+            seek_preparation: runtime.player.seek_preparation,
+            seek_preparation_degraded_reason: runtime.player.seek_preparation_degraded_reason,
+            stream_helper: runtime.player.stream_helper,
+            stream_helper_remediation: runtime.player.stream_helper_remediation,
+            media_match: runtime.media_match.model,
+            media_match_remediation: runtime.media_match.remediation,
+            plex: runtime.plex.model,
+            saved_configuration: runtime.settings.saved,
+            configuration: runtime.settings.draft,
+            main_window: runtime.playlist.main_window,
+            menus: runtime.session.menus,
+            public_servers: runtime.session.public_servers,
+            media_search: runtime.media_resolution.search,
+        }
     }
 
     pub(super) fn saved_session_connect_target(&self) -> Option<GuiSavedSessionConnectTarget> {
-        let raw_host = self
-            .configuration
-            .control_value(SettingId::ConnectionHost)
-            .unwrap_or_default()
-            .trim();
-        if raw_host.is_empty() {
-            return None;
-        }
-        let (normalized_host, _) = parse_host_and_optional_port_from_host_arg(raw_host);
-        let normalized_host = normalized_host.trim();
-        if normalized_host.is_empty() {
-            return None;
-        }
-
-        let raw_port = self
-            .configuration
-            .control_value(SettingId::ConnectionPort)
-            .unwrap_or_default()
-            .trim();
-        let port = if raw_port.is_empty() {
-            self.configuration.to_stored_settings().port.unwrap_or(8999)
-        } else {
-            raw_port.parse::<u16>().ok().filter(|port| *port > 0)?
-        };
-
-        let mut settings = self.configuration.to_stored_settings();
-        settings.host = Some(normalized_host.to_owned());
-        settings.port = Some(port);
-        settings.username = settings
-            .username
-            .take()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-        settings.room = settings
-            .room
-            .take()
-            .and_then(|value| configured_room_name_text(&value));
-        if settings.room.is_none()
-            && let Some(room) = settings.room_list.as_ref().and_then(|rooms| {
-                rooms
-                    .iter()
-                    .find_map(|room| (!room.is_empty()).then_some(room.to_owned()))
-            })
-        {
-            settings.room = Some(room);
-        }
-        let runtime_settings = stored_client_settings_runtime_snapshot(&settings);
-        let address = format!("{normalized_host}:{port}");
-        Some(GuiSavedSessionConnectTarget {
-            address,
-            username: runtime_settings
-                .config
-                .connection
-                .username
-                .map(|username| username.into_inner())
-                .unwrap_or_default(),
-            room: runtime_settings
-                .config
-                .connection
-                .room
-                .map(|room| room.into_inner())
-                .unwrap_or_default(),
-            controlled_room_password_override: runtime_settings
-                .config
-                .connection
-                .controlled_room_password,
-        })
+        super::configuration_model::saved_session_connect_target(&self.configuration)
     }
-
     pub(super) fn saved_session_connect_button_label(&self) -> &'static str {
         if self.commands.can_disconnect_session {
             "Reconnect"
@@ -182,16 +90,11 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn connect_blocked_by_player_setup_issue(&self) -> bool {
-        self.configuration.launch_mode == super::GuiLaunchMode::FirstRun
-            && self.player_setup_issue.as_ref().is_some_and(|issue| {
-                !matches!(
-                    issue.kind,
-                    GuiPlayerSetupIssueKind::PlayerSettingsDegraded
-                        | GuiPlayerSetupIssueKind::BridgeDegraded
-                )
-            })
+        super::configuration_model::connect_blocked_by_player_setup_issue(
+            &self.configuration,
+            &self.player_setup_issue,
+        )
     }
-
     pub(super) fn player_setup_connect_block_message(&self) -> Option<String> {
         if !self.connect_blocked_by_player_setup_issue() {
             return None;
@@ -291,27 +194,6 @@ impl SorotteGuiShellAppState {
             .as_ref()
             .is_some_and(|issue| issue.retry_available)
             && self.pending_operation.is_none()
-    }
-
-    pub(super) fn chat_send_unavailable_reason_from_settings(
-        &self,
-        settings: &StoredClientSettings,
-        session_runtime_available: bool,
-    ) -> Option<String> {
-        if !chat_input_enabled(settings) {
-            return Some("Chat input is disabled in Chat settings.".to_owned());
-        }
-        if self.pending_operation.is_some() {
-            return Some(
-                "Chat input is unavailable while another GUI operation is in progress.".to_owned(),
-            );
-        }
-        if !session_runtime_available {
-            return Some(
-                "Chat input is unavailable because no session runtime is connected.".to_owned(),
-            );
-        }
-        None
     }
 
     pub(super) fn chat_send_unavailable_reason(&self) -> String {
@@ -525,29 +407,6 @@ impl SorotteGuiShellAppState {
         *self = Self::from_stored_settings(&settings);
     }
 
-    pub(super) fn default_selection_from_surfaces(&mut self) {
-        self.selection.selected_main_window_user =
-            (!self.main_window.users.is_empty()).then_some(0);
-        self.set_main_window_playlist_selection(
-            self.main_window
-                .playlist
-                .iter()
-                .position(|row| row.is_selected)
-                .or_else(|| (!self.main_window.playlist.is_empty()).then_some(0)),
-            false,
-        );
-        self.selection.selected_menu_action =
-            self.menus
-                .sections
-                .iter()
-                .enumerate()
-                .find_map(|(section_index, section)| {
-                    (!section.actions.is_empty()).then_some((section_index, 0))
-                });
-        self.selection.selected_media_search_directory =
-            (!self.media_search.directories.is_empty()).then_some(0);
-    }
-
     pub(super) fn select_configuration_tab(&mut self, tab: GuiConfigurationTab) {
         self.selected_configuration_tab = tab;
     }
@@ -570,51 +429,13 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn normalize_selection(&mut self) {
-        if self
-            .selection
-            .selected_main_window_user
-            .is_some_and(|index| index >= self.main_window.users.len())
-        {
-            self.selection.selected_main_window_user =
-                (!self.main_window.users.is_empty()).then_some(0);
-        }
-        if self
-            .selection
-            .selected_main_window_playlist
-            .is_some_and(|index| index >= self.main_window.playlist.len())
-        {
-            self.set_main_window_playlist_selection(
-                (!self.main_window.playlist.is_empty()).then_some(0),
-                false,
-            );
-        }
-        if self
-            .selection
-            .selected_menu_action
-            .is_some_and(|(section_index, action_index)| {
-                self.menus
-                    .sections
-                    .get(section_index)
-                    .is_none_or(|section| action_index >= section.actions.len())
-            })
-        {
-            self.selection.selected_menu_action =
-                self.menus
-                    .sections
-                    .iter()
-                    .enumerate()
-                    .find_map(|(section_index, section)| {
-                        (!section.actions.is_empty()).then_some((section_index, 0))
-                    });
-        }
-        if self
-            .selection
-            .selected_media_search_directory
-            .is_some_and(|index| index >= self.media_search.directories.len())
-        {
-            self.selection.selected_media_search_directory =
-                (!self.media_search.directories.is_empty()).then_some(0);
-        }
+        super::selection_projection::normalize_selection(
+            &self.main_window,
+            &self.media_search,
+            &self.menus,
+            &mut self.selection,
+            &mut self.main_window_playlist_selection_is_local,
+        );
     }
 
     pub(super) fn set_main_window_playlist_selection(
@@ -627,47 +448,11 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn normalize_selected_menu_action_after_runtime_update(&mut self) {
-        let Some((selected_section_index, selected_action_index)) =
-            self.selection.selected_menu_action
-        else {
-            return;
-        };
-        if self
-            .menus
-            .sections
-            .get(selected_section_index)
-            .and_then(|section| section.actions.get(selected_action_index))
-            .is_some_and(|action| action.enabled)
-        {
-            return;
-        }
-
-        let replacement_in_section =
-            self.menus
-                .sections
-                .get(selected_section_index)
-                .and_then(|section| {
-                    section
-                        .actions
-                        .iter()
-                        .position(|action| action.enabled)
-                        .map(|action_index| (selected_section_index, action_index))
-                });
-        self.selection.selected_menu_action = replacement_in_section.or_else(|| {
-            self.menus
-                .sections
-                .iter()
-                .enumerate()
-                .find_map(|(section_index, section)| {
-                    section
-                        .actions
-                        .iter()
-                        .position(|action| action.enabled)
-                        .map(|action_index| (section_index, action_index))
-                })
-        });
+        super::selection_projection::normalize_selected_menu_action_after_runtime_update(
+            &self.menus,
+            &mut self.selection,
+        );
     }
-
     pub(super) fn set_menu_action_enabled(&mut self, action_id: MenuActionId, enabled: bool) {
         let Some(action) = self.menus.action_mut(action_id) else {
             return;
@@ -709,83 +494,32 @@ impl SorotteGuiShellAppState {
         action.is_checked = checked;
     }
 
-    pub(super) fn set_runtime_menu_action_override(
-        &mut self,
-        action_override: MenuActionRuntimeOverride,
-    ) {
-        if let Some(existing) = self
-            .runtime_menu_action_overrides
-            .iter_mut()
-            .find(|existing| existing.id == action_override.id)
-        {
-            existing.enabled = action_override.enabled;
-            return;
-        }
-        self.runtime_menu_action_overrides.push(action_override);
-    }
-
-    pub(super) fn clear_runtime_menu_action_override(&mut self, action_id: MenuActionId) {
-        self.runtime_menu_action_overrides
-            .retain(|action_override| action_override.id != action_id);
-    }
-
-    pub(super) fn remember_runtime_menu_action_override(
-        &mut self,
-        baseline_menus: &MenuDialogShellState,
-        action_override: &MenuActionRuntimeOverride,
-    ) {
-        let baseline_enabled = baseline_menus
-            .action(action_override.id)
-            .map(|action| action.enabled);
-        let Some(baseline_enabled) = baseline_enabled else {
-            return;
-        };
-        if action_override.enabled == baseline_enabled {
-            self.clear_runtime_menu_action_override(action_override.id);
-            return;
-        }
-        self.set_runtime_menu_action_override(action_override.clone());
-    }
-
     pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
         &mut self,
         settings: &StoredClientSettings,
     ) {
-        let baseline_menus = MenuDialogShellState::from_stored_settings(settings);
-        self.runtime_menu_action_overrides
-            .retain(|action_override| {
-                baseline_menus
-                    .action(action_override.id)
-                    .is_some_and(|action| action.enabled != action_override.enabled)
-            });
+        super::configuration_model::normalize_runtime_menu_action_overrides_for_settings(
+            &mut self.runtime_menu_action_overrides,
+            settings,
+        );
     }
 
     pub(super) fn command_availability_without_runtime_override(
         &self,
     ) -> GuiCommandAvailabilityState {
-        let settings = self.configuration.to_stored_settings();
-        let busy = self.pending_operation.is_some();
-        let chat_unavailable_reason =
-            self.chat_send_unavailable_reason_from_settings(&settings, true);
-        GuiCommandAvailabilityState {
-            can_save_configuration: !busy
-                && self.validation.issues.is_empty()
-                && self.has_unsaved_configuration_changes(),
-            can_reset_configuration: !busy && self.has_unsaved_configuration_changes(),
-            can_reload_configuration: !busy,
-            can_connect_saved_server: !busy
-                && self.saved_session_connect_target().is_some()
-                && !self.connect_blocked_by_player_setup_issue(),
-            can_disconnect_session: false,
-            can_connect_public_server: !busy && self.public_servers.can_connect,
-            can_refresh_public_servers: !busy && self.public_servers.can_refresh,
-            can_search_missing_media: !busy && self.media_search.can_search_missing_media,
-            can_toggle_pause: !busy && self.main_window.playback.can_toggle_pause,
-            can_send_chat_message: chat_unavailable_reason.is_none(),
-            chat_unavailable_reason,
+        super::configuration_model::GuiCommandAvailabilityContext {
+            configuration: &self.configuration,
+            saved_configuration: &self.saved_configuration,
+            pending_config_storage_target: &self.pending_config_storage_target,
+            pending_operation: &self.pending_operation,
+            player_setup_issue: &self.player_setup_issue,
+            validation: &self.validation,
+            main_window: &self.main_window,
+            public_servers: &self.public_servers,
+            media_search: &self.media_search,
         }
+        .command_availability_without_runtime_override()
     }
-
     pub(super) fn normalize_runtime_command_availability_override_for_current_state(&mut self) {
         let baseline = self.command_availability_without_runtime_override();
         self.runtime_command_availability_override
@@ -793,42 +527,15 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn sync_playback_menu_actions_from_runtime_state(&mut self, can_toggle_pause: bool) {
-        let busy = self.pending_operation.is_some();
-        let playback_controls_available = !busy && !self.main_window.playlist.is_empty();
-        let can_open_media_file = !busy && self.media_open_runtime_available();
-        self.set_menu_action_enabled(MenuActionId::OpenMedia, can_open_media_file);
-        self.set_menu_action_enabled(
-            MenuActionId::Play,
-            playback_controls_available && can_toggle_pause,
+        super::selection_projection::sync_playback_menu_actions_from_runtime_state(
+            &self.main_window,
+            &mut self.menus,
+            &mut self.selection,
+            &self.pending_operation,
+            can_toggle_pause,
         );
-        self.set_menu_action_enabled(
-            MenuActionId::Pause,
-            playback_controls_available && can_toggle_pause,
-        );
-        self.set_menu_action_enabled(
-            MenuActionId::TogglePause,
-            playback_controls_available && can_toggle_pause,
-        );
-        self.set_menu_action_enabled(
-            MenuActionId::Seek,
-            playback_controls_available && self.main_window.playback.can_seek,
-        );
-        self.set_menu_action_enabled(
-            MenuActionId::UndoSeek,
-            playback_controls_available && self.main_window.playback.can_undo_seek,
-        );
-        self.set_menu_action_enabled(
-            MenuActionId::SharedPlaylist,
-            !busy && self.main_window.playback.can_manage_playlist,
-        );
-        self.set_menu_action_enabled(
-            MenuActionId::SetOffset,
-            playback_controls_available && self.main_window.playback.can_set_offset,
-        );
-        self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
     }
-
     pub(super) fn sync_dialog_menu_actions_from_runtime_state(&mut self) {
         let runtime_menu_action_overrides = self.runtime_menu_action_overrides.clone();
         for action_override in runtime_menu_action_overrides {
@@ -851,21 +558,12 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn apply_selection_to_surfaces(&mut self) {
-        for (index, user) in self.main_window.users.iter_mut().enumerate() {
-            user.is_selected = self.selection.selected_main_window_user == Some(index);
-        }
-        for (index, item) in self.main_window.playlist.iter_mut().enumerate() {
-            item.is_selected = self.selection.selected_main_window_playlist == Some(index);
-        }
-        for (section_index, section) in self.menus.sections.iter_mut().enumerate() {
-            for (action_index, action) in section.actions.iter_mut().enumerate() {
-                action.is_selected =
-                    self.selection.selected_menu_action == Some((section_index, action_index));
-            }
-        }
-        for (index, directory) in self.media_search.directories.iter_mut().enumerate() {
-            directory.is_selected = self.selection.selected_media_search_directory == Some(index);
-        }
+        super::selection_projection::apply_selection_to_surfaces(
+            &self.selection,
+            &mut self.main_window,
+            &mut self.menus,
+            &mut self.media_search,
+        );
     }
 }
 

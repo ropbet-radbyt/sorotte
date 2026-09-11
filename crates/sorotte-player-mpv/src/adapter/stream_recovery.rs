@@ -471,12 +471,7 @@ impl MpvAdapter {
                     requested_target: path,
                 },
             );
-        self.pending_transport_telemetry_updates.retain(|update| {
-            update.media_generation != Some(generation)
-                || (update.phase != Some(PlayerTransportPhase::Ended)
-                    && update.phase != Some(PlayerTransportPhase::Failed)
-                    && update.eof_reached != Some(true))
-        });
+
         self.lifecycle_reconciliation_due = true;
         #[cfg(not(test))]
         self.reconcile_lifecycle_from_authority();

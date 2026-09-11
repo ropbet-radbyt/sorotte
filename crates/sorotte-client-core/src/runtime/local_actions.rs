@@ -661,7 +661,6 @@ where
     }
 
     pub fn run_disconnect(&mut self, now_seconds: f64) -> Result<(), PlayerError> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         // Disconnect remains authoritative even if the player has already
         // gone away and cannot acknowledge the best-effort rate cleanup.
         let _ = self.interrupt_playback_recovery(now_seconds);
@@ -710,20 +709,14 @@ where
         filesize_privacy_mode: PrivacyMode,
         now_seconds: f64,
     ) -> Result<bool, PlayerError> {
-        let ordered_delivery = self.player.player_event_delivery_mode()
-            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches;
-        let local_file_update = if ordered_delivery {
-            self.drain_player_transport_coordination(now_seconds)?;
-            if self
-                .playback_coordination
-                .ordered_transport_awaits_snapshot()
-            {
-                return Ok(false);
-            }
-            self.pending_ordered_local_file_updates.front().cloned()
-        } else {
-            self.player.take_local_file_update()
-        };
+        self.drain_player_transport_coordination(now_seconds)?;
+        if self
+            .playback_coordination
+            .ordered_transport_awaits_snapshot()
+        {
+            return Ok(false);
+        }
+        let local_file_update = self.pending_ordered_local_file_updates.front().cloned();
         let Some(local_file_update) = local_file_update else {
             return Ok(false);
         };
@@ -750,9 +743,7 @@ where
             transport_kind,
             now_seconds,
         )?;
-        if ordered_delivery {
-            self.pending_ordered_local_file_updates.acknowledge_front();
-        }
+        self.pending_ordered_local_file_updates.acknowledge_front();
         Ok(true)
     }
 
@@ -774,46 +765,12 @@ where
         Value::Object(payload)
     }
 
-    pub(crate) fn sync_player_playback_telemetry_into_session_and_buffer(&mut self) {
-        if self.player.player_event_delivery_mode()
-            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-        {
-            return;
-        }
-        while let Some(update) = self.player.take_playback_telemetry_update() {
-            self.observe_pending_reconnect_rate_reset(update.playback_rate);
-            self.session.apply_player_playback_telemetry_update(&update);
-            // Telemetry is a coalescible state effect: keep one pending snapshot
-            // and let newer fields supersede older values before delivery.
-            if let Some(pending) = self.pending_player_playback_telemetry_updates.back_mut() {
-                pending.paused = update.paused.or(pending.paused);
-                pending.position_seconds = update.position_seconds.or(pending.position_seconds);
-                pending.playback_rate = update.playback_rate.or(pending.playback_rate);
-                pending.paused_for_cache = update.paused_for_cache.or(pending.paused_for_cache);
-                pending.cache_buffering_percent = update
-                    .cache_buffering_percent
-                    .or(pending.cache_buffering_percent);
-            } else {
-                self.pending_player_playback_telemetry_updates
-                    .push_back(update);
-            }
-        }
-    }
-
     fn refresh_player_projection_before_local_transport_intent(
         &mut self,
     ) -> Result<(), PlayerError> {
-        if self.player.player_event_delivery_mode()
-            == sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-        {
-            // A user can issue adjacent commands before the ordinary runtime
-            // tick drains mpv's acknowledged batch. Deriving Seek or Toggle
-            // from the old projection can then pair a fresh intent with the
-            // previous pause state and overwrite newer room authority.
-            return self.drain_player_transport_coordination(unix_wall_clock_time_seconds());
-        }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
-        Ok(())
+        // Adjacent user commands must derive their intent from the latest acknowledged
+        // player projection, even before the next ordinary runtime tick.
+        self.drain_ordered_player_events(unix_wall_clock_time_seconds())
     }
 
     fn causal_state_for_local_seek_actions(

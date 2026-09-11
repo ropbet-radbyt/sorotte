@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(test)]
+use crate::app::shell_state::SorotteGuiShellAppState;
+#[cfg(test)]
+use crate::app::testing::support::runtime_state_for_shell;
 
 const PLEX_MISS_BACKOFF: [Duration; 4] = [
     Duration::from_secs(2),
@@ -247,7 +251,7 @@ mod tests {
             });
             state.main_window.playlist[0].source_state.policy = policy;
 
-            assert!(!owner.active_plex_miss_retry_due(&state));
+            assert!(!owner.active_plex_miss_retry_due(&runtime_state_for_shell(&state)));
             assert!(
                 owner.plex_miss_state.is_none(),
                 "{policy:?} must discard Automatic's independent retry state"

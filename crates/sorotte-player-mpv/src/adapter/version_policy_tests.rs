@@ -1,4 +1,6 @@
 use super::*;
+use crate::tests::player_delivery::collect_player_delivery;
+use sorotte_player_api::PlayerCommandSemanticResult;
 use std::{collections::VecDeque, io};
 
 #[derive(Debug)]
@@ -266,6 +268,7 @@ fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() 
     adapter.active_media_generation = Some(old_generation);
     adapter.current_path = Some("C:/old-core.mkv".to_owned());
     adapter.observed_state.path = adapter.current_path.clone();
+    let _ = collect_pending_player_delivery(&mut adapter);
     let old_command = adapter.register_tracked_command(
         Some(old_generation),
         TrackedCommandKind::Seek {
@@ -275,8 +278,6 @@ fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() 
         },
     );
     adapter.accept_tracked_command(old_command);
-    adapter.pending_command_progress_updates.clear();
-    adapter.pending_ordered_player_events.clear();
 
     let replacement = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new_many(&[
         r#"{"request_id":1,"error":"success","data":"0.41.1"}"#,
@@ -312,25 +313,18 @@ fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() 
     );
     assert_ne!(adapter.active_media_generation, Some(old_generation));
     assert_eq!(adapter.current_path.as_deref(), Some("C:/new-core.mkv"));
+    let delivery = collect_player_delivery(&mut adapter);
     assert!(
-        adapter
-            .pending_command_progress_updates
-            .iter()
-            .any(|progress| {
-                progress.command_id == old_command
-                    && progress.state
-                        == sorotte_player_api::PlayerCommandProgressState::Finished(
-                            PlayerCommandResult::Failed(
-                                PlayerCommandFailureKind::TransportDisconnected,
-                            ),
-                        )
-            })
+        delivery
+            .command_outcomes()
+            .any(|outcome| outcome.command_id == old_command
+                && outcome.result == PlayerCommandSemanticResult::TransportDisconnected)
     );
     assert!(
-        adapter
-            .pending_media_load_outcomes
-            .iter()
-            .all(|outcome| outcome.outcome.loaded_target.as_deref() != Some("C:/old-core.mkv"))
+        delivery
+            .load_outcomes()
+            .all(|outcome| outcome.attachment_epoch == old_attachment
+                || outcome.loaded_target.as_deref() != Some("C:/old-core.mkv"))
     );
 }
 

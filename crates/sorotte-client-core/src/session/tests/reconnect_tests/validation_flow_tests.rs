@@ -31,15 +31,17 @@ fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_
             .expect("reconnect room playstate should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -76,15 +78,6 @@ fn client_runtime_reconnect_state_restore_validation_uses_cached_telemetry_when_
             .reconnect
             .state_restore_validation_pending,
         "validation should remain disabled until restore dispatch starts the validation cycle"
-    );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "pre-restore validation tick should preserve telemetry for diagnostics drains"
     );
 
     runtime
@@ -204,15 +197,17 @@ fn client_runtime_reconnect_restore_and_validation_notifications_do_not_duplicat
         .expect("empty reconnect playlist snapshot should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_if_needed()
@@ -306,15 +301,17 @@ fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -352,15 +349,7 @@ fn client_runtime_reconnect_state_restore_validation_emits_mismatch_notification
         Some(120.0),
         "session local position should be updated to the corrective target"
     );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "validation should preserve telemetry updates for later diagnostics drains"
-    );
+
     assert!(runtime.drain_reconnect_notifications().is_empty());
 }
 
@@ -384,15 +373,17 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(122.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(122.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -420,15 +411,6 @@ fn client_runtime_reconnect_state_restore_validation_uses_aged_room_position() {
             .state_restore_validation_pending,
         "validation should complete once the aged room playstate matches the fresh local telemetry"
     );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(122.5)
-        ],
-        "telemetry should remain available for diagnostics drains after a no-op validation success"
-    );
 }
 
 #[test]
@@ -451,15 +433,17 @@ fn client_runtime_reconnect_state_restore_validation_at_uses_supplied_clock_for_
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(122.0),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(false)
+                .with_position_seconds(122.0)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed_at(12.0)
@@ -499,13 +483,15 @@ fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() 
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default().with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default().with_paused(false)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -515,10 +501,7 @@ fn client_runtime_reconnect_state_restore_validation_waits_for_complete_state() 
         runtime.drain_reconnect_notifications().is_empty(),
         "no reconnect validation notification should emit until position is known"
     );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![PlayerPlaybackTelemetryUpdate::default().with_paused(false)]
-    );
+
     assert!(
         runtime
             .session()
@@ -536,15 +519,17 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -571,15 +556,6 @@ fn client_runtime_reconnect_state_restore_validation_handles_telemetry_before_ro
             .reconnect
             .state_restore_validation_pending,
         "pending validation should remain set until room playstate arrives"
-    );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "telemetry should remain available for diagnostics drains while validation is pending"
     );
 
     runtime.session_mut_for_test().model.room.playstates.insert(
@@ -674,12 +650,12 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_paused(true)
-            .with_position_seconds(117.5),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -716,15 +692,6 @@ fn client_runtime_reconnect_state_restore_validation_handles_room_state_before_t
             .state_restore_validation_pending,
         "pending validation should clear after delayed-telemetry validation succeeds"
     );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "telemetry should remain available for diagnostics drains after delayed-telemetry validation"
-    );
 }
 
 #[test]
@@ -745,15 +712,17 @@ fn client_runtime_reconnect_state_restore_validation_honors_custom_position_tole
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -790,15 +759,18 @@ fn client_runtime_reconnect_state_restore_validation_retries_correction_after_fa
 
     let player = RecordingPlayer {
         fail_set_position: true,
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
+
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -878,13 +850,4 @@ fn client_runtime_reconnect_state_restore_validation_retries_correction_after_fa
             .state_restore_validation_pending
     );
     assert!(runtime.drain_reconnect_notifications().is_empty());
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "telemetry should remain available for later diagnostics despite retry handling"
-    );
 }

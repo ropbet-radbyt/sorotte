@@ -149,9 +149,73 @@ struct RecordingPlayer {
     fail_set_position: bool,
     fail_set_playback_rate: bool,
     player_effects: Vec<ClientEffect>,
-    pending_local_file_update: Option<LocalFileUpdate>,
-    pending_playback_telemetry_update: Option<PlayerPlaybackTelemetryUpdate>,
+    events: Option<RecordingPlayerScript>,
     pending_chat_requests: std::collections::VecDeque<String>,
+}
+
+struct RecordingPlayerScript {
+    events: sorotte_player_api::scripted_events::ScriptedPlayerEvents,
+}
+
+impl RecordingPlayerScript {
+    fn started_media() -> Self {
+        use sorotte_player_api::*;
+        let mut events = scripted_events::ScriptedPlayerEvents::new(PlayerAttachmentEpoch::new(1));
+        events.push_event(PlayerEvent::LoadAttemptStarting {
+            attempt_id: LoadAttemptId::new(1),
+            media_generation: PlayerMediaGeneration::new(1),
+            command_id: None,
+            playlist_entry_id: 1,
+            owns_transport: true,
+        });
+        Self { events }
+    }
+
+    fn with_playback(update: PlayerPlaybackTelemetryUpdate) -> Self {
+        let mut script = Self::started_media();
+        script.observe_playback(update);
+        script
+    }
+
+    fn with_loaded_file(update: LocalFileUpdate) -> Self {
+        use sorotte_player_api::*;
+        let mut script = Self::started_media();
+        script.events.push_event(PlayerEvent::LoadAttemptActive {
+            attempt_id: LoadAttemptId::new(1),
+            media_generation: PlayerMediaGeneration::new(1),
+            command_id: None,
+            playlist_entry_id: 1,
+        });
+        script.events.push_event(PlayerEvent::LocalFileChanged {
+            attempt_id: LoadAttemptId::new(1),
+            media_generation: PlayerMediaGeneration::new(1),
+            update,
+        });
+        script
+    }
+
+    fn observe_playback(&mut self, update: PlayerPlaybackTelemetryUpdate) {
+        use sorotte_player_api::*;
+        self.events
+            .push_event(PlayerEvent::TransportDelta(PlayerTransportDelta {
+                load_attempt_id: Some(LoadAttemptId::new(1)),
+                media_generation: Some(PlayerMediaGeneration::new(1)),
+                logical_pause: update.paused,
+                position_seconds: update.position_seconds,
+                playback_rate: update.playback_rate,
+                paused_for_cache: update.paused_for_cache,
+                cache_percentage: update.cache_buffering_percent,
+                ..PlayerTransportDelta::default()
+            }));
+    }
+}
+
+impl RecordingPlayer {
+    fn observe_playback(&mut self, update: PlayerPlaybackTelemetryUpdate) {
+        self.events
+            .get_or_insert_with(RecordingPlayerScript::started_media)
+            .observe_playback(update);
+    }
 }
 
 impl PlayerAdapter for RecordingPlayer {
@@ -189,12 +253,19 @@ impl PlayerAdapter for RecordingPlayer {
         Ok(())
     }
 
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.pending_local_file_update.take()
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+        self.events.as_ref().and_then(|script| script.events.peek())
     }
 
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.pending_playback_telemetry_update.take()
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        self.events
+            .as_mut()
+            .expect("an emitted script owns its receipt")
+            .events
+            .acknowledge(token)
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {

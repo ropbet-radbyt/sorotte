@@ -90,18 +90,14 @@ impl MpvAdapter {
         self.deferred_start_file_observation = None;
         self.deferred_file_loaded_observation = None;
         self.active_generation_has_restarted = false;
-        self.pending_local_file_update = None;
         self.last_polled_local_file_update = None;
-        self.last_paused_position_poll_at = None;
+
         self.transport_readback = transport_readback::TransportReadbackState::default();
-        self.last_paused_position_telemetry_at = None;
+
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
-        self.pending_playback_telemetry_update = None;
-        self.pending_transport_telemetry_updates.clear();
         self.pending_cache_telemetry_updates.clear();
-        self.pending_media_load_outcomes.clear();
         self.observed_state = MpvObservedState::default();
         self.transport_phase = PlayerTransportPhase::Empty;
         self.reset_timeline_metadata();
@@ -130,34 +126,11 @@ impl MpvAdapter {
     }
 
     pub(super) fn reset_player_state_for_new_attachment(&mut self) {
-        let accepted_command_ids = self
-            .pending_tracked_commands
-            .iter()
-            .filter(|command| command.accepted_at.is_some())
-            .map(|command| command.id)
-            .collect::<BTreeSet<_>>();
+        // The lifecycle reducer retains old-epoch terminal batches until acknowledged.
         self.fail_all_accepted_tracked_commands(PlayerCommandFailureKind::TransportDisconnected);
-        let handoff_progress = accepted_command_ids
-            .iter()
-            .filter_map(|command_id| {
-                self.unacknowledged_terminal_command_progress
-                    .get(command_id)
-                    .copied()
-            })
-            .collect::<Vec<_>>();
 
         self.pending_tracked_commands.clear();
         self.last_finished_tracked_command_debug = None;
-        self.pending_command_progress_updates.clear();
-        self.pending_media_load_outcomes.clear();
-        self.pending_ordered_player_events.clear();
-        self.last_delivered_ordered_command_progress.clear();
-        self.last_delivered_ordered_media_load_outcomes.clear();
-        self.pending_local_file_update = None;
-        self.pending_local_file_generation = None;
-        self.pending_local_file_observed_at = None;
-        self.pending_playback_telemetry_update = None;
-        self.pending_transport_telemetry_updates.clear();
         self.pending_cache_telemetry_updates.clear();
         self.pending_ipc_connection_events.clear();
 
@@ -180,19 +153,14 @@ impl MpvAdapter {
         self.playback_rate = 0.0;
         self.paused_for_cache = false;
         self.cache_buffering_percent = None;
-        self.last_paused_position_poll_at = None;
+
         self.transport_readback = transport_readback::TransportReadbackState::default();
-        self.last_paused_position_telemetry_at = None;
+
         self.last_ipc_event_fence_at = None;
         self.pending_ipc_event_fence_command_id = None;
         self.invalidate_cache_pause_readback_scope();
         self.playback_restart_sequence = 0;
         self.reset_timeline_metadata();
-        self.ordered_player_event_reacquisition_required = true;
-        self.ordered_player_event_reacquisition_requested_by_consumer = false;
-        for progress in handoff_progress {
-            self.queue_command_progress(progress);
-        }
     }
 
     pub(super) fn require_supported_mpv_version(

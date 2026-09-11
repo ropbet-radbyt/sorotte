@@ -4,6 +4,7 @@ use crate::app::runtime_owner::{
     GuiPlexStreamResolveOutcome, GuiPlexStreamResolveWorkerResult,
 };
 use crate::app::shell_state::GuiPlaylistSourceStatus;
+use crate::app::testing::support::runtime_state_for_shell;
 
 const PERMANENT_MISS_INVARIANT: &str =
     "TC-GUI-003: permanent Plex ambiguity must warn once without automatic retry";
@@ -39,7 +40,9 @@ fn queue_automatic_plex_attempt(
     let (_watch_sync_tx, watch_sync_rx) = std::sync::mpsc::channel();
     owner.plex_sync_rx = Some(watch_sync_rx);
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(state)
+        ),
         SelectedPlaylistMediaSyncOutcome::NoChange
     );
     let trigger_key = owner
@@ -71,7 +74,9 @@ fn finish_automatic_plex_ambiguity(
     });
     owner.last_attached_media_resolution_trigger = None;
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(state)
+        ),
         SelectedPlaylistMediaSyncOutcome::NoChange
     );
 }
@@ -115,7 +120,7 @@ fn permanent_plex_ambiguity_warns_once_without_automatic_retry() {
     assert!(miss.next_retry_at.is_none());
     assert!(!miss.retry_in_flight);
     let (_, projected_source) = owner
-        .playlist_resolution_source_state_for_projection(&state)
+        .playlist_resolution_source_state_for_projection(&runtime_state_for_shell(&state))
         .expect("terminal ambiguity should project source status");
     assert_eq!(projected_source.status, GuiPlaylistSourceStatus::Failed);
     assert!(
@@ -128,7 +133,7 @@ fn permanent_plex_ambiguity_warns_once_without_automatic_retry() {
     if let Some(miss) = owner.plex_miss_state.as_mut() {
         miss.next_retry_at = Some(std::time::Instant::now());
     }
-    if owner.active_plex_miss_retry_due(&state) {
+    if owner.active_plex_miss_retry_due(&runtime_state_for_shell(&state)) {
         owner.last_attached_media_resolution_trigger = None;
         let (second_trigger, second_context) = queue_automatic_plex_attempt(&mut owner, &state);
         finish_automatic_plex_ambiguity(&mut owner, &state, second_trigger, second_context);

@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
 use sorotte_player_api::{
     PlayerMediaGeneration, PlayerObservationTimestamp, PlayerSeekableRange, PlayerTransportPhase,
@@ -10,12 +11,12 @@ use sorotte_protocol::{
     PlaybackBarrierStatusPayload, PlaystatePayload, PrepareMediaPayload, ProtocolMessage,
     SetPayload, StatePayload, decode_message_line_items, encode_message_line,
 };
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 #[derive(Debug, Default)]
 struct OffsetTimelinePlayerState {
-    transport_updates: VecDeque<PlayerTransportTelemetryUpdate>,
+    events: Option<ScriptedPlayerEvents>,
     set_positions: Vec<f64>,
     set_paused: Vec<bool>,
 }
@@ -50,12 +51,25 @@ impl PlayerAdapter for OffsetTimelinePlayer {
         Ok(())
     }
 
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .transport_updates
-            .pop_front()
+            .unwrap_or_else(|p| p.into_inner())
+            .events
+            .as_ref()
+            .and_then(ScriptedPlayerEvents::peek)
+    }
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .acknowledge(token)
     }
 }
 
@@ -102,8 +116,10 @@ fn offset_test_owner(
     std::sync::Arc<std::sync::Mutex<OffsetTimelinePlayerState>>,
     SorotteGuiShellAppState,
 ) {
-    let player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(OffsetTimelinePlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(OffsetTimelinePlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("real client-core GUI session should bootstrap");
@@ -189,14 +205,16 @@ fn real_gui_positive_offset_normalizes_barrier_readiness_on_the_room_timeline() 
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push_back(offset_transport(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(offset_transport(
             1.0,
             PlayerTransportPhase::ReadyPaused,
             15.0,
             true,
             PlayerSeekableRange::new(15.0, 25.0),
-        ));
+        )));
 
     owner.refresh_player_state_impl();
     assert_eq!(
@@ -204,7 +222,7 @@ fn real_gui_positive_offset_normalizes_barrier_readiness_on_the_room_timeline() 
         Some(10.0),
         "positive-offset player telemetry must be stored on the room timeline"
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     let outbound = owner
         .session
@@ -265,16 +283,18 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push_back(offset_transport(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(offset_transport(
             1.0,
             PlayerTransportPhase::Playing,
             5.0,
             false,
             PlayerSeekableRange::new(0.0, 16.0),
-        ));
+        )));
     owner.refresh_player_state_impl();
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert_eq!(
         owner.player_position_seconds,
         Some(10.0),
@@ -289,14 +309,16 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push_back(offset_transport(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(offset_transport(
             2.0,
             PlayerTransportPhase::Rebuffering,
             5.0,
             false,
             PlayerSeekableRange::new(0.0, 16.0),
-        ));
+        )));
     owner.refresh_player_state_impl();
     assert_eq!(owner.player_position_seconds, Some(10.0));
     assert!(
@@ -325,7 +347,7 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
             ),
         ),
     );
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
     assert!(
         player_state
             .lock()
@@ -346,8 +368,10 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .transport_updates
-        .push_back(offset_transport(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(transport_event(offset_transport(
             3.0,
             PlayerTransportPhase::ReadyPaused,
             5.0,
@@ -356,7 +380,7 @@ fn real_gui_negative_offset_normalizes_recovery_and_shifts_coordinator_seek_once
             // [5, 21]. The live-edge safety clamp therefore permits the
             // requested global 20s target only when the range is shifted.
             PlayerSeekableRange::new(0.0, 16.0),
-        ));
+        )));
     owner.refresh_player_state_impl();
 
     assert_eq!(
@@ -401,7 +425,7 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner {
         config_path: None,
-        legacy_projection: None,
+        runtime_state: None,
         session: None,
         active_session_settings: None,
         active_session_configured_settings: None,
@@ -468,7 +492,6 @@ fn gui_persisted_config_runtime_owner_keeps_offset_commands_on_global_timeline()
         attached_native_seek_tracker: Default::default(),
         attached_system_seek_ownership: std::collections::VecDeque::new(),
         attached_system_seek_fail_closed: None,
-        attached_transport_telemetry_authority: Default::default(),
         player_position_seconds: Some(100.0),
         player_paused: Some(false),
         player_paused_for_cache: None,

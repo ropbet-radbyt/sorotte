@@ -9,7 +9,7 @@ pub(in crate::app::live_python_interop) fn pump_and_apply(
     handle: &GuiQueuedRuntimeBridgeHandle,
     state: &mut SorotteGuiShellAppState,
 ) {
-    owner.pump_compatibility_state(handle, state);
+    owner.pump_shell_input(handle, state);
     for action in handle.drain_actions() {
         state.apply(action);
     }

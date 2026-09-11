@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_state::GuiRuntimeState;
 
 fn gui_actions_from_playback_coordinator(
     actions: Vec<PlaybackCoordinatorAction>,
@@ -23,16 +24,17 @@ fn gui_actions_from_playback_coordinator(
 }
 
 impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
-    fn drain_gui_actions(&mut self, state: &SorotteGuiShellAppState) -> Vec<GuiShellAction> {
+    fn drain_gui_actions(&mut self, state: &GuiRuntimeState) -> Vec<GuiShellAction> {
         self.drain_gui_actions_impl(state)
     }
 
     fn adjust_command_availability(
         &self,
-        state: &SorotteGuiShellAppState,
+        state: &GuiRuntimeState,
         mut command_availability: GuiCommandAvailabilityState,
     ) -> GuiCommandAvailabilityState {
-        if !chat_input_enabled(&self.runtime_settings.settings) || state.pending_operation.is_some()
+        if !chat_input_enabled(&self.runtime_settings.settings)
+            || state.session.pending_operation.is_some()
         {
             return command_availability;
         }

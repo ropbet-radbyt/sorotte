@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::player_delivery::collect_player_delivery;
 
 fn loaded_adapter(path: &str, duration_seconds: Option<f64>) -> MpvAdapter {
     let generation = PlayerMediaGeneration::new(41);
@@ -68,8 +69,8 @@ fn paused_core_idle_internal_seek_does_not_latch_transport_in_seeking() {
     adapter.active_generation_has_restarted = true;
     adapter.playback_restart_sequence = 1;
     adapter.transport_phase = PlayerTransportPhase::ReadyPaused;
-    adapter.pending_ordered_player_events.clear();
-    adapter.pending_transport_telemetry_updates.clear();
+
+    let _ = collect_player_delivery(&mut adapter);
 
     adapter.handle_ipc_event(&json!({
         "event": MPV_EVENT_SEEK,
@@ -80,15 +81,11 @@ fn paused_core_idle_internal_seek_does_not_latch_transport_in_seeking() {
         "an internal resync edge must not displace settled intentional pause"
     );
     assert_eq!(adapter.observed_state.seeking, Some(false));
-    let seek_edges = adapter
-        .pending_ordered_player_events
-        .iter()
-        .filter_map(|event| match &event.kind {
-            PlayerOrderedEventKind::Transport(update) if update.seeking.is_some() => {
-                Some((update.phase, update.seeking))
-            }
-            _ => None,
-        })
+    let delivery = collect_player_delivery(&mut adapter);
+    let seek_edges = delivery
+        .transport_deltas()
+        .filter(|update| update.seeking.is_some())
+        .map(|update| (update.phase, update.seeking))
         .collect::<Vec<_>>();
     assert_eq!(
         seek_edges,
@@ -215,7 +212,7 @@ fn youtube_cache_stall_recovery_preserves_the_active_generation_and_live_timelin
     adapter.active_generation_has_restarted = true;
     adapter.transport_phase = PlayerTransportPhase::Playing;
     observe_ytdl_is_live(&mut adapter, json!("true"));
-    adapter.pending_transport_telemetry_updates.clear();
+    let _ = collect_player_delivery(&mut adapter);
 
     adapter.handle_ipc_event(&json!({
         "event": "property-change",
@@ -241,7 +238,8 @@ fn youtube_cache_stall_recovery_preserves_the_active_generation_and_live_timelin
     assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Rebuffering);
     assert_eq!(adapter.active_media_generation, Some(generation));
     assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
-    assert_eq!(adapter.take_media_load_outcome(), None);
+    let delivery = collect_player_delivery(&mut adapter);
+    assert_eq!(delivery.load_outcomes().count(), 0);
 
     adapter.handle_ipc_event(&json!({
         "event": "property-change",
@@ -258,11 +256,11 @@ fn youtube_cache_stall_recovery_preserves_the_active_generation_and_live_timelin
     assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Playing);
     assert_eq!(adapter.active_media_generation, Some(generation));
     assert_eq!(adapter.timeline_kind, PlayerTimelineKind::SlidingLive);
-    assert_eq!(adapter.take_media_load_outcome(), None);
+    let delivery = collect_player_delivery(&mut adapter);
+    assert_eq!(delivery.load_outcomes().count(), 0);
     assert!(
-        adapter
-            .pending_transport_telemetry_updates
-            .iter()
+        delivery
+            .transport_deltas()
             .all(|update| update.media_generation == Some(generation))
     );
 }
@@ -389,7 +387,7 @@ fn authoritative_seek_event_emits_an_explicit_same_generation_cache_clear() {
         "underrun": true,
     }));
     adapter.pending_cache_telemetry_updates.clear();
-    adapter.pending_transport_telemetry_updates.clear();
+    let _ = collect_player_delivery(&mut adapter);
 
     adapter.handle_seek_event();
 
@@ -406,16 +404,12 @@ fn authoritative_seek_event_emits_an_explicit_same_generation_cache_clear() {
     assert_eq!(cleared.cache_end_seconds, None);
     assert_eq!(cleared.eof, None);
     assert_eq!(cleared.underrun, None);
-    assert!(
-        adapter
-            .pending_transport_telemetry_updates
-            .iter()
-            .any(|update| {
-                update.media_generation == generation
-                    && update.phase == Some(PlayerTransportPhase::Seeking)
-                    && update.seeking == Some(true)
-            })
-    );
+    let delivery = collect_player_delivery(&mut adapter);
+    assert!(delivery.transport_deltas().any(|update| {
+        update.media_generation == generation
+            && update.phase == Some(PlayerTransportPhase::Seeking)
+            && update.seeking == Some(true)
+    }));
 }
 
 #[test]

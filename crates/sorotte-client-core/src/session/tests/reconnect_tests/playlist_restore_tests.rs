@@ -278,15 +278,17 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
         .expect("empty reconnect playlist snapshot should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_if_needed()
@@ -397,15 +399,6 @@ fn client_runtime_reconnect_state_and_playlist_restore_precede_validation_mismat
             .reconnect
             .state_restore_validation_pending,
         "validation pending should clear after post-restore correction"
-    );
-    assert_eq!(
-        runtime.drain_player_playback_telemetry_updates(),
-        vec![
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5)
-        ],
-        "telemetry should remain available for diagnostics drains after the ordered restore/playlist/validation sequence"
     );
 }
 

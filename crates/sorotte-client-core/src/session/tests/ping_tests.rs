@@ -34,15 +34,17 @@ fn client_runtime_state_sync_reconcile_legacy_ping_wrapper_tracks_and_emits_ping
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(12.5)
-                .with_paused(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(12.5)
+                .with_paused(true)),
+        );
 
     let now = unix_wall_clock_time_seconds();
     let inbound_latency_calculation = now - 0.05;

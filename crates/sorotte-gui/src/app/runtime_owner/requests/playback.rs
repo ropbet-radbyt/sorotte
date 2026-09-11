@@ -4,6 +4,7 @@ use crate::app::mpv_launch::retry_sorotte_chat_osd_integration;
 use crate::app::runtime_owner::GuiPlayerIntegrationHealth;
 use crate::app::runtime_stack::GuiAttachedPlayerRuntimeAction;
 use crate::app::runtime_stack::GuiOwnedPlayer;
+use crate::app::runtime_state::GuiRuntimeState;
 use crate::app::support::system_time_seconds;
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_player_mpv::SorotteBridgeHealth;
@@ -12,7 +13,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn handle_player_command(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         command: Command,
     ) -> bool {
         match command {
@@ -120,9 +121,9 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_retry_player_launch_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         self.sync_player_from_lookup_and_settings(&env_trimmed, Some(&settings), true);
         self.finish_retry_player_launch_request(handle, projected_state, &settings)
     }
@@ -130,7 +131,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(in crate::app::runtime_owner) fn finish_retry_player_launch_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         settings: &StoredClientSettings,
     ) -> bool {
         self.refresh_player_state();
@@ -186,9 +187,9 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_retry_player_settings_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let _ = self.apply_saved_player_settings_in_place(&settings);
         self.refresh_player_state();
         let player_settings_applied = self.current_player_core_state_is_applied();
@@ -226,7 +227,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_retry_chat_osd_integration_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         let Some(ui_settings) = self.player_launch_state.mpv_ui_settings().cloned() else {
             Self::push_player_error(
@@ -278,7 +279,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 ),
             ),
         };
-        let settings = projected_state.saved_configuration.clone();
+        let settings = projected_state.settings.saved.clone();
         let pending_requirements =
             self.pending_apply_requirements_action(projected_state, &settings);
         Self::push_actions_and_project(
@@ -299,7 +300,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_undo_seek_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
@@ -372,7 +373,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_offset_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         command: sorotte_client_app::app_boundary::commands::LocalOffsetCommand,
     ) -> bool {
         self.refresh_player_state();
@@ -439,7 +440,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_autoplay_enabled_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         enabled: bool,
     ) -> bool {
         if let Err(error) = self.ensure_detached_client_core_chat_session(projected_state) {
@@ -463,7 +464,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_autoplay_threshold_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         threshold: usize,
     ) -> bool {
         if let Err(error) = self.ensure_detached_client_core_chat_session(projected_state) {
@@ -491,7 +492,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_seek_offset_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         offset_seconds: f64,
     ) -> bool {
         self.refresh_player_state();
@@ -572,7 +573,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_seek_to_position_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target_position_seconds: f64,
     ) -> bool {
         self.refresh_player_state();
@@ -656,14 +657,14 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_toggle_playback_pause_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
         if self.player.is_some() {
             let previous_paused = self
                 .player_paused
-                .unwrap_or(projected_state.main_window.playback_paused);
+                .unwrap_or(projected_state.playlist.main_window.playback_paused);
             let target_paused = !previous_paused;
             match self.apply_playback_pause_change_with_detached_session(
                 projected_state,
@@ -674,15 +675,16 @@ impl GuiPersistedConfigRuntimeOwner {
                     if let Some(error) = sync_error {
                         Self::push_player_error(handle, error);
                     }
-                    let actions = if projected_state.main_window.playback_paused == actual_paused {
-                        Vec::new()
-                    } else {
-                        vec![if actual_paused {
-                            GuiShellAction::AnnouncePlaybackPaused
+                    let actions =
+                        if projected_state.playlist.main_window.playback_paused == actual_paused {
+                            Vec::new()
                         } else {
-                            GuiShellAction::AnnouncePlaybackResumed
-                        }]
-                    };
+                            vec![if actual_paused {
+                                GuiShellAction::AnnouncePlaybackPaused
+                            } else {
+                                GuiShellAction::AnnouncePlaybackResumed
+                            }]
+                        };
                     Self::push_actions_and_project(handle, projected_state, actions);
                 }
                 Err(error) => Self::push_player_error(handle, error),
@@ -696,7 +698,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_set_playback_paused_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target_paused: bool,
     ) -> bool {
         self.refresh_player_state();
@@ -704,7 +706,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.player.is_some() {
             let previous_paused = self
                 .player_paused
-                .unwrap_or(projected_state.main_window.playback_paused);
+                .unwrap_or(projected_state.playlist.main_window.playback_paused);
             match self.apply_playback_pause_change_with_detached_session(
                 projected_state,
                 previous_paused,
@@ -714,15 +716,16 @@ impl GuiPersistedConfigRuntimeOwner {
                     if let Some(error) = sync_error {
                         Self::push_player_error(handle, error);
                     }
-                    let actions = if projected_state.main_window.playback_paused == actual_paused {
-                        Vec::new()
-                    } else {
-                        vec![if actual_paused {
-                            GuiShellAction::AnnouncePlaybackPaused
+                    let actions =
+                        if projected_state.playlist.main_window.playback_paused == actual_paused {
+                            Vec::new()
                         } else {
-                            GuiShellAction::AnnouncePlaybackResumed
-                        }]
-                    };
+                            vec![if actual_paused {
+                                GuiShellAction::AnnouncePlaybackPaused
+                            } else {
+                                GuiShellAction::AnnouncePlaybackResumed
+                            }]
+                        };
                     Self::push_actions_and_project(handle, projected_state, actions);
                 }
                 Err(error) => Self::push_player_error(handle, error),
@@ -736,7 +739,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_set_playback_pause_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
         target_paused: bool,
     ) -> bool {
         self.refresh_player_state();
@@ -744,7 +747,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.player.is_some() {
             let previous_paused = self
                 .player_paused
-                .unwrap_or(projected_state.main_window.playback_paused);
+                .unwrap_or(projected_state.playlist.main_window.playback_paused);
             let actions = match self.apply_playback_pause_change_with_detached_session(
                 projected_state,
                 previous_paused,
@@ -781,14 +784,14 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_complete_toggle_playback_pause_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut SorotteGuiShellAppState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         self.refresh_player_state();
         self.ensure_configured_player_attached();
         if self.player.is_some() {
             let previous_paused = self
                 .player_paused
-                .unwrap_or(projected_state.main_window.playback_paused);
+                .unwrap_or(projected_state.playlist.main_window.playback_paused);
             let target_paused = !previous_paused;
             let actions = match self.apply_playback_pause_change_with_detached_session(
                 projected_state,

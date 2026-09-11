@@ -2,6 +2,11 @@
 
 Status: implementation design and verification contract.
 
+The compatibility paths described below belong to the recorded source checkpoint.
+The current player API uses only acknowledged event batches; typed observation
+getters and the alternate consumer path have been removed. See
+[the current runtime contracts](DEVELOPMENT.md) for current implementation guidance.
+
 Design baseline:
 
 - branch: `codex/upgrade-rust-stable-dependencies`

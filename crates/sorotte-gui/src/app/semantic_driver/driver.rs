@@ -246,7 +246,10 @@ impl GuiSemanticDriver {
     fn open_media_files(&mut self, paths: Vec<String>) -> Result<(), String> {
         let paths = self.materialize_media_fixture_paths(paths)?;
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
-            Some(&self.state),
+            Some(
+                &crate::app::feature_slices::GuiRuntimeInput::from_shell(&self.state)
+                    .to_runtime_state(),
+            ),
             paths,
             self.state.shared_playlist_events_enabled(),
             None,
@@ -269,7 +272,10 @@ impl GuiSemanticDriver {
         let playlist_insert_slot = matches!(target, GuiDroppedFilesTarget::Playlist)
             .then_some(self.state.main_window.playlist.len());
         let actions = GuiPreviewRuntimeBridge::preview_open_media_file_actions(
-            Some(&self.state),
+            Some(
+                &crate::app::feature_slices::GuiRuntimeInput::from_shell(&self.state)
+                    .to_runtime_state(),
+            ),
             paths,
             target.load_into_shared_playlist(&self.state),
             playlist_insert_slot,
@@ -338,7 +344,7 @@ impl GuiSemanticDriver {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(request));
-        owner.pump_compatibility_state(&handle, &self.state);
+        owner.pump_shell_input(&handle, &self.state);
         let actions = handle.drain_actions();
         if actions.is_empty() {
             return Err(

@@ -636,14 +636,16 @@ fn reconnect_discards_failed_state_but_retains_reliable_chat_and_playlist_comman
         )
         .expect("initial room State should apply");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false)),
+        );
 
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     runtime
@@ -695,12 +697,12 @@ fn reconnect_discards_failed_state_but_retains_reliable_chat_and_playlist_comman
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(99.0)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(99.0)
+                .with_paused(false),
+        );
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let ProtocolMessage::State(new_state) = &runtime.control().outbound_messages()[2] else {
         panic!("replacement connection should queue a fresh State after reliable commands");
@@ -794,16 +796,19 @@ fn client_runtime_notification_sink_failure_preserves_failed_notification_and_ta
 fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_callback() {
     let session = ClientSession::default();
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
+        events: Some(RecordingPlayerScript::with_playback(
             PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_position_seconds(12.5)
                 .with_playback_rate(0.95),
-        ),
+        )),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .drain_player_transport_coordination(unix_wall_clock_time_seconds())
+        .unwrap();
 
     let mut captured = Vec::new();
     runtime
@@ -829,11 +834,11 @@ fn client_runtime_drain_player_playback_telemetry_updates_to_sink_dispatches_cal
 #[test]
 fn client_runtime_coalesces_pending_playback_telemetry_to_latest_values() {
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
+        events: Some(RecordingPlayerScript::with_playback(
             PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_position_seconds(10.0),
-        ),
+        )),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(
@@ -841,15 +846,17 @@ fn client_runtime_coalesces_pending_playback_telemetry_to_latest_values() {
         player,
         QueuedRuntimeControl::default(),
     );
-    runtime.sync_player_playback_telemetry_into_session_and_buffer();
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
+        .drain_player_transport_coordination(unix_wall_clock_time_seconds())
+        .unwrap();
+    runtime.player_mut_for_test().observe_playback(
         PlayerPlaybackTelemetryUpdate::default()
             .with_position_seconds(20.0)
             .with_playback_rate(1.25),
     );
-    runtime.sync_player_playback_telemetry_into_session_and_buffer();
+    runtime
+        .drain_player_transport_coordination(unix_wall_clock_time_seconds())
+        .unwrap();
 
     assert_eq!(
         runtime.drain_player_playback_telemetry_updates(),
@@ -869,7 +876,7 @@ fn client_runtime_playback_telemetry_sink_failure_preserves_latest_update() {
         .with_paused(true)
         .with_position_seconds(12.5);
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(update.clone()),
+        events: Some(RecordingPlayerScript::with_playback(update.clone())),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(
@@ -877,6 +884,9 @@ fn client_runtime_playback_telemetry_sink_failure_preserves_latest_update() {
         player,
         QueuedRuntimeControl::default(),
     );
+    runtime
+        .drain_player_transport_coordination(unix_wall_clock_time_seconds())
+        .unwrap();
 
     let result = runtime
         .drain_player_playback_telemetry_updates_to_sink(|_| Err::<(), _>("telemetry sink failed"));
@@ -894,15 +904,18 @@ fn client_runtime_drain_player_playback_telemetry_updates_refreshes_local_state(
     session.model.playback.local_paused = Some(true);
     session.model.playback.local_position = Some(1.0);
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
+        events: Some(RecordingPlayerScript::with_playback(
             PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(false)
                 .with_position_seconds(12.5),
-        ),
+        )),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .drain_player_transport_coordination(unix_wall_clock_time_seconds())
+        .unwrap();
 
     let updates = runtime.drain_player_playback_telemetry_updates();
     assert_eq!(updates.len(), 1);

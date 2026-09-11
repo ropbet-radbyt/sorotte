@@ -1,14 +1,13 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
 #[test]
 fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        playback_updates:
-            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct TelemetryPlayerAdapter {
@@ -20,22 +19,25 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
             "telemetry"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
@@ -132,16 +134,23 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        events: Some(active_player_events(1)),
+    }));
     {
         let mut player_state = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        player_state.local_file_updates.push_back(
-            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-                .with_path("C:/Media/episode1.mkv".to_owned())
-                .with_duration_seconds(1510.0),
-        );
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(file_event(
+                1,
+                sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_path("C:/Media/episode1.mkv".to_owned())
+                    .with_duration_seconds(1510.0),
+            ));
     }
 
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
@@ -189,12 +198,26 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push_back(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_position_seconds(1511.0),
-        );
+        ));
+    player_state
+        .lock()
+        .unwrap()
+        .events
+        .as_mut()
+        .unwrap()
+        .push_event(sorotte_player_api::PlayerEvent::LogicalPlaybackTerminal {
+            attempt_id: sorotte_player_api::LoadAttemptId::new(1),
+            media_generation: sorotte_player_api::PlayerMediaGeneration::new(1),
+            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+        });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
     assert_eq!(
@@ -251,7 +274,9 @@ fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_sett
         value: false,
     }));
     assert_eq!(
-        owner.current_shared_playlist_target(&state).as_deref(),
+        owner
+            .current_shared_playlist_target(&runtime_state_for_shell(&state))
+            .as_deref(),
         Some("episode.mkv"),
         "an unsaved disable must not hide the active session playlist target"
     );
@@ -267,7 +292,7 @@ fn gui_persisted_config_runtime_owner_pins_playlist_target_lookup_to_active_sett
         value: true,
     }));
     assert_eq!(
-        owner.current_shared_playlist_target(&state),
+        owner.current_shared_playlist_target(&runtime_state_for_shell(&state)),
         None,
         "an unsaved enable must not activate playlist lookup for a disabled session"
     );
@@ -345,7 +370,9 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         Some(0),
         false,
     );
-    let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+    let opened = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+        &runtime_state_for_shell(&state),
+    );
 
     assert_eq!(opened, SelectedPlaylistMediaSyncOutcome::StartedLoading);
     assert_eq!(
@@ -482,7 +509,7 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
         shared_playlist_enabled: Some(true),
         ..StoredClientSettings::default()
     });
-    owner.sync_session_playstate_to_attached_player_impl(&state, false);
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     assert_eq!(
         player_state
@@ -506,9 +533,7 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
 fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_eof() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        playback_updates:
-            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         applied_pauses: Vec<bool>,
         applied_positions: Vec<f64>,
     }
@@ -543,40 +568,56 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             Ok(())
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     {
         let mut player_state = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        player_state.local_file_updates.push_back(
-            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-                .with_path("C:/Media/episode1.mkv".to_owned())
-                .with_duration_seconds(1510.0),
-        );
-        player_state.playback_updates.push_back(
-            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(0.0),
-        );
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(file_event(
+                1,
+                sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_path("C:/Media/episode1.mkv".to_owned())
+                    .with_duration_seconds(1510.0),
+            ));
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(playback_event(
+                1,
+                sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(0.0),
+            ));
     }
 
     let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
@@ -622,12 +663,15 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push_back(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_position_seconds(1511.0),
-        );
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 
@@ -650,9 +694,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
 fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_eof_with_offset() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        playback_updates:
-            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
         applied_pauses: Vec<bool>,
         applied_positions: Vec<f64>,
     }
@@ -687,40 +729,56 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             Ok(())
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     {
         let mut player_state = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        player_state.local_file_updates.push_back(
-            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-                .with_path("C:/Media/episode1.mkv".to_owned())
-                .with_duration_seconds(1510.0),
-        );
-        player_state.playback_updates.push_back(
-            sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(false)
-                .with_position_seconds(0.0),
-        );
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(file_event(
+                1,
+                sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_path("C:/Media/episode1.mkv".to_owned())
+                    .with_duration_seconds(1510.0),
+            ));
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(playback_event(
+                1,
+                sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
+                    .with_paused(false)
+                    .with_position_seconds(0.0),
+            ));
     }
 
     let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
@@ -767,12 +825,15 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push_back(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
                 .with_position_seconds(1515.0),
-        );
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 

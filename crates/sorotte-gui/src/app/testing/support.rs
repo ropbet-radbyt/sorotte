@@ -171,3 +171,37 @@ where
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
+
+/// Build the same feature input that the UI submits to its worker. Tests that
+/// inspect runtime decisions can retain their separate UI fixture.
+pub(in crate::app) fn runtime_state_for_shell(
+    state: &SorotteGuiShellAppState,
+) -> crate::app::runtime_state::GuiRuntimeState {
+    crate::app::feature_slices::GuiRuntimeInput::from_shell(state).to_runtime_state()
+}
+
+pub(in crate::app) fn pump_worker_state(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    handle: &GuiQueuedRuntimeBridgeHandle,
+    state: &mut crate::app::runtime_state::GuiRuntimeState,
+) -> Vec<GuiShellAction> {
+    owner.runtime_state = Some(state.clone());
+    owner.poll(handle);
+    *state = owner
+        .runtime_state
+        .take()
+        .expect("poll must retain its worker state");
+    let actions = handle.drain_actions();
+    for action in &actions {
+        if matches!(
+            action,
+            GuiShellAction::ApplyMainWindowRuntimeSnapshot(_)
+                | GuiShellAction::ApplySharedPlaylistSelection(_)
+                | GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(_)
+                | GuiShellAction::ApplyGuiPlexRuntimeSnapshot(_)
+        ) {
+            state.apply(action.clone());
+        }
+    }
+    actions
+}

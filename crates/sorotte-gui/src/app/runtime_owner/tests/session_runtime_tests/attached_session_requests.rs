@@ -19,7 +19,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
     }
 
     impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
-        fn drain_gui_actions(&mut self, _state: &SorotteGuiShellAppState) -> Vec<GuiShellAction> {
+        fn drain_gui_actions(
+            &mut self,
+            _state: &crate::app::runtime_state::GuiRuntimeState,
+        ) -> Vec<GuiShellAction> {
             std::mem::take(
                 &mut self
                     .state

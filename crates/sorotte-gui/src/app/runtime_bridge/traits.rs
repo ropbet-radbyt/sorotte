@@ -231,18 +231,21 @@ impl GuiNativeRuntimePump for GuiNoopRuntimePump {
 #[derive(Default)]
 #[cfg(test)]
 pub(in crate::app) struct GuiPreviewRuntimeOwner {
-    latest_state: Option<SorotteGuiShellAppState>,
+    latest_state: Option<crate::app::runtime_state::GuiRuntimeState>,
 }
 
 #[cfg(test)]
 impl GuiPreviewRuntimeOwner {
     fn push_preview_response(
         handle: &GuiQueuedRuntimeBridgeHandle,
-        state: &SorotteGuiShellAppState,
+        state: &mut crate::app::runtime_state::GuiRuntimeState,
         request: GuiRuntimeRequest,
     ) {
         let actions = request.preview_actions_for_state(state);
         if !actions.is_empty() {
+            for action in &actions {
+                state.apply(action.clone());
+            }
             handle.push_actions(actions);
         }
     }
@@ -251,11 +254,11 @@ impl GuiPreviewRuntimeOwner {
 #[cfg(test)]
 impl GuiQueuedRuntimeOwner for GuiPreviewRuntimeOwner {
     fn input_changed(&mut self, _handle: &GuiQueuedRuntimeBridgeHandle, input: &GuiRuntimeInput) {
-        self.latest_state = Some(input.to_compatibility_projection());
+        self.latest_state = Some(input.to_runtime_state());
     }
 
     fn poll(&mut self, handle: &GuiQueuedRuntimeBridgeHandle) {
-        let Some(state) = self.latest_state.as_ref() else {
+        let Some(state) = self.latest_state.as_mut() else {
             return;
         };
         for request in handle.drain_requests() {

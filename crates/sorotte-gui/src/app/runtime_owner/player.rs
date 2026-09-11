@@ -22,10 +22,10 @@ use sorotte_player_api::{
     LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
     PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
     PlayerCommandProgressState, PlayerCommandResult, PlayerCommandSemanticResult, PlayerEvent,
-    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventDeliveryMode, PlayerEventOrder,
-    PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadOutcome, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta,
-    PlayerTransportSnapshot, SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventOrder, PlayerLoadAttemptResult,
+    PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+    PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportSnapshot,
+    SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 use sorotte_player_mpv::SyncplayOsdKind;
 
@@ -45,7 +45,7 @@ use super::super::shell_state::{
     GuiPlaylistResolutionStep, GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin,
     GuiPlaylistSourceStatus, GuiPluginSelection, GuiShellAction, GuiShellModal, GuiShellView,
     GuiStreamHelperHealth, GuiStreamTargetKind, GuiTransientNotificationLevel,
-    MainWindowRuntimeSnapshot, SorotteGuiShellAppState, browser_is_url, browser_stream_target_kind,
+    MainWindowRuntimeSnapshot, browser_is_url, browser_stream_target_kind,
     shuffle_playlist_entries_in_place,
 };
 use super::super::startup_support::env_trimmed;
