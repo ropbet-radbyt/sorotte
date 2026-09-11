@@ -260,25 +260,6 @@ pub struct MpvNetworkMediaDiagnosticSnapshot {
     pub cache_underrun: Option<bool>,
 }
 
-/// Compatibility view that merges the two independent event channels in production order.
-/// New consumers should use the split transition/outcome APIs and the authoritative snapshot.
-#[derive(Debug, PartialEq, Eq)]
-pub enum MpvNetworkMediaOptionsTransitionOutcome {
-    /// A previously degraded core hook was positively reconfigured or responded successfully.
-    HookRecovered,
-    /// The active media ended and there is currently no file-specific policy to apply.
-    NoActiveMedia,
-    /// The authoritative hook classified the active media as local, so network options are idle.
-    LocalMediaUnchanged,
-    /// Every configured file-local network option was accepted for the active network media.
-    NetworkMediaUpdated,
-    /// The core hook is unavailable or this adapter lost its lease. Playback and JSON IPC remain
-    /// attached, but applying network-only policy requires an explicit retry or hook recovery.
-    HookDegraded(PlayerError),
-    /// At least one option write failed. IPC health determines whether the failure is retryable.
-    Failed(PlayerError),
-}
-
 fn uses_network_media_options(path: &str) -> bool {
     let Some((scheme, _)) = path.trim().split_once("://") else {
         return false;

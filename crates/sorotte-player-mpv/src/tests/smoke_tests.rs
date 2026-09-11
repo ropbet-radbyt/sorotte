@@ -114,12 +114,15 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         );
     }
 
-    fn wait_for_network_outcome(
-        adapter: &mut MpvAdapter,
-    ) -> MpvNetworkMediaOptionsTransitionOutcome {
+    fn wait_for_network_outcome(adapter: &mut MpvAdapter) -> MpvNetworkMediaPolicyOutcome {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Some(outcome) = adapter.take_network_media_options_transition_outcome() {
+            if let Some(MpvNetworkOptionsHookHealthTransition::Degraded(error)) =
+                adapter.take_network_options_hook_health_transition()
+            {
+                panic!("the real-mpv network hook degraded: {error}");
+            }
+            if let Some(outcome) = adapter.take_network_media_policy_outcome() {
                 return outcome;
             }
             sleep(Duration::from_millis(25));
@@ -259,14 +262,12 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         .open_file(&network_media_url)
         .expect("real mpv should accept the asynchronous network load request");
     let network_outcome = wait_for_network_outcome(&mut contender);
-    if let MpvNetworkMediaOptionsTransitionOutcome::Failed(error)
-    | MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error) = &network_outcome
-    {
+    if let MpvNetworkMediaPolicyOutcome::Failed(error) = &network_outcome {
         panic!("the real-mpv network hook failed: {error}");
     }
     assert_eq!(
         network_outcome,
-        MpvNetworkMediaOptionsTransitionOutcome::NetworkMediaUpdated,
+        MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated,
         "the on-load hook should apply the owned option map to network media"
     );
 
@@ -280,12 +281,12 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         .expect("real mpv should accept the asynchronous local load request");
     assert_eq!(
         wait_for_network_outcome(&mut contender),
-        MpvNetworkMediaOptionsTransitionOutcome::LocalMediaUnchanged,
+        MpvNetworkMediaPolicyOutcome::LocalMediaUnchanged,
         "local on-load must complete the installed policy without a file-local write"
     );
     assert_eq!(
         wait_for_network_outcome(&mut contender),
-        MpvNetworkMediaOptionsTransitionOutcome::NoActiveMedia,
+        MpvNetworkMediaPolicyOutcome::NoActiveMedia,
         "the missing local fixture must finish its later idle transition before testing lease expiry"
     );
 
@@ -308,15 +309,23 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
             .hook_health,
         MpvNetworkOptionsHookHealth::Ready
     );
-    let replaced_owner_outcome = wait_for_network_outcome(&mut contender);
+    let degradation_deadline = Instant::now() + Duration::from_secs(5);
+    let replacement_error = loop {
+        if let Some(MpvNetworkOptionsHookHealthTransition::Degraded(error)) =
+            contender.take_network_options_hook_health_transition()
+        {
+            break error;
+        }
+        assert!(
+            Instant::now() < degradation_deadline,
+            "expected replaced-owner hook degradation"
+        );
+        sleep(Duration::from_millis(25));
+    };
     assert!(
-        matches!(
-            &replaced_owner_outcome,
-            MpvNetworkMediaOptionsTransitionOutcome::HookDegraded(error)
-                if error.to_string().contains("ownership")
-                    || error.to_string().contains("lease expired")
-        ),
-        "expected replaced-owner degradation, observed {replaced_owner_outcome:?}"
+        replacement_error.to_string().contains("ownership")
+            || replacement_error.to_string().contains("lease expired"),
+        "expected replaced-owner degradation, observed {replacement_error}"
     );
     assert!(
         contender.is_connected(),

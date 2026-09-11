@@ -49,10 +49,10 @@ pub use adapter::{
 };
 pub use adapter::{
     MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaDiagnosticSnapshot,
-    MpvNetworkMediaOptionsTransitionOutcome, MpvNetworkMediaPolicyApplicationState,
-    MpvNetworkMediaPolicyOutcome, MpvNetworkMediaPolicyState, MpvNetworkOptionApplyResult,
-    MpvNetworkOptionApplyStatus, MpvNetworkOptionsHookHealth,
-    MpvNetworkOptionsHookHealthTransition, MpvNetworkOptionsRuntimeHealthSnapshot,
+    MpvNetworkMediaPolicyApplicationState, MpvNetworkMediaPolicyOutcome,
+    MpvNetworkMediaPolicyState, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
+    MpvNetworkOptionsHookHealth, MpvNetworkOptionsHookHealthTransition,
+    MpvNetworkOptionsRuntimeHealthSnapshot,
 };
 pub use bridge::{SorotteBridgeFailure, SorotteBridgeFailureKind, SorotteBridgeHealth};
 pub use bridge_resource::{

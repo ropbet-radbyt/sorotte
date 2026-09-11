@@ -3512,7 +3512,7 @@ mod nonblocking_maintenance_tests {
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
-                    transition.value,
+                    transition,
                     MpvNetworkOptionsHookHealthTransition::Degraded(_)
                 ))
         );
@@ -3591,7 +3591,7 @@ mod nonblocking_maintenance_tests {
                 .pending_network_options_hook_health_transitions
                 .iter()
                 .all(|transition| !matches!(
-                    transition.value,
+                    transition,
                     MpvNetworkOptionsHookHealthTransition::Degraded(_)
                 ))
         );
@@ -4161,18 +4161,14 @@ mod nonblocking_maintenance_tests {
                 .network_options
                 .pending_network_options_hook_health_transitions
                 .iter()
-                .all(|event| !matches!(
-                    event.value,
-                    MpvNetworkOptionsHookHealthTransition::Recovered
-                )),
+                .all(|event| !matches!(event, MpvNetworkOptionsHookHealthTransition::Recovered)),
             "an earlier transition result must not recover the hook after later ownership loss"
         );
         assert!(matches!(
             adapter
                 .network_options
                 .pending_network_media_policy_outcomes
-                .front()
-                .map(|event| &event.value),
+                .front(),
             Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
         ));
         assert!(
@@ -4248,8 +4244,7 @@ mod nonblocking_maintenance_tests {
             adapter
                 .network_options
                 .pending_network_media_policy_outcomes
-                .front()
-                .map(|event| &event.value),
+                .front(),
             Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
         ));
     }

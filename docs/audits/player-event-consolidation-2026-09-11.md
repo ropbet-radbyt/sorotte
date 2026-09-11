@@ -23,32 +23,40 @@ Follow-up to the compatibility and terminology cleanup, based on PR #62 at
   and passes after it.
 - Removed coverage-policy entries for the deleted wrapper module. The actual
   adapter remains within the existing critical player-runtime boundary.
-
 - Removed the bare `partially-applied` mpv hook status accepted only for
   provisional development builds. The bundled hook's `failed` status plus
   `applicationState=partially-applied` remains supported and covered by both the
   adapter and Lua tests. Player test names now distinguish the Syncplay bridge,
   typed command-progress queue, playback snapshot, and scripted fixtures.
 
+- Removed `MpvNetworkMediaOptionsTransitionOutcome` and its merged getter, which
+  had no application consumers. Removed the sequencing counter and event wrappers
+  that existed only to merge the two queues. Hook health and media-policy events
+  retain their separate bounded queues and authoritative runtime snapshot.
+  Migrated the IPC, CLI, and real-mpv tests to those actual application APIs;
+  empty-queue checks still assert that both channels have been consumed.
+
 ## Validation
 
-The adapter consolidation passed the full checks below before the additional
-hook-status cleanup. Tests used Rust 1.98.1, the pinned Syncplay Python environment, and the required
-live interoperability flags described in the preceding cleanup audit.
+Final checks used Rust 1.98.1, the pinned Syncplay Python environment, and the
+required live interoperability flags described in the preceding cleanup audit.
 
 | Check | Result | Local evidence |
 | --- | --- | --- |
-| Workspace, all features | 4,387 passed, 0 failed, 30 ignored | `target/player-cleanup-workspace-final.log` |
-| Workspace Clippy, all targets and features, warnings denied | Passed | `target/player-cleanup-clippy-final.log` |
-| GUI semantic scenarios | 14 passed, including live Python peers | `target/player-cleanup-semantic-final.json` |
-| Static verification | All 16 checks passed | `target/player-cleanup-preflight-final.json` |
+| Workspace, all features | 4,388 passed, 0 failed, 30 ignored | `target/player-cleanup-workspace-complete.log` |
+| Workspace Clippy, all targets and features, warnings denied | Passed | `target/player-cleanup-clippy-complete.log` |
+| GUI semantic scenarios | 14 passed, including live Python peers | `target/player-cleanup-semantic-complete.json` |
+| Static verification | All 16 checks passed | `target/player-cleanup-preflight-complete.json` |
+| Real mpv bridge lifecycle, default features | Passed with audio/video output disabled | `target/player-cleanup-real-mpv-split-events.log` |
+| Integrated workflow regression tests | 41 passed | `target/player-cleanup-integrated-workflow-tests.log` |
 | Formatting and whitespace | Passed | `cargo fmt --all`; `git diff --check` |
 
-The additional hook-status cleanup passed all 466 mpv tests (4 ignored),
-all-target/all-feature mpv Clippy, formatting, and whitespace checks. Logs:
-`target/player-cleanup-hook-tests.log` and `target/player-cleanup-hook-clippy.log`.
-The merged PR pipeline repairs also passed 41 workflow tests, recorded in
-`target/player-cleanup-integrated-workflow-tests.log`.
+The separate real-mpv run exercised the opt-in bridge test against
+`mpv v0.41.0-1012-ge8673660a`; its executable SHA-256 was
+`547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe`.
+It verified bridge discovery, settings acknowledgement, competing ownership,
+network/local transitions, lease expiry, and clean ownership release through
+actual JSON IPC. It did not exercise visible Windows GUI interaction.
 
 These are local results for this follow-up. PR #62's hosted and native evidence
 belongs to its own source revision and does not qualify this change.
