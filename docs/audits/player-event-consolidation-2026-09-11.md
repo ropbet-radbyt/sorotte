@@ -35,6 +35,13 @@ Follow-up to the compatibility and terminology cleanup, based on PR #62 at
   retain their separate bounded queues and authoritative runtime snapshot.
   Migrated the IPC, CLI, and real-mpv tests to those actual application APIs;
   empty-queue checks still assert that both channels have been consumed.
+- Initial hosted qualification exposed a live Syncplay comparator race: a room
+  change could be attributed no output after 60 milliseconds of silence, before
+  Python announced the destination. The collector now waits for that room
+  announcement on the requesting client's connection. The delayed-response
+  regression failed before the fix and also checks that an older room's output
+  cannot satisfy the wait. The existing two-second maximum and exact outbound
+  sequence comparisons remain in force.
 
 ## Validation
 
@@ -49,6 +56,8 @@ required live interoperability flags described in the preceding cleanup audit.
 | Static verification | All 16 checks passed | `target/player-cleanup-preflight-complete.json` |
 | Real mpv bridge lifecycle, default features | Passed with audio/video output disabled | `target/player-cleanup-real-mpv-split-events.log` |
 | Integrated workflow regression tests | 41 passed | `target/player-cleanup-integrated-workflow-tests.log` |
+| Compatibility suite after the collector repair | 145 passed, 0 failed, 7 ignored, with live Syncplay prerequisites | `target/pr63-room-reply-compat-after.log` |
+| Workspace Clippy after the collector repair | Passed | `target/pr63-room-reply-clippy.log` |
 | Formatting and whitespace | Passed | `cargo fmt --all`; `git diff --check` |
 
 The separate real-mpv run exercised the opt-in bridge test against

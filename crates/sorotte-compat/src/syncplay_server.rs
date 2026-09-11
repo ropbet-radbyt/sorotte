@@ -171,20 +171,19 @@ pub(crate) fn run_syncplay_server_fanout_roundtrip_with_full_overrides(
             let stream = clients
                 .get_mut(&step.client_id)
                 .ok_or_else(|| InteropError::MissingSyncplayClient(step.client_id.clone()))?;
-            let required_first_output_client = (is_new_client
-                && matches!(
-                    decode_message_line(&request_line)?,
-                    ProtocolMessage::Hello(_)
-                ))
-            .then_some(step.client_id.as_str());
+            let request = decode_message_line(&request_line)?;
             let legacy_request_line = prepare_syncplay_server_request_line(&request_line)?;
             stream.stream.write_all(legacy_request_line.as_bytes())?;
             // Twisted LineReceiver defaults to CRLF framing.
             stream.stream.write_all(b"\r\n")?;
             stream.stream.flush()?;
 
-            let outbound_lines =
-                collect_syncplay_server_step_outputs(&mut clients, required_first_output_client)?;
+            let outbound_lines = collect_syncplay_server_step_outputs(
+                &mut clients,
+                &step.client_id,
+                &request,
+                is_new_client,
+            )?;
             events.push(ServerRuntimeScenarioEvent {
                 client_id: step.client_id.clone(),
                 request_line: step.request_line.clone(),

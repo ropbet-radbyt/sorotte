@@ -371,8 +371,18 @@ pub(crate) fn connect_syncplay_client_stream(
 
 pub(crate) fn collect_syncplay_server_step_outputs(
     clients: &mut BTreeMap<String, SyncplayServerClientConnection>,
-    required_first_output_client: Option<&str>,
+    request_client_id: &str,
+    request: &ProtocolMessage,
+    is_new_client: bool,
 ) -> Result<Vec<DirectedOutboundLine>, InteropError> {
+    let requested_room = match request {
+        ProtocolMessage::Set(message) => message.set.room.as_ref(),
+        _ => None,
+    };
+    // Room changes announce the destination to their requesting client.
+    // Silence or an earlier room's output cannot delimit that asynchronous reply.
+    let wait_for_required_output =
+        (is_new_client && matches!(request, ProtocolMessage::Hello(_))) || requested_room.is_some();
     let mut outputs = Vec::new();
     let step_start = Instant::now();
     let mut last_activity = Instant::now();
@@ -385,10 +395,22 @@ pub(crate) fn collect_syncplay_server_step_outputs(
                 continue;
             }
             saw_new_output = true;
-            if required_first_output_client == Some(client_id.as_str()) {
-                saw_required_output = true;
-            }
             for line in lines {
+                if client_id == request_client_id
+                    && requested_room.is_none_or(|room| {
+                        matches!(
+                            decode_message_line(&line),
+                            Ok(ProtocolMessage::Set(message))
+                                if message.set.user.as_ref().is_some_and(|users| {
+                                    users.values().any(|user| {
+                                        user.room.as_ref().is_some_and(|observed| observed.name == room.name)
+                                    })
+                                })
+                        )
+                    })
+                {
+                    saw_required_output = true;
+                }
                 outputs.push(DirectedOutboundLine {
                     client_id: client_id.clone(),
                     line,
@@ -402,7 +424,7 @@ pub(crate) fn collect_syncplay_server_step_outputs(
 
         let step_elapsed = step_start.elapsed();
         if syncplay_server_step_collection_is_complete(
-            required_first_output_client.is_some(),
+            wait_for_required_output,
             saw_required_output,
             step_elapsed,
             last_activity.elapsed(),
@@ -417,13 +439,13 @@ pub(crate) fn collect_syncplay_server_step_outputs(
 }
 
 pub(crate) fn syncplay_server_step_collection_is_complete(
-    wait_for_first_output: bool,
+    wait_for_required_output: bool,
     saw_required_output: bool,
     step_elapsed: Duration,
     idle_elapsed: Duration,
 ) -> bool {
     step_elapsed >= SYNCPLAY_SERVER_STEP_MAX_WAIT
-        || ((!wait_for_first_output || saw_required_output)
+        || ((!wait_for_required_output || saw_required_output)
             && step_elapsed >= SYNCPLAY_SERVER_STEP_MIN_WAIT
             && idle_elapsed >= SYNCPLAY_SERVER_STEP_IDLE_WAIT)
 }
