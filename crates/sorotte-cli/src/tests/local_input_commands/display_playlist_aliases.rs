@@ -1,21 +1,21 @@
 use super::*;
 
 #[test]
-fn localized_legacy_compatibility_headings_legacy_compatible_use_selected_language() {
+fn localized_legacy_compatibility_headings_use_selected_language() {
     assert_eq!(
-        crate::localized_legacy_startup_compatibility_heading_legacy_compatible(Some("fr")),
-        "Compatibilite de demarrage de Legacy Python ConfigurationGetter :"
+        crate::localized_startup_compatibility_heading(Some("fr")),
+        "Compatibilite de demarrage de Syncplay ConfigurationGetter :"
     );
     assert_eq!(
-        crate::localized_legacy_ini_compatibility_heading_legacy_compatible(Some("de")),
-        "Legacy-Python-ConfigurationGetter sorotte.ini-Kompatibilitaet:"
+        crate::localized_syncplay_ini_compatibility_heading(Some("de")),
+        "Syncplay-ConfigurationGetter sorotte.ini-Kompatibilitaet:"
     );
     assert_eq!(
-        crate::localized_compatibility_input_label_legacy_compatible(Some("es")),
+        crate::localized_compatibility_input_label(Some("es")),
         "Entrada"
     );
     assert_eq!(
-        crate::localized_compatibility_note_label_legacy_compatible(Some("ko")),
+        crate::localized_compatibility_note_label(Some("ko")),
         "Bigo"
     );
 }

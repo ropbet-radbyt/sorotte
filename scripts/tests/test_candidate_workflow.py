@@ -148,6 +148,7 @@ def validate(value):
     container_candidate = value["qualify-server-container.yml"]["jobs"]["qualify"]
     assert "org.opencontainers.image.version=${{ steps.build_info.outputs.version }}" in step(container_candidate, "meta")["with"]["labels"].splitlines()
     package = value["package-ci.yml"]["jobs"]["package-required"]
+    assert package["if"] == "${{ !cancelled() }}"
     required = step(package, "candidate_required")
     assert required["if"] == "github.event_name == 'pull_request'"
     assert 'candidate_authority.py require --source-sha "$VERIFICATION_SHA" --pull-request "$PR_NUMBER"' in required["run"]
@@ -175,6 +176,8 @@ class CandidateWorkflowTests(unittest.TestCase):
             "skipped-handoff": lambda w: step(w["stable-release.yml"]["jobs"]["retain-release-qualification"], "handoff").update({"if": "false"}),
             "tolerated-candidate": lambda w: step(w["package-ci.yml"]["jobs"]["package-required"], "candidate_required").update({"continue-on-error": "true"}),
             "optional-candidate": lambda w: step(w["package-ci.yml"]["jobs"]["package-required"], "candidate_required").update({"if": "false"}),
+            "uncancellable-package-gate": lambda w: w["package-ci.yml"]["jobs"]["package-required"].update({"if": "always()"}),
+            "failure-skipping-package-gate": lambda w: w["package-ci.yml"]["jobs"]["package-required"].update({"if": "success()"}),
             "rebuild-container": lambda w: w["publish-server-container.yml"]["jobs"]["publish"]["steps"].append({"run": "cargo build --release"}),
             "test-main": lambda w: w["main-qualification.yml"]["jobs"]["main-qualified"]["steps"].append({"id": "late_test", "run": "cargo test"}),
             "missing-archive-authority": lambda w: step(w["publish-qualified-archives.yml"]["jobs"]["publish"], "authorize").update({"if": "false"}),

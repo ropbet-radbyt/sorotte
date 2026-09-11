@@ -661,10 +661,12 @@ pub struct PlaybackBarrierStatusPayload {
     /// V2 and playback-barrier V1.
     pub participants: BTreeMap<String, PlaybackBarrierParticipantStatus>,
     /// Current room members excluded from the technical start cohort. Servers
-    /// may use this explicit compatibility policy for legacy clients in mixed
-    /// V1/V2 rooms; UIs must not imply technical start guarantees for them.
+    /// may exclude peers without both required capabilities from mixed rooms;
+    /// UIs must not imply technical start guarantees for them. The serialized
+    /// name remains unchanged for existing peers.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub excluded_legacy_clients: BTreeSet<String>,
+    #[serde(rename = "excludedLegacyClients")]
+    pub excluded_unsupported_clients: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

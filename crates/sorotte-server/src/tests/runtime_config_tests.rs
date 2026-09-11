@@ -248,7 +248,7 @@ fn hello_line_persistent_rooms_notice_is_added_for_legacy_clients() {
     assert_eq!(
         hello.extra.get("motd"),
         Some(&Value::String(
-            super::LEGACY_PERSISTENT_ROOMS_NOTICE.to_owned(),
+            super::SYNCPLAY_PERSISTENT_ROOMS_NOTICE.to_owned(),
         ))
     );
 }
@@ -295,7 +295,7 @@ fn hello_line_persistent_rooms_notice_combines_with_existing_motd_with_blank_lin
         hello.extra.get("motd"),
         Some(&Value::String(format!(
             "{}\n\nYou are using Syncplay 1.2.255 but a newer version is available from https://syncplay.pl\nTemplate latest=1.7.5",
-            super::LEGACY_PERSISTENT_ROOMS_NOTICE
+            super::SYNCPLAY_PERSISTENT_ROOMS_NOTICE
         ),))
     );
 }

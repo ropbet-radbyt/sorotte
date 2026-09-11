@@ -169,8 +169,7 @@ impl SorotteGuiShellAppState {
                         "Public-server label and address must both be non-empty.",
                     );
                 }
-                let (host, _) =
-                    parse_host_and_optional_port_from_host_arg_legacy_compatible(address);
+                let (host, _) = parse_host_and_optional_port_from_host_arg(address);
                 if host.trim().is_empty() {
                     return self.record_action_error("Public-server address is not valid.");
                 }

@@ -1,6 +1,6 @@
 use super::*;
 
-impl LegacyServerPythonPeerHarness {
+impl SyncplayServerPythonPeerHarness {
     pub fn start_peer_connected(&mut self) -> Result<(), InteropError> {
         self.start_peer_connected_with_timeout(Duration::from_secs(3))
             .map(|_| ())
@@ -9,7 +9,7 @@ impl LegacyServerPythonPeerHarness {
     pub fn start_peer_connected_with_timeout(
         &mut self,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         if self.peer_child.is_none() {
             self.spawn_peer_process()?;
         }
@@ -21,7 +21,7 @@ impl LegacyServerPythonPeerHarness {
         &mut self,
         username: &str,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -52,7 +52,7 @@ impl LegacyServerPythonPeerHarness {
         &mut self,
         ready: bool,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -71,7 +71,7 @@ impl LegacyServerPythonPeerHarness {
         username: &str,
         ready: bool,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -90,7 +90,7 @@ impl LegacyServerPythonPeerHarness {
         &mut self,
         controller: bool,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -109,7 +109,7 @@ impl LegacyServerPythonPeerHarness {
         username: &str,
         controller: bool,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -127,7 +127,7 @@ impl LegacyServerPythonPeerHarness {
     pub fn send_peer_chat_message(
         &mut self,
         message: &str,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -145,7 +145,7 @@ impl LegacyServerPythonPeerHarness {
         username: &str,
         message: &str,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -165,7 +165,7 @@ impl LegacyServerPythonPeerHarness {
         username: &str,
         file_name: &str,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -183,7 +183,7 @@ impl LegacyServerPythonPeerHarness {
     pub fn set_peer_playlist(
         &mut self,
         files: &[String],
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -199,7 +199,7 @@ impl LegacyServerPythonPeerHarness {
     pub fn set_peer_playlist_index(
         &mut self,
         index: usize,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -216,7 +216,7 @@ impl LegacyServerPythonPeerHarness {
         &mut self,
         files: &[String],
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -234,7 +234,7 @@ impl LegacyServerPythonPeerHarness {
         &mut self,
         index: usize,
         timeout: Duration,
-    ) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    ) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -248,7 +248,7 @@ impl LegacyServerPythonPeerHarness {
         Self::parse_peer_snapshot(&status)
     }
 
-    pub fn peer_snapshot(&mut self) -> Result<LegacyPythonPeerSnapshot, InteropError> {
+    pub fn peer_snapshot(&mut self) -> Result<SyncplayPythonPeerSnapshot, InteropError> {
         self.ensure_peer_connected()?;
         let status = self.send_peer_command_and_wait(
             &json!({
@@ -269,7 +269,7 @@ impl LegacyServerPythonPeerHarness {
         if let Err(error) = self.stop_peer_process() {
             errors.push(error.to_string());
         }
-        terminate_legacy_server_process(&mut self.server_child);
+        terminate_syncplay_server_process(&mut self.server_child);
         if errors.is_empty() {
             Ok(())
         } else {

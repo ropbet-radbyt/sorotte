@@ -1,51 +1,48 @@
 use super::*;
 
 #[test]
-fn parse_env_bool_legacy_compatible_parses_expected_tokens() {
-    assert_eq!(parse_env_bool_legacy_compatible("1"), Some(true));
-    assert_eq!(parse_env_bool_legacy_compatible("true"), Some(true));
-    assert_eq!(parse_env_bool_legacy_compatible("YES"), Some(true));
-    assert_eq!(parse_env_bool_legacy_compatible("on"), Some(true));
-    assert_eq!(parse_env_bool_legacy_compatible("0"), Some(false));
-    assert_eq!(parse_env_bool_legacy_compatible("false"), Some(false));
-    assert_eq!(parse_env_bool_legacy_compatible("No"), Some(false));
-    assert_eq!(parse_env_bool_legacy_compatible("off"), Some(false));
+fn parse_env_bool_parses_expected_tokens() {
+    assert_eq!(parse_env_bool("1"), Some(true));
+    assert_eq!(parse_env_bool("true"), Some(true));
+    assert_eq!(parse_env_bool("YES"), Some(true));
+    assert_eq!(parse_env_bool("on"), Some(true));
+    assert_eq!(parse_env_bool("0"), Some(false));
+    assert_eq!(parse_env_bool("false"), Some(false));
+    assert_eq!(parse_env_bool("No"), Some(false));
+    assert_eq!(parse_env_bool("off"), Some(false));
 }
 
 #[test]
-fn parse_env_bool_legacy_compatible_rejects_invalid_values() {
-    assert_eq!(parse_env_bool_legacy_compatible(""), None);
-    assert_eq!(parse_env_bool_legacy_compatible("  "), None);
-    assert_eq!(parse_env_bool_legacy_compatible("maybe"), None);
-    assert_eq!(parse_env_bool_legacy_compatible("2"), None);
+fn parse_env_bool_rejects_invalid_values() {
+    assert_eq!(parse_env_bool(""), None);
+    assert_eq!(parse_env_bool("  "), None);
+    assert_eq!(parse_env_bool("maybe"), None);
+    assert_eq!(parse_env_bool("2"), None);
 }
 
 #[test]
-fn parse_env_port_legacy_compatible_requires_port_range_one_to_65535() {
-    assert_eq!(parse_env_port_legacy_compatible("1"), Some(1));
-    assert_eq!(parse_env_port_legacy_compatible("65535"), Some(65535));
-    assert_eq!(parse_env_port_legacy_compatible("0"), None);
-    assert_eq!(parse_env_port_legacy_compatible("65536"), None);
-    assert_eq!(parse_env_port_legacy_compatible("abc"), None);
+fn parse_env_port_requires_port_range_one_to_65535() {
+    assert_eq!(parse_env_port("1"), Some(1));
+    assert_eq!(parse_env_port("65535"), Some(65535));
+    assert_eq!(parse_env_port("0"), None);
+    assert_eq!(parse_env_port("65536"), None);
+    assert_eq!(parse_env_port("abc"), None);
 }
 
 #[test]
-fn parse_env_non_negative_f64_legacy_compatible_requires_finite_non_negative_values() {
-    assert_eq!(parse_env_non_negative_f64_legacy_compatible("0"), Some(0.0));
+fn parse_env_non_negative_f64_requires_finite_non_negative_values() {
+    assert_eq!(parse_env_non_negative_f64("0"), Some(0.0));
+    assert_eq!(parse_env_non_negative_f64("1.25"), Some(1.25));
+    assert_eq!(parse_env_non_negative_f64("-0.01"), None);
+    assert_eq!(parse_env_non_negative_f64("NaN"), None);
+    assert_eq!(parse_env_non_negative_f64("inf"), None);
+    assert_eq!(parse_env_non_negative_f64("abc"), None);
+}
+
+#[test]
+fn parse_env_string_list_splits_and_trims_entries() {
     assert_eq!(
-        parse_env_non_negative_f64_legacy_compatible("1.25"),
-        Some(1.25)
-    );
-    assert_eq!(parse_env_non_negative_f64_legacy_compatible("-0.01"), None);
-    assert_eq!(parse_env_non_negative_f64_legacy_compatible("NaN"), None);
-    assert_eq!(parse_env_non_negative_f64_legacy_compatible("inf"), None);
-    assert_eq!(parse_env_non_negative_f64_legacy_compatible("abc"), None);
-}
-
-#[test]
-fn parse_env_string_list_legacy_compatible_splits_and_trims_entries() {
-    assert_eq!(
-        parse_env_string_list_legacy_compatible(" youtube.com , *.example.com/videos ; youtu.be"),
+        parse_env_string_list(" youtube.com , *.example.com/videos ; youtu.be"),
         Some(vec![
             "youtube.com".to_owned(),
             "*.example.com/videos".to_owned(),
@@ -53,7 +50,7 @@ fn parse_env_string_list_legacy_compatible_splits_and_trims_entries() {
         ])
     );
     assert_eq!(
-        parse_env_string_list_legacy_compatible("alpha\nbeta\r\ngamma"),
+        parse_env_string_list("alpha\nbeta\r\ngamma"),
         Some(vec![
             "alpha".to_owned(),
             "beta".to_owned(),
@@ -63,98 +60,88 @@ fn parse_env_string_list_legacy_compatible_splits_and_trims_entries() {
 }
 
 #[test]
-fn parse_env_string_list_legacy_compatible_rejects_empty_values() {
-    assert_eq!(parse_env_string_list_legacy_compatible(""), None);
-    assert_eq!(parse_env_string_list_legacy_compatible(" , ; \n "), None);
+fn parse_env_string_list_rejects_empty_values() {
+    assert_eq!(parse_env_string_list(""), None);
+    assert_eq!(parse_env_string_list(" , ; \n "), None);
 }
 
 #[test]
-fn parse_unpause_action_mode_legacy_compatible_accepts_known_values() {
+fn parse_unpause_action_mode_accepts_known_values() {
     assert_eq!(
-        parse_unpause_action_mode_legacy_compatible("IfAlreadyReady"),
+        parse_unpause_action_mode("IfAlreadyReady"),
         Some(UnpauseActionMode::IfAlreadyReady)
     );
     assert_eq!(
-        parse_unpause_action_mode_legacy_compatible("if_others_ready"),
+        parse_unpause_action_mode("if_others_ready"),
         Some(UnpauseActionMode::IfOthersReady)
     );
     assert_eq!(
-        parse_unpause_action_mode_legacy_compatible("if-min-users-ready"),
+        parse_unpause_action_mode("if-min-users-ready"),
         Some(UnpauseActionMode::IfMinUsersReady)
     );
     assert_eq!(
-        parse_unpause_action_mode_legacy_compatible("always"),
+        parse_unpause_action_mode("always"),
         Some(UnpauseActionMode::Always)
     );
 }
 
 #[test]
-fn parse_unpause_action_mode_legacy_compatible_rejects_unknown_values() {
-    assert_eq!(parse_unpause_action_mode_legacy_compatible(""), None);
-    assert_eq!(
-        parse_unpause_action_mode_legacy_compatible("sometimes"),
-        None
-    );
+fn parse_unpause_action_mode_rejects_unknown_values() {
+    assert_eq!(parse_unpause_action_mode(""), None);
+    assert_eq!(parse_unpause_action_mode("sometimes"), None);
 }
 
 #[test]
-fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible_accepts_known_values() {
+fn parse_reconnect_state_restore_correction_policy_mode_accepts_known_values() {
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("auto"),
+        parse_reconnect_state_restore_correction_policy_mode("auto"),
         Some(ReconnectStateRestoreCorrectionPolicyMode::AutoCorrect)
     );
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("notify-only"),
+        parse_reconnect_state_restore_correction_policy_mode("notify-only"),
         Some(ReconnectStateRestoreCorrectionPolicyMode::NotifyOnly)
     );
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
-            "warn-only-on-exhaustion"
-        ),
+        parse_reconnect_state_restore_correction_policy_mode("warn-only-on-exhaustion"),
         Some(ReconnectStateRestoreCorrectionPolicyMode::WarnOnlyOnExhaustion)
     );
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
-            "disable-after-n-mismatches"
-        ),
+        parse_reconnect_state_restore_correction_policy_mode("disable-after-n-mismatches"),
         Some(ReconnectStateRestoreCorrectionPolicyMode::DisableAfterNMismatches)
     );
 }
 
 #[test]
-fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible_rejects_unknown_values() {
+fn parse_reconnect_state_restore_correction_policy_mode_rejects_unknown_values() {
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(""),
+        parse_reconnect_state_restore_correction_policy_mode(""),
         None
     );
     assert_eq!(
-        parse_reconnect_state_restore_correction_policy_mode_legacy_compatible("retry-forever"),
+        parse_reconnect_state_restore_correction_policy_mode("retry-forever"),
         None
     );
 }
 
 #[test]
-fn parse_autoplay_min_users_override_legacy_compatible_maps_legacy_ranges() {
+fn parse_autoplay_min_users_override_maps_legacy_ranges() {
     assert_eq!(
-        parse_autoplay_min_users_override_legacy_compatible("-1"),
+        parse_autoplay_min_users_override("-1"),
         Some(AutoplayThresholdOverride::Disable)
     );
     assert_eq!(
-        parse_autoplay_min_users_override_legacy_compatible("0"),
+        parse_autoplay_min_users_override("0"),
         Some(AutoplayThresholdOverride::Disable)
     );
     assert_eq!(
-        parse_autoplay_min_users_override_legacy_compatible("1"),
+        parse_autoplay_min_users_override("1"),
         Some(AutoplayThresholdOverride::Set(1))
     );
     assert_eq!(
-        parse_autoplay_min_users_override_legacy_compatible("3"),
+        parse_autoplay_min_users_override("3"),
         Some(AutoplayThresholdOverride::Set(3))
     );
-    assert_eq!(
-        parse_autoplay_min_users_override_legacy_compatible("abc"),
-        None
-    );
+    assert_eq!(parse_autoplay_min_users_override("abc"), None);
 }
 
 #[test]

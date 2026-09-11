@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const PINNED_LEGACY_SYNCPLAY_SHA: &str = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f";
+const PINNED_SYNCPLAY_SHA: &str = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f";
 const ARGUMENT_PROBE_SCHEMA: &str = "sorotte-pinned-configuration-getter-arguments-v1";
 const ENDPOINT_PROBE_SCHEMA: &str = "sorotte-pinned-configuration-getter-endpoint-v1";
 const PASSWORD_CANARY: &str = "CLI_DIFFERENTIAL_PASSWORD_CANARY";
@@ -35,7 +35,7 @@ fn assert_pinned_legacy_root(root: &Path) {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        PINNED_LEGACY_SYNCPLAY_SHA,
+        PINNED_SYNCPLAY_SHA,
         "legacy argument oracle must use the reviewed pinned revision"
     );
 }
@@ -73,7 +73,7 @@ fn run_python_probe(root: &Path, script_name: &str, request: &[u8]) -> std::proc
 }
 
 fn rust_argument_projection(id: &str, arguments: &[String]) -> serde_json::Value {
-    let parsed = parse_legacy_client_arg_overrides(arguments);
+    let parsed = parse_syncplay_client_arg_overrides(arguments);
     if !parsed.unknown_options.is_empty() {
         return serde_json::json!({"id": id, "accepted": false});
     }
@@ -199,14 +199,14 @@ fn cli_short_option_grammar_matches_pinned_python_configuration_getter() {
 }
 
 fn rust_endpoint_projection(id: &str, arguments: &[String]) -> serde_json::Value {
-    let parsed = parse_legacy_client_arg_overrides(arguments);
+    let parsed = parse_syncplay_client_arg_overrides(arguments);
     if !parsed.unknown_options.is_empty() {
         return serde_json::json!({"id": id, "accepted": false});
     }
     let mut config = build_client_loop_config_from_env();
     config.host = "lower.example".to_owned();
     config.port = 8999;
-    apply_legacy_client_arg_overrides(&mut config, &parsed);
+    apply_syncplay_client_arg_overrides(&mut config, &parsed);
     serde_json::json!({
         "id": id,
         "accepted": validate_composed_client_endpoint(&config).is_ok(),

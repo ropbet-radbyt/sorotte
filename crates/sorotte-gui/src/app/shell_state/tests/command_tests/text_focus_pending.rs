@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginConfigurationTextEdit(
         SettingId::ConnectionHost,
@@ -46,8 +45,7 @@ fn gui_shell_app_state_tracks_configuration_text_edit_session_lifecycle() {
 
 #[test]
 fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::FocusConfigurationControl(
         SettingId::PlaybackAutoplay,
@@ -117,8 +115,7 @@ fn gui_shell_app_state_tracks_focused_configuration_controls_and_activation() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_configuration_focus_and_activation() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ActivateFocusedConfigurationControl));
     assert_eq!(
@@ -137,8 +134,7 @@ fn gui_shell_app_state_rejects_invalid_configuration_focus_and_activation() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_configuration_text_edit_sessions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::BeginConfigurationTextEdit(
         SettingId::OsdShow,
@@ -165,12 +161,12 @@ fn gui_shell_app_state_rejects_invalid_configuration_text_edit_sessions() {
 
 #[test]
 fn gui_shell_app_state_tracks_pending_operations_and_busy_command_availability() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_toggle_pause = true;
     state.refresh_validation();

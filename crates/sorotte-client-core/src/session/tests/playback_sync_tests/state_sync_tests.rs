@@ -363,7 +363,7 @@ fn heartbeat_publishes_pending_pause_instead_of_pre_command_player_sample() {
     );
     runtime.stage_external_player_pause_intent(true, 0.01);
 
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let ProtocolMessage::State(state_message) = &runtime.control().outbound_messages()[0] else {
         panic!("queued heartbeat should be State");
     };
@@ -589,7 +589,7 @@ fn client_runtime_state_sync_heartbeat_emits_when_active_even_if_chat_is_disable
     let mut runtime = ClientRuntime::new(session, player, control);
 
     assert!(
-        runtime.run_state_sync_heartbeat_legacy_ping_compatible(false),
+        runtime.run_state_sync_heartbeat_with_ping(false),
         "an active session should heartbeat independently of the chat capability"
     );
     assert_eq!(
@@ -642,7 +642,7 @@ fn blocked_state_write_coalesces_repeated_heartbeats_to_the_latest_pending_state
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
 
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     runtime
         .flush_queued_protocol_lines_to_transport(|_| {
             Err(ProtocolError::ServerError {
@@ -659,7 +659,7 @@ fn blocked_state_write_coalesces_repeated_heartbeats_to_the_latest_pending_state
                 .with_position_seconds(position)
                 .with_paused(false),
         );
-        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     }
 
     assert_eq!(
@@ -704,7 +704,7 @@ fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
 
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let staged_line = runtime
         .pending_protocol_line()
         .expect("State should encode")
@@ -718,7 +718,7 @@ fn leased_state_keeps_staged_bytes_stable_while_newer_heartbeats_coalesce() {
                 .with_position_seconds(position)
                 .with_paused(false),
         );
-        assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+        assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     }
 
     assert_eq!(
@@ -759,7 +759,7 @@ fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down
             r#"{"State":{"playstate":{"position":10.0,"paused":false,"setBy":"bob"}}}"#,
         )
         .expect("room state should apply");
-    let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+    let now_seconds = unix_wall_clock_time_seconds();
     session
         .model
         .room
@@ -778,7 +778,7 @@ fn client_runtime_state_sync_heartbeat_reports_room_position_when_dont_slow_down
     let mut runtime = ClientRuntime::new(session, player, control);
 
     assert!(
-        runtime.run_state_sync_heartbeat_legacy_ping_compatible(true),
+        runtime.run_state_sync_heartbeat_with_ping(true),
         "heartbeat should emit state while the session is active"
     );
 
@@ -841,9 +841,7 @@ fn client_runtime_desync_correction_legacy_ping_forward_delay_compensates_border
     );
 
     let mut compensated_runtime = runtime_fixture();
-    compensated_runtime
-        .ping_metrics_legacy_compatible
-        .forward_delay_seconds = 0.35;
+    compensated_runtime.ping_metrics.forward_delay_seconds = 0.35;
     compensated_runtime
         .run_desync_correction_if_needed(0.0, false, false, false)
         .expect("initial behind detection with forward delay should not fail");

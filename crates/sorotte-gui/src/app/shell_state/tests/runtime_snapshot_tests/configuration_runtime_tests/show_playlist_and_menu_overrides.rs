@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_configuration_preserves_typed_menu_runtime_overrides() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {

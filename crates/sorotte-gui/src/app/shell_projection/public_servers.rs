@@ -1,7 +1,7 @@
 use super::*;
 
 impl PublicServerBrowserShellState {
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let servers = settings
             .public_servers
             .as_ref()

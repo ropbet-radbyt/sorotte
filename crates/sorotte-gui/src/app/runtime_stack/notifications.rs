@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::notifications::user_change_notification_message_localized_legacy_compatible;
+use sorotte_client_app::app_boundary::notifications::user_change_notification_message_localized;
 use sorotte_client_core::{
     AutoplayCountdownNotification, ControlledRoomCreationNotification,
     ControllerAuthTransitionNotification, ReconnectTransitionNotification, UserChangeNotification,
@@ -32,8 +32,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         if hide_from_osd {
             return None;
         }
-        let message =
-            user_change_notification_message_localized_legacy_compatible(&notification, language);
+        let message = user_change_notification_message_localized(&notification, language);
         Some(GuiShellAction::AnnounceSystemChatEvent(message))
     }
 

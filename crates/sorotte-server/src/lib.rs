@@ -56,8 +56,8 @@ use sorotte_protocol::{
     decode_message_line_items, encode_message_line, playlist_change_with_plex_sidecar,
 };
 use sorotte_protocol::{
-    LEGACY_MAX_PROTOCOL_LINE_BYTES, SOROTTE_LARGE_PROTOCOL_FRAMES_V1,
-    SOROTTE_MAX_PROTOCOL_LINE_BYTES, message_fits_line_limit,
+    SOROTTE_LARGE_PROTOCOL_FRAMES_V1, SOROTTE_MAX_PROTOCOL_LINE_BYTES,
+    SYNCPLAY_MAX_PROTOCOL_LINE_BYTES, message_fits_line_limit,
 };
 use sorotte_secret::SecretValue;
 use tokio::{
@@ -73,7 +73,7 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
-const LEGACY_COMPAT_SERVER_VERSION: &str = "1.7.5";
+const SYNCPLAY_COMPAT_VERSION: &str = "1.7.5";
 
 #[derive(Clone, Copy)]
 struct LifecycleAuthorityTransition {
@@ -207,23 +207,23 @@ fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
     }
     encoded
 }
-const SERVER_REAL_VERSION: &str = LEGACY_COMPAT_SERVER_VERSION;
-const LEGACY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
+const SERVER_REAL_VERSION: &str = SYNCPLAY_COMPAT_VERSION;
+const SYNCPLAY_COMPAT_UPGRADE_URL: &str = "https://syncplay.pl";
 const DEFAULT_OUTDATED_MOTD_TEMPLATE: &str =
     "You are using Syncplay {client_version} but a newer version is available from {upgrade_url}";
-const LEGACY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS: &str =
+const SYNCPLAY_SERVER_MOTD_UNESCAPED_PLACEHOLDERS: &str =
     "Message of the Day has unescaped placeholders. All $ signs should be doubled ($$).";
-const LEGACY_SERVER_MOTD_TOO_LONG_PREFIX: &str = "Message of the Day is too long - maximum of";
-const LEGACY_SERVER_MAX_TEMPLATE_LENGTH: usize = 10_000;
-const LEGACY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
-const LEGACY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
-const LEGACY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
-const LEGACY_CONTROLLED_ROOMS_MIN_VERSION: &str = "1.3.0";
-const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
-const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
-const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
-const LEGACY_UI_MODE_GRAPHICAL: &str = "GUI";
-const LEGACY_UI_MODE_UNKNOWN: &str = "Unknown";
+const SYNCPLAY_SERVER_MOTD_TOO_LONG_PREFIX: &str = "Message of the Day is too long - maximum of";
+const SYNCPLAY_SERVER_MAX_TEMPLATE_LENGTH: usize = 10_000;
+const SYNCPLAY_PERSISTENT_ROOMS_NOTICE: &str = "NOTICE: This server uses persistent rooms, which means that the playlist information is stored between playback sessions. If you want to create a room where information is not saved then put -temp at the end of the room name.";
+const SYNCPLAY_SERVER_PASSWORD_REQUIRED_ERROR: &str = "Password required";
+const SYNCPLAY_SERVER_WRONG_PASSWORD_ERROR: &str = "Wrong password supplied";
+const SYNCPLAY_CONTROLLED_ROOMS_MIN_VERSION: &str = "1.3.0";
+const SYNCPLAY_USER_READY_MIN_VERSION: &str = "1.3.0";
+const SYNCPLAY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
+const SYNCPLAY_CHAT_MIN_VERSION: &str = "1.5.0";
+const SYNCPLAY_UI_MODE_GRAPHICAL: &str = "GUI";
+const SYNCPLAY_UI_MODE_UNKNOWN: &str = "Unknown";
 // This value is part of controlled-room hash compatibility; keep it byte-stable.
 const DEFAULT_CONTROLLED_ROOM_HASH_SALT: &str = "syncplay-rs-controlled-room-v1";
 const DEFAULT_MAX_CHAT_MESSAGE_LENGTH: usize = 150;
@@ -234,7 +234,7 @@ const DEFAULT_MAX_PERSISTENT_ROOMS_PER_IDENTITY: usize = 64;
 const DEFAULT_PERSISTENT_ROOM_CREATION_COOLDOWN_SECONDS: f64 = 1.0;
 const DEFAULT_PERSISTENT_ROOM_INACTIVITY_EXPIRY_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 const PERSISTENT_ROOM_ACTIVITY_HEARTBEAT_MAX_INTERVAL_SECONDS: f64 = 30.0;
-const LEGACY_PERSISTENT_ROOM_OWNER_BUCKET: &str = "quota:legacy-unattributed";
+const UNATTRIBUTED_PERSISTENT_ROOM_OWNER_BUCKET: &str = "quota:legacy-unattributed";
 const DEFAULT_MAX_FILENAME_LENGTH: usize = 250;
 const DEFAULT_PLAYLIST_MAX_ITEMS: usize = 250;
 const DEFAULT_PLAYLIST_MAX_CHARACTERS: usize = 10_000;
@@ -305,12 +305,12 @@ const TLS_HANDSHAKE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const SERVER_WRITE_TIMEOUT_SECONDS: f64 = IO_TIMEOUT_SECONDS;
 const TLS_REQUIRED_CERT_FILENAMES: [&str; 3] = ["privkey.pem", "cert.pem", "chain.pem"];
 const TLS_CERT_ROTATION_MAX_RETRIES: u32 = 10;
-const LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";
-const LEGACY_SERVER_NOT_JSON_ERROR_PREFIX: &str = "Not a json encoded string";
-const LEGACY_SERVER_LINE_DECODE_ERROR: &str = "Not a utf-8 string";
-const LEGACY_SERVER_NOT_KNOWN_ERROR: &str =
+const SYNCPLAY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX: &str = "Unknown command";
+const SYNCPLAY_SERVER_NOT_JSON_ERROR_PREFIX: &str = "Not a json encoded string";
+const SYNCPLAY_SERVER_LINE_DECODE_ERROR: &str = "Not a utf-8 string";
+const SYNCPLAY_SERVER_NOT_KNOWN_ERROR: &str =
     "You must be known to server before sending this command";
-const LEGACY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
+const SYNCPLAY_SERVER_HELLO_ERROR: &str = "Not enough Hello arguments";
 
 mod actor;
 mod app;
@@ -347,9 +347,7 @@ pub use persistence_actor::{
 };
 pub use resources::{ServerResourceLimits, ServerResourceSnapshot};
 
-pub(crate) use auth::{
-    RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt_legacy_compatible,
-};
+pub(crate) use auth::{RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt};
 pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
 pub(crate) use compat::*;
 pub(crate) use inbound::{
@@ -795,7 +793,6 @@ impl MonotonicParticipantStatusAvailability {
             ParticipantStatusAvailability::AwaitingReport
             | ParticipantStatusAvailability::Unsupported
             | ParticipantStatusAvailability::Unavailable => 0,
-            _ => 0,
         }
     }
 }
@@ -902,7 +899,7 @@ struct RoomPlaybackBarrier {
     initiator_session_sequence: u64,
     initiator_username: String,
     participants: BTreeMap<String, RoomPlaybackBarrierParticipant>,
-    excluded_legacy_clients: BTreeSet<String>,
+    excluded_unsupported_clients: BTreeSet<String>,
     phase: PlaybackBarrierPhase,
     state_revision: Option<u64>,
     readiness_revision: Option<u64>,

@@ -38,14 +38,14 @@ use crate::app::{
     GuiShellAction, GuiShellView, GuiTestPlayerAdapter, GuiTransientNotificationLevel,
     MainWindowPlaylistRow, MainWindowRuntimeChatSnapshot, MainWindowRuntimeSnapshot, MenuActionId,
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SecretDraft, SettingId,
-    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, legacy_gui_qsettings_store_path,
-    persist_gui_ui_state_at_root,
+    SorotteGuiRuntimeSnapshot, SorotteGuiShellAppState, persist_gui_ui_state_at_root,
+    syncplay_qsettings_store_path,
 };
 use sorotte_client_app::app_boundary::persistence::{
-    load_sorotte_ini_stored_client_settings_mvp_from_path,
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path,
+    load_sorotte_ini_stored_client_settings_from_path,
+    upsert_sorotte_ini_stored_client_settings_at_path,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_client_app::app_boundary::storage::{
     SOROTTE_CLIENT_INSTALL_ROOT_ENV, parse_sorotte_client_install_locator_config_root,
     sorotte_client_install_locator_path,
@@ -251,12 +251,12 @@ fn runtime_owner_searches_and_resolves_plex_playlist_picker_items() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some(server_url),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));

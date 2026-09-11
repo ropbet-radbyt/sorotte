@@ -292,8 +292,8 @@ impl FaultSuffix {
 
     fn expected_error(self) -> &'static str {
         match self {
-            Self::MalformedJson => crate::LEGACY_SERVER_NOT_JSON_ERROR_PREFIX,
-            Self::InvalidUtf8 => crate::LEGACY_SERVER_LINE_DECODE_ERROR,
+            Self::MalformedJson => crate::SYNCPLAY_SERVER_NOT_JSON_ERROR_PREFIX,
+            Self::InvalidUtf8 => crate::SYNCPLAY_SERVER_LINE_DECODE_ERROR,
             Self::Oversized => crate::PROTOCOL_LINE_TOO_LONG_ERROR,
         }
     }
@@ -444,7 +444,7 @@ async fn truncation_and_read_half_close_have_distinct_bounded_outcomes() {
                 if payload
                     .error
                     .message
-                    .starts_with(crate::LEGACY_SERVER_NOT_JSON_ERROR_PREFIX)
+                    .starts_with(crate::SYNCPLAY_SERVER_NOT_JSON_ERROR_PREFIX)
         )
     }));
     assert!(truncated.read_to_eof().await.is_empty());

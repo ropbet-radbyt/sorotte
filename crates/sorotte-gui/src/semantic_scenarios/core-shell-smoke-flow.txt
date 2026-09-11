@@ -1,4 +1,4 @@
-# Core shell smoke flow ported from the legacy non-transport Windows smoke path
+# Core shell smoke flow without a live transport
 setting	public-server	Alpha	alpha.example:8999
 setting	public-server	Beta	beta.example:9000
 setting	media-search-directory	C:/SmokeMedia

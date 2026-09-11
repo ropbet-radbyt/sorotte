@@ -224,12 +224,12 @@ fn gui_portable_smoke_regression_covers_tcp_state_churn_and_reconnect() {
         )
         .expect("portable tcp churn smoke owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("portable-user".to_owned()),
         room: Some("portable-room".to_owned()),
         chat_input_enabled: Some(true),
         public_servers: Some(vec![("Reconnect".to_owned(), second_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

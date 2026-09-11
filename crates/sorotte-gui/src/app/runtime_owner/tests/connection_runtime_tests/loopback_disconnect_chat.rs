@@ -13,9 +13,9 @@ fn gui_persisted_config_runtime_owner_loopback_transport_echoes_client_core_chat
         retryable_in_place: true,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginLocalChatSend("hello room".to_owned())));
@@ -89,10 +89,10 @@ fn gui_persisted_config_runtime_owner_manual_disconnect_applies_pause_on_leave()
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -157,11 +157,11 @@ fn gui_persisted_config_runtime_owner_discards_attached_player_chat_without_a_se
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

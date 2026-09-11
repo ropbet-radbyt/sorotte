@@ -148,7 +148,7 @@ impl GuiQueuedRuntimeBridgeHandle {
         queue.extend(
             requests
                 .into_iter()
-                .map(GuiClientCommand::from_compatibility_request),
+                .map(GuiClientCommand::from_runtime_request),
         );
         let queued_commands = queue.len().saturating_sub(previous_len);
         drop(queue);
@@ -160,7 +160,7 @@ impl GuiQueuedRuntimeBridgeHandle {
     pub(super) fn drain_requests(&self) -> Vec<GuiRuntimeRequest> {
         self.drain_client_commands()
             .into_iter()
-            .map(GuiClientCommand::into_compatibility_request)
+            .map(GuiClientCommand::into_runtime_request)
             .collect()
     }
 
@@ -195,7 +195,7 @@ impl GuiQueuedRuntimeBridgeHandle {
         queue.extend(
             requests
                 .into_iter()
-                .map(GuiClientCommand::from_compatibility_request),
+                .map(GuiClientCommand::from_runtime_request),
         );
         let queued_commands = queue.len().saturating_sub(previous_len);
         drop(queue);

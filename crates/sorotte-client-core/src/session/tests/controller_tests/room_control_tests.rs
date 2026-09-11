@@ -34,7 +34,7 @@ fn noncontroller_event_hide_from_osd_respects_behavior_config_and_controller_fla
         .expect("hello should apply");
 
     assert!(
-        session.noncontroller_event_hide_from_osd_legacy_compatible("bob"),
+        session.noncontroller_event_hide_from_osd("bob"),
         "unknown users are treated as non-controllers when non-controller OSD is disabled"
     );
 
@@ -44,13 +44,13 @@ fn noncontroller_event_hide_from_osd_respects_behavior_config_and_controller_fla
         )
         .expect("controller update should apply");
     assert!(
-        !session.noncontroller_event_hide_from_osd_legacy_compatible("bob"),
+        !session.noncontroller_event_hide_from_osd("bob"),
         "controllers should remain visible on OSD"
     );
 
     session.behavior_config_mut().show_noncontroller_osd = true;
     assert!(
-        !session.noncontroller_event_hide_from_osd_legacy_compatible("carol"),
+        !session.noncontroller_event_hide_from_osd("carol"),
         "non-controller OSD override should keep unknown/non-controller users visible"
     );
 }

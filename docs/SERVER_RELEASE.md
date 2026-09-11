@@ -102,7 +102,7 @@ MOTD template from a file:
 .\target\release\sorotte-server.exe --port 8999 --motd-file .\motd.txt
 ```
 
-MOTD templates support the legacy Syncplay variables handled by the Rust server, including server/client/user/room fields.
+MOTD templates support the Syncplay variables handled by the Rust server, including server/client/user/room fields.
 
 Room isolation:
 

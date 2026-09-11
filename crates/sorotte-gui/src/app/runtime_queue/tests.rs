@@ -24,7 +24,7 @@ use crate::app::{
     },
     testing::support::test_temp_root,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[test]
 fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
@@ -42,9 +42,9 @@ fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
     assert!(host_handle.drain_requests().is_empty());
 
     let (mut runtime, handle) = GuiQueuedRuntimeBridge::new();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(!runtime.shows_manual_pending_controls());
@@ -421,8 +421,7 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
         Duration::from_millis(5),
     )
     .expect("threaded runtime owner should spawn");
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     wait_until(Duration::from_secs(1), "initial input change", || {
@@ -484,9 +483,9 @@ fn gui_threaded_runtime_owner_reconciles_changed_input_once_and_polls_repeatedly
 #[test]
 fn gui_threaded_runtime_owner_pump_wakes_immediately_for_requests_without_waiting_for_poll_timeout()
 {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
@@ -549,7 +548,7 @@ fn gui_threaded_runtime_owner_pump_joins_worker_on_drop() {
         Duration::from_millis(10),
     )
     .expect("threaded runtime owner should spawn");
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     GuiNativeRuntimePump::pump(&mut threaded_pump, &state);
     started_rx
         .recv_timeout(Duration::from_secs(5))
@@ -607,7 +606,7 @@ fn gui_threaded_runtime_owner_pump_bounds_shutdown_when_owner_poll_is_stuck() {
         Duration::from_millis(60),
     )
     .expect("blocked-owner runtime pump should spawn");
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     GuiNativeRuntimePump::pump(&mut pump, &state);
     entered_rx
         .recv_timeout(Duration::from_secs(1))
@@ -636,9 +635,9 @@ fn gui_threaded_runtime_owner_pump_bounds_shutdown_when_owner_poll_is_stuck() {
 
 #[test]
 fn gui_threaded_runtime_owner_pump_reuses_identical_runtime_inputs() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         GuiQueuedRuntimeBridgeHandle::default(),
@@ -667,8 +666,7 @@ fn gui_threaded_runtime_owner_pump_reuses_identical_runtime_inputs() {
 
 #[test]
 fn gui_threaded_runtime_owner_pump_reuses_input_after_ui_only_changes() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let mut threaded_pump = GuiThreadedRuntimeOwnerPump::new_with_poll_interval(
         GuiQueuedRuntimeBridgeHandle::default(),
         GuiPreviewRuntimeOwner::default(),
@@ -711,7 +709,7 @@ fn gui_threaded_runtime_owner_pump_reuses_input_after_ui_only_changes() {
 
 #[test]
 fn gui_runtime_thread_unavailable_pump_reports_startup_failure_and_drains_requests() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut pump = GuiRuntimeThreadUnavailablePump::new(handle.clone(), "spawn denied".to_owned());
 

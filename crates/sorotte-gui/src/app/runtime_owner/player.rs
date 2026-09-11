@@ -27,7 +27,7 @@ use sorotte_player_api::{
     PlayerMediaLoadOutcome, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta,
     PlayerTransportSnapshot, SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
-use sorotte_player_mpv::LegacySyncplayOsdKind;
+use sorotte_player_mpv::SyncplayOsdKind;
 
 use super::super::media_search_cache::{
     current_media_search_cache_generation, current_unix_time_millis,

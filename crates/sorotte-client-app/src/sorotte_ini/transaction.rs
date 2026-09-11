@@ -81,7 +81,7 @@ impl SettingsTransaction {
 }
 
 /// Read-only acquisition never creates a directory or sidecar. If the first
-/// writer creates a sidecar during a legacy/uninitialized read, its provisional
+/// writer creates a sidecar during a read without a transaction sidecar, its provisional
 /// result (including an error or absence) is discarded and read under the lock.
 pub(super) fn read_consistently<F>(path: &Path, read: F) -> anyhow::Result<Option<String>>
 where

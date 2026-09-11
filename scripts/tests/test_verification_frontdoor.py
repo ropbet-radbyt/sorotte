@@ -32,6 +32,46 @@ class SelectionTests(unittest.TestCase):
     def test_protocol_change_keeps_fuzz_and_mutation(self):
         self.assertTrue({"fuzz", "mutation", "coverage", "behavior"} <= self.selected(["crates/sorotte-protocol/src/state.rs"]))
 
+    def plan_policy_change(self, previous, candidate):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "policy.json"
+            path.write_text(json.dumps(candidate), encoding="utf-8")
+            with mock.patch.object(verify, "POLICY", path), mock.patch.object(
+                verify, "git", side_effect=["a" * 40, "b" * 40,
+                    "coverage/verification-lanes.json\0", json.dumps(previous)]
+            ):
+                return verify.plan("base", "head")
+
+    def test_retired_rust_source_compatibility_keeps_all_other_obligations(self):
+        previous = copy.deepcopy(self.policy)
+        previous["lanes"].append({"id": "semver", "owner": "API maintainers",
+            "command": "pwsh -File scripts/check-semver.ps1 -BaselineRev BASE",
+            "patterns": ["crates/**", "Cargo.*"]})
+        result = self.plan_policy_change(previous, self.policy)
+        self.assertEqual({lane["id"] for lane in result["lanes"] if lane["selected"]},
+                         {lane["id"] for lane in self.policy["lanes"]})
+        for alteration in ("definition", "reason", "missing-record"):
+            candidate = copy.deepcopy(self.policy)
+            if alteration == "definition":
+                candidate["retired_lanes"]["semver"]["definition_sha256"] = "0" * 64
+            elif alteration == "reason":
+                candidate["retired_lanes"]["semver"]["reason"] = " "
+            else:
+                candidate.pop("retired_lanes")
+            with self.subTest(alteration=alteration), self.assertRaisesRegex(ValueError, "requires explicit migration"):
+                self.plan_policy_change(previous, candidate)
+
+    def test_retirement_does_not_authorize_another_lane_or_changed_base_definition(self):
+        previous = copy.deepcopy(self.policy)
+        candidate = copy.deepcopy(self.policy)
+        candidate["lanes"] = [lane for lane in candidate["lanes"] if lane["id"] != "behavior"]
+        with self.assertRaisesRegex(ValueError, "removed lane behavior"):
+            self.plan_policy_change(previous, candidate)
+        previous["lanes"].append({"id": "semver", "owner": "API maintainers",
+            "command": "another-obligation", "patterns": ["crates/**", "Cargo.*"]})
+        with self.assertRaisesRegex(ValueError, "removed lane semver"):
+            self.plan_policy_change(previous, self.policy)
+
     def test_gate_rejects_missing_duplicate_and_failed_producers(self):
         for results in (["a=success"], ["a=success", "a=success"], ["a=success", "b=skipped"], ["a=success", "b=cancelled"]):
             with self.assertRaises(ValueError):

@@ -33,10 +33,10 @@ fn controller_auth_transition_notification_message_uses_legacy_style_wording() {
 }
 
 #[test]
-fn controller_auth_transition_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
+fn controller_auth_transition_notification_message_localized_localizes_common_runtime_notifications()
  {
     assert_eq!(
-        crate::controller_auth_transition_notification_message_localized_legacy_compatible(
+        crate::controller_auth_transition_notification_message_localized(
             &ControllerAuthTransitionNotification::Attempting {
                 room: "+room:ABCDEF123456".to_owned(),
             },
@@ -45,7 +45,7 @@ fn controller_auth_transition_notification_message_localized_legacy_compatible_l
         "Identification comme operateur de salle dans la salle +room:ABCDEF123456..."
     );
     assert_eq!(
-        crate::controller_auth_transition_notification_message_localized_legacy_compatible(
+        crate::controller_auth_transition_notification_message_localized(
             &ControllerAuthTransitionNotification::Succeeded {
                 username: "alice".to_owned(),
                 room: "+room:ABCDEF123456".to_owned(),
@@ -56,7 +56,7 @@ fn controller_auth_transition_notification_message_localized_legacy_compatible_l
         "alice wurde als Raumoperator in Raum +room:ABCDEF123456 authentifiziert"
     );
     assert_eq!(
-        crate::controller_auth_transition_notification_message_localized_legacy_compatible(
+        crate::controller_auth_transition_notification_message_localized(
             &ControllerAuthTransitionNotification::Failed {
                 username: "alice".to_owned(),
                 room: "+room:ABCDEF123456".to_owned(),
@@ -131,10 +131,10 @@ fn chat_notification_message_preserves_whitespace_and_senderless_legacy_formatti
 }
 
 #[test]
-fn playlist_index_in_bounds_legacy_compatible_checks_current_room_bounds() {
+fn playlist_index_in_bounds_checks_current_room_bounds() {
     let mut session = ClientSession::default();
-    assert!(!playlist_index_in_bounds_legacy_compatible(&session, 0));
-    assert!(!playlist_index_in_bounds_legacy_compatible(&session, -1));
+    assert!(!playlist_index_in_bounds(&session, 0));
+    assert!(!playlist_index_in_bounds(&session, -1));
 
     session
         .apply_hello_json(
@@ -150,13 +150,12 @@ fn playlist_index_in_bounds_legacy_compatible_checks_current_room_bounds() {
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#)
         .expect("playlist index should apply");
 
-    assert!(playlist_index_in_bounds_legacy_compatible(&session, 0));
-    assert!(!playlist_index_in_bounds_legacy_compatible(&session, 1));
+    assert!(playlist_index_in_bounds(&session, 0));
+    assert!(!playlist_index_in_bounds(&session, 1));
 }
 
 #[test]
-fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_playlist_and_dispatches_in_range()
- {
+fn run_planned_local_runtime_action_suppresses_out_of_range_playlist_and_dispatches_in_range() {
     let mut session = ClientSession::default();
     session
         .apply_hello_json(
@@ -179,7 +178,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
     let mut user_offset_seconds = 0.0;
 
     assert!(
-        !run_planned_local_runtime_action_legacy_compatible(
+        !run_planned_local_runtime_action(
             &mut runtime,
             &mut user_offset_seconds,
             1.0,
@@ -189,7 +188,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
         "out-of-range select should be suppressed with legacy local error"
     );
     assert!(
-        !run_planned_local_runtime_action_legacy_compatible(
+        !run_planned_local_runtime_action(
             &mut runtime,
             &mut user_offset_seconds,
             1.0,
@@ -205,7 +204,7 @@ fn run_planned_local_runtime_action_legacy_compatible_suppresses_out_of_range_pl
     );
 
     assert!(
-        run_planned_local_runtime_action_legacy_compatible(
+        run_planned_local_runtime_action(
             &mut runtime,
             &mut user_offset_seconds,
             1.0,
@@ -257,7 +256,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
     let mut application = ClientApplication::from_runtime(runtime);
     let mut user_offset_seconds = 0.0;
 
-    run_planned_local_runtime_action_legacy_compatible(
+    run_planned_local_runtime_action(
         &mut application,
         &mut user_offset_seconds,
         1.0,
@@ -266,7 +265,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
     .expect("pause should dispatch");
     assert!(application.player().paused(), "pause must pause playback");
 
-    run_planned_local_runtime_action_legacy_compatible(
+    run_planned_local_runtime_action(
         &mut application,
         &mut user_offset_seconds,
         2.0,
@@ -278,7 +277,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
         "a repeated pause must not resume playback"
     );
 
-    run_planned_local_runtime_action_legacy_compatible(
+    run_planned_local_runtime_action(
         &mut application,
         &mut user_offset_seconds,
         3.0,
@@ -287,7 +286,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
     .expect("play should dispatch");
     assert!(!application.player().paused(), "play must resume playback");
 
-    run_planned_local_runtime_action_legacy_compatible(
+    run_planned_local_runtime_action(
         &mut application,
         &mut user_offset_seconds,
         4.0,
@@ -299,7 +298,7 @@ fn explicit_play_and_pause_actions_set_state_while_p_remains_a_toggle() {
         "a repeated play must not pause playback"
     );
 
-    run_planned_local_runtime_action_legacy_compatible(
+    run_planned_local_runtime_action(
         &mut application,
         &mut user_offset_seconds,
         5.0,
@@ -396,13 +395,8 @@ fn cli_readiness_commands_preserve_direct_and_indirect_v2_sources() {
             UserReadinessIntent::NotReady,
         ),
     ] {
-        run_planned_local_runtime_action_legacy_compatible(
-            &mut application,
-            &mut user_offset_seconds,
-            1.0,
-            action,
-        )
-        .expect("direct CLI readiness command should dispatch");
+        run_planned_local_runtime_action(&mut application, &mut user_offset_seconds, 1.0, action)
+            .expect("direct CLI readiness command should dispatch");
         let intent = pending_readiness_intent(&mut application);
         assert_eq!(intent.desired, desired);
         assert_eq!(
@@ -425,13 +419,8 @@ fn cli_readiness_commands_preserve_direct_and_indirect_v2_sources() {
             PlayerReadinessAction::Play,
         ),
     ] {
-        run_planned_local_runtime_action_legacy_compatible(
-            &mut application,
-            &mut user_offset_seconds,
-            2.0,
-            action,
-        )
-        .expect("CLI playback command should dispatch");
+        run_planned_local_runtime_action(&mut application, &mut user_offset_seconds, 2.0, action)
+            .expect("CLI playback command should dispatch");
         let intent = pending_readiness_intent(&mut application);
         assert_eq!(intent.desired, desired);
         assert_eq!(

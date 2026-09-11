@@ -79,11 +79,7 @@ fn a_new_pause_survives_the_delayed_acknowledgement_of_its_prior_play() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
     fixture.queue_observation(false, 0.1);
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let play = fixture.take_response();
     assert_eq!(play.playstate.as_ref().unwrap().paused, Some(false));
     let counter = play
@@ -125,11 +121,7 @@ fn a_new_pause_survives_the_delayed_acknowledgement_of_its_prior_play() {
         "the older Play acknowledgement must not erase the newer Pause"
     );
     fixture.queue_observation(true, 0.1);
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let pause = fixture.take_response();
     let playstate = pause
         .playstate
@@ -144,11 +136,7 @@ type TestRuntime = ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl>;
 fn emit_pause_mutation(fixture: &mut SeekFixture, paused: bool) -> StatePayload {
     assert!(fixture.runtime.run_set_paused(paused).unwrap());
     fixture.queue_observation(paused, 0.1);
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let state = fixture.take_response();
     assert_eq!(state.playstate.as_ref().unwrap().paused, Some(paused));
     assert!(state.ignoring_on_the_fly.as_ref().unwrap().client.unwrap() > 0);
@@ -208,11 +196,7 @@ fn both_pause_directions_and_player_acknowledgement_orders_preserve_the_newer_co
                 .runtime
                 .drain_player_transport_coordination(1.5)
                 .unwrap();
-            assert!(
-                fixture
-                    .runtime
-                    .run_state_sync_heartbeat_legacy_ping_compatible(false)
-            );
+            assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
             let newer = fixture.take_response();
             let playstate = newer.playstate.as_ref().unwrap();
             assert_eq!(playstate.paused, Some(initial_paused));
@@ -336,11 +320,7 @@ fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
     fixture.runtime.flush_queued_protocol_messages();
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let first = fixture
         .runtime
         .control()
@@ -352,11 +332,7 @@ fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
         matches!(&first, ProtocolMessage::State(state) if state.state.playstate.as_ref().is_some_and(|playstate| playstate.paused == Some(false)))
     );
     for _ in 0..8 {
-        assert!(
-            fixture
-                .runtime
-                .run_state_sync_heartbeat_legacy_ping_compatible(false)
-        );
+        assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     }
     let messages = fixture.runtime.flush_queued_protocol_messages();
     assert_eq!(
@@ -390,11 +366,7 @@ pub(super) fn assert_causal_pause_keeps_participant_reports_cancellable() {
         .playback_coordination
         .participant_status
         .last_participant_status_fingerprint = None;
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let pending: Vec<_> = fixture
         .runtime
         .control()
@@ -622,10 +594,7 @@ impl SeekFixture {
                 .pending_local_pause_intent,
             Some(false)
         );
-        assert!(
-            self.runtime
-                .run_state_sync_heartbeat_legacy_ping_compatible(false)
-        );
+        assert!(self.runtime.run_state_sync_heartbeat_with_ping(false));
         let response = self.take_response();
         assert!(
             response.playstate.is_none(),
@@ -653,9 +622,7 @@ impl SeekFixture {
     fn reconcile(&mut self, state: StatePayload) -> StatePayload {
         assert!(
             self.runtime
-                .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
-                    state, false, 1.3
-                )
+                .run_state_sync_reconcile_with_inbound_state_with_ping_at(state, false, 1.3)
         );
         self.take_response()
     }
@@ -673,10 +640,7 @@ impl SeekFixture {
 
     fn heartbeat_play(&mut self) -> StatePayload {
         self.queue_observation(false, 11.2);
-        assert!(
-            self.runtime
-                .run_state_sync_heartbeat_legacy_ping_compatible(false)
-        );
+        assert!(self.runtime.run_state_sync_heartbeat_with_ping(false));
         let response = self.take_response();
         let playstate = response
             .playstate
@@ -799,11 +763,7 @@ fn ordered_playing_seek_echo_preserves_and_delivers_the_later_explicit_pause() {
     fixture.queue_observation(false, 11.0);
     assert!(fixture.runtime.run_set_paused(true).unwrap());
     let commands_after_pause = fixture.runtime.player.commands.len();
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     assert!(fixture.take_response().playstate.is_none());
 
     fixture.queue_observation(true, 11.1);
@@ -817,11 +777,7 @@ fn ordered_playing_seek_echo_preserves_and_delivers_the_later_explicit_pause() {
         Some(true)
     );
     fixture.queue_observation(true, 11.2);
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let response = fixture.take_response();
     let playstate = response
         .playstate
@@ -1432,11 +1388,7 @@ fn later_explicit_pause_wins_over_play_waiting_for_its_seek_echo() {
     let echo = fixture.echo();
     fixture.reconcile(echo);
     fixture.queue_observation(true, 11.2);
-    assert!(
-        fixture
-            .runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(false)
-    );
+    assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let response = fixture.take_response();
     assert!(
         response

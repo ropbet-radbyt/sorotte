@@ -8,7 +8,7 @@ impl Default for ServerRuntime {
 
 impl ServerRuntime {
     pub fn new() -> Self {
-        Self::with_room_password_salt(generate_server_salt_legacy_compatible())
+        Self::with_room_password_salt(generate_server_salt())
     }
 
     pub fn with_room_password_salt(salt: impl Into<SecretValue>) -> Self {
@@ -64,9 +64,7 @@ impl ServerRuntime {
             server_password_token: None,
             motd_template: None,
             stats_persistence: None,
-            stats_snapshot_start_delay_seconds: legacy_stats_snapshot_start_delay_seconds_for_port(
-                0,
-            ),
+            stats_snapshot_start_delay_seconds: stats_snapshot_start_delay_seconds_for_port(0),
             stats_snapshot_interval_seconds: SERVER_STATS_SNAPSHOT_INTERVAL_SECONDS,
             stats_next_snapshot_at_seconds: None,
             tls_cert_path: None,
@@ -154,9 +152,9 @@ impl ServerRuntime {
     }
 
     pub fn set_stats_snapshot_start_delay_for_port(&mut self, port: u16) {
-        self.set_stats_snapshot_start_delay_seconds(
-            legacy_stats_snapshot_start_delay_seconds_for_port(port),
-        );
+        self.set_stats_snapshot_start_delay_seconds(stats_snapshot_start_delay_seconds_for_port(
+            port,
+        ));
     }
 
     pub fn set_stats_snapshot_interval_seconds(&mut self, interval_seconds: f64) {

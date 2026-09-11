@@ -16,7 +16,7 @@ const PLEX_WATCH_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
 const PLEX_WATCH_CACHE_FILE_NAME: &str = "plex-watch-cache.json";
 
 impl GuiPlexServerDiscoveryCoordinator {
-    fn operation_context(&self, settings: &StoredClientSettingsMvp) -> GuiPlexOperationContext {
+    fn operation_context(&self, settings: &StoredClientSettings) -> GuiPlexOperationContext {
         let resolved = ClientConfig::resolve(settings).config;
         let plugin_enabled = resolved.plugins.plex_enabled;
         let config = resolved.plex;
@@ -113,7 +113,7 @@ impl std::fmt::Debug for GuiPlexServerDiscoveryWorkerResult {
 impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn plex_operation_context(
         &self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) -> GuiPlexOperationContext {
         self.plex_server_discovery.operation_context(settings)
     }
@@ -166,8 +166,8 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
-        previous: &StoredClientSettingsMvp,
-        next: &StoredClientSettingsMvp,
+        previous: &StoredClientSettings,
+        next: &StoredClientSettings,
     ) {
         if self.plex_operation_context(previous) != self.plex_operation_context(next) {
             self.invalidate_plex_operation_context(handle, projected_state);
@@ -177,7 +177,7 @@ impl GuiPersistedConfigRuntimeOwner {
     #[cfg(test)]
     fn apply_authenticated_plex_account(
         &mut self,
-        settings: &mut StoredClientSettingsMvp,
+        settings: &mut StoredClientSettings,
         token: sorotte_secret::SecretValue,
     ) {
         let account_changed = settings.plex_user_token.as_ref() != Some(&token);
@@ -1457,7 +1457,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn start_plex_server_refresh_worker(
         &mut self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
         context: GuiPlexServerRefreshContext,
     ) -> Result<(), String> {
         if context != GuiPlexServerRefreshContext::Startup {
@@ -1505,7 +1505,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         patch: GuiPersistedSettingsPatch,
         failure_context: &str,
-    ) -> Option<StoredClientSettingsMvp> {
+    ) -> Option<StoredClientSettings> {
         let settings = match self.persist_saved_settings_patch(projected_state, &patch) {
             Ok(settings) => settings,
             Err(error) => {
@@ -1551,7 +1551,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     fn plex_snapshot_from_settings_and_status(
         &self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
         status: Option<&PlexSyncStatus>,
     ) -> GuiPlexRuntimeSnapshot {
         let plex = ClientConfig::resolve(settings).config.plex;
@@ -1705,7 +1705,7 @@ impl GuiPersistedConfigRuntimeOwner {
 }
 
 pub(in crate::app::runtime_owner) fn plex_config_from_settings(
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> PlexClientConfig {
     let plex = ClientConfig::resolve(settings).config.plex;
     PlexClientConfig {
@@ -1719,7 +1719,7 @@ pub(in crate::app::runtime_owner) fn plex_config_from_settings(
 }
 
 fn apply_plex_server_to_settings(
-    settings: &mut StoredClientSettingsMvp,
+    settings: &mut StoredClientSettings,
     server: &PlexServerConnection,
 ) {
     settings.plex_selected_server_id = Some(server.machine_identifier.clone());
@@ -1728,7 +1728,7 @@ fn apply_plex_server_to_settings(
 }
 
 fn reconcile_plex_server_selection(
-    settings: &mut StoredClientSettingsMvp,
+    settings: &mut StoredClientSettings,
     servers: &[PlexServerConnection],
     select_first_if_missing: bool,
 ) -> bool {
@@ -1771,7 +1771,7 @@ fn reconcile_plex_server_selection(
 
 fn refresh_plex_servers_and_reachability<T>(
     discovery: PlexDiscoveryService<T>,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> Result<GuiPlexServerRefreshOutcome, String>
 where
     T: sorotte_plex::discovery::PlexServerDiscoveryTransport,
@@ -2041,13 +2041,13 @@ mod tests {
 
     #[test]
     fn reconcile_plex_server_selection_updates_stale_duplicate_uri_by_machine_id() {
-        let mut settings = StoredClientSettingsMvp {
+        let mut settings = StoredClientSettings {
             plex_selected_server_id: Some("raptor-machine".to_owned()),
             plex_selected_server_url: Some(
                 "https://172-18-0-6.raptor-machine.plex.direct:32400".to_owned(),
             ),
             plex_selected_server_token: Some("old-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let servers = vec![PlexServerConnection {
             name: "Raptor".to_owned(),
@@ -2079,11 +2079,11 @@ mod tests {
 
     #[test]
     fn reconcile_plex_server_selection_refreshes_token_for_same_server_identity() {
-        let mut settings = StoredClientSettingsMvp {
+        let mut settings = StoredClientSettings {
             plex_selected_server_id: Some("raptor-machine".to_owned()),
             plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
             plex_selected_server_token: Some("old-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let servers = vec![PlexServerConnection {
             name: "Raptor".to_owned(),
@@ -2116,12 +2116,12 @@ mod tests {
             plex_server_reachability_key("https://raptor.example:32400"),
             GuiPlexServerReachability::Checking,
         );
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("raptor-machine".to_owned()),
             plex_selected_server_url: Some("https://raptor.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
 
         let snapshot = owner.plex_snapshot_from_settings_and_status(&settings, None);
@@ -2155,12 +2155,12 @@ mod tests {
             plex_server_reachability_key("https://saved.example:32400"),
             GuiPlexServerReachability::Reachable,
         );
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("saved-machine".to_owned()),
             plex_selected_server_url: Some("https://saved.example:32400".to_owned()),
             plex_selected_server_token: Some("saved-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
 
         let snapshot = owner.plex_snapshot_from_settings_and_status(&settings, None);
@@ -2179,9 +2179,9 @@ mod tests {
     fn manual_discovery_generation_supersedes_startup_without_accepting_its_result() {
         let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
         let startup_token = sorotte_secret::SecretValue::from("same-account-token");
-        let operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+        let operation_context = coordinator.operation_context(&StoredClientSettings {
             plex_user_token: Some(startup_token.clone()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         let startup_generation = coordinator.begin_generation();
         let (startup_tx, startup_rx) = mpsc::channel();
@@ -2241,14 +2241,14 @@ mod tests {
         const OLD_TOKEN: &str = "OLD_DISCOVERY_TOKEN_CANARY";
         const LOGIN_TOKEN: &str = "LOGIN_DISCOVERY_TOKEN_CANARY";
         let mut coordinator = GuiPlexServerDiscoveryCoordinator::default();
-        let old_operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+        let old_operation_context = coordinator.operation_context(&StoredClientSettings {
             plex_user_token: Some(OLD_TOKEN.into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         coordinator.invalidate_operation_context();
-        let login_operation_context = coordinator.operation_context(&StoredClientSettingsMvp {
+        let login_operation_context = coordinator.operation_context(&StoredClientSettings {
             plex_user_token: Some(LOGIN_TOKEN.into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         let old_generation = coordinator.begin_generation();
         let login_generation = coordinator.begin_generation();
@@ -2270,9 +2270,9 @@ mod tests {
                 reachability: HashMap::new(),
             }),
         };
-        let wrong_token_context = coordinator.operation_context(&StoredClientSettingsMvp {
+        let wrong_token_context = coordinator.operation_context(&StoredClientSettings {
             plex_user_token: Some("WRONG_DISCOVERY_TOKEN_CANARY".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         let wrong_token = GuiPlexServerDiscoveryWorkerResult {
             generation: login_generation,
@@ -2408,14 +2408,14 @@ mod tests {
 
     #[test]
     fn cancelled_resolve_has_no_playlist_side_effect() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             shared_playlist_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2463,14 +2463,14 @@ mod tests {
 
     #[test]
     fn queued_cancel_is_ordered_before_ready_resolve_commit() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             shared_playlist_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2522,13 +2522,13 @@ mod tests {
 
     #[test]
     fn fast_search_result_uses_request_intent_before_shell_input_arrives() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut stale_projection = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2575,14 +2575,14 @@ mod tests {
 
     #[test]
     fn fast_resolve_result_uses_request_intent_before_shell_input_arrives() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             shared_playlist_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut stale_projection = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2630,13 +2630,13 @@ mod tests {
 
     #[test]
     fn cancelled_and_reopened_search_rejects_old_same_context_result() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2728,14 +2728,14 @@ mod tests {
 
     #[test]
     fn same_context_resolve_supersession_only_appends_latest_item() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             shared_playlist_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2820,13 +2820,13 @@ mod tests {
 
     #[test]
     fn busy_search_request_supersedes_active_same_context_job() {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -2870,7 +2870,7 @@ mod tests {
 
     #[test]
     fn auth_completion_clears_old_account_server_identity_before_discovery() {
-        let mut settings = StoredClientSettingsMvp {
+        let mut settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_sync_enabled: Some(true),
             plex_streaming_enabled: Some(true),
@@ -2878,7 +2878,7 @@ mod tests {
             plex_selected_server_id: Some("old-machine".to_owned()),
             plex_selected_server_url: Some("https://old.example:32400".to_owned()),
             plex_selected_server_token: Some("old-server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let previous_settings = settings.clone();
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -2927,15 +2927,15 @@ mod tests {
 
     #[test]
     fn new_account_search_completion_wins_before_old_account_worker_finishes() {
-        let old_settings = StoredClientSettingsMvp {
+        let old_settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_user_token: Some("old-account-token".into()),
             plex_selected_server_id: Some("old-machine".to_owned()),
             plex_selected_server_url: Some("https://old.example:32400".to_owned()),
             plex_selected_server_token: Some("old-server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        let new_settings = StoredClientSettingsMvp {
+        let new_settings = StoredClientSettings {
             plex_user_token: Some("new-account-token".into()),
             plex_selected_server_id: Some("new-machine".to_owned()),
             plex_selected_server_url: Some("https://new.example:32400".to_owned()),
@@ -3005,16 +3005,16 @@ mod tests {
 
     #[test]
     fn stale_server_resolve_cannot_append_after_new_server_result_completed_first() {
-        let old_settings = StoredClientSettingsMvp {
+        let old_settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             shared_playlist_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("old-machine".to_owned()),
             plex_selected_server_url: Some("https://old.example:32400".to_owned()),
             plex_selected_server_token: Some("old-server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        let new_settings = StoredClientSettingsMvp {
+        let new_settings = StoredClientSettings {
             plex_selected_server_id: Some("new-machine".to_owned()),
             plex_selected_server_url: Some("https://new.example:32400".to_owned()),
             plex_selected_server_token: Some("new-server-token".into()),
@@ -3095,14 +3095,14 @@ mod tests {
     fn sync_toggle_cancels_active_playlist_jobs_and_closes_picker() {
         let root = test_temp_root("plex-sync-toggle-cancels-playlist-jobs");
         let config_path = root.join("sorotte.ini");
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_sync_enabled: Some(false),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
         let mut state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -3124,14 +3124,14 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&test_root);
-        let old_settings = StoredClientSettingsMvp {
+        let old_settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_sync_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path(Some(test_root.join("sorotte.ini")));
@@ -3180,14 +3180,14 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&test_root);
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_streaming_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
             plex_selected_server_id: Some("machine".to_owned()),
             plex_selected_server_url: Some("https://plex.example:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path(Some(test_root.join("sorotte.ini")));
@@ -3249,10 +3249,10 @@ mod tests {
         let (_resolve_tx, resolve_rx) = mpsc::channel();
         let (_stream_tx, stream_rx) = mpsc::channel();
         let handle = GuiQueuedRuntimeBridgeHandle::default();
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             plex_plugin_enabled: Some(true),
             plex_user_token: Some("user-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         mark_plex_picker_busy(&mut state, "old-query", Some("old-rating"));
         let old_context = owner.plex_operation_context(&state.configuration.to_stored_settings());
@@ -3302,8 +3302,7 @@ mod tests {
     #[test]
     fn runtime_owner_without_config_path_does_not_fall_back_to_user_profile() {
         let owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-        let state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
         assert_eq!(
             owner.persisted_settings_config_path_for_request(&state),
@@ -3316,16 +3315,16 @@ mod tests {
     fn completed_plex_login_persists_token_across_all_runtime_layers() {
         let root = test_temp_root("plex-login-four-layer-success");
         let config_path = root.join("sorotte.ini");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             host: Some("saved.example".to_owned()),
             language: Some("en".to_owned()),
             server_password: Some("saved-secret".into()),
             plex_plugin_enabled: Some(true),
             plex_sync_enabled: Some(false),
             plex_streaming_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        sorotte_client_app::app_boundary::persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+        sorotte_client_app::app_boundary::persistence::upsert_sorotte_ini_stored_client_settings_at_path(
             &config_path,
             &saved_settings,
         )
@@ -3368,7 +3367,7 @@ mod tests {
             },
         );
 
-        let disk = sorotte_client_app::app_boundary::persistence::load_sorotte_ini_stored_client_settings_mvp_from_path(
+        let disk = sorotte_client_app::app_boundary::persistence::load_sorotte_ini_stored_client_settings_from_path(
             &config_path,
         )
         .expect("Plex login config should be readable")
@@ -3441,7 +3440,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test directory should be created");
         let sentinel_path = root.join("unchanged.txt");
         std::fs::write(&sentinel_path, "unchanged").expect("sentinel should be written");
-        let saved_settings = StoredClientSettingsMvp {
+        let saved_settings = StoredClientSettings {
             language: Some("en".to_owned()),
             server_password: Some("saved-secret".into()),
             plex_plugin_enabled: Some(true),
@@ -3450,7 +3449,7 @@ mod tests {
             plex_selected_server_id: Some("old-machine".to_owned()),
             plex_selected_server_url: Some("https://old.example:32400".to_owned()),
             plex_selected_server_token: Some("old-server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.clone()));
         owner.plex_servers.push(PlexServerConnection {

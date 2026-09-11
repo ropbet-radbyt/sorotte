@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 
 use crate::sorotte_ini::{
-    clear_sorotte_ini_stored_client_settings_mvp_at_path, ensure_sorotte_ini_contents_at_path,
+    clear_sorotte_ini_stored_client_settings_at_path, ensure_sorotte_ini_contents_at_path,
     read_sorotte_ini_contents_consistently_at_path, update_sorotte_ini_contents_at_path,
 };
 
@@ -476,7 +476,7 @@ pub fn clear_sorotte_client_config_root_pointer(
     default_storage_root: &Path,
 ) -> anyhow::Result<bool> {
     let pointer_path = sorotte_client_config_root_pointer_path(default_storage_root);
-    clear_sorotte_ini_stored_client_settings_mvp_at_path(&pointer_path).with_context(|| {
+    clear_sorotte_ini_stored_client_settings_at_path(&pointer_path).with_context(|| {
         format!(
             "failed clearing config-root pointer {}",
             pointer_path.display()
@@ -716,17 +716,6 @@ where
         default_storage_root,
         source,
     }))
-}
-
-/// Compatibility wrapper. Read failures resolve to no path, never another root.
-/// Production callers should use the checked variant to report those failures.
-pub fn resolve_sorotte_client_storage_paths(
-    cli_config_path: Option<PathBuf>,
-    cli_config_root: Option<PathBuf>,
-) -> Option<SorotteClientStoragePaths> {
-    try_resolve_sorotte_client_storage_paths(cli_config_path, cli_config_root)
-        .ok()
-        .flatten()
 }
 
 pub fn try_resolve_sorotte_client_storage_paths(

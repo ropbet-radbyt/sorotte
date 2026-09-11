@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn non_automatic_policy_clears_active_automatic_miss_retry() {
         let mut state = SorotteGuiShellAppState::from_stored_settings(
-            &sorotte_client_app::app_boundary::state::StoredClientSettingsMvp {
+            &sorotte_client_app::app_boundary::state::StoredClientSettings {
                 shared_playlist_enabled: Some(true),
                 ..Default::default()
             },

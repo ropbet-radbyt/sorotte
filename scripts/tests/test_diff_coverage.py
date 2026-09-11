@@ -662,6 +662,38 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertTrue(set(range(1, 6)).isdisjoint(structural))
         self.assertNotIn(7, structural)
 
+    def test_constant_fields_and_unit_variant_patterns_keep_executable_lookalikes(self) -> None:
+        structural = [
+            "reason: StartGateDegradedReason::UnsupportedParticipant,",
+            "show_osd_warnings: DEFAULT_SHOW_OSD_WARNINGS,",
+            "token: player::SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,",
+            "Some(StartParticipationRole::ExcludedUnsupported),",
+        ]
+        executable = [
+            "reason: determine_reason(),",
+            "value: Constructor::Build(),",
+            "token: TOKENS[index()],",
+            "value: DEFAULT_VALUE + 1,",
+            "Some(determine_role()),",
+            "Some(Role::Excluded) if allowed() => act(),",
+            "Some(Role::with_value(compute())),",
+        ]
+        self.assertEqual(
+            coverage.lexical_non_coverable_lines(structural + executable),
+            set(range(1, len(structural) + 1)),
+        )
+
+    def test_constant_field_allowance_never_overrides_recorded_zero_hits(self) -> None:
+        line = "reason: StartGateDegradedReason::UnsupportedParticipant,"
+        self.source.write_text(line + "\n", encoding="utf-8")
+        report = self.build(
+            self.lcov({1: 0}),
+            self.patch(old_range="1", new_range="1", body=["-old", "+" + line]),
+        )
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["summary"]["uncovered_lines"], 1)
+        self.assertEqual(report["summary"]["non_coverable_lines"], 0)
+
     def test_multiline_let_else_delimiters_and_nested_patterns_are_structural(self) -> None:
         lines = [
             ") else {",

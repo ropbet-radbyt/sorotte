@@ -368,9 +368,7 @@ impl ClientSession {
     }
 
     pub fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
-        self.take_pending_playlist_index_reset_intent_at(
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        )
+        self.take_pending_playlist_index_reset_intent_at(unix_wall_clock_time_seconds())
     }
 
     pub(crate) fn take_pending_playlist_index_reset_intent_at(
@@ -483,7 +481,7 @@ impl ClientSession {
     /// A playlist-index frame and its paired State frame are separate protocol
     /// messages. Until the latter is accepted, replaying the predecessor's
     /// desired Play level can briefly start the successor. Receipt sequencing
-    /// also covers legacy untagged playstate while the transport-revision
+    /// also covers untagged Syncplay playstate while the transport-revision
     /// fence rejects stale tagged or downgrade frames before they reach here.
     pub fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
         if self

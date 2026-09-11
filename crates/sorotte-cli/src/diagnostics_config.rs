@@ -2,7 +2,7 @@ use sorotte_client_app::app_boundary::diagnostics::{
     ReconnectCorrectionDiagnosticsAlertThresholds, ReconnectCorrectionDiagnosticsFormat,
 };
 
-use crate::client_args::LegacyClientArgOverrides;
+use crate::client_args::SyncplayClientArgOverrides;
 use crate::env_support::{env_flag_enabled, env_u32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,11 +60,11 @@ fn client_loop_diagnostics_config_from_env() -> ClientLoopDiagnosticsConfig {
     }
 }
 
-pub(super) fn apply_legacy_client_arg_diagnostics_overrides(
+pub(super) fn apply_syncplay_client_arg_diagnostics_overrides(
     mut config: ClientLoopDiagnosticsConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) -> ClientLoopDiagnosticsConfig {
-    if legacy_overrides.is_some_and(|overrides| overrides.debug_requested) {
+    if argument_overrides.is_some_and(|overrides| overrides.debug_requested) {
         config.log_player_telemetry = true;
         config.log_player_drift = true;
         if config.reconnect_correction_diagnostics_format.is_none() {
@@ -76,10 +76,10 @@ pub(super) fn apply_legacy_client_arg_diagnostics_overrides(
 }
 
 pub(super) fn client_loop_diagnostics_config(
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) -> ClientLoopDiagnosticsConfig {
-    apply_legacy_client_arg_diagnostics_overrides(
+    apply_syncplay_client_arg_diagnostics_overrides(
         client_loop_diagnostics_config_from_env(),
-        legacy_overrides,
+        argument_overrides,
     )
 }

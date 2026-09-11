@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::app::support::system_time_seconds;
-use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible;
+use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
 #[test]
 fn gui_client_core_adapter_uses_network_receipt_time_after_delayed_owner_drain() {
@@ -27,7 +27,7 @@ fn gui_client_core_adapter_uses_network_receipt_time_after_delayed_owner_drain()
     assert_eq!(playstate.position, Some(14.0));
     let ping_adjusted_playstate = adapter
         .runtime
-        .current_room_playstate_legacy_ping_compatible_at(104.0)
+        .current_room_playstate_with_ping_at(104.0)
         .expect("ping-adjusted room playstate should remain available");
     assert!(
         ping_adjusted_playstate
@@ -40,11 +40,11 @@ fn gui_client_core_adapter_uses_network_receipt_time_after_delayed_owner_drain()
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_stale_session_state_before_server_hello() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut stale_main_window = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_main_window.room_name = "live-room".to_owned();
@@ -402,17 +402,16 @@ fn rich_transport_keeps_steady_state_attached_drift_correction() {
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_server_hello() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ready_at_start: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(!state.main_window.users[0].is_ready);
 
-    let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(
-        &state.configuration.to_stored_settings(),
-    );
+    let runtime_settings =
+        stored_client_settings_runtime_snapshot(&state.configuration.to_stored_settings());
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
@@ -456,11 +455,11 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_applies_batched_top_level_commands() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -583,11 +582,11 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_projects_remote_user_after_playlist_seed() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("smoke-user".to_owned()),
         room: Some("smoke-room".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("smoke-user", "smoke-room")
         .expect("client-core chat adapter should bootstrap");
@@ -644,10 +643,10 @@ fn gui_client_core_chat_session_runtime_adapter_stops_reconnect_on_server_error(
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_to_system_chat() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -705,10 +704,10 @@ fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_t
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_dispatches_reconnect_playlist_restore_messages() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -876,11 +875,11 @@ fn gui_client_core_chat_session_runtime_adapter_rejects_controller_auth_when_man
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_after_server_hello() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut stale_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     stale_snapshot.can_set_ready = false;
@@ -933,10 +932,10 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_disables_remote_readiness_without_control() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("+room:ABCDEF123456".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "+room:ABCDEF123456")
         .expect("client-core chat adapter should bootstrap");

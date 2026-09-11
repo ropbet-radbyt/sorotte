@@ -428,9 +428,9 @@ pub trait ClientEffectSink {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
 
     /// Emits a playlist-index request that is accepted only while the server's
-    /// canonical selection still matches the completed item. Sinks without
-    /// guarded-playlist support retain source compatibility and emit the
-    /// established unconditional index request.
+    /// canonical selection still matches the completed item. The production
+    /// queued sink enforces that condition; simple effect collectors record
+    /// an unconditional index request.
     fn emit_playlist_index_if_current(
         &mut self,
         index: i64,
@@ -442,8 +442,8 @@ pub trait ClientEffectSink {
 
     /// Emits a connection-scoped FIFO State for one playback control edge.
     ///
-    /// Sinks without an ordered protocol outbox retain source compatibility
-    /// and observe an ordinary State effect. The production queued sink
+    /// Sinks without an ordered protocol outbox observe an ordinary State
+    /// effect. The production queued sink
     /// overrides this so periodic and advisory State cannot replace the edge.
     fn emit_causal_state(&mut self, state: StatePayload) -> Result<(), ClientEffectError> {
         self.emit(ClientEffect::SendState(state))

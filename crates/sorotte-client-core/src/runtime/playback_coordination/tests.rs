@@ -834,7 +834,7 @@ fn participant_status_room_switch_confirmation_requires_authoritative_membership
 
 #[test]
 fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbeats() {
-    let base_now = unix_wall_clock_time_seconds_legacy_compatible();
+    let base_now = unix_wall_clock_time_seconds();
     let player = CoordinatedTestPlayer {
         advertises_telemetry: true,
         ..CoordinatedTestPlayer::default()
@@ -882,7 +882,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
         .participant_status
         .last_participant_status_sent_at_seconds =
         Some(base_now - PARTICIPANT_STATUS_HEARTBEAT_SECONDS);
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let reports = reports_in(runtime.flush_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].report_sequence, 2);
@@ -1264,14 +1264,14 @@ fn participant_status_public_external_epoch_rebase_emits_transition_immediately(
 }
 
 #[test]
-fn participant_status_legacy_position_fallback_requires_a_legacy_player() {
-    assert!(participant_status_legacy_position_fallback(None, false));
-    assert!(!participant_status_legacy_position_fallback(None, true));
-    assert!(participant_status_legacy_position_fallback(
+fn participant_status_list_position_fallback_requires_a_legacy_player() {
+    assert!(participant_status_list_position_fallback(None, false));
+    assert!(!participant_status_list_position_fallback(None, true));
+    assert!(participant_status_list_position_fallback(
         Some(ExternalPlayerAvailability::Connecting),
         false,
     ));
-    assert!(!participant_status_legacy_position_fallback(
+    assert!(!participant_status_list_position_fallback(
         Some(ExternalPlayerAvailability::Connecting),
         true,
     ));
@@ -1284,7 +1284,7 @@ fn participant_status_legacy_position_fallback_requires_a_legacy_player() {
     ] {
         for transport_telemetry_ever_observed in [false, true] {
             assert!(
-                !participant_status_legacy_position_fallback(
+                !participant_status_list_position_fallback(
                     Some(availability),
                     transport_telemetry_ever_observed,
                 ),
@@ -2138,7 +2138,7 @@ fn runtime_never_reports_when_server_did_not_negotiate_participant_status() {
     runtime.drain_player_transport_coordination(1.0).unwrap();
     assert!(runtime.flush_queued_protocol_messages().is_empty());
 
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let messages = runtime.flush_queued_protocol_messages();
     assert!(reports_in(messages).is_empty());
 }
@@ -2673,7 +2673,7 @@ fn barrier_status(
         quorum: None,
         deadline: 100.0,
         participants: BTreeMap::new(),
-        excluded_legacy_clients: BTreeSet::new(),
+        excluded_unsupported_clients: BTreeSet::new(),
     }
 }
 
@@ -2794,7 +2794,7 @@ impl PlayerAdapter for CoordinatedTestPlayer {
         if self.ordered_delivery {
             PlayerEventDeliveryMode::OrderedAcknowledgedBatches
         } else {
-            PlayerEventDeliveryMode::LegacyTypedQueues
+            PlayerEventDeliveryMode::TypedQueues
         }
     }
 
@@ -3100,7 +3100,7 @@ fn ordered_state_sync_drains_physical_seek_before_publishing_response() {
     ));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(7.0)
@@ -3297,7 +3297,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
         .expect("the existing room authority should be established");
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(7.0)
@@ -3318,7 +3318,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
     )));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(7.0)
@@ -3360,7 +3360,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
         Vec::new(),
     ));
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(7.0)
@@ -3428,7 +3428,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
     ));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(0.0)
@@ -3449,7 +3449,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
     )));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(0.0)
@@ -3495,7 +3495,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
         Vec::new(),
     ));
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(0.2)
@@ -3646,7 +3646,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
         .expect("the existing paused authority should be established");
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(0.8)
@@ -3713,7 +3713,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
     ));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(1.0)
@@ -3851,7 +3851,7 @@ fn ordered_state_sync_defers_refresh_error_and_omits_stale_playstate() {
     ));
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(7.0)
@@ -5143,10 +5143,7 @@ fn ordered_local_file_event_survives_ack_retry_and_publishes_once() {
 
     assert!(
         runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendRaw,
-                PrivacyMode::SendRaw,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
             .is_err(),
         "the first ordered batch acknowledgement is deliberately rejected"
     );
@@ -5158,18 +5155,12 @@ fn ordered_local_file_event_survives_ack_retry_and_publishes_once() {
 
     assert!(
         runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendRaw,
-                PrivacyMode::SendRaw,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
             .expect("the replayed batch and file publication should succeed")
     );
     assert!(
         !runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendRaw,
-                PrivacyMode::SendRaw,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
             .expect("an empty follow-up pump should be harmless")
     );
 
@@ -5250,10 +5241,7 @@ fn ordered_snapshot_preserves_matching_richer_pending_file_announcement() {
     ));
     assert!(
         !runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendRaw,
-                PrivacyMode::SendRaw,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
             .expect("gap handling should remain nonfatal"),
         "a pre-gap file announcement must remain fenced until the snapshot proves its identity"
     );
@@ -5338,10 +5326,7 @@ fn ordered_snapshot_recovers_local_file_announcement_after_lost_event() {
 
     assert!(
         runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                PrivacyMode::SendRaw,
-                PrivacyMode::SendRaw,
-            )
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
             .expect("snapshot recovery and file publication should succeed"),
         "an authoritative active-load snapshot is the recovery source when LocalFileChanged was dropped"
     );
@@ -7862,7 +7847,7 @@ fn explicit_replay_can_supersede_same_logical_active_barrier() {
                 quorum: None,
                 deadline: 20.0,
                 participants: BTreeMap::new(),
-                excluded_legacy_clients: BTreeSet::new(),
+                excluded_unsupported_clients: BTreeSet::new(),
             }),
     );
     let mut coordination = RuntimePlaybackCoordination::default();
@@ -7911,7 +7896,7 @@ fn fresh_controller_infers_replay_from_retained_terminal_logical_identity() {
                 quorum: None,
                 deadline: 55.0,
                 participants: BTreeMap::new(),
-                excluded_legacy_clients: BTreeSet::new(),
+                excluded_unsupported_clients: BTreeSet::new(),
             }),
     );
 
@@ -7947,7 +7932,7 @@ fn fresh_controller_infers_replay_from_retained_terminal_logical_identity() {
 }
 
 #[test]
-fn legacy_server_never_receives_sorotte_barrier_control() {
+fn syncplay_server_never_receives_sorotte_barrier_control() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -7992,7 +7977,7 @@ fn ongoing_buffering_reports_only_transport_state_transitions() {
                 quorum: None,
                 deadline: 120.0,
                 participants: BTreeMap::new(),
-                excluded_legacy_clients: BTreeSet::new(),
+                excluded_unsupported_clients: BTreeSet::new(),
             })
             .with_buffering_policy(buffering_policy.clone()),
     );
@@ -8108,7 +8093,7 @@ fn server_enforced_prepare_timeout_action_is_captured_once_for_controller_ui() {
                 quorum: None,
                 deadline: 100.0,
                 participants,
-                excluded_legacy_clients: BTreeSet::new(),
+                excluded_unsupported_clients: BTreeSet::new(),
             }),
     );
     let mut coordination = RuntimePlaybackCoordination::default();
@@ -8822,7 +8807,7 @@ fn desync_position_projection_uses_the_position_sample_clock_and_rejects_stale_s
     assert_eq!(
         runtime.projected_local_position_at(100.0, Some(7.0)),
         Some(7.0),
-        "legacy adapters without transport timestamps retain point-sample compatibility"
+        "observations without transport timestamps remain point samples"
     );
     runtime.prepare_media(
         LogicalMediaId::new("clock-aligned-position").unwrap(),
@@ -9259,7 +9244,7 @@ fn outbound_state_sync_projects_rich_position_and_omits_blocked_samples() {
         104.5,
     );
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(5.0)
@@ -9303,7 +9288,7 @@ fn outbound_state_sync_projects_rich_position_and_omits_blocked_samples() {
 
 #[test]
 fn authorized_play_intent_survives_cache_blocked_position_projection() {
-    let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+    let now_seconds = unix_wall_clock_time_seconds();
     let mut session = ClientSession::default();
     session
         .apply_message_json_at(
@@ -9341,7 +9326,7 @@ fn authorized_play_intent_survives_cache_blocked_position_projection() {
         None,
         "cache-paused telemetry must remain blocked from ordinary State publication"
     );
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let ordinary = runtime.flush_queued_protocol_messages();
     let ProtocolMessage::State(ordinary) = ordinary
         .last()
@@ -9355,7 +9340,7 @@ fn authorized_play_intent_survives_cache_blocked_position_projection() {
     );
 
     runtime.stage_external_player_pause_intent(false, now_seconds);
-    assert!(runtime.run_state_sync_heartbeat_legacy_ping_compatible(false));
+    assert!(runtime.run_state_sync_heartbeat_with_ping(false));
     let mutation = runtime.flush_queued_protocol_messages();
     let ProtocolMessage::State(mutation) = mutation
         .last()
@@ -9444,7 +9429,7 @@ fn delayed_inbound_state_does_not_publish_false_local_seek() {
         .observe_transport(transport(1, 5.5, PlayerTransportPhase::Playing, 9.5), 104.5);
 
     assert!(
-        runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
             StatePayload::new().with_playstate(
                 PlaystatePayload::new()
                     .with_position(5.0)

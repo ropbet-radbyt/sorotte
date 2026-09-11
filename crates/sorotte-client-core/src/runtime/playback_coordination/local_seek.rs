@@ -188,7 +188,7 @@ impl RuntimePlaybackCoordination {
             client_counter,
         };
         if self.local_transport_scope_matches(&predecessor, session) {
-            // The legacy counter resets on server acknowledgement and
+            // The Syncplay counter resets on server acknowledgement and
             // saturates. A repeated wire counter cannot distinguish two
             // same-revision mutations, so it earns no special rebase authority.
             // Keep one bounded watermark across later operation invalidation.

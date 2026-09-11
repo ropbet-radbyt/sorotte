@@ -2,7 +2,7 @@ use sorotte_client_app::app_boundary::application::{
     ClientApplication, ClientCommand, ClientEvent,
 };
 use sorotte_client_app::app_boundary::commands::{
-    PlannedLocalRuntimeAction, plan_local_runtime_dispatch_legacy_compatible,
+    PlannedLocalRuntimeAction, plan_local_runtime_dispatch,
 };
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_player_mpv::{
@@ -12,7 +12,7 @@ use sorotte_player_mpv::{
 use sorotte_protocol::DirectReadinessSurface;
 
 use crate::client_config::ClientLoopConfig;
-use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
+use crate::language_support::current_runtime_language_tag;
 
 pub(super) const PLAYER_CHAT_INPUT_POLL_INTERVAL_MS: u64 = 100;
 
@@ -155,7 +155,7 @@ pub(super) fn publish_pending_local_file_updates(
     now_seconds: f64,
 ) -> anyhow::Result<()> {
     loop {
-        let published = application.publish_pending_local_file_update_legacy_compatible_at(
+        let published = application.publish_pending_local_file_update_at(
             config.filename_privacy_mode,
             config.filesize_privacy_mode,
             now_seconds,
@@ -226,7 +226,7 @@ fn network_media_options_fatal_error(error: &str) -> anyhow::Error {
     )
 }
 
-pub(super) fn drain_player_chat_input_legacy_compatible(
+pub(super) fn drain_player_chat_input(
     application: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<bool> {
     let mut sent = 0usize;
@@ -253,14 +253,14 @@ fn command_result(events: Vec<ClientEvent>) -> anyhow::Result<bool> {
         .unwrap_or(false))
 }
 
-pub(super) fn run_planned_local_runtime_action_legacy_compatible(
+pub(super) fn run_planned_local_runtime_action(
     application: &mut ClientApplication<MpvAdapter>,
     user_offset_seconds: &mut f64,
     now_seconds: f64,
     action: PlannedLocalRuntimeAction,
 ) -> anyhow::Result<bool> {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let dispatch = plan_local_runtime_dispatch_legacy_compatible(
+    let language = current_runtime_language_tag();
+    let dispatch = plan_local_runtime_dispatch(
         application.session(),
         *user_offset_seconds,
         action,
@@ -349,15 +349,15 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
         Some(PlannedLocalRuntimeAction::RequestControllerAuth { room, password }) => {
             Some(ClientCommand::RequestControllerAuth { room, password })
         }
-        Some(PlannedLocalRuntimeAction::SetRoomWithLegacyFallback(room)) => {
+        Some(PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(room)) => {
             Some(ClientCommand::SetRoom {
                 room,
-                legacy_fallback: true,
+                default_room_fallback: true,
             })
         }
         Some(PlannedLocalRuntimeAction::SetRoom(room)) => Some(ClientCommand::SetRoom {
             room,
-            legacy_fallback: false,
+            default_room_fallback: false,
         }),
         None => None,
     };
@@ -371,7 +371,7 @@ pub(super) fn run_planned_local_runtime_action_legacy_compatible(
 mod network_media_options_transition_outcome_tests {
     use super::*;
     use sorotte_player_mpv::{
-        LegacySyncplayUiSettings, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
+        MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus, SyncplayUiSettings,
     };
 
     fn snapshot(
@@ -495,7 +495,7 @@ mod network_media_options_transition_outcome_tests {
     fn repeated_runtime_drains_do_not_repeat_streaming_health_lines() {
         let (mut adapter, _commands, _transition_trigger) =
             MpvAdapter::with_external_network_media_transition_test_ipc(
-                LegacySyncplayUiSettings::default(),
+                SyncplayUiSettings::default(),
             );
         adapter.inject_test_network_media_options_hook_degradation("test hook loss");
         let mut application = ClientApplication::with_default_session(adapter);

@@ -10,12 +10,12 @@ use proptest::{
 };
 use sorotte_client_app::app_boundary::{
     persistence::{
-        parse_sorotte_ini_stored_client_settings_mvp, upsert_sorotte_ini_stored_client_settings_mvp,
+        parse_sorotte_ini_stored_client_settings, upsert_sorotte_ini_stored_client_settings,
     },
     state::{
-        AutoplayThresholdOverride, StoredClientSettingsConfigPlan, StoredClientSettingsEnvPresence,
-        StoredClientSettingsV1, stored_client_settings_config_plan_legacy_compatible,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
+        AutoplayThresholdOverride, StoredClientSettings, StoredClientSettingsConfigPlan,
+        StoredClientSettingsEnvPresence, stored_client_settings_config_plan,
+        stored_client_settings_runtime_snapshot,
     },
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
@@ -269,8 +269,8 @@ impl GeneratedConfig {
         }
     }
 
-    fn to_stored(&self) -> StoredClientSettingsV1 {
-        StoredClientSettingsV1 {
+    fn to_stored(&self) -> StoredClientSettings {
+        StoredClientSettings {
             host: Some(self.host.clone()),
             port: Some(self.port),
             server_password: Some(self.server_password.clone().into()),
@@ -301,7 +301,7 @@ impl GeneratedConfig {
             show_osd_warnings: Some(self.show_osd_warnings),
             show_noncontroller_osd: Some(self.show_noncontroller_osd),
             show_different_room_osd: Some(self.show_different_room_osd),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         }
     }
 
@@ -456,7 +456,7 @@ fn required<T>(value: Option<T>, field: OverrideField) -> T {
     value.unwrap_or_else(|| panic!("generated field {field:?} must remain present"))
 }
 
-fn stored_values(settings: &StoredClientSettingsV1) -> Vec<ProjectedValue> {
+fn stored_values(settings: &StoredClientSettings) -> Vec<ProjectedValue> {
     vec![
         ProjectedValue::Text(required(settings.host.clone(), OverrideField::Host)),
         ProjectedValue::Port(required(settings.port, OverrideField::Port)),
@@ -643,14 +643,10 @@ fn render_parse_and_plan(
     model: &GeneratedConfig,
     existing: &str,
     env_presence: &StoredClientSettingsEnvPresence,
-) -> (
-    String,
-    StoredClientSettingsV1,
-    StoredClientSettingsConfigPlan,
-) {
-    let rendered = upsert_sorotte_ini_stored_client_settings_mvp(existing, &model.to_stored());
-    let parsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
-    let plan = stored_client_settings_config_plan_legacy_compatible(&parsed, env_presence);
+) -> (String, StoredClientSettings, StoredClientSettingsConfigPlan) {
+    let rendered = upsert_sorotte_ini_stored_client_settings(existing, &model.to_stored());
+    let parsed = parse_sorotte_ini_stored_client_settings(&rendered);
+    let plan = stored_client_settings_config_plan(&parsed, env_presence);
     (rendered, parsed, plan)
 }
 
@@ -715,7 +711,7 @@ proptest! {
         );
 
         prop_assert_eq!(stored_values(&parsed), expected.clone());
-        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&parsed);
+        let snapshot = stored_client_settings_runtime_snapshot(&parsed);
         prop_assert!(
             snapshot.validation_issues.is_empty(),
             "generated canonical settings must be valid: {:?}",
@@ -734,7 +730,7 @@ proptest! {
             );
         }
 
-        let rerendered = upsert_sorotte_ini_stored_client_settings_mvp(&rendered, &parsed);
+        let rerendered = upsert_sorotte_ini_stored_client_settings(&rendered, &parsed);
         prop_assert_eq!(rerendered, rendered);
     }
 
@@ -803,16 +799,16 @@ proptest! {
     ) {
         let field = OverrideField::from_selector(field_selector);
         let model = GeneratedConfig::from_words(model_words);
-        let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &model.to_stored());
-        let parsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
-        let baseline = stored_client_settings_config_plan_legacy_compatible(
+        let rendered = upsert_sorotte_ini_stored_client_settings("", &model.to_stored());
+        let parsed = parse_sorotte_ini_stored_client_settings(&rendered);
+        let baseline = stored_client_settings_config_plan(
             &parsed,
             &StoredClientSettingsEnvPresence::default(),
         );
         let mut presence = StoredClientSettingsEnvPresence::default();
         field.mark_present(&mut presence);
         let suppressed =
-            stored_client_settings_config_plan_legacy_compatible(&parsed, &presence);
+            stored_client_settings_config_plan(&parsed, &presence);
         let baseline_values = plan_values(&baseline);
         let suppressed_values = plan_values(&suppressed);
 

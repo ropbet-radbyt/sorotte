@@ -1,7 +1,7 @@
 use super::super::*;
 
 impl ClientSession {
-    pub(in crate::session) fn capture_playlist_undo_snapshot_legacy_compatible(
+    pub(in crate::session) fn capture_playlist_undo_snapshot(
         &mut self,
         room_name: &str,
         current_files: &[String],
@@ -25,7 +25,7 @@ impl ClientSession {
             .insert(room_name.to_owned(), current_files.to_vec());
     }
 
-    pub(in crate::session) fn local_playlist_target_index_from_changed_playlist_legacy_compatible(
+    pub(in crate::session) fn local_playlist_target_index_from_changed_playlist(
         current_files: &[String],
         current_index: Option<usize>,
         new_files: &[String],
@@ -63,7 +63,7 @@ impl ClientSession {
         0
     }
 
-    pub(in crate::session) fn next_playlist_shuffle_seed_legacy_compatible(
+    pub(in crate::session) fn next_playlist_shuffle_seed(
         &mut self,
         files: &[String],
         current_index: usize,
@@ -94,24 +94,21 @@ impl ClientSession {
         }
     }
 
-    pub(in crate::session) fn next_shuffle_state_legacy_compatible(state: &mut u64) -> u64 {
+    pub(in crate::session) fn next_shuffle_state(state: &mut u64) -> u64 {
         *state = state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         *state
     }
 
-    pub(in crate::session) fn shuffle_playlist_slice_in_place_legacy_compatible(
-        files: &mut [String],
-        seed: u64,
-    ) {
+    pub(in crate::session) fn shuffle_playlist_slice_in_place(files: &mut [String], seed: u64) {
         if files.len() <= 1 {
             return;
         }
 
         let mut state = seed;
         for index in (1..files.len()).rev() {
-            let random_value = Self::next_shuffle_state_legacy_compatible(&mut state);
+            let random_value = Self::next_shuffle_state(&mut state);
             let swap_index = (random_value as usize) % (index + 1);
             files.swap(index, swap_index);
         }

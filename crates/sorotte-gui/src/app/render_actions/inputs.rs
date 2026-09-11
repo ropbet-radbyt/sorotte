@@ -154,11 +154,11 @@ impl GuiWidgetEguiRenderer {
                 ));
             }
             if submitted {
-                let room_name = controlled_room_base_name_legacy_compatible(value);
+                let room_name = controlled_room_base_name(value);
                 if let Some(room_name) = nonempty_room_name_text(&room_name) {
                     actions.push(GuiShellAction::RequestControllerAuth {
                         room: room_name,
-                        password: generate_room_password_legacy_compatible().into(),
+                        password: generate_room_password().into(),
                     });
                     actions.push(GuiShellAction::CancelCreateControlledRoomEdit);
                 }
@@ -324,7 +324,7 @@ impl GuiWidgetEguiRenderer {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
-            SettingId::GeneralLanguage => SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY
+            SettingId::GeneralLanguage => SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY
                 .split('/')
                 .map(str::to_owned)
                 .collect(),

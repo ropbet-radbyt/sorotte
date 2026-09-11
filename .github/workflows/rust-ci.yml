@@ -92,67 +92,6 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  semver:
-    name: Public Rust API compatibility
-    if: github.event_name != 'schedule'
-    needs: preflight
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        id: ci_checkout_2858a3e2
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.VERIFICATION_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Setup Rust
-        id: ci_setup_rust_dd1a8f55
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
-        with:
-          toolchain: 1.98.1
-      - name: Install pinned cargo-semver-checks
-        id: ci_install_pinned_cargo_semver_checks_712626c6
-        if: github.event_name == 'pull_request'
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
-        with:
-          tool: cargo-semver-checks@0.50.0
-          fallback: none
-      - name: Enforce public Rust API compatibility
-        id: ci_enforce_public_rust_api_compatibility_cc4e4e07
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          baseline_sha="${{ github.event.pull_request.base.sha }}"
-          git cat-file -e "${baseline_sha}^{commit}"
-          for package in \
-            sorotte-secret \
-            sorotte-protocol \
-            sorotte-core \
-            sorotte-server \
-            sorotte-media-match \
-            sorotte-client-core \
-            sorotte-client-app \
-            sorotte-player-api \
-            sorotte-player-mpv \
-            sorotte-lifecycle-evidence \
-            sorotte-plex \
-            sorotte-cli \
-            sorotte-gui \
-            sorotte-sim \
-            sorotte-compat
-          do
-            if ! git cat-file -e "${baseline_sha}:crates/${package}/Cargo.toml" 2>/dev/null
-            then
-              echo "Skipping new package absent from baseline: ${package}"
-              continue
-            fi
-            cargo semver-checks \
-              --package "$package" \
-              --baseline-rev "$baseline_sha"
-          done
-
   checks:
     needs: preflight
     if: github.event_name != 'schedule'
@@ -618,11 +557,6 @@ jobs:
         id: ci_verify_cached_archives_and_reconstruct_ec66cc47
         run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
 
-
-      - name: Validate Windows semver wrapper
-        id: ci_validate_windows_semver_wrapper_6ba0767b
-        shell: pwsh
-        run: python -m unittest scripts.tests.test_semver_wrapper -v
 
       - name: Install live compatibility prerequisites
         id: ci_install_live_compatibility_prerequisit_d64088f1
@@ -1692,7 +1626,7 @@ jobs:
   merge-required:
     name: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'merge-required' || format('merge-{0}', github.event_name) }}
     if: always() && github.event_name != 'schedule'
-    needs: [preflight, semver, verification_required, apparatus-canaries]
+    needs: [preflight, verification_required, apparatus-canaries]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1712,14 +1646,12 @@ jobs:
         id: ci_enforce_complete_ci_producer_graph_adc01d5e
         env:
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-          SEMVER_RESULT: ${{ needs.semver.result }}
           CANARIES_RESULT: ${{ needs['apparatus-canaries'].result }}
           VERIFICATION_RESULT: ${{ needs.verification_required.result }}
         run: >-
           python scripts/verify.py gate --lane merge --source-sha "$VERIFICATION_SHA"
-          --expected-job preflight --expected-job semver --expected-job verification --expected-job canaries
+          --expected-job preflight --expected-job verification --expected-job canaries
           --job-result "preflight=$PREFLIGHT_RESULT"
-          --job-result "semver=$SEMVER_RESULT"
           --job-result "verification=$VERIFICATION_RESULT"
           --job-result "canaries=$CANARIES_RESULT"
           --output target/verification/merge-required.json

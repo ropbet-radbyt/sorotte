@@ -74,7 +74,8 @@ def plan(base: str, head: str) -> dict:
     paths = sorted(path for path in paths if path)
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     lanes = select(paths, policy)
-    # A changed policy cannot remove old obligations. Missing old policy means broad qualification.
+    # Old obligations remain required unless an exact lane definition has an
+    # explicit retirement record. Missing old policy means broad qualification.
     try:
         previous = json.loads(git("show", f"{base}:coverage/verification-lanes.json"))
         previous_lanes = {lane["id"]: lane for lane in select(paths, previous)}
@@ -86,8 +87,18 @@ def plan(base: str, head: str) -> dict:
     for lane in lanes:
         if previous_lanes.get(lane["id"], {}).get("selected"):
             lane.update(selected=True, reason="base or candidate policy")
-    if previous_lanes.keys() - {lane["id"] for lane in lanes}:
-        raise ValueError("removed lane requires explicit migration; base obligations remain required")
+    removed = previous_lanes.keys() - {lane["id"] for lane in lanes}
+    retirements = policy.get("retired_lanes", {})
+    for lane_id in removed:
+        definition = {key: value for key, value in previous_lanes[lane_id].items()
+                      if key not in {"selected", "reason"}}
+        fingerprint = hashlib.sha256(json.dumps(definition, sort_keys=True,
+                                                separators=(",", ":")).encode()).hexdigest()
+        retirement = retirements.get(lane_id, {})
+        if (retirement.get("definition_sha256") != fingerprint
+                or not isinstance(retirement.get("reason"), str)
+                or not retirement["reason"].strip()):
+            raise ValueError(f"removed lane {lane_id} requires explicit migration of its exact definition; base obligations remain required")
     return {"schema_version": 1, "kind": "verification-plan", "base_sha": base,
             "source_sha": head, "policy_sha256": digest(POLICY), "paths": paths, "lanes": lanes,
             "required_checks": policy["required_checks"], "created_at": now()}
@@ -132,12 +143,6 @@ def preflight(phase: str, requested_tools: list[str], legacy: Path | None) -> di
         evaluate(json.loads((ROOT / "coverage/assurance-capabilities.json").read_text(encoding="utf-8")), datetime.now(timezone.utc))
         return f"{len(paths)} TOML manifests, lane policy, native and assurance registries validated"
     def writable_temp():
-        try:
-            Path(tempfile.gettempdir()).resolve().relative_to(ROOT)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("TEMP is inside the checkout; semver immutable exports require an external writable temp directory")
         with tempfile.TemporaryDirectory(prefix="sorotte-preflight-") as folder:
             path = Path(folder) / "rename-source"
             path.write_bytes(b"canary")

@@ -7,56 +7,45 @@ pub(crate) fn reconnect_transition_notification_message(
     shared_reconnect_transition_notification_message(notification)
 }
 
-pub(crate) fn reconnect_transition_notification_message_localized_legacy_compatible(
+pub(crate) fn reconnect_transition_notification_message_localized(
     notification: &ReconnectTransitionNotification,
     language: Option<&str>,
 ) -> String {
-    shared_reconnect_transition_notification_message_localized_legacy_compatible(
-        notification,
-        language,
-    )
+    shared_reconnect_transition_notification_message_localized(notification, language)
 }
 
 fn emit_reconnect_transition_notification(
     notification: &ReconnectTransitionNotification,
 ) -> anyhow::Result<()> {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let language = current_runtime_language_tag();
     println!(
         "{}",
-        reconnect_transition_notification_message_localized_legacy_compatible(
-            notification,
-            language.as_deref(),
-        )
+        reconnect_transition_notification_message_localized(notification, language.as_deref(),)
     );
     Ok(())
 }
 
-fn emit_reconnect_transition_notification_to_player_legacy_compatible(
+fn emit_reconnect_transition_notification_to_player(
     player: &mut MpvAdapter,
     notification: &ReconnectTransitionNotification,
 ) {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let message = reconnect_transition_notification_message_localized_legacy_compatible(
-        notification,
-        language.as_deref(),
-    );
-    emit_sorotte_player_osd_notification_legacy_compatible(
+    let language = current_runtime_language_tag();
+    let message =
+        reconnect_transition_notification_message_localized(notification, language.as_deref());
+    emit_sorotte_player_osd_notification(
         player,
         &message,
-        LegacySyncplayOsdKind::Notification,
+        SyncplayOsdKind::Notification,
         "reconnect notification",
     );
 }
 
-pub(crate) fn flush_reconnect_notifications_legacy_compatible(
+pub(crate) fn flush_reconnect_notifications(
     runtime: &mut ClientApplication<MpvAdapter>,
 ) -> anyhow::Result<()> {
     while let Some(notification) = runtime.pending_reconnect_notification().cloned() {
         runtime.with_player_io(|player| {
-            emit_reconnect_transition_notification_to_player_legacy_compatible(
-                player,
-                &notification,
-            );
+            emit_reconnect_transition_notification_to_player(player, &notification);
         });
         emit_reconnect_transition_notification(&notification)?;
         let acknowledged = runtime.acknowledge_reconnect_notification();

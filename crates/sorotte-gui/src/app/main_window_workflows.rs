@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::commands::controlled_room_base_name_legacy_compatible;
+use sorotte_client_app::app_boundary::commands::controlled_room_base_name;
 use sorotte_secret::SecretValue;
 
 use super::shell_state::{
@@ -425,7 +425,7 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn controlled_room_create_default_room_name(&self) -> Option<String> {
         self.current_joined_main_window_room_name()
-            .map(controlled_room_base_name_legacy_compatible)
+            .map(controlled_room_base_name)
             .and_then(|room_name| nonempty_room_name_text(&room_name))
     }
 

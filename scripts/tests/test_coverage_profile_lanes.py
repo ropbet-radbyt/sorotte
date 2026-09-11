@@ -231,7 +231,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
             },
             "legacy_reference": {
                 "path": ".interop-cache/syncplay-legacy",
-                "commit_sha": lanes.PINNED_LEGACY_SYNCPLAY_SHA,
+                "commit_sha": lanes.PINNED_SYNCPLAY_SHA,
             },
             "instrumentation_environment": {
                 "keys": sorted(lanes.EXPECTED_SHOW_ENV_KEYS),
@@ -711,7 +711,7 @@ class CoverageProfileLaneTests(unittest.TestCase):
             lanes.compatibility_oracle(unexpected_test, b"")
 
     def test_compatibility_accepts_unrelated_counts_and_new_selected_regressions(self) -> None:
-        tests = sorted([*lanes.REQUIRED_COMPAT_TESTS, "tests::legacy_server_new_regression"])
+        tests = sorted([*lanes.REQUIRED_COMPAT_TESTS, "tests::syncplay_server_new_regression"])
         for filtered in (0, 131, 132, 140):
             output = f"running {len(tests)} tests\n"
             output += "".join(f"test {name} ... ok\n" for name in tests)

@@ -4,7 +4,7 @@ use std::{
 };
 
 use sorotte_client_app::app_boundary::state::TlsPolicy;
-use sorotte_compat::{LegacyPythonPeerChatMessage, LegacyServerPythonPeerHarness};
+use sorotte_compat::{SyncplayPythonPeerChatMessage, SyncplayServerPythonPeerHarness};
 
 #[cfg(test)]
 use super::super::{
@@ -12,7 +12,7 @@ use super::super::{
 };
 use super::super::{
     GuiPersistedConfigRuntimeOwner, GuiQueuedRuntimeBridgeHandle, GuiShellAction, GuiShellView,
-    SorotteGuiShellAppState, StoredClientSettingsMvp,
+    SorotteGuiShellAppState, StoredClientSettings,
 };
 use super::projection::{
     gui_playlist, local_user_controller, local_user_ready, merge_peer_chat_messages,
@@ -112,7 +112,7 @@ impl Drop for LivePythonSharedPlaylistMediaFixture {
 }
 
 pub(super) fn run_live_python_peer_connect_flow_with_harness(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
 ) -> Result<LivePythonPeerInteropResult, LivePythonPeerInteropError> {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_tcp_session_runtime(
@@ -123,13 +123,13 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let startup_deadline = Instant::now() + Duration::from_millis(600);
@@ -430,7 +430,7 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
             .main_window
             .chat
             .iter()
-            .map(|row| LegacyPythonPeerChatMessage {
+            .map(|row| SyncplayPythonPeerChatMessage {
                 sender: row.sender.clone(),
                 message: row.message.clone(),
             })
@@ -441,26 +441,26 @@ pub(super) fn run_live_python_peer_connect_flow_with_harness(
 }
 
 pub(super) fn run_live_python_peer_controlled_room_flow_with_harness(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
 ) -> Result<LivePythonPeerControlledRoomInteropResult, LivePythonPeerInteropError> {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_tcp_session_runtime(
             LIVE_PYTHON_INTEROP_LOCAL_USERNAME,
             LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT,
             harness.address(),
-            // This legacy-Python loopback fixture intentionally exercises a
+            // This Python Syncplay loopback fixture intentionally exercises a
             // credential-bearing plaintext protocol peer.
             TlsPolicy::Plaintext,
         )
         .map_err(LivePythonPeerInteropError::Gui)?;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_CONTROLLED_ROOM_INPUT.to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let startup_deadline = Instant::now() + Duration::from_millis(600);
@@ -508,11 +508,11 @@ pub(super) fn run_live_python_peer_controlled_room_flow_with_harness(
 
 #[cfg(test)]
 pub(super) fn run_live_python_peer_detached_public_server_connect_flow_with_harness(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
 ) -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
         public_servers: Some(vec![("Primary".to_owned(), harness.address().to_owned())]),
@@ -520,7 +520,7 @@ pub(super) fn run_live_python_peer_detached_public_server_connect_flow_with_harn
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     if !state.apply(GuiShellAction::SelectPublicServer(0))
@@ -571,11 +571,11 @@ pub(super) fn run_live_python_peer_detached_public_server_connect_flow_with_harn
 
 #[cfg(test)]
 pub(super) fn run_live_python_peer_startup_saved_connect_flow_with_harness(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
 ) -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("localhost".to_owned()),
         port: Some(harness.port()),
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
@@ -584,7 +584,7 @@ pub(super) fn run_live_python_peer_startup_saved_connect_flow_with_harness(
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     wait_for_projected_room_projection(
@@ -623,7 +623,7 @@ pub(super) fn run_live_python_peer_startup_saved_connect_flow_with_harness(
 
 #[cfg(test)]
 pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
-    harness: &mut LegacyServerPythonPeerHarness,
+    harness: &mut SyncplayServerPythonPeerHarness,
 ) -> Result<LivePythonPeerSharedPlaylistOpenInteropResult, LivePythonPeerInteropError> {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_tcp_session_runtime(
@@ -635,14 +635,14 @@ pub(super) fn run_live_python_peer_shared_playlist_open_flow_with_harness(
         .map_err(LivePythonPeerInteropError::Gui)?;
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(LIVE_PYTHON_INTEROP_LOCAL_USERNAME.to_owned()),
         room: Some(LIVE_PYTHON_INTEROP_ROOM.to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let startup_deadline = Instant::now() + Duration::from_millis(600);

@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::Overview,
     )));
@@ -69,9 +68,9 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         Some(vec!["stable".to_owned(), "dev".to_owned()])
     );
 
-    let chat_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let chat_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let chat_tree = chat_state.main_window_widget_tree();
     let chat_input = chat_tree.find("main-window:chat-input").unwrap();
@@ -92,9 +91,9 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
         ])
     );
 
-    let mut room_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut room_state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(room_state.apply(GuiShellAction::ToggleMainWindowRoomChange));
     let room_tree = room_state.main_window_widget_tree();
@@ -137,7 +136,7 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     assert!(room_tree.find("main-window:playlist:new").is_none());
 
     let mut user_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(user_state.apply(GuiShellAction::AddMainWindowUser("Bob".to_owned())));
     assert!(user_state.apply(GuiShellAction::SelectMainWindowUser(1)));
     assert!(user_state.apply(GuiShellAction::BeginEditSelectedMainWindowUser));
@@ -145,9 +144,9 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     assert!(user_tree.find("main-window:user-edit:username").is_none());
 
     let mut controlled_room_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             room: Some("Lounge".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     assert!(controlled_room_state.apply(GuiShellAction::BeginCreateControlledRoomEdit));
     let controlled_room_tree = controlled_room_state.main_window_widget_tree();
@@ -184,9 +183,9 @@ fn gui_widget_egui_renderer_maps_text_and_checkbox_edits_to_actions() {
     );
 
     let mut controller_auth_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             room: Some("+Lounge:ABCDEF123456".to_owned()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     assert!(controller_auth_state.apply(GuiShellAction::BeginControllerAuthEdit));
     let controller_auth_tree = controller_auth_state.main_window_widget_tree();

@@ -26,7 +26,7 @@ fn save_current_draft(
 
 fn persisted_owner_and_state(
     label: &str,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> (
     PathBuf,
     GuiPersistedConfigRuntimeOwner,
@@ -35,7 +35,7 @@ fn persisted_owner_and_state(
 ) {
     let root = test_temp_root(label);
     let config_path = root.join("sorotte.ini");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, settings)
         .expect("pending-apply fixture should persist its initial settings");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     owner.startup_saved_connect_attempted = true;
@@ -49,10 +49,10 @@ fn persisted_owner_and_state(
 
 fn install_active_settings_baseline(
     owner: &mut GuiPersistedConfigRuntimeOwner,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) {
-    let snapshot = sorotte_client_app::app_boundary::state::
-        stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+    let snapshot =
+        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(settings);
     owner.session_projects_to_shell = true;
     owner.active_session_settings = Some(snapshot.clone());
     owner.active_session_configured_settings = Some(snapshot);
@@ -60,7 +60,7 @@ fn install_active_settings_baseline(
 
 fn install_attached_mpv_baseline(
     owner: &mut GuiPersistedConfigRuntimeOwner,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) {
     let applied =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
@@ -81,7 +81,7 @@ fn install_attached_mpv_baseline(
 
 fn install_attached_unacknowledging_mpv_baseline(
     owner: &mut GuiPersistedConfigRuntimeOwner,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) {
     let applied =
         GuiPersistedConfigRuntimeOwner::configured_player_launch_state_from_lookup_and_settings(
@@ -94,7 +94,7 @@ fn install_attached_unacknowledging_mpv_baseline(
         GuiPlayerLaunchRuntimeState::ManagedMpv(_)
     ));
     let ui_settings =
-        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(settings));
+        crate::app::mpv_launch::syncplay_ui_settings_from_stored_settings(Some(settings));
     owner.player_launch_state = applied.clone();
     owner.record_fully_applied_player_launch_state(&applied);
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
@@ -189,10 +189,10 @@ fn streaming_requirements_follow_player_and_session_consumers() {
 #[test]
 fn detached_ordinary_save_does_not_report_reconnect() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         host: Some("active-a.example".to_owned()),
         port: Some(8999),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-detached-save", &initial);
@@ -218,20 +218,18 @@ fn detached_ordinary_save_does_not_report_reconnect() {
 #[test]
 fn connected_host_save_and_revert_toggle_reconnect_symmetrically() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let active = StoredClientSettingsMvp {
+    let active = StoredClientSettings {
         host: Some("active-a.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room-a".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-connected-host", &active);
     owner.session_projects_to_shell = true;
     owner.active_session_settings = Some(
-        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible(
-            &active,
-        ),
+        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(&active),
     );
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -261,10 +259,10 @@ fn connected_host_save_and_revert_toggle_reconnect_symmetrically() {
 #[test]
 fn application_language_and_force_prompt_save_reverts_are_symmetric() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         language: Some("en".to_owned()),
         force_gui_prompt: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-application-reverts", &initial);
@@ -312,9 +310,9 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
     env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
     env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
 
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/vlc-a.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-player-revert", &initial);
@@ -354,29 +352,29 @@ fn active_player_save_and_revert_toggle_restart_player_symmetrically() {
 #[test]
 fn tainted_partial_bridge_apply_is_rolled_back_without_core_restart_guidance() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let applied_settings = StoredClientSettingsMvp {
+    let applied_settings = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(25),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let failed_saved_settings = StoredClientSettingsMvp {
+    let failed_saved_settings = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(45),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) = persisted_owner_and_state(
         "pending-apply-tainted-player-revert",
         &failed_saved_settings,
     );
     install_attached_mpv_baseline(&mut owner, &applied_settings);
-    let failed_ui = crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(
+    let failed_ui = crate::app::mpv_launch::syncplay_ui_settings_from_stored_settings(Some(
         &failed_saved_settings,
     ));
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_mut() else {
         panic!("tainted player fixture should retain its simulated mpv adapter");
     };
     player
-        .configure_legacy_syncplay_ui_settings(failed_ui)
+        .configure_syncplay_ui_settings(failed_ui)
         .expect("the fixture should model the locally mutated side of a partial failure");
     owner.player_apply_state.acknowledged_bridge_settings = None;
     owner.player_apply_state.acknowledged_bridge_generation = None;
@@ -399,17 +397,17 @@ fn tainted_partial_bridge_apply_is_rolled_back_without_core_restart_guidance() {
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("successful rollback should retain the attached mpv adapter");
     };
-    assert_eq!(player.legacy_syncplay_ui_settings().chat_top_margin, 25);
+    assert_eq!(player.syncplay_ui_settings().chat_top_margin, 25);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reason() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-tainted-player-detached", &settings);
@@ -446,14 +444,14 @@ fn tainted_player_without_a_live_adapter_keeps_restart_guidance_and_failure_reas
 #[test]
 fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let settings_a = StoredClientSettingsMvp {
+    let settings_a = StoredClientSettings {
         player_path: Some("C:/Players/vlc-a.exe".to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let settings_b = StoredClientSettingsMvp {
+    let settings_b = StoredClientSettings {
         player_path: Some("C:/Players/vlc-b.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-stale-player-target", &settings_a);
@@ -499,14 +497,14 @@ fn reverting_a_failed_player_target_reconciles_the_stale_target_and_error() {
 #[test]
 fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_is_attached() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let settings_a = StoredClientSettingsMvp {
+    let settings_a = StoredClientSettings {
         player_path: Some("C:/Players/A/mpv.exe".to_owned()),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let settings_b = StoredClientSettingsMvp {
+    let settings_b = StoredClientSettings {
         player_path: Some("C:/Players/B/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-stale-attachable-target", &settings_a);
@@ -552,10 +550,10 @@ fn reverting_a_failed_attachable_target_keeps_restart_until_the_restored_target_
 #[test]
 fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         notification_timeout_seconds: Some(3),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-osd-timeout", &initial);
@@ -585,10 +583,7 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("OSD timeout fixture should retain its attached mpv adapter");
     };
-    assert_eq!(
-        player.legacy_syncplay_ui_settings().notification_timeout_ms,
-        9_000
-    );
+    assert_eq!(player.syncplay_ui_settings().notification_timeout_ms, 9_000);
     assert_eq!(
         owner
             .player_apply_state
@@ -603,11 +598,11 @@ fn osd_timeout_save_applies_to_attached_mpv_without_reconnect_or_restart() {
 #[test]
 fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_move_osd: Some(false),
         notification_timeout_seconds: Some(3),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-missing-syncplayintf-ack", &initial);
@@ -673,20 +668,20 @@ fn missing_syncplayintf_ack_keeps_player_and_offers_bridge_retry_after_save() {
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("missing-ack fixture should retain its connected mpv adapter");
     };
-    assert!(!player.legacy_syncplayintf_options_ready());
+    assert!(!player.syncplayintf_options_ready());
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn bridge_warning_does_not_suppress_restart_for_incompatible_player_target() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv-a.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let desired = StoredClientSettingsMvp {
+    let desired = StoredClientSettings {
         player_path: Some("C:/Players/mpv-b.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let applied =
@@ -719,9 +714,9 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
     env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
     env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
 
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     install_attached_mpv_baseline(&mut owner, &initial);
@@ -759,7 +754,7 @@ fn streaming_retry_requirement_escalates_when_in_place_retry_is_not_safe() {
         "C:/Players/mpv.exe".to_owned(),
         vec!["--profile=changed-process-arguments".to_owned()],
     );
-    let changed_process_arguments = StoredClientSettingsMvp {
+    let changed_process_arguments = StoredClientSettings {
         per_player_arguments: Some(per_player_arguments),
         ..initial.clone()
     };
@@ -777,19 +772,19 @@ fn failed_streaming_settings_retry_replaces_retry_requirement_with_restart_playe
     env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
     env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
 
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         streaming_read_ahead_seconds: Some(3.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let desired = StoredClientSettingsMvp {
+    let desired = StoredClientSettings {
         streaming_read_ahead_seconds: Some(9.0),
         ..initial.clone()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     install_attached_mpv_baseline(&mut owner, &initial);
     let initial_ui_settings =
-        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(&initial));
+        crate::app::mpv_launch::syncplay_ui_settings_from_stored_settings(Some(&initial));
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
         sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
             initial_ui_settings,
@@ -850,19 +845,19 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
     env_guard.remove_var("SOROTTE_MPV_IPC_PATH");
     env_guard.remove_var("SOROTTE_GUI_ENABLE_TEST_PLAYER");
 
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         streaming_read_ahead_seconds: Some(3.0),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let desired = StoredClientSettingsMvp {
+    let desired = StoredClientSettings {
         streaming_read_ahead_seconds: Some(9.0),
         ..initial.clone()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     install_attached_mpv_baseline(&mut owner, &initial);
     let initial_ui_settings =
-        crate::app::mpv_launch::legacy_syncplay_ui_settings_from_stored_settings(Some(&initial));
+        crate::app::mpv_launch::syncplay_ui_settings_from_stored_settings(Some(&initial));
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
         sorotte_player_mpv::MpvAdapter::with_first_active_network_option_rejection_test_ipc(
             initial_ui_settings,
@@ -975,10 +970,10 @@ fn bridge_retry_clears_only_bridge_state_while_streaming_reapply_is_pending() {
 #[test]
 fn chat_margin_save_applies_to_attached_mpv_without_reconnect_or_restart() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_top_margin: Some(25),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-chat-margin", &initial);
@@ -1000,17 +995,17 @@ fn chat_margin_save_applies_to_attached_mpv_without_reconnect_or_restart() {
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("chat margin fixture should retain its attached mpv adapter");
     };
-    assert_eq!(player.legacy_syncplay_ui_settings().chat_top_margin, 45);
+    assert_eq!(player.syncplay_ui_settings().chat_top_margin, 45);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
 fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/mpv.exe".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-chat-input", &initial);
@@ -1032,7 +1027,7 @@ fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected()
     let Some(GuiOwnedPlayer::Mpv(player)) = owner.player.as_ref() else {
         panic!("chat input fixture should retain its attached mpv adapter");
     };
-    assert!(!player.legacy_syncplay_ui_settings().chat_input_enabled);
+    assert!(!player.syncplay_ui_settings().chat_input_enabled);
 
     install_active_settings_baseline(&mut owner, &state.saved_configuration);
     assert!(
@@ -1045,7 +1040,7 @@ fn chat_input_save_applies_to_mpv_and_reports_only_reconnect_until_reconnected()
 #[test]
 fn successful_player_retry_reconciles_restart_player_requirement() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp::default();
+    let initial = StoredClientSettings::default();
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-player-retry", &initial);
     owner.player_launch_state = GuiPlayerLaunchRuntimeState::TestPlayer;
@@ -1071,7 +1066,7 @@ fn successful_player_retry_reconciles_restart_player_requirement() {
 #[test]
 fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room-a".to_owned()),
         autoplay_initial_state: Some(false),
@@ -1079,7 +1074,7 @@ fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() 
             sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(2),
         ),
         check_for_updates_automatically: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-live-autoplay", &initial);
@@ -1087,9 +1082,7 @@ fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() 
         .expect("autoplay requirement fixture should create a session");
     owner.install_active_session_runtime(
         Box::new(session),
-        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot_legacy_compatible(
-            &initial,
-        ),
+        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(&initial),
     );
 
     handle.push_request(GuiRuntimeRequest::SetAutoplayEnabled(true));
@@ -1142,9 +1135,9 @@ fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() 
 #[test]
 fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
     let _env_guard = TestEnvGuard::lock(&CONFIG_ROOT_ENV_LOCK);
-    let initial = StoredClientSettingsMvp {
+    let initial = StoredClientSettings {
         player_path: Some("C:/Players/vlc.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-reload-no-player", &initial);
@@ -1153,13 +1146,13 @@ fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
     owner.record_fully_applied_player_launch_state(&GuiPlayerLaunchRuntimeState::None);
     state.pending_apply_requirements = vec![GuiSettingApplyRequirement::RestartPlayer];
 
-    let reloaded = StoredClientSettingsMvp {
+    let reloaded = StoredClientSettings {
         language: Some("en".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     std::fs::remove_file(root.join("sorotte.ini"))
         .expect("no-player reload fixture should replace the original config");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&root.join("sorotte.ini"), &reloaded)
+    upsert_sorotte_ini_stored_client_settings_at_path(&root.join("sorotte.ini"), &reloaded)
         .expect("no-player reload fixture should update the config");
     assert!(state.apply(GuiShellAction::BeginConfigurationReload));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(

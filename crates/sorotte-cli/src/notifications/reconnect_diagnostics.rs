@@ -15,8 +15,8 @@ pub(crate) fn flush_reconnect_correction_diagnostics_to_sink<F>(
 where
     F: FnMut(&str) -> anyhow::Result<()>,
 {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let lines = shared_next_reconnect_correction_diagnostic_lines_legacy_compatible(
+    let language = current_runtime_language_tag();
+    let lines = shared_next_reconnect_correction_diagnostic_lines(
         state,
         *runtime.reconnect_state_restore_correction_metrics(),
         runtime.reconnect_state_restore_correction_state_snapshot(),

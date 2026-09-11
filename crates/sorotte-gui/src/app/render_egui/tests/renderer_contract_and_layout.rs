@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn gui_widget_egui_renderer_rebuilds_widget_tree_from_renderer_contract() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let expected_tree = state.shell_widget_tree();
     let mut renderer = GuiWidgetEguiRenderer::default();
 
@@ -155,12 +155,12 @@ fn gui_widget_egui_renderer_responsive_column_planner_clamps_requested_spans() {
 
 #[test]
 fn gui_widget_egui_renderer_main_window_top_region_scales_across_compact_medium_and_wide_widths() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         chat_input_enabled: Some(true),
         player_path: Some("mpv".to_owned()),
         room: Some("Lounge".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

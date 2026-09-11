@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn gui_configuration_does_not_expose_unimplemented_view_commands() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
         chat_output_enabled: Some(true),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let visible_labels = state

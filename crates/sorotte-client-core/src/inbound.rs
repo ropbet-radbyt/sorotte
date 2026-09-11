@@ -10,7 +10,7 @@ use sorotte_protocol::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientCompatibilityFallback {
     IgnoredSetCommand { command: String },
-    UsedLegacyFeatureDefaults { context: String },
+    UsedSyncplayFeatureDefaults { context: String },
     IgnoredInvalidFileSize { context: String },
     IgnoredInvalidMediaMatch { context: String, reason: String },
     IgnoredInvalidFeatures { context: String },
@@ -39,7 +39,7 @@ impl ClientCompatibilityFallback {
             Self::IgnoredSetCommand { command } => Self::IgnoredSetCommand {
                 command: truncate_compatibility_fallback_text(command),
             },
-            Self::UsedLegacyFeatureDefaults { context } => Self::UsedLegacyFeatureDefaults {
+            Self::UsedSyncplayFeatureDefaults { context } => Self::UsedSyncplayFeatureDefaults {
                 context: truncate_compatibility_fallback_text(context),
             },
             Self::IgnoredInvalidFileSize { context } => Self::IgnoredInvalidFileSize {
@@ -176,7 +176,7 @@ pub struct SharedFile {
     /// Wire fields unknown to this version of the client.
     ///
     /// Retaining these fields keeps a non-empty forward-compatible payload
-    /// distinct from the legacy no-file values (`null` and `{}`).
+    /// distinct from the Syncplay no-file values (`null` and `{}`).
     pub extra: BTreeMap<String, Value>,
 }
 
@@ -198,7 +198,7 @@ impl std::fmt::Debug for SharedFile {
 
 impl SharedFile {
     // Keep this normalization constructor out of unrelated status mutation expressions while
-    // still deriving every other legacy field from the canonical default.
+    // still deriving every other file field from the canonical default.
     #[allow(clippy::field_reassign_with_default)]
     fn with_name(name: String) -> Self {
         let mut file = Self::default();
@@ -604,7 +604,7 @@ pub(crate) fn normalize_client_protocol_message(
                 .map(SecretValue::from);
             let server_version = hello.effective_version().to_owned();
             if !hello.features.as_ref().is_some_and(Value::is_object) {
-                fallbacks.push(ClientCompatibilityFallback::UsedLegacyFeatureDefaults {
+                fallbacks.push(ClientCompatibilityFallback::UsedSyncplayFeatureDefaults {
                     context: "Hello.features".to_owned(),
                 });
             }
@@ -614,39 +614,36 @@ pub(crate) fn normalize_client_protocol_message(
             let capabilities = ServerCapabilities {
                 readiness: feature_bool(hello.features.as_ref(), "readiness").unwrap_or_else(
                     || {
-                        ClientSession::meets_min_version_legacy_compatible(
+                        ClientSession::meets_min_version(
                             &server_version,
-                            LEGACY_USER_READY_MIN_VERSION,
+                            SYNCPLAY_USER_READY_MIN_VERSION,
                         )
                     },
                 ),
                 remote_readiness: feature_bool(hello.features.as_ref(), "setOthersReadiness")
                     .unwrap_or_else(|| {
-                        ClientSession::meets_min_version_legacy_compatible(
+                        ClientSession::meets_min_version(
                             &server_version,
-                            LEGACY_SET_OTHERS_READINESS_MIN_VERSION,
+                            SYNCPLAY_SET_OTHERS_READINESS_MIN_VERSION,
                         )
                     }),
                 managed_rooms: feature_bool(hello.features.as_ref(), "managedRooms")
                     .unwrap_or_else(|| {
-                        ClientSession::meets_min_version_legacy_compatible(
+                        ClientSession::meets_min_version(
                             &server_version,
-                            LEGACY_MANAGED_ROOMS_MIN_VERSION,
+                            SYNCPLAY_MANAGED_ROOMS_MIN_VERSION,
                         )
                     }),
                 shared_playlists: feature_bool(hello.features.as_ref(), "sharedPlaylists")
                     .unwrap_or_else(|| {
-                        ClientSession::meets_min_version_legacy_compatible(
+                        ClientSession::meets_min_version(
                             &server_version,
-                            LEGACY_SHARED_PLAYLIST_MIN_VERSION,
+                            SYNCPLAY_SHARED_PLAYLIST_MIN_VERSION,
                         )
                     }),
                 media_match: feature_bool(hello.features.as_ref(), "mediaMatch").unwrap_or(false),
                 chat: feature_bool(hello.features.as_ref(), "chat").unwrap_or_else(|| {
-                    ClientSession::meets_min_version_legacy_compatible(
-                        &server_version,
-                        LEGACY_CHAT_MIN_VERSION,
-                    )
+                    ClientSession::meets_min_version(&server_version, SYNCPLAY_CHAT_MIN_VERSION)
                 }),
                 plex_playlist_uris: feature_bool(
                     hello.features.as_ref(),
@@ -663,11 +660,11 @@ pub(crate) fn normalize_client_protocol_message(
                 persistent_rooms: feature_bool(hello.features.as_ref(), "persistentRooms")
                     .unwrap_or(false),
                 max_username_length: feature_usize(hello.features.as_ref(), "maxUsernameLength")
-                    .unwrap_or(LEGACY_FALLBACK_MAX_USERNAME_LENGTH),
+                    .unwrap_or(SYNCPLAY_FALLBACK_MAX_USERNAME_LENGTH),
                 max_room_name_length: feature_usize(hello.features.as_ref(), "maxRoomNameLength")
-                    .unwrap_or(LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH),
+                    .unwrap_or(SYNCPLAY_FALLBACK_MAX_ROOM_NAME_LENGTH),
                 max_filename_length: feature_usize(hello.features.as_ref(), "maxFilenameLength")
-                    .unwrap_or(LEGACY_FALLBACK_MAX_FILENAME_LENGTH),
+                    .unwrap_or(SYNCPLAY_FALLBACK_MAX_FILENAME_LENGTH),
             };
             ClientInboundCommand::Hello(ClientHello {
                 username: hello.username,
@@ -678,7 +675,7 @@ pub(crate) fn normalize_client_protocol_message(
                     hello.features.as_ref(),
                     "maxChatMessageLength",
                 )
-                .unwrap_or(LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH),
+                .unwrap_or(SYNCPLAY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH),
                 readiness_reconnect_token,
             })
         }

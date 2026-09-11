@@ -47,7 +47,7 @@ struct ConnectedSessionBranchOutputState<'a> {
     file_difference_notifications: &'a mut FileDifferenceNotificationState,
 }
 
-fn flush_connected_session_branch_outputs_legacy_compatible<F, G>(
+fn flush_connected_session_branch_outputs<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
     diagnostics_config: &ClientLoopDiagnosticsConfig,
     output_state: ConnectedSessionBranchOutputState<'_>,
@@ -70,7 +70,7 @@ where
     // controls remain discoverable with the default diagnostics settings.
     flush_seek_preparation_notifications(runtime, seek_preparation_notifications);
     flush_readiness_status_notifications(runtime, readiness_notifications);
-    for action in connected_session_drain_actions_legacy_compatible(plan) {
+    for action in connected_session_drain_actions(plan) {
         match action {
             ConnectedSessionDrainAction::FlushPlayerPlaybackDiagnostics => {
                 flush_player_playback_telemetry_diagnostics(
@@ -80,7 +80,7 @@ where
                 )?;
             }
             ConnectedSessionDrainAction::FlushReconnectNotifications => {
-                flush_reconnect_notifications_legacy_compatible(runtime)?;
+                flush_reconnect_notifications(runtime)?;
             }
             ConnectedSessionDrainAction::FlushReconnectCorrectionDiagnostics(format) => {
                 flush_reconnect_correction_diagnostics_to_sink(
@@ -92,19 +92,19 @@ where
                 )?;
             }
             ConnectedSessionDrainAction::FlushControllerAuthNotifications => {
-                flush_controller_auth_notifications_legacy_compatible(runtime)?;
+                flush_controller_auth_notifications(runtime)?;
             }
             ConnectedSessionDrainAction::FlushChatNotifications => {
-                flush_chat_notifications_legacy_compatible(runtime)?;
+                flush_chat_notifications(runtime)?;
             }
             ConnectedSessionDrainAction::FlushUserChangeNotifications => {
-                flush_user_change_notifications_legacy_compatible(runtime)?;
+                flush_user_change_notifications(runtime)?;
             }
             ConnectedSessionDrainAction::FlushAutoplayNotifications => {
-                flush_autoplay_notifications_legacy_compatible(runtime, notification_sink)?;
+                flush_autoplay_notifications(runtime, notification_sink)?;
             }
             ConnectedSessionDrainAction::FlushFileDifferenceNotifications => {
-                flush_file_difference_notifications_legacy_compatible(
+                flush_file_difference_notifications(
                     runtime,
                     file_difference_notifications,
                     file_difference_sink,
@@ -116,7 +116,7 @@ where
     Ok(())
 }
 
-fn run_connected_session_inbound_post_apply_legacy_compatible<P>(
+fn run_connected_session_inbound_post_apply<P>(
     runtime: &mut ClientApplication<P>,
     pending_ready_at_start_on_server_hello: &mut Option<PendingReadyAtStart>,
     pending_chat_message_on_connect: &mut Option<String>,
@@ -126,7 +126,7 @@ fn run_connected_session_inbound_post_apply_legacy_compatible<P>(
 where
     P: sorotte_player_api::PlayerAdapter,
 {
-    for action in connected_session_inbound_post_apply_actions_legacy_compatible(plan) {
+    for action in connected_session_inbound_post_apply_actions(plan) {
         let (operation, outcome) = match action {
             ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
                 if let Some(pending) = *pending_ready_at_start_on_server_hello {
@@ -220,7 +220,7 @@ where
     None
 }
 
-fn apply_connected_session_inbound_message_legacy_compatible<P>(
+fn apply_connected_session_inbound_message<P>(
     application: &mut ClientApplication<P>,
     line: &str,
     now_seconds: f64,
@@ -255,7 +255,7 @@ struct ConnectedSessionInboundApplyOutcome {
     trailing_decode_error: Option<ProtocolError>,
 }
 
-async fn apply_connected_session_protocol_plan_legacy_compatible(
+async fn apply_connected_session_protocol_plan(
     runtime: &mut ClientApplication<MpvAdapter>,
     writer: &mut ConnectedSessionWriteHalf,
     startup_playlist_file_on_connect: &mut Option<String>,
@@ -269,12 +269,8 @@ async fn apply_connected_session_protocol_plan_legacy_compatible(
         ConnectedSessionStartupPlaylistDisposition::LeavePending => {}
         ConnectedSessionStartupPlaylistDisposition::EmitIfAvailable => {
             if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
-                let _ = emit_startup_playlist_load_from_file_legacy_compatible(
-                    runtime,
-                    writer,
-                    &playlist_path,
-                )
-                .await?;
+                let _ =
+                    emit_startup_playlist_load_from_file(runtime, writer, &playlist_path).await?;
             }
         }
         ConnectedSessionStartupPlaylistDisposition::DiscardIfPending => {
@@ -336,12 +332,8 @@ pub(super) fn run_contained_planned_local_runtime_action(
     action: PlannedLocalRuntimeAction,
 ) -> anyhow::Result<(bool, Option<ContainedConnectedSessionPlayerFailure>)> {
     let player_bound = planned_local_runtime_action_is_player_bound(&action);
-    let result = run_planned_local_runtime_action_legacy_compatible(
-        runtime,
-        user_offset_seconds,
-        now_seconds,
-        action,
-    );
+    let result =
+        run_planned_local_runtime_action(runtime, user_offset_seconds, now_seconds, action);
     contain_planned_local_runtime_action_result(runtime, now_seconds, player_bound, result)
 }
 
@@ -401,7 +393,7 @@ pub(super) fn report_contained_connected_session_player_failure(
     }
 }
 
-fn run_connected_session_branch_runtime_steps_legacy_compatible(
+fn run_connected_session_branch_runtime_steps(
     runtime: &mut ClientApplication<MpvAdapter>,
     config: &ClientLoopConfig,
     network_options_health_reporter: &mut CliNetworkOptionsHealthReporter,
@@ -422,10 +414,9 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
             error.into(),
         ));
     }
-    let actions =
-        connected_session_runtime_step_actions_legacy_compatible(plan, outbound_state_sync_enabled);
+    let actions = connected_session_runtime_step_actions(plan, outbound_state_sync_enabled);
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
-    let shared_playlists_enabled = shared_playlists_enabled_cli_legacy_compatible(config);
+    let shared_playlists_enabled = shared_playlists_enabled_cli(config);
 
     for action in actions {
         let (operation, outcome) = match action {
@@ -491,12 +482,11 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
             ),
             ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
                 if outbound_state_sync_enabled {
-                    let _ = runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
-                            StatePayload::new(),
-                            dont_slow_down_with_me,
-                            now_seconds,
-                        );
+                    let _ = runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
+                        StatePayload::new(),
+                        dont_slow_down_with_me,
+                        now_seconds,
+                    );
                     ("publish state heartbeat", Ok(()))
                 } else {
                     let _ = runtime.run_participant_status_heartbeat(now_seconds);
@@ -554,7 +544,7 @@ fn run_connected_session_branch_runtime_steps_legacy_compatible(
     None
 }
 
-async fn run_connected_session_branch_plan_legacy_compatible<F, G>(
+async fn run_connected_session_branch_plan<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
@@ -581,7 +571,7 @@ where
         file_difference_sink,
     } = context;
     if plan.run_protocol_before_runtime_steps {
-        apply_connected_session_protocol_plan_legacy_compatible(
+        apply_connected_session_protocol_plan(
             runtime,
             writer,
             startup_playlist_file_on_connect,
@@ -590,7 +580,7 @@ where
         .await?;
     }
     let player_failure = prior_player_failure.or_else(|| {
-        run_connected_session_branch_runtime_steps_legacy_compatible(
+        run_connected_session_branch_runtime_steps(
             runtime,
             config,
             network_options_health_reporter,
@@ -601,7 +591,7 @@ where
         )
     });
     if !plan.run_protocol_before_runtime_steps {
-        apply_connected_session_protocol_plan_legacy_compatible(
+        apply_connected_session_protocol_plan(
             runtime,
             writer,
             startup_playlist_file_on_connect,
@@ -617,7 +607,7 @@ where
         let _ = runtime.run_participant_status_heartbeat(now_seconds);
         flush_runtime_protocol_lines(runtime, writer).await?;
     }
-    flush_connected_session_branch_outputs_legacy_compatible(
+    flush_connected_session_branch_outputs(
         runtime,
         diagnostics_config,
         ConnectedSessionBranchOutputState {
@@ -667,7 +657,7 @@ where
     pub(super) branch: ConnectedSessionBranchExecutionContext<'a, F, G>,
 }
 
-pub(super) async fn run_connected_session_event_plan_legacy_compatible<F, G>(
+pub(super) async fn run_connected_session_event_plan<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
     inbound_message_line: Option<&str>,
     now_seconds: f64,
@@ -690,7 +680,7 @@ where
         let inbound_message_line = inbound_message_line.ok_or_else(|| {
             anyhow::anyhow!("inbound apply plan requires an inbound message line")
         })?;
-        let outcome = apply_connected_session_inbound_message_legacy_compatible(
+        let outcome = apply_connected_session_inbound_message(
             runtime,
             inbound_message_line,
             now_seconds,
@@ -713,7 +703,7 @@ where
             .event
             .inbound_post_apply
             .and_then(|inbound_post_apply| {
-                run_connected_session_inbound_post_apply_legacy_compatible(
+                run_connected_session_inbound_post_apply(
                     runtime,
                     pending_ready_at_start_on_server_hello,
                     pending_chat_message_on_connect,
@@ -721,7 +711,7 @@ where
                     inbound_post_apply,
                 )
             });
-    run_connected_session_branch_plan_legacy_compatible(
+    run_connected_session_branch_plan(
         runtime,
         now_seconds,
         dont_slow_down_with_me,
@@ -1132,7 +1122,7 @@ mod tests {
         let mut notification_sink = |_notification: &AutoplayCountdownNotification| Ok(());
         let mut file_difference_sink = |_line: &str| Ok(());
 
-        run_connected_session_branch_plan_legacy_compatible(
+        run_connected_session_branch_plan(
             &mut application,
             2.0,
             false,
@@ -1408,7 +1398,7 @@ mod tests {
         };
 
         assert!(
-            run_connected_session_inbound_post_apply_legacy_compatible(
+            run_connected_session_inbound_post_apply(
                 &mut application,
                 &mut pending_ready,
                 &mut pending_chat,
@@ -1430,7 +1420,7 @@ mod tests {
             .apply_protocol_line(&snapshot_line, 2.0, false, false, false)
             .expect("snapshot should apply");
         assert!(
-            run_connected_session_inbound_post_apply_legacy_compatible(
+            run_connected_session_inbound_post_apply(
                 &mut application,
                 &mut pending_ready,
                 &mut pending_chat,
@@ -1516,7 +1506,7 @@ mod tests {
             ),
         ));
         let retry_line = encode_message_line(&retry_later).expect("retry result should encode");
-        apply_connected_session_inbound_message_legacy_compatible(
+        apply_connected_session_inbound_message(
             &mut application,
             &retry_line,
             10.0,
@@ -1531,7 +1521,7 @@ mod tests {
         let mut pending_ready = None;
         let mut pending_chat = None;
         assert!(
-            run_connected_session_inbound_post_apply_legacy_compatible(
+            run_connected_session_inbound_post_apply(
                 &mut application,
                 &mut pending_ready,
                 &mut pending_chat,

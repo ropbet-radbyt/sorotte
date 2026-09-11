@@ -118,15 +118,15 @@ fn hello_without_limit_features_uses_python_compatible_fallbacks() {
     assert!(!session.server_persistent_rooms_supported());
     assert_eq!(
         session.server_max_username_length(),
-        Some(LEGACY_FALLBACK_MAX_USERNAME_LENGTH)
+        Some(SYNCPLAY_FALLBACK_MAX_USERNAME_LENGTH)
     );
     assert_eq!(
         session.server_max_room_name_length(),
-        Some(LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH)
+        Some(SYNCPLAY_FALLBACK_MAX_ROOM_NAME_LENGTH)
     );
     assert_eq!(
         session.server_max_filename_length(),
-        Some(LEGACY_FALLBACK_MAX_FILENAME_LENGTH)
+        Some(SYNCPLAY_FALLBACK_MAX_FILENAME_LENGTH)
     );
 }
 
@@ -282,7 +282,7 @@ fn hello_applies_server_chat_max_message_length_when_enabled() {
 }
 
 #[test]
-fn hello_without_features_uses_legacy_fallback_chat_max_message_length() {
+fn hello_without_features_uses_default_room_fallback_chat_max_message_length() {
     let mut session = ClientSession::default();
     session.chat_config_mut().max_chat_message_length = 150;
     session
@@ -293,7 +293,7 @@ fn hello_without_features_uses_legacy_fallback_chat_max_message_length() {
 
     assert_eq!(
         session.chat_config().max_chat_message_length,
-        LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH
+        SYNCPLAY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH
     );
 }
 

@@ -542,15 +542,15 @@ pub(super) fn localize_exact_message(message: &str, language: Option<&str>) -> O
             "Que shi meiti sousuo yi wancheng: wei zhaodao pipei xiang",
             "nujlagdoen midieo geomsa-ga wallyodoeeotjiman ilchi haneun hangmogi eopseumnida",
         ),
-        "Sorotte is up to date" => localized_sorotte_uptodate_message_legacy_compatible(language),
+        "Sorotte is up to date" => localized_sorotte_uptodate_message(language),
         "A new version of Sorotte is available. Do you want to visit the release page?" => {
-            localized_sorotte_update_available_message_legacy_compatible(language)
+            localized_sorotte_update_available_message(language)
         }
         "An update notice is available for this client build" => {
-            localized_update_notice_available_message_legacy_compatible(language)
+            localized_update_notice_available_message(language)
         }
         "Dismiss it here or trigger another update check from the same modal" => {
-            localized_update_dismiss_hint_line_legacy_compatible(language)
+            localized_update_dismiss_hint_line(language)
         }
         _ => return None,
     };

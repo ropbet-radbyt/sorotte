@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_triggers_selected_menu_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode.mkv", true)];
     state.main_window.playback.can_toggle_pause = true;
@@ -39,7 +39,7 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
     assert!(state.main_window.playback_paused);
 
     let mut disabled_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(!disabled_state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::Pause)));
     assert_eq!(
         disabled_state.validation.last_action_error.as_deref(),
@@ -49,8 +49,7 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
 
 #[test]
 fn window_menu_exposes_only_real_checkable_visibility_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
 
     let visible_tree = state.shell_widget_tree();
@@ -165,9 +164,9 @@ fn window_menu_exposes_only_real_checkable_visibility_actions() {
 
 #[test]
 fn playback_menu_and_toolbar_disable_together_while_an_operation_is_pending() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode.mkv", true)];
     state.main_window.playback.can_toggle_pause = true;
@@ -212,8 +211,7 @@ fn playback_menu_and_toolbar_disable_together_while_an_operation_is_pending() {
 
 #[test]
 fn typed_about_action_opens_the_modal_without_changing_views_or_toggling_closed() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
 
     assert!(state.apply(GuiShellAction::InvokeMenuAction(MenuActionId::About)));
@@ -227,12 +225,12 @@ fn typed_about_action_opens_the_modal_without_changing_views_or_toggling_closed(
 
 #[test]
 fn gui_shell_app_state_selects_public_server_and_updates_config_host_port() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Primary".to_owned(), "syncplay.pl:8999".to_owned()),
             ("Backup".to_owned(), "syncplay.example:8995".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
@@ -246,9 +244,9 @@ fn gui_shell_app_state_selects_public_server_and_updates_config_host_port() {
 
 #[test]
 fn gui_shell_app_state_handles_public_server_browser_event_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::AnnouncePublicServerSelectionChanged(0)));
@@ -305,8 +303,7 @@ fn gui_shell_app_state_handles_public_server_browser_event_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_public_server_browser_event_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::BeginSelectedPublicServerConnect));
     assert_eq!(
@@ -341,8 +338,7 @@ fn gui_shell_app_state_rejects_invalid_public_server_browser_event_actions() {
 
 #[test]
 fn gui_shell_app_state_adds_edits_and_removes_public_server_rows() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginAddPublicServer));
     assert!(state.apply(GuiShellAction::UpdatePublicServerEditLabel(
@@ -401,9 +397,9 @@ fn gui_shell_app_state_adds_edits_and_removes_public_server_rows() {
 
 #[test]
 fn gui_shell_app_state_manually_refreshes_an_explicitly_empty_public_server_list() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
@@ -426,12 +422,12 @@ fn gui_shell_app_state_manually_refreshes_an_explicitly_empty_public_server_list
 
 #[test]
 fn gui_shell_app_state_preserves_explicit_empty_result_from_manual_public_server_refresh() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![(
             "Cached".to_owned(),
             "cached.example:8999".to_owned(),
         )]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
@@ -448,12 +444,12 @@ fn gui_shell_app_state_preserves_explicit_empty_result_from_manual_public_server
 #[test]
 fn gui_shell_app_state_remaps_public_server_edit_sessions_by_row_identity_across_configuration_runtime_snapshots()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
             ("Beta".to_owned(), "beta.example:8999".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
@@ -500,12 +496,12 @@ fn gui_shell_app_state_remaps_public_server_edit_sessions_by_row_identity_across
 
 #[test]
 fn gui_shell_app_state_clears_public_server_edit_sessions_when_the_edited_row_disappears() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
             ("Beta".to_owned(), "beta.example:8999".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
@@ -529,12 +525,12 @@ fn gui_shell_app_state_clears_public_server_edit_sessions_when_the_edited_row_di
 
 #[test]
 fn gui_shell_app_state_keeps_public_server_selection_on_the_active_edit_row() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
             ("Beta".to_owned(), "beta.example:8999".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
@@ -553,8 +549,7 @@ fn gui_shell_app_state_keeps_public_server_selection_on_the_active_edit_row() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_public_server_edit_sessions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::BeginEditSelectedPublicServer));
     assert_eq!(
@@ -584,8 +579,7 @@ fn gui_shell_app_state_rejects_invalid_public_server_edit_sessions() {
 
 #[test]
 fn gui_shell_app_state_tracks_transient_notification_queue() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     for (level, message) in [
         (GuiTransientNotificationLevel::Info, "one"),
@@ -619,8 +613,7 @@ fn gui_shell_app_state_tracks_transient_notification_queue() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_transient_notification_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::PushTransientNotification {
         level: GuiTransientNotificationLevel::Info,

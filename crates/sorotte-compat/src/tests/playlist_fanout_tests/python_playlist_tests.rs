@@ -6,8 +6,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_controller_scenari
         "server_runtime_playlist_controller.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -22,8 +21,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_cross_room_ready_list_scena
         "server_runtime_cross_room_ready_list.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -39,8 +37,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_room_switch_peer_t
         PLAYLIST_ROOM_SWITCH_PEER_TRANSITION_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -56,8 +53,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_double_room_switch
         PLAYLIST_DOUBLE_ROOM_SWITCH_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -73,8 +69,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_room_switch_snapsh
         PLAYLIST_ROOM_SWITCH_SNAPSHOT_THEN_DESTINATION_UPDATE_ORDERING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -90,8 +85,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_room_switch_snapsh
         PLAYLIST_ROOM_SWITCH_SNAPSHOT_THEN_OLD_ROOM_UPDATE_ORDERING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -107,8 +101,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_room_switch_snapsh
         PLAYLIST_ROOM_SWITCH_SNAPSHOT_THEN_OLD_THEN_DESTINATION_UPDATE_ORDERING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -124,8 +117,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_playlist_room_switch_snapsh
         PLAYLIST_ROOM_SWITCH_SNAPSHOT_THEN_DESTINATION_THEN_OLD_UPDATE_ORDERING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(

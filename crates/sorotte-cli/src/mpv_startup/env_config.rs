@@ -12,24 +12,23 @@ pub(crate) fn managed_mpv_launch_env_config_from_env() -> ManagedMpvLaunchEnvCon
     }
 }
 
-pub(crate) fn apply_legacy_client_arg_managed_mpv_overrides(
+pub(crate) fn apply_syncplay_client_arg_managed_mpv_overrides(
     managed_config: &mut ManagedMpvLaunchEnvConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) {
-    let Some(overrides) = legacy_overrides else {
+    let Some(overrides) = argument_overrides else {
         return;
     };
-    let legacy_player_path = overrides.player_path.as_deref();
-    let legacy_player_requests_managed_mpv =
-        legacy_player_path.is_some_and(legacy_player_path_requests_managed_mpv_legacy_compatible);
+    let player_path = overrides.player_path.as_deref();
+    let player_requests_managed_mpv = player_path.is_some_and(player_path_requests_managed_mpv);
 
-    if !managed_config.enabled && legacy_player_requests_managed_mpv {
+    if !managed_config.enabled && player_requests_managed_mpv {
         managed_config.enabled = true;
     }
 
     if managed_config.mpv_bin.is_none()
-        && legacy_player_requests_managed_mpv
-        && let Some(player_path) = legacy_player_path
+        && player_requests_managed_mpv
+        && let Some(player_path) = player_path
     {
         managed_config.mpv_bin = Some(PathBuf::from(player_path));
     }

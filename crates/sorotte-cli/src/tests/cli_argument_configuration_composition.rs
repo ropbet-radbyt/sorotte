@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn short_attached_password_is_accepted_without_diagnostic_exposure() {
-    let overrides = parse_legacy_client_arg_overrides(["-pCLI_PASSWORD_CANARY"]);
+    let overrides = parse_syncplay_client_arg_overrides(["-pCLI_PASSWORD_CANARY"]);
 
     assert!(
         overrides.unknown_options.is_empty(),
@@ -12,7 +12,7 @@ fn short_attached_password_is_accepted_without_diagnostic_exposure() {
 
 #[test]
 fn malformed_final_host_blocks_endpoint_composition() {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "--host",
         "valid.example:8999",
         "--host",
@@ -28,7 +28,7 @@ fn malformed_final_host_blocks_endpoint_composition() {
 #[test]
 fn unknown_attached_values_are_secret_safe_in_diagnostics() {
     const SECRET: &str = "CLI_UNKNOWN_OPTION_SECRET_CANARY";
-    let overrides = parse_legacy_client_arg_overrides([format!("--api-token={SECRET}")]);
+    let overrides = parse_syncplay_client_arg_overrides([format!("--api-token={SECRET}")]);
     assert_eq!(overrides.unknown_options.len(), 1);
     assert!(overrides.unknown_options[0].matches_rejected_token(&format!("--api-token={SECRET}")));
     assert!(
@@ -36,7 +36,7 @@ fn unknown_attached_values_are_secret_safe_in_diagnostics() {
         "the structural parser issue must not retain the attached value"
     );
 
-    let diagnostic = legacy_unrecognized_arguments_diagnostic_line(&overrides.unknown_options);
+    let diagnostic = syncplay_unrecognized_arguments_diagnostic_line(&overrides.unknown_options);
     assert!(
         !diagnostic.contains(SECRET),
         "unknown-option diagnostics leaked an attached secret: {diagnostic}"
@@ -46,16 +46,16 @@ fn unknown_attached_values_are_secret_safe_in_diagnostics() {
         "redacted diagnostics must preserve a visible redaction marker: {diagnostic}"
     );
 
-    let unattached = parse_legacy_client_arg_overrides(["--api-token"]);
+    let unattached = parse_syncplay_client_arg_overrides(["--api-token"]);
     assert_eq!(
-        legacy_unrecognized_arguments_diagnostic_line(&unattached.unknown_options),
+        syncplay_unrecognized_arguments_diagnostic_line(&unattached.unknown_options),
         "error: unrecognized arguments: --api-token"
     );
 }
 
 #[test]
 fn attached_cli_configuration_values_cross_the_real_parser_boundary() {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "--host=cli.example:4321",
         "--name=cli-user",
         "--room=cli-room",
@@ -78,7 +78,7 @@ fn attached_cli_configuration_values_cross_the_real_parser_boundary() {
 
 #[test]
 fn duplicate_host_without_port_clears_the_earlier_cli_port_override() {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "--host",
         "first.example:1111",
         "--host",
@@ -94,7 +94,7 @@ fn duplicate_host_without_port_clears_the_earlier_cli_port_override() {
 
 #[test]
 fn empty_duplicate_values_clear_the_cli_layer_override() {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "--name",
         "first-user",
         "--name=",
@@ -114,7 +114,7 @@ fn empty_duplicate_values_clear_the_cli_layer_override() {
 
 #[test]
 fn missing_required_host_and_name_values_are_invalid_parser_cases() {
-    let overrides = parse_legacy_client_arg_overrides(["--host", "--name"]);
+    let overrides = parse_syncplay_client_arg_overrides(["--host", "--name"]);
 
     assert!(overrides.unknown_options[0].matches_rejected_token("--host"));
     assert!(overrides.unknown_options[1].matches_rejected_token("--name"));
@@ -122,7 +122,7 @@ fn missing_required_host_and_name_values_are_invalid_parser_cases() {
 
 #[test]
 fn canonical_short_attached_values_and_boolean_clusters_match_argparse_shape() {
-    let overrides = parse_legacy_client_arg_overrides([
+    let overrides = parse_syncplay_client_arg_overrides([
         "-aexample.org:8999",
         "-nAlice",
         "-rroom",
@@ -145,7 +145,7 @@ fn canonical_short_attached_values_and_boolean_clusters_match_argparse_shape() {
     assert!(overrides.debug_requested);
     assert!(overrides.force_gui_prompt_requested);
 
-    let reverse_cluster = parse_legacy_client_arg_overrides(["-gd"]);
+    let reverse_cluster = parse_syncplay_client_arg_overrides(["-gd"]);
     assert!(reverse_cluster.debug_requested);
     assert!(reverse_cluster.force_gui_prompt_requested);
     assert!(reverse_cluster.unknown_options.is_empty());
@@ -153,22 +153,22 @@ fn canonical_short_attached_values_and_boolean_clusters_match_argparse_shape() {
 
 #[test]
 fn optional_short_values_and_psn_overlap_follow_pinned_argparse_precedence() {
-    let flag_looking_values = parse_legacy_client_arg_overrides(["-p", "-d", "-r", "-g"]);
+    let flag_looking_values = parse_syncplay_client_arg_overrides(["-p", "-d", "-r", "-g"]);
     assert_eq!(flag_looking_values.controlled_room_password_override, None);
     assert_eq!(flag_looking_values.room, None);
     assert!(flag_looking_values.debug_requested);
     assert!(flag_looking_values.force_gui_prompt_requested);
     assert!(flag_looking_values.unknown_options.is_empty());
 
-    let separated_psn = parse_legacy_client_arg_overrides(["-psn", "VALUE"]);
-    let equals_psn = parse_legacy_client_arg_overrides(["-psn=VALUE"]);
+    let separated_psn = parse_syncplay_client_arg_overrides(["-psn", "VALUE"]);
+    let equals_psn = parse_syncplay_client_arg_overrides(["-psn=VALUE"]);
     for parsed in [&separated_psn, &equals_psn] {
         assert_eq!(parsed.controlled_room_password_override, None);
         assert_eq!(parsed.file, None);
         assert!(parsed.unknown_options.is_empty());
     }
 
-    let password_prefix = parse_legacy_client_arg_overrides(["-psnVALUE"]);
+    let password_prefix = parse_syncplay_client_arg_overrides(["-psnVALUE"]);
     assert_eq!(
         password_prefix
             .controlled_room_password_override
@@ -178,15 +178,15 @@ fn optional_short_values_and_psn_overlap_follow_pinned_argparse_precedence() {
     );
     assert!(password_prefix.unknown_options.is_empty());
 
-    let missing_psn_value = parse_legacy_client_arg_overrides(["-psn"]);
+    let missing_psn_value = parse_syncplay_client_arg_overrides(["-psn"]);
     assert!(missing_psn_value.unknown_options[0].matches_rejected_token("-psn"));
 }
 
 fn final_host_argument_error(arguments: &[&str]) -> HostArgumentError {
-    let parsed = parse_legacy_client_arg_overrides(arguments);
+    let parsed = parse_syncplay_client_arg_overrides(arguments);
     assert_eq!(parsed.unknown_options.len(), 1, "arguments={arguments:?}");
     match parsed.unknown_options[0] {
-        LegacyClientArgumentIssue::InvalidHost { error, .. } => error,
+        SyncplayClientArgumentIssue::InvalidHost { error, .. } => error,
         ref issue => panic!("expected invalid-host issue for {arguments:?}, got {issue:?}"),
     }
 }
@@ -215,7 +215,7 @@ fn malformed_final_cli_endpoints_fail_closed_with_specific_error_kinds() {
 
 #[test]
 fn final_host_occurrence_controls_failure_and_valid_no_port_inherits_lower_port() {
-    let valid_then_invalid = parse_legacy_client_arg_overrides([
+    let valid_then_invalid = parse_syncplay_client_arg_overrides([
         "--host",
         "valid.example:8999",
         "--host",
@@ -225,7 +225,7 @@ fn final_host_occurrence_controls_failure_and_valid_no_port_inherits_lower_port(
     assert_eq!(valid_then_invalid.port, None);
     assert_eq!(valid_then_invalid.unknown_options.len(), 1);
 
-    let invalid_then_valid = parse_legacy_client_arg_overrides([
+    let invalid_then_valid = parse_syncplay_client_arg_overrides([
         "--host",
         "invalid.example:notaport",
         "--host",
@@ -238,8 +238,8 @@ fn final_host_occurrence_controls_failure_and_valid_no_port_inherits_lower_port(
     let mut inherited = build_client_loop_config_from_env();
     inherited.host = "lower.example".to_owned();
     inherited.port = 4567;
-    let no_port = parse_legacy_client_arg_overrides(["--host", "valid.example"]);
-    apply_legacy_client_arg_overrides(&mut inherited, &no_port);
+    let no_port = parse_syncplay_client_arg_overrides(["--host", "valid.example"]);
+    apply_syncplay_client_arg_overrides(&mut inherited, &no_port);
     assert_eq!(inherited.host, "valid.example");
     assert_eq!(inherited.port, 4567);
     assert_eq!(validate_composed_client_endpoint(&inherited), Ok(()));
@@ -344,14 +344,14 @@ struct GeneratedStoredSettings {
 }
 
 impl GeneratedStoredSettings {
-    fn as_production_settings(&self) -> StoredClientSettingsMvp {
-        StoredClientSettingsMvp {
+    fn as_production_settings(&self) -> StoredClientSettings {
+        StoredClientSettings {
             host: Some(self.host.clone()),
             port: Some(self.port),
             server_password: Some(self.server_password.clone().into()),
             username: Some(self.username.clone()),
             room: Some(self.room.clone()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }
     }
 }
@@ -846,13 +846,13 @@ fn generated_cli_configuration_composition_matches_independent_precedence_oracle
     for case in &cases {
         install_generated_environment(&env, &case.environment);
         let mut production = build_client_loop_config_from_env();
-        apply_stored_client_settings_mvp_if_env_absent(
+        apply_stored_client_settings_if_env_absent(
             &mut production,
             &case.stored.as_production_settings(),
         );
 
         let arguments = case.arguments();
-        let parsed = parse_legacy_client_arg_overrides(&arguments);
+        let parsed = parse_syncplay_client_arg_overrides(&arguments);
         let modeled_cli = independently_model_cli_operations(&case.operations);
         assert_eq!(
             parsed.unknown_options.len(),
@@ -874,7 +874,7 @@ fn generated_cli_configuration_composition_matches_independent_precedence_oracle
 
         if modeled_cli.invalid_options.is_empty() {
             valid += 1;
-            apply_legacy_client_arg_overrides(&mut production, &parsed);
+            apply_syncplay_client_arg_overrides(&mut production, &parsed);
             let expected = independently_apply_cli_overrides(
                 independent_lower_layer_projection(&case.environment, &case.stored),
                 &modeled_cli,
@@ -887,7 +887,8 @@ fn generated_cli_configuration_composition_matches_independent_precedence_oracle
             );
         } else {
             invalid += 1;
-            let diagnostic = legacy_unrecognized_arguments_diagnostic_line(&parsed.unknown_options);
+            let diagnostic =
+                syncplay_unrecognized_arguments_diagnostic_line(&parsed.unknown_options);
             assert!(
                 diagnostic.starts_with("error: unrecognized arguments: "),
                 "{} invalid parser case lost its bounded diagnostic",

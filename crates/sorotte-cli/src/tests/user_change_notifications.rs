@@ -53,10 +53,9 @@ fn user_change_notification_message_uses_legacy_style_wording() {
 }
 
 #[test]
-fn user_change_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
- {
+fn user_change_notification_message_localized_localizes_common_runtime_notifications() {
     assert_eq!(
-        crate::user_change_notification_message_localized_legacy_compatible(
+        crate::user_change_notification_message_localized(
             &UserChangeNotification::Joined {
                 username: "bob".to_owned(),
                 room: "room1".to_owned(),
@@ -67,7 +66,7 @@ fn user_change_notification_message_localized_legacy_compatible_localizes_common
         "bob se ha unido a la sala: 'room1'"
     );
     assert_eq!(
-        crate::user_change_notification_message_localized_legacy_compatible(
+        crate::user_change_notification_message_localized(
             &UserChangeNotification::Playing {
                 username: "bob".to_owned(),
                 room: "room1".to_owned(),
@@ -81,7 +80,7 @@ fn user_change_notification_message_localized_legacy_compatible_localizes_common
         "bob lit 'movie.mkv' dans la salle: 'room1'"
     );
     assert_eq!(
-        crate::user_change_notification_message_localized_legacy_compatible(
+        crate::user_change_notification_message_localized(
             &UserChangeNotification::Left {
                 username: "bob".to_owned(),
                 hide_from_osd: true,
@@ -121,10 +120,10 @@ fn user_change_notification_hidden_from_osd_uses_visibility_metadata() {
 
 #[test]
 fn format_duration_legacy_matches_python_shape() {
-    assert_eq!(format_duration_legacy(95.5), "01:36");
-    assert_eq!(format_duration_legacy(3600.0), "01:00:00");
-    assert_eq!(format_duration_legacy(604800.0), "00:00 (Title 1)");
-    assert_eq!(format_duration_legacy(-1.5), "-00:02");
+    assert_eq!(format_duration(95.5), "01:36");
+    assert_eq!(format_duration(3600.0), "01:00:00");
+    assert_eq!(format_duration(604800.0), "00:00 (Title 1)");
+    assert_eq!(format_duration(-1.5), "-00:02");
 }
 
 #[test]

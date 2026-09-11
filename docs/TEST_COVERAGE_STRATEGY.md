@@ -2210,7 +2210,7 @@ Mechanical success criteria:
 - resource bounds remain below declared limits;
 - clean termination with no orphan process.
 
-### 9.11 Undefined behavior and API compatibility
+### 9.11 Undefined behavior and construction invariants
 
 Add a nightly Miri shard for pure crates/targets first:
 
@@ -2227,14 +2227,14 @@ Use targeted Linux ASan/LSan for server, player-mpv, and media-match integration
 tests. Consider TSan only for selected native-threaded boundaries and keep tool
 limitations explicit.
 
-Use a downstream fixture crate plus `trybuild` for intended public API
-construction/compile failures. Run `cargo-semver-checks` when public crates
-change. This is especially valuable for acknowledged batch types and adapter
-traits whose accidental source breakage ordinary workspace tests cannot see.
+Use compile-fail checks where constructors enforce a concrete invariant, such
+as sanitizing participant evidence before presentation. Rust APIs are internal
+workspace boundaries: change their callers together, without a downstream
+fixture crate or a source-compatibility gate. Syncplay wire compatibility and
+settings import retain behavioral and reference-implementation coverage.
 
 References:
-[Miri](https://github.com/rust-lang/miri) and
-[cargo-semver-checks](https://docs.rs/crate/cargo-semver-checks/latest/source/README.md).
+[Miri](https://github.com/rust-lang/miri).
 
 ## 10. Coverage policy
 

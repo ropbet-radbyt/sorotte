@@ -3,13 +3,13 @@ use crate::app::SecretDraft;
 
 #[test]
 fn gui_shell_app_state_moves_and_removes_media_search_rows() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![
             "C:/Media".to_owned(),
             "D:/Archive".to_owned(),
             "E:/Incoming".to_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::SelectMediaSearchDirectory(2)));
     assert!(state.apply(GuiShellAction::MoveSelectedMediaSearchDirectoryUp));
@@ -59,9 +59,9 @@ fn gui_shell_app_state_moves_and_removes_media_search_rows() {
 
 #[test]
 fn gui_shell_app_state_handles_media_search_event_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::AnnounceMediaSearchDirectorySelected(0)));
@@ -118,8 +118,7 @@ fn gui_shell_app_state_handles_media_search_event_actions() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_media_search_event_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::AnnounceMediaSearchDirectorySelected(0)));
     assert_eq!(
@@ -156,10 +155,10 @@ fn gui_shell_app_state_rejects_invalid_media_search_event_actions() {
 
 #[test]
 fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         server_password: Some("old-secret".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.config_storage.source_label = "environment override".to_owned();
     state.config_storage.config_path = Some("C:/Existing/sorotte.ini".to_owned());
@@ -254,7 +253,7 @@ fn gui_shell_app_state_handles_save_and_playback_toggle_command_actions() {
 #[test]
 fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions() {
     let mut invalid_configuration_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(
         invalid_configuration_state.apply(GuiShellAction::EditConfigurationText {
             id: SettingId::ConnectionPort,
@@ -271,12 +270,11 @@ fn gui_shell_app_state_rejects_invalid_save_and_playback_toggle_command_actions(
         Some("Configuration cannot be saved while validation issues remain.")
     );
 
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     state.main_window.playlist = vec![MainWindowPlaylistRow::inferred("episode1.mkv", false)];
 
     assert!(!state.apply(GuiShellAction::CompleteConfigurationSave(
-        StoredClientSettingsMvp::default(),
+        StoredClientSettings::default(),
     )));
     assert_eq!(
         state.validation.last_action_error.as_deref(),

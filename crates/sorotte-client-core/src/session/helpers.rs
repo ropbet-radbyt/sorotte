@@ -115,7 +115,7 @@ impl ClientSession {
             .unwrap_or(true)
     }
 
-    pub(super) fn shared_playlist_runtime_commands_allowed_legacy_compatible(&self) -> bool {
+    pub(super) fn shared_playlist_runtime_commands_allowed(&self) -> bool {
         self.is_active()
             && self.model.connection.username.is_some()
             && self.model.room.name.is_some()
@@ -316,7 +316,7 @@ impl ClientSession {
             local_paused,
             local_position,
             None,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         )
     }
 
@@ -429,7 +429,7 @@ impl ClientSession {
         hash.len() == 12 && hash.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
-    pub(super) fn normalize_runtime_controlled_room_input_legacy_compatible(
+    pub(super) fn normalize_runtime_controlled_room_input(
         room: String,
     ) -> (String, Option<String>) {
         let parts: Vec<_> = room.split(':').collect();
@@ -438,14 +438,14 @@ impl ClientSession {
         }
 
         let canonical_room = format!("{}:{}", parts[0], parts[1]);
-        let normalized_password = Self::normalize_control_password_legacy_compatible(parts[2]);
+        let normalized_password = Self::normalize_control_password(parts[2]);
         (
             canonical_room,
             (!normalized_password.is_empty()).then_some(normalized_password),
         )
     }
 
-    pub(super) fn normalize_control_password_legacy_compatible(password: &str) -> String {
+    pub(super) fn normalize_control_password(password: &str) -> String {
         password
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -531,7 +531,7 @@ impl ClientSession {
                 .as_ref()
                 .and_then(|file| file.name.as_deref())
                 .is_some_and(|other_file_name| {
-                    Self::same_filename_legacy_like(local_file_name, other_file_name)
+                    Self::filenames_match(local_file_name, other_file_name)
                 })
             {
                 return true;
@@ -737,7 +737,7 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn set_user_legacy_list_position_snapshot(
+    pub(super) fn set_user_list_position_snapshot(
         &mut self,
         username: &str,
         position_seconds: Option<f64>,
@@ -746,14 +746,11 @@ impl ClientSession {
             Some(position_seconds) => {
                 self.model
                     .room
-                    .legacy_list_position_snapshots
+                    .list_position_snapshots
                     .insert(username.to_owned(), position_seconds);
             }
             None => {
-                self.model
-                    .room
-                    .legacy_list_position_snapshots
-                    .remove(username);
+                self.model.room.list_position_snapshots.remove(username);
             }
         }
     }
@@ -769,10 +766,7 @@ impl ClientSession {
             .room
             .participant_status_capabilities
             .remove(username);
-        self.model
-            .room
-            .legacy_list_position_snapshots
-            .remove(username);
+        self.model.room.list_position_snapshots.remove(username);
         self.model.room.participant_statuses.remove(username);
         self.model.room.participant_status_receipts.remove(username);
     }

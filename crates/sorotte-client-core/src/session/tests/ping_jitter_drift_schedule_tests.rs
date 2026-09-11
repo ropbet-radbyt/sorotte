@@ -50,7 +50,7 @@ impl ReferencePingOracle {
     }
 }
 
-fn production_ping_snapshot(metrics: ClientPingMetricsLegacyCompatible) -> (f64, f64, f64) {
+fn production_ping_snapshot(metrics: ClientPingMetrics) -> (f64, f64, f64) {
     (
         metrics.client_rtt_seconds(),
         metrics.server_rtt_seconds(),
@@ -72,7 +72,7 @@ fn assert_ping_snapshots_match(actual: (f64, f64, f64), expected: (f64, f64, f64
 }
 
 fn observe_production_ping(
-    metrics: &mut ClientPingMetricsLegacyCompatible,
+    metrics: &mut ClientPingMetrics,
     client_send_seconds: f64,
     server_rtt_seconds: f64,
     client_receive_seconds: f64,
@@ -118,7 +118,7 @@ fn ping_jitter_outlier_and_nonmonotonic_observation_schedule_matches_reference_o
         ),
     ];
 
-    let mut production = ClientPingMetricsLegacyCompatible::default();
+    let mut production = ClientPingMetrics::default();
     let mut reference = ReferencePingOracle::default();
 
     for (name, client_send, server_rtt, client_receive, expected_to_apply) in schedule {
@@ -161,7 +161,7 @@ fn affine_clock_offset_is_invariant_while_rate_drift_remains_measurement_bias() 
     for clock_rate in clock_rates {
         let mut snapshots = Vec::new();
         for offset in offsets {
-            let mut production = ClientPingMetricsLegacyCompatible::default();
+            let mut production = ClientPingMetrics::default();
             let mut reference = ReferencePingOracle::default();
             for (relative_send, relative_rtt, server_rtt) in relative_samples {
                 let client_send = offset + relative_send * clock_rate;
@@ -267,7 +267,7 @@ fn adjusted_room_playstate(
     response_at_seconds: f64,
 ) -> RoomPlaystateView {
     runtime
-        .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
+        .adjusted_inbound_playstate_for_local_state_change_with_ping(
             &normalize_client_state_payload(state),
             received_at_seconds,
             response_at_seconds,
@@ -278,15 +278,8 @@ fn adjusted_room_playstate(
 #[test]
 fn scheduler_latency_and_nonmonotonic_reply_clocks_have_bounded_projection() {
     let mut runtime = runtime_fixture();
-    observe_production_ping(
-        &mut runtime.ping_metrics_legacy_compatible,
-        100.0,
-        0.10,
-        100.20,
-    );
-    let forward_delay = runtime
-        .ping_metrics_legacy_compatible
-        .forward_delay_seconds();
+    observe_production_ping(&mut runtime.ping_metrics, 100.0, 0.10, 100.20);
+    let forward_delay = runtime.ping_metrics.forward_delay_seconds();
     assert_close(forward_delay, 0.20, "schedule forward delay precondition");
 
     let schedules = [
@@ -317,7 +310,7 @@ fn scheduler_latency_and_nonmonotonic_reply_clocks_have_bounded_projection() {
 
     let mut reconciled = runtime_fixture();
     assert!(
-        reconciled.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        reconciled.run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
             inbound_playstate(10.0, false, false, 100.0, 0.10),
             false,
             100.0,
@@ -328,7 +321,7 @@ fn scheduler_latency_and_nonmonotonic_reply_clocks_have_bounded_projection() {
     );
     assert_close(
         reconciled
-            .current_room_playstate_legacy_ping_compatible_at(100.50)
+            .current_room_playstate_with_ping_at(100.50)
             .and_then(|playstate| playstate.position)
             .expect("monotonic room projection"),
         10.70,
@@ -336,7 +329,7 @@ fn scheduler_latency_and_nonmonotonic_reply_clocks_have_bounded_projection() {
     );
     assert_close(
         reconciled
-            .current_room_playstate_legacy_ping_compatible_at(99.50)
+            .current_room_playstate_with_ping_at(99.50)
             .and_then(|playstate| playstate.position)
             .expect("backward-clock room projection"),
         10.20,
@@ -400,12 +393,7 @@ impl ReferencePlaybackOracle {
 
 fn runtime_with_fixed_ping() -> ClientRuntime<RecordingPlayer, QueuedRuntimeControl> {
     let mut runtime = runtime_fixture();
-    observe_production_ping(
-        &mut runtime.ping_metrics_legacy_compatible,
-        100.0,
-        0.10,
-        100.20,
-    );
+    observe_production_ping(&mut runtime.ping_metrics, 100.0, 0.10, 100.20);
     runtime
 }
 

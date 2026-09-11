@@ -1,10 +1,10 @@
 use super::{
     GuiPersistedUiState, GuiUpdateCheckState, GuiUpdateIndicatorAction, GuiUpdateIndicatorTone,
-    legacy_gui_qsettings_store_path, load_gui_ui_state_from_root, persist_gui_ui_state_at_root,
+    load_gui_ui_state_from_root, persist_gui_ui_state_at_root, syncplay_qsettings_store_path,
 };
 
 use crate::app::remote_services::{
-    LegacyUpdateCheckStatus, StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+    StagedUpdate, UpdateCandidate, UpdateCandidateSource, UpdateChannel, UpdateCheckStatus,
     UpdateDownloadState,
 };
 use crate::app::testing::support::test_temp_root;
@@ -59,9 +59,9 @@ fn gui_persisted_ui_state_roundtrips_at_root() {
         .expect("persisted GUI state should be readable")
         .expect("persisted GUI state should not be empty");
     assert_eq!(loaded, expected);
-    assert!(legacy_gui_qsettings_store_path(&root, "MainWindow").exists());
-    assert!(legacy_gui_qsettings_store_path(&root, "Interface").exists());
-    assert!(legacy_gui_qsettings_store_path(&root, "MediaBrowseDialog").exists());
+    assert!(syncplay_qsettings_store_path(&root, "MainWindow").exists());
+    assert!(syncplay_qsettings_store_path(&root, "Interface").exists());
+    assert!(syncplay_qsettings_store_path(&root, "MediaBrowseDialog").exists());
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -71,7 +71,7 @@ fn gui_persisted_ui_state_ignores_legacy_main_window_tab_at_root() {
     let root = test_temp_root("persisted-ui-invalid-tabs");
     std::fs::create_dir_all(&root).expect("test root should be writable");
     std::fs::write(
-        legacy_gui_qsettings_store_path(&root, "MainWindow"),
+        syncplay_qsettings_store_path(&root, "MainWindow"),
         "[MainWindow]\nmainWindowTab = playlist\nconfigurationTab = also-nope\n",
     )
     .expect("legacy main-window store should be writable");
@@ -97,7 +97,7 @@ fn gui_persisted_ui_state_maps_legacy_active_views_to_room_and_setup() {
         let root = test_temp_root(&format!("persisted-ui-active-view-{legacy_view}"));
         std::fs::create_dir_all(&root).expect("test root should be writable");
         std::fs::write(
-            legacy_gui_qsettings_store_path(&root, "MainWindow"),
+            syncplay_qsettings_store_path(&root, "MainWindow"),
             format!("[MainWindow]\nactiveView = {legacy_view}\nmainWindowTab = chat\n"),
         )
         .expect("legacy main-window store should be writable");
@@ -121,14 +121,14 @@ fn gui_update_indicator_model_covers_status_states() {
         Some(GuiUpdateIndicatorAction::Check)
     );
 
-    state.status = Some(LegacyUpdateCheckStatus::Checking);
+    state.status = Some(UpdateCheckStatus::Checking);
     let model = state.indicator_model(None);
     assert_eq!(model.title, "Checking for updates");
     assert_eq!(model.tone, GuiUpdateIndicatorTone::Progress);
     assert!(!model.enabled);
     assert_eq!(state.update_indicator_activation_action(), None);
 
-    state.status = Some(LegacyUpdateCheckStatus::UpToDate);
+    state.status = Some(UpdateCheckStatus::UpToDate);
     state.self_update_supported = true;
     state.last_checked_for_updates = Some("2026-05-22 01:02:03.004".to_owned());
     let model = state.indicator_model(Some("en"));
@@ -136,7 +136,7 @@ fn gui_update_indicator_model_covers_status_states() {
     assert_eq!(model.tone, GuiUpdateIndicatorTone::Success);
     assert!(model.enabled);
 
-    state.status = Some(LegacyUpdateCheckStatus::Failed);
+    state.status = Some(UpdateCheckStatus::Failed);
     let model = state.indicator_model(None);
     assert_eq!(model.title, "Update failed");
     assert_eq!(model.tone, GuiUpdateIndicatorTone::Error);
@@ -150,7 +150,7 @@ fn gui_update_indicator_model_covers_status_states() {
 fn gui_update_indicator_model_covers_install_states() {
     let candidate = update_candidate();
     let mut state = GuiUpdateCheckState {
-        status: Some(LegacyUpdateCheckStatus::UpdateAvailable),
+        status: Some(UpdateCheckStatus::UpdateAvailable),
         candidate: Some(candidate.clone()),
         self_update_supported: true,
         ..GuiUpdateCheckState::default()

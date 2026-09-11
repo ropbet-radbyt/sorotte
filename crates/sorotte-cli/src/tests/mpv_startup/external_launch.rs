@@ -198,12 +198,12 @@ fn external_player_process_fixture_entrypoint() {
         }
         "stdio-coordinator" => {
             env.set_var(PROCESS_FIXTURE_ROLE, "stdio-leaf");
-            let spec = LegacyExternalPlayerLaunchSpec {
+            let spec = ExternalPlayerLaunchSpec {
                 program: std::env::current_exe()
                     .expect("current test executable should be available"),
                 args: exact_fixture_args(),
             };
-            let mut child = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+            let mut child = crate::spawn_external_player_from_spec(&spec)
                 .expect("production external launch should spawn the stdio leaf");
             std::fs::write(root.join("coordinator-ready"), b"ready")
                 .expect("coordinator should publish its launch barrier");
@@ -264,12 +264,12 @@ fn external_spawn_failure_is_contextual_and_redacts_arguments() {
     let fixture = ProcessFixtureDirectory::new("spawn-failure");
     let missing_program = fixture.marker("missing-player");
     let secret = "super-secret-player-token";
-    let spec = LegacyExternalPlayerLaunchSpec {
+    let spec = ExternalPlayerLaunchSpec {
         program: missing_program.clone(),
         args: vec![format!("--password={secret}")],
     };
 
-    let error = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+    let error = crate::spawn_external_player_from_spec(&spec)
         .expect_err("a missing external player must fail to spawn")
         .to_string();
 
@@ -293,12 +293,12 @@ fn external_launch_returns_ownership_for_caller_to_reap_an_early_exit() {
     let fixture = ProcessFixtureDirectory::new("early-exit");
     env.set_var(PROCESS_FIXTURE_ROLE, "early-exit-leaf");
     env.set_var(PROCESS_FIXTURE_ROOT, &fixture.path);
-    let spec = LegacyExternalPlayerLaunchSpec {
+    let spec = ExternalPlayerLaunchSpec {
         program: std::env::current_exe().expect("current test executable should be available"),
         args: exact_fixture_args(),
     };
 
-    let mut child = crate::spawn_legacy_external_player_from_spec_legacy_compatible(&spec)
+    let mut child = crate::spawn_external_player_from_spec(&spec)
         .expect("production external launch should return the child handle");
     wait_for_process_marker(&fixture.marker("leaf-started"), "early-exit child start");
     let status = child.wait().expect("caller should reap early-exit child");
@@ -324,19 +324,19 @@ fn unmanaged_external_launch_hands_process_ownership_to_the_child() {
     let player = CopiedUnmanagedPlayer::new(&fixture);
     let player_path = player.path.to_string_lossy().into_owned();
     assert!(
-        !crate::legacy_player_path_requests_managed_mpv_legacy_compatible(&player_path),
+        !crate::player_path_requests_managed_mpv(&player_path),
         "the copied fixture must be unmanaged under its mpv-containing parent: {player_path}"
     );
     env.set_var(PROCESS_FIXTURE_ROLE, "detached-leaf");
     env.set_var(PROCESS_FIXTURE_ROOT, &fixture.path);
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         player_path: Some(player_path),
         player_args: exact_fixture_args(),
         ..Default::default()
     };
 
     assert!(
-        crate::spawn_legacy_external_player_if_requested_legacy_compatible(&overrides)
+        crate::spawn_external_player_if_requested(&overrides)
             .expect("production unmanaged launch should succeed"),
         "the unmanaged external launch path should report that it spawned"
     );
@@ -377,8 +377,8 @@ fn external_launch_nulls_child_stdin() {
 }
 
 #[test]
-fn legacy_external_player_launch_spec_from_overrides_orders_player_args_before_file() {
-    let overrides = LegacyClientArgOverrides {
+fn external_player_launch_spec_from_overrides_orders_player_args_before_file() {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -402,11 +402,11 @@ fn legacy_external_player_launch_spec_from_overrides_orders_player_args_before_f
         unknown_options: vec![],
     };
 
-    let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+    let spec = external_player_launch_spec_from_overrides(&overrides)
         .expect("player-path should produce a launch spec");
     assert_eq!(
         spec,
-        LegacyExternalPlayerLaunchSpec {
+        ExternalPlayerLaunchSpec {
             program: PathBuf::from("C:/players/mpv.exe"),
             args: vec![
                 "--fs".to_owned(),
@@ -418,9 +418,8 @@ fn legacy_external_player_launch_spec_from_overrides_orders_player_args_before_f
 }
 
 #[test]
-fn legacy_external_player_launch_spec_from_overrides_preserves_launch_only_args_for_unmanaged_launch()
- {
-    let overrides = LegacyClientArgOverrides {
+fn external_player_launch_spec_from_overrides_preserves_launch_only_args_for_unmanaged_launch() {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -444,7 +443,7 @@ fn legacy_external_player_launch_spec_from_overrides_preserves_launch_only_args_
         unknown_options: vec![],
     };
 
-    let spec = legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides)
+    let spec = external_player_launch_spec_from_overrides(&overrides)
         .expect("player-path should produce a launch spec");
     assert_eq!(
         spec.args,
@@ -457,8 +456,8 @@ fn legacy_external_player_launch_spec_from_overrides_preserves_launch_only_args_
 }
 
 #[test]
-fn legacy_external_player_launch_spec_from_overrides_returns_none_without_player_path() {
-    let overrides = LegacyClientArgOverrides {
+fn external_player_launch_spec_from_overrides_returns_none_without_player_path() {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -481,13 +480,11 @@ fn legacy_external_player_launch_spec_from_overrides_returns_none_without_player
         show_version: false,
         unknown_options: vec![],
     };
-    assert!(
-        legacy_external_player_launch_spec_from_overrides_legacy_compatible(&overrides).is_none()
-    );
+    assert!(external_player_launch_spec_from_overrides(&overrides).is_none());
 }
 
 #[test]
-fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env_respects_mpv_envs() {
+fn should_skip_external_player_launch_due_to_mpv_integration_env_respects_mpv_envs() {
     let env = TestEnvGuard::lock(&LEGACY_EXTERNAL_PLAYER_ENV_LOCK);
     let key_managed = "SOROTTE_CLIENT_MPV_MANAGED_LAUNCH";
     let key_client_ipc = "SOROTTE_CLIENT_MPV_IPC_PATH";
@@ -500,19 +497,19 @@ fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env_respects
     env.remove_var(key_fallback_ipc);
 
     assert!(
-        !should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+        !should_skip_external_player_launch_due_to_mpv_integration_env(),
         "no explicit IPC or managed launch env should allow legacy external spawn path"
     );
     env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
     assert!(
-        should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+        should_skip_external_player_launch_due_to_mpv_integration_env(),
         "explicit client IPC path should skip unmanaged external spawn"
     );
     env.remove_var(key_client_ipc);
     env.set_var(key_managed, "1");
 
     assert!(
-        should_skip_legacy_external_player_launch_due_to_mpv_integration_env(),
+        should_skip_external_player_launch_due_to_mpv_integration_env(),
         "managed mpv launch env should skip unmanaged external spawn"
     );
 
@@ -531,7 +528,7 @@ fn should_skip_legacy_external_player_launch_due_to_mpv_integration_env_respects
 }
 
 #[test]
-fn resolve_managed_mpv_launch_program_legacy_compatible_expands_python_style_directory_inputs() {
+fn resolve_managed_mpv_launch_program_expands_python_style_directory_inputs() {
     let unique_suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time should be monotonic enough for test")
@@ -547,11 +544,11 @@ fn resolve_managed_mpv_launch_program_legacy_compatible_expands_python_style_dir
     std::fs::write(&mpv_executable, b"").expect("portable mpv executable should be created");
 
     assert_eq!(
-        crate::resolve_managed_mpv_launch_program_legacy_compatible(&portable_dir),
+        crate::resolve_managed_mpv_launch_program(&portable_dir),
         mpv_executable
     );
     assert_eq!(
-        crate::resolve_managed_mpv_launch_program_legacy_compatible(&portable_dir.join("mpv")),
+        crate::resolve_managed_mpv_launch_program(&portable_dir.join("mpv")),
         mpv_executable
     );
 
@@ -560,19 +557,21 @@ fn resolve_managed_mpv_launch_program_legacy_compatible_expands_python_style_dir
 }
 
 #[test]
-fn legacy_player_path_requests_managed_mpv_legacy_compatible_matches_python_style_mpv_paths() {
-    assert!(crate::legacy_player_path_requests_managed_mpv_legacy_compatible("mpv"));
-    assert!(crate::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/mpv.exe"));
-    assert!(
-        crate::legacy_player_path_requests_managed_mpv_legacy_compatible(r"C:\players\MPV.COM")
-    );
-    assert!(crate::legacy_player_path_requests_managed_mpv_legacy_compatible("/usr/bin/mpv"));
-    assert!(
-        !crate::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/vlc.exe")
-    );
-    assert!(
-        !crate::legacy_player_path_requests_managed_mpv_legacy_compatible("C:/players/mpvnet.exe")
-    );
+fn player_path_requests_managed_mpv_matches_python_style_mpv_paths() {
+    assert!(crate::player_path_requests_managed_mpv("mpv"));
+    assert!(crate::player_path_requests_managed_mpv(
+        "C:/players/mpv.exe"
+    ));
+    assert!(crate::player_path_requests_managed_mpv(
+        r"C:\players\MPV.COM"
+    ));
+    assert!(crate::player_path_requests_managed_mpv("/usr/bin/mpv"));
+    assert!(!crate::player_path_requests_managed_mpv(
+        "C:/players/vlc.exe"
+    ));
+    assert!(!crate::player_path_requests_managed_mpv(
+        "C:/players/mpvnet.exe"
+    ));
 
     let unique_suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -588,72 +587,62 @@ fn legacy_player_path_requests_managed_mpv_legacy_compatible_matches_python_styl
     let mpv_executable = portable_dir.join("mpv");
     std::fs::write(&mpv_executable, b"").expect("portable mpv executable should be created");
 
-    assert!(
-        crate::legacy_player_path_requests_managed_mpv_legacy_compatible(
-            portable_dir.to_string_lossy().as_ref()
-        )
-    );
+    assert!(crate::player_path_requests_managed_mpv(
+        portable_dir.to_string_lossy().as_ref()
+    ));
     let unresolved_prefix = portable_dir.join("mpv");
-    assert!(
-        crate::legacy_player_path_requests_managed_mpv_legacy_compatible(
-            unresolved_prefix.to_string_lossy().as_ref()
-        )
-    );
+    assert!(crate::player_path_requests_managed_mpv(
+        unresolved_prefix.to_string_lossy().as_ref()
+    ));
 
     let _ = std::fs::remove_file(&mpv_executable);
     let _ = std::fs::remove_dir(&portable_dir);
 }
 
 #[test]
-fn legacy_player_path_compatibility_warning_line_legacy_compatible_distinguishes_mpv_and_non_mpv_values()
- {
-    let mpv_overrides = LegacyClientArgOverrides {
+fn player_path_compatibility_warning_line_distinguishes_mpv_and_non_mpv_values() {
+    let mpv_overrides = SyncplayClientArgOverrides {
         player_path: Some("C:/players/mpv.exe".to_owned()),
         ..Default::default()
     };
-    let vlc_overrides = LegacyClientArgOverrides {
+    let vlc_overrides = SyncplayClientArgOverrides {
         player_path: Some("C:/players/vlc.exe".to_owned()),
         ..Default::default()
     };
 
     assert_eq!(
-        crate::legacy_player_path_compatibility_warning_line_legacy_compatible(&mpv_overrides),
+        crate::player_path_compatibility_warning_line(&mpv_overrides),
         Some(
-            "warning: legacy --player-path selects managed mpv integration for Python-style mpv paths; non-mpv values remain launch-only unmanaged fallback"
+            "warning: --player-path selects managed mpv integration for Python-style mpv paths; non-mpv values remain launch-only unmanaged fallback"
         )
     );
     assert_eq!(
-        crate::legacy_player_path_compatibility_warning_line_legacy_compatible(&vlc_overrides),
+        crate::player_path_compatibility_warning_line(&vlc_overrides),
         Some(
-            "warning: legacy non-mpv --player-path is launch-only unmanaged fallback; it is not adapter-integrated and is ignored when managed mpv or explicit-mpv-IPC is active"
+            "warning: non-mpv --player-path is launch-only unmanaged fallback; it is not adapter-integrated and is ignored when managed mpv or explicit-mpv-IPC is active"
         )
     );
 }
 
 #[test]
-fn legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible_only_warns_for_non_mpv_values()
- {
-    let mpv_overrides = LegacyClientArgOverrides {
+fn non_mpv_player_path_ignored_by_mpv_integration_warning_line_only_warns_for_non_mpv_values() {
+    let mpv_overrides = SyncplayClientArgOverrides {
         player_path: Some("C:/players/mpv.exe".to_owned()),
         ..Default::default()
     };
-    let vlc_overrides = LegacyClientArgOverrides {
+    let vlc_overrides = SyncplayClientArgOverrides {
         player_path: Some("C:/players/vlc.exe".to_owned()),
         ..Default::default()
     };
 
     assert_eq!(
-        crate::legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(
-            &mpv_overrides
-        ),
+        crate::non_mpv_player_path_ignored_by_mpv_integration_warning_line(&mpv_overrides),
         None
     );
     assert_eq!(
-        crate::legacy_non_mpv_player_path_ignored_by_mpv_integration_warning_line_legacy_compatible(
-            &vlc_overrides
-        ),
+        crate::non_mpv_player_path_ignored_by_mpv_integration_warning_line(&vlc_overrides),
         Some(
-            "warning: legacy non-mpv --player-path was ignored because managed mpv or explicit-mpv-IPC integration is active"
+            "warning: non-mpv --player-path was ignored because managed mpv or explicit-mpv-IPC integration is active"
         )
     );
 }

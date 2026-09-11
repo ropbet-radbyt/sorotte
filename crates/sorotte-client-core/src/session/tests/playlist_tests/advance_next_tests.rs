@@ -36,7 +36,7 @@ fn client_runtime_advance_playlist_index_dispatches_protocol_message() {
     assert!(
         runtime
             .session()
-            .recently_advanced(unix_wall_clock_time_seconds_legacy_compatible()),
+            .recently_advanced(unix_wall_clock_time_seconds()),
         "playlist advance should immediately enter the recently-advanced grace window"
     );
     assert_eq!(

@@ -309,7 +309,7 @@ try {
     }
     Invoke-CargoStep `
         "strict live legacy compatibility" `
-        @("test", "--locked", "-p", "sorotte-compat", "--all-features", "legacy_server_", "--", "--nocapture") `
+        @("test", "--locked", "-p", "sorotte-compat", "--all-features", "syncplay_server_", "--", "--nocapture") `
         @{
             SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY = "1"
             SYNCPLAY_REQUIRE_LEGACY_TLS_PARITY = "1"

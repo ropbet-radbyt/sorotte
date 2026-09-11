@@ -1,34 +1,32 @@
 use super::*;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct LegacyStartupMediaSearchResolution {
+pub(crate) struct StartupMediaSearchResolution {
     pub(crate) file: Option<String>,
     pub(crate) warning_lines: Vec<String>,
 }
 
-pub(crate) fn apply_stored_media_search_startup_file_fallback_if_missing_legacy_compatible(
-    overrides: &mut LegacyClientArgOverrides,
-    settings: Option<&StoredClientSettingsMvp>,
+pub(crate) fn apply_stored_media_search_startup_file_fallback_if_missing(
+    overrides: &mut SyncplayClientArgOverrides,
+    settings: Option<&StoredClientSettings>,
 ) {
-    let resolution = resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
-        overrides.file.as_deref(),
-        settings,
-    );
+    let resolution =
+        resolve_startup_file_with_media_search_fallback(overrides.file.as_deref(), settings);
     for line in resolution.warning_lines {
         eprintln!("{line}");
     }
     overrides.file = resolution.file;
 }
 
-pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_compatible(
+pub(crate) fn resolve_startup_file_with_media_search_fallback(
     requested_file: Option<&str>,
-    settings: Option<&StoredClientSettingsMvp>,
-) -> LegacyStartupMediaSearchResolution {
+    settings: Option<&StoredClientSettings>,
+) -> StartupMediaSearchResolution {
     let Some(requested_file) = requested_file
         .map(str::trim)
         .filter(|file| !file.is_empty())
     else {
-        return LegacyStartupMediaSearchResolution::default();
+        return StartupMediaSearchResolution::default();
     };
 
     let requested_path = Path::new(requested_file);
@@ -37,21 +35,21 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
         || requested_path.is_file()
         || requested_path.is_absolute()
     {
-        return LegacyStartupMediaSearchResolution {
+        return StartupMediaSearchResolution {
             file: Some(requested_file.to_owned()),
             warning_lines: Vec::new(),
         };
     }
 
     let Some(settings) = settings else {
-        return LegacyStartupMediaSearchResolution {
+        return StartupMediaSearchResolution {
             file: Some(requested_file.to_owned()),
             warning_lines: Vec::new(),
         };
     };
     let playback = ClientConfig::resolve(settings).config.playback;
     if playback.media_search_directories.is_empty() {
-        return LegacyStartupMediaSearchResolution {
+        return StartupMediaSearchResolution {
             file: Some(requested_file.to_owned()),
             warning_lines: Vec::new(),
         };
@@ -72,14 +70,14 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
         let directory = directory_path.display();
         if !directory_path.is_dir() {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories ignored missing media directory '{directory}'",
+                "warning: mediaSearchDirectories ignored missing media directory '{directory}'",
             ));
             continue;
         }
 
         let direct_candidate = directory_path.join(requested_file);
         if direct_candidate.is_file() {
-            return LegacyStartupMediaSearchResolution {
+            return StartupMediaSearchResolution {
                 file: Some(direct_candidate.to_string_lossy().into_owned()),
                 warning_lines,
             };
@@ -91,7 +89,7 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
 
         if first_file_timeout_seconds <= 0.0 {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout is 0",
+                "warning: mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout is 0",
             ));
             continue;
         }
@@ -99,25 +97,25 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
         let first_probe_started = Instant::now();
         if std::fs::read_dir(directory_path).is_err() {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories could not access media directory '{directory}'",
+                "warning: mediaSearchDirectories could not access media directory '{directory}'",
             ));
             continue;
         }
         if first_probe_started.elapsed().as_secs_f64() > first_file_timeout_seconds {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout was exceeded",
+                "warning: mediaSearchDirectories skipped recursive startup-file search in '{directory}' because folderSearchFirstFileTimeout was exceeded",
             ));
             continue;
         }
 
         if folder_timeout_seconds <= 0.0 {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{directory}' because folderSearchTimeout is 0",
+                "warning: mediaSearchDirectories aborted recursive startup-file search in '{directory}' because folderSearchTimeout is 0",
             ));
             continue;
         }
 
-        if let Some(found_path) = search_media_directories_for_startup_file_name_legacy_compatible(
+        if let Some(found_path) = search_media_directories_for_startup_file_name(
             directory_path,
             simple_file_name,
             folder_timeout_seconds,
@@ -125,20 +123,20 @@ pub(crate) fn resolve_legacy_startup_file_with_media_search_fallback_legacy_comp
             warning_repeat_interval_seconds,
             &mut warning_lines,
         ) {
-            return LegacyStartupMediaSearchResolution {
+            return StartupMediaSearchResolution {
                 file: Some(found_path.to_string_lossy().into_owned()),
                 warning_lines,
             };
         }
     }
 
-    LegacyStartupMediaSearchResolution {
+    StartupMediaSearchResolution {
         file: Some(requested_file.to_owned()),
         warning_lines,
     }
 }
 
-fn search_media_directories_for_startup_file_name_legacy_compatible(
+fn search_media_directories_for_startup_file_name(
     root_directory: &Path,
     target_file_name: &str,
     folder_timeout_seconds: f64,
@@ -155,7 +153,7 @@ fn search_media_directories_for_startup_file_name_legacy_compatible(
     while let Some(directory) = pending_directories.pop() {
         if search_started.elapsed().as_secs_f64() > folder_timeout_seconds {
             warning_lines.push(format!(
-                "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
+                "warning: mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
                 root_directory.display(),
                 scanned_file_count
             ));
@@ -169,7 +167,7 @@ fn search_media_directories_for_startup_file_name_legacy_compatible(
             let elapsed_seconds = search_started.elapsed().as_secs_f64();
             if elapsed_seconds > folder_timeout_seconds {
                 warning_lines.push(format!(
-                    "warning: legacy mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
+                    "warning: mediaSearchDirectories aborted recursive startup-file search in '{}' after scanning {} file(s) because folderSearchTimeout was reached",
                     root_directory.display(),
                     scanned_file_count
                 ));
@@ -180,7 +178,7 @@ fn search_media_directories_for_startup_file_name_legacy_compatible(
                     .is_none_or(|last| elapsed_seconds - last >= warning_repeat_interval_seconds)
             {
                 warning_lines.push(format!(
-                    "warning: legacy mediaSearchDirectories has scanned {} file(s) in '{}' for {} second(s) while resolving the startup file",
+                    "warning: mediaSearchDirectories has scanned {} file(s) in '{}' for {} second(s) while resolving the startup file",
                     scanned_file_count,
                     root_directory.display(),
                     elapsed_seconds.floor() as u64

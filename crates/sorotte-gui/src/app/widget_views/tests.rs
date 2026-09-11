@@ -17,7 +17,7 @@ use crate::app::{
     SorotteGuiShellAppState,
 };
 
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_media_match::{MediaMatchAutoplayPolicy, MediaMatchSettings};
 use sorotte_plex::{
     PlexMediaType, PlexPlaylistUri, PlexServerConnectionKind, format_plex_playlist_uri,

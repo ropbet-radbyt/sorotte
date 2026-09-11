@@ -49,12 +49,12 @@ fn detached_missing_media_search_uses_saved_directories_until_draft_is_saved() {
     std::fs::write(&draft_target, b"draft-media-b")
         .expect("draft media target B should be written");
 
-    let saved_settings = StoredClientSettingsMvp {
+    let saved_settings = StoredClientSettings {
         media_search_directories: Some(vec![saved_root.to_string_lossy().into_owned()]),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &saved_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &saved_settings)
         .expect("saved media directory A should be persisted");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
@@ -116,7 +116,7 @@ fn detached_missing_media_search_uses_saved_directories_until_draft_is_saved() {
         "the subsequent detached search must resolve through newly saved directory B"
     );
 
-    let persisted = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let persisted = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .expect("saved directory B configuration should remain readable")
         .expect("saved directory B configuration should remain present");
     assert_eq!(persisted, submitted_settings);

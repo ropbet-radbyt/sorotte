@@ -1,31 +1,31 @@
 use super::*;
 
-impl LegacyServerPythonPeerHarness {
+impl SyncplayServerPythonPeerHarness {
     pub(super) fn spawn_server(peer_username: &str, room: &str) -> Result<Self, InteropError> {
-        let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
+        let legacy_checkout = ensure_syncplay_checkout_available()?;
 
-        let legacy_server_entry = legacy_syncplay_server_entry_script_path();
-        if !legacy_server_entry.is_file() {
-            return Err(InteropError::LegacyServerEntryScriptMissing(
-                legacy_server_entry,
+        let syncplay_server_entry = syncplay_server_entry_script_path();
+        if !syncplay_server_entry.is_file() {
+            return Err(InteropError::SyncplayServerEntryScriptMissing(
+                syncplay_server_entry,
             ));
         }
 
-        let mut port_lease = reserve_legacy_server_port()?;
+        let mut port_lease = reserve_syncplay_server_port()?;
         let port = port_lease.port();
         let python_bin = python_bin_from_env();
         let python_bin_display = python_bin.to_string_lossy().to_string();
 
         let mut server_command = Command::new(&python_bin);
         server_command
-            .arg(&legacy_server_entry)
+            .arg(&syncplay_server_entry)
             .arg("--port")
             .arg(port.to_string())
             .arg("--ipv4-only")
             .arg("--interface-ipv4")
             .arg("127.0.0.1")
             .arg("--salt")
-            .arg(DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+            .arg(DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT)
             .current_dir(&legacy_checkout)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::null())
@@ -40,13 +40,13 @@ impl LegacyServerPythonPeerHarness {
                     source,
                 })?;
 
-        if let Err(error) = wait_for_legacy_server_startup(port, &mut server_child) {
-            terminate_legacy_server_process(&mut server_child);
+        if let Err(error) = wait_for_syncplay_server_startup(port, &mut server_child) {
+            terminate_syncplay_server_process(&mut server_child);
             return Err(error);
         }
         drop(port_lease);
-        if let Err(error) = ensure_legacy_server_is_running(&mut server_child) {
-            terminate_legacy_server_process(&mut server_child);
+        if let Err(error) = ensure_syncplay_server_is_running(&mut server_child) {
+            terminate_syncplay_server_process(&mut server_child);
             return Err(error);
         }
 

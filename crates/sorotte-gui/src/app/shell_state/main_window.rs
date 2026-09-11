@@ -163,7 +163,7 @@ pub(in crate::app) struct GuiPlaylistSourceState {
     pub(in crate::app) preferred_provider_id: Option<GuiMediaSourceProviderId>,
     /// The provider that produced the current resolution/load attempt.
     pub(in crate::app) resolved_provider_id: Option<GuiMediaSourceProviderId>,
-    /// Compatibility/presentation alias for the provider currently shown in
+    /// The provider currently shown in
     /// the row. Resolution updates this without changing `policy`.
     pub(in crate::app) current_provider_id: GuiMediaSourceProviderId,
     pub(in crate::app) current_label: String,

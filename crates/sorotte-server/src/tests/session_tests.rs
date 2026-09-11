@@ -1054,7 +1054,7 @@ fn hello_response_features_reflect_chat_readiness_and_length_limits() {
     );
     assert_eq!(
         features.get("uiMode").and_then(Value::as_str),
-        Some(LEGACY_UI_MODE_UNKNOWN)
+        Some(SYNCPLAY_UI_MODE_UNKNOWN)
     );
 }
 
@@ -1139,7 +1139,7 @@ fn hello_requires_server_password_token_when_configured() {
                 && matches!(
                     message,
                     ProtocolMessage::Error(payload)
-                        if payload.error.message == LEGACY_SERVER_PASSWORD_REQUIRED_ERROR
+                        if payload.error.message == SYNCPLAY_SERVER_PASSWORD_REQUIRED_ERROR
                 )
         }),
         "hello without password should receive legacy password-required error"
@@ -1164,7 +1164,7 @@ fn hello_password_error_dispatch_schedules_close_after_error() {
 
     assert_eq!(
         dispatch_error_message(&dispatch).as_deref(),
-        Some(LEGACY_SERVER_PASSWORD_REQUIRED_ERROR)
+        Some(SYNCPLAY_SERVER_PASSWORD_REQUIRED_ERROR)
     );
     assert!(
         has_close_transport_action(&dispatch.transport_actions, "client-1"),
@@ -1194,7 +1194,7 @@ fn hello_server_password_token_accepts_exact_match_and_username_is_truncated() {
 }
 
 #[test]
-fn hello_server_password_token_accepts_legacy_python_md5_hash() {
+fn hello_server_password_token_accepts_syncplay_python_md5_hash() {
     let mut runtime = ServerRuntime::default();
     runtime.set_server_password_token(Some("secret".into()));
 
@@ -1229,7 +1229,7 @@ fn hello_server_password_token_rejects_non_matching_token() {
                 && matches!(
                     message,
                     ProtocolMessage::Error(payload)
-                        if payload.error.message == LEGACY_SERVER_WRONG_PASSWORD_ERROR
+                        if payload.error.message == SYNCPLAY_SERVER_WRONG_PASSWORD_ERROR
                 )
         }),
         "hello with wrong password token should receive legacy wrong-password error"

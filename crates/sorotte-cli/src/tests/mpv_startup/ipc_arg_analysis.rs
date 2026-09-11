@@ -1,5 +1,5 @@
 #[test]
-fn parse_legacy_explicit_mpv_ipc_startup_player_args_parses_supported_subset_and_last_wins() {
+fn parse_explicit_mpv_ipc_startup_player_args_parses_supported_subset_and_last_wins() {
     let args = vec![
         "--fs".to_owned(),
         "--start".to_owned(),
@@ -12,10 +12,10 @@ fn parse_legacy_explicit_mpv_ipc_startup_player_args_parses_supported_subset_and
         "--volume=50".to_owned(),
     ];
 
-    let parsed = crate::parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+    let parsed = crate::parse_explicit_mpv_ipc_startup_player_args(&args);
     assert_eq!(
         parsed,
-        crate::LegacyExplicitMpvIpcStartupPlayerArgs {
+        crate::ExplicitMpvIpcStartupPlayerArgs {
             paused: Some(true),
             start_position_seconds: Some(12.5),
             playback_rate: Some(1.5),
@@ -41,17 +41,17 @@ fn parse_legacy_explicit_mpv_ipc_startup_player_args_parses_supported_subset_and
 }
 
 #[test]
-fn parse_legacy_explicit_mpv_ipc_startup_player_args_accepts_timecode_start_values() {
+fn parse_explicit_mpv_ipc_startup_player_args_accepts_timecode_start_values() {
     let args = vec![
         "--start".to_owned(),
         "01:02:03.5".to_owned(),
         "--pause=false".to_owned(),
     ];
 
-    let parsed = crate::parse_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+    let parsed = crate::parse_explicit_mpv_ipc_startup_player_args(&args);
     assert_eq!(
         parsed,
-        crate::LegacyExplicitMpvIpcStartupPlayerArgs {
+        crate::ExplicitMpvIpcStartupPlayerArgs {
             paused: Some(false),
             start_position_seconds: Some(3723.5),
             playback_rate: None,
@@ -77,7 +77,7 @@ fn parse_legacy_explicit_mpv_ipc_startup_player_args_accepts_timecode_start_valu
 }
 
 #[test]
-fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes() {
+fn analyze_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes() {
     let args = vec![
         "--start=00:01:02".to_owned(),
         "--volume=50".to_owned(),
@@ -105,11 +105,10 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes
         "--unknown".to_owned(),
     ];
 
-    let analysis =
-        crate::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+    let analysis = crate::analyze_explicit_mpv_ipc_startup_player_args(&args);
     assert_eq!(
         analysis.parsed,
-        crate::LegacyExplicitMpvIpcStartupPlayerArgs {
+        crate::ExplicitMpvIpcStartupPlayerArgs {
             paused: None,
             start_position_seconds: Some(62.0),
             playback_rate: None,
@@ -135,10 +134,10 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes
     assert_eq!(
         analysis.runtime_commands,
         vec![
-            crate::LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+            crate::ExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
                 profile: "fast".to_owned()
             },
-            crate::LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+            crate::ExplicitMpvIpcStartupPlayerCommand::SetOptionString {
                 name: "script-opts".to_owned(),
                 value: "osc=no".to_owned(),
             },
@@ -146,7 +145,7 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes
     );
     assert_eq!(
         analysis.diagnostics,
-        crate::LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+        crate::ExplicitMpvIpcStartupPlayerArgDiagnostics {
             supported_tokens: vec![
                 "--start=00:01:02".to_owned(),
                 "--volume=50".to_owned(),
@@ -176,7 +175,7 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_classifies_token_outcomes
 }
 
 #[test]
-fn analyze_legacy_explicit_mpv_ipc_startup_player_args_runtime_commands_last_wins() {
+fn analyze_explicit_mpv_ipc_startup_player_args_runtime_commands_last_wins() {
     let args = vec![
         "--profile=fast".to_owned(),
         "--script-opts=osc=no".to_owned(),
@@ -184,15 +183,14 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_runtime_commands_last_win
         "--script-opts=osc=yes".to_owned(),
     ];
 
-    let analysis =
-        crate::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+    let analysis = crate::analyze_explicit_mpv_ipc_startup_player_args(&args);
     assert_eq!(
         analysis.runtime_commands,
         vec![
-            crate::LegacyExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
+            crate::ExplicitMpvIpcStartupPlayerCommand::ApplyProfile {
                 profile: "slow".to_owned()
             },
-            crate::LegacyExplicitMpvIpcStartupPlayerCommand::SetOptionString {
+            crate::ExplicitMpvIpcStartupPlayerCommand::SetOptionString {
                 name: "script-opts".to_owned(),
                 value: "osc=yes".to_owned(),
             },
@@ -201,14 +199,13 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_runtime_commands_last_win
 }
 
 #[test]
-fn analyze_legacy_explicit_mpv_ipc_startup_player_args_missing_value_does_not_consume_next_flag() {
+fn analyze_explicit_mpv_ipc_startup_player_args_missing_value_does_not_consume_next_flag() {
     let args = vec!["--start".to_owned(), "--pause".to_owned()];
 
-    let analysis =
-        crate::analyze_legacy_explicit_mpv_ipc_startup_player_args_legacy_compatible(&args);
+    let analysis = crate::analyze_explicit_mpv_ipc_startup_player_args(&args);
     assert_eq!(
         analysis.parsed,
-        crate::LegacyExplicitMpvIpcStartupPlayerArgs {
+        crate::ExplicitMpvIpcStartupPlayerArgs {
             paused: Some(true),
             start_position_seconds: None,
             playback_rate: None,
@@ -242,8 +239,8 @@ fn analyze_legacy_explicit_mpv_ipc_startup_player_args_missing_value_does_not_co
 }
 
 #[test]
-fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_report_summary_and_ignored_groups() {
-    let diagnostics = crate::LegacyExplicitMpvIpcStartupPlayerArgDiagnostics {
+fn explicit_mpv_ipc_startup_player_arg_diagnostic_lines_report_summary_and_ignored_groups() {
+    let diagnostics = crate::ExplicitMpvIpcStartupPlayerArgDiagnostics {
         supported_tokens: vec![
             "--start=12".to_owned(),
             "--speed=1.25".to_owned(),
@@ -256,11 +253,7 @@ fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_report_summary_an
         unsupported_tokens: vec!["--untouchable".to_owned()],
     };
 
-    let lines =
-        crate::legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
-            &diagnostics,
-            2,
-        );
+    let lines = crate::explicit_mpv_ipc_startup_player_arg_diagnostic_lines(&diagnostics, 2);
     assert_eq!(
             lines,
             vec![

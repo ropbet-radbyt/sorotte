@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     state.main_window.playback.can_toggle_pause = true;
@@ -211,12 +211,12 @@ fn gui_widget_egui_renderer_maps_playlist_workflow_controls_to_actions() {
 
 #[test]
 fn gui_widget_egui_renderer_maps_plex_playlist_picker_controls() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.playback.can_manage_playlist = true;
     assert!(state.apply(GuiShellAction::BeginPlexPlaylistSearch));
@@ -302,8 +302,8 @@ fn gui_widget_egui_renderer_maps_plex_playlist_picker_controls() {
 
 #[test]
 fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        ..StoredClientSettingsMvp::default()
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
@@ -398,8 +398,8 @@ fn gui_widget_egui_renderer_maps_stream_support_buttons_to_import_and_retry_acti
 
 #[test]
 fn gui_widget_egui_renderer_disables_stream_support_modal_actions_during_remediation() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        ..StoredClientSettingsMvp::default()
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(

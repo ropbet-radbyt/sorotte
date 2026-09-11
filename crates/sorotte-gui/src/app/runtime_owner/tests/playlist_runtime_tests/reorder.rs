@@ -28,13 +28,13 @@ fn gui_persisted_config_runtime_owner_reorders_shared_playlist_without_switching
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -166,13 +166,13 @@ fn gui_persisted_config_runtime_owner_reorders_playlist_with_local_highlight_wit
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         player_path: Some("mpv".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);

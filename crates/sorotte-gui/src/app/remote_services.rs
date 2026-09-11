@@ -12,12 +12,10 @@ use std::{
 use reqwest::blocking::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sorotte_client_app::app_boundary::language::normalized_legacy_runtime_language_tag_legacy_compatible;
-use sorotte_client_app::app_boundary::persistence::parse_serialized_public_servers_list_legacy_compatible;
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::language::normalized_runtime_language_tag;
+use sorotte_client_app::app_boundary::persistence::parse_serialized_public_servers_list;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 mod download;
 #[cfg(test)]
@@ -30,7 +28,7 @@ use update_limits::{
 
 use super::child_process::configure_gui_child_process;
 
-const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
+const SYNCPLAY_VERSION: &str = "1.7.5";
 
 fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
@@ -40,16 +38,10 @@ fn lowercase_hex(bytes: impl AsRef<[u8]>) -> String {
     }
     encoded
 }
-const LEGACY_SYNCPLAY_MILESTONE: &str = "Yoitsu";
-const LEGACY_SYNCPLAY_RELEASE_NUMBER: &str = "116";
-const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 86_400;
-#[cfg(test)]
-const LEGACY_SYNCPLAY_VERSION_STATUS_UP_TO_DATE: &str = "uptodate";
-#[cfg(test)]
-const LEGACY_SYNCPLAY_VERSION_STATUS_UPDATE_AVAILABLE: &str = "updateavailale";
+const SYNCPLAY_MILESTONE: &str = "Yoitsu";
+const SYNCPLAY_RELEASE_NUMBER: &str = "116";
+const DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 86_400;
 const SYNCPLAY_PUBLIC_SERVER_LIST_URL: &str = "https://syncplay.pl/listpublicservers";
-#[cfg(test)]
-const SYNCPLAY_DOWNLOAD_URL: &str = "https://syncplay.pl/download/";
 const GITHUB_RELEASES_PAGE_URL: &str = "https://github.com/ropbet-radbyt/sorotte/releases";
 const GITHUB_RELEASE_LATEST_URL: &str =
     "https://api.github.com/repos/ropbet-radbyt/sorotte/releases/latest";
@@ -78,28 +70,11 @@ const SOROTTE_GUI_BUILD_CREATED_AT_UTC_ENV: &str = "SOROTTE_GUI_BUILD_CREATED_AT
 static RUSTLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "legacy parser tests still exercise unknown wire statuses"
-)]
-pub(crate) enum LegacyUpdateCheckStatus {
+pub(crate) enum UpdateCheckStatus {
     UpToDate,
     UpdateAvailable,
     Checking,
     Failed,
-    Unknown(String),
-}
-
-impl LegacyUpdateCheckStatus {
-    #[cfg(test)]
-    fn from_legacy_wire_value(value: &str) -> Self {
-        match value.trim() {
-            LEGACY_SYNCPLAY_VERSION_STATUS_UP_TO_DATE => Self::UpToDate,
-            LEGACY_SYNCPLAY_VERSION_STATUS_UPDATE_AVAILABLE => Self::UpdateAvailable,
-            "failed" => Self::Failed,
-            other => Self::Unknown(other.to_owned()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,8 +212,8 @@ pub(crate) struct UpdateApplyLaunchResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LegacyUpdateCheckResult {
-    pub(crate) status: LegacyUpdateCheckStatus,
+pub(crate) struct UpdateCheckResult {
+    pub(crate) status: UpdateCheckStatus,
     pub(crate) message: String,
     pub(crate) url: Option<String>,
     pub(crate) candidate: Option<UpdateCandidate>,
@@ -285,9 +260,9 @@ fn fetch_public_servers_from_url(
     let response = client
         .get(url)
         .query(&[
-            ("version", LEGACY_SYNCPLAY_VERSION),
-            ("milestone", LEGACY_SYNCPLAY_MILESTONE),
-            ("release_number", LEGACY_SYNCPLAY_RELEASE_NUMBER),
+            ("version", SYNCPLAY_VERSION),
+            ("milestone", SYNCPLAY_MILESTONE),
+            ("release_number", SYNCPLAY_RELEASE_NUMBER),
             ("language", language),
         ])
         .send()
@@ -306,7 +281,7 @@ fn fetch_public_servers_from_url(
 
 fn parse_public_server_response(body: &str) -> Result<Vec<(String, String)>, String> {
     let normalized = sanitize_wordpress_public_server_response(body);
-    let Some(rows) = parse_serialized_public_servers_list_legacy_compatible(&normalized) else {
+    let Some(rows) = parse_serialized_public_servers_list(&normalized) else {
         return Err(
             "failed to parse public server list response from the Syncplay service".to_owned(),
         );
@@ -324,17 +299,16 @@ pub(crate) fn check_for_updates(
     language: Option<&str>,
     user_initiated: bool,
     update_channel: Option<&str>,
-) -> LegacyUpdateCheckResult {
-    let checked_at_utc =
-        legacy_utc_timestamp_string_legacy_compatible(std::time::SystemTime::now());
+) -> UpdateCheckResult {
+    let checked_at_utc = utc_timestamp_string(std::time::SystemTime::now());
     match check_for_github_update(language, user_initiated, update_channel) {
-        Ok(result) => LegacyUpdateCheckResult {
+        Ok(result) => UpdateCheckResult {
             checked_at_utc,
             user_initiated,
             ..result
         },
-        Err(error) => LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::Failed,
+        Err(error) => UpdateCheckResult {
+            status: UpdateCheckStatus::Failed,
             message: format!(
                 "{error}\n-----\n{}",
                 github_update_check_failed_message(language)
@@ -514,7 +488,7 @@ fn check_for_github_update(
     language: Option<&str>,
     _user_initiated: bool,
     update_channel: Option<&str>,
-) -> Result<LegacyUpdateCheckResult, String> {
+) -> Result<UpdateCheckResult, String> {
     let capability = self_update_capability_current_install();
     if let Some(body) = env_response_override(SOROTTE_UPDATE_CHECK_RESPONSE_ENV)
         && let Some(result) = github_update_response_override_result(&body, language)?
@@ -531,12 +505,12 @@ fn check_for_github_update(
 }
 
 fn apply_self_update_capability(
-    mut result: LegacyUpdateCheckResult,
+    mut result: UpdateCheckResult,
     capability: SelfUpdateCapability,
-) -> LegacyUpdateCheckResult {
+) -> UpdateCheckResult {
     result.self_update_supported = capability.supported();
     if !capability.supported()
-        && result.status == LegacyUpdateCheckStatus::UpdateAvailable
+        && result.status == UpdateCheckStatus::UpdateAvailable
         && !result.message.contains(capability.unavailable_message())
     {
         result.message = format!(
@@ -548,15 +522,15 @@ fn apply_self_update_capability(
     result
 }
 
-fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+fn check_stable_release_update(language: Option<&str>) -> Result<UpdateCheckResult, String> {
     let client = github_http_client()?;
     let release_url = env_trimmed(SOROTTE_GITHUB_RELEASE_LATEST_URL_ENV)
         .unwrap_or_else(|| GITHUB_RELEASE_LATEST_URL.to_owned());
     let release: GitHubRelease = match github_get_json(&client, &release_url) {
         Ok(release) => release,
         Err(error) if error.contains("HTTP 404") => {
-            return Ok(LegacyUpdateCheckResult {
-                status: LegacyUpdateCheckStatus::UpToDate,
+            return Ok(UpdateCheckResult {
+                status: UpdateCheckStatus::UpToDate,
                 message: github_update_up_to_date_message(language, UpdateChannel::Stable),
                 url: Some(GITHUB_RELEASES_PAGE_URL.to_owned()),
                 candidate: None,
@@ -574,8 +548,8 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
     let current_version = current_semver()?;
     let candidate_version = parse_version(&manifest.version)?;
     if candidate_version <= current_version {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
+        return Ok(UpdateCheckResult {
+            status: UpdateCheckStatus::UpToDate,
             message: github_update_up_to_date_message(language, UpdateChannel::Stable),
             url: release.html_url,
             candidate: None,
@@ -592,8 +566,8 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
         release.html_url,
         UpdateCandidateSource::ReleaseAsset,
     );
-    Ok(LegacyUpdateCheckResult {
-        status: LegacyUpdateCheckStatus::UpdateAvailable,
+    Ok(UpdateCheckResult {
+        status: UpdateCheckStatus::UpdateAvailable,
         message: candidate.summary(),
         url: candidate.details_url.clone(),
         candidate: Some(candidate),
@@ -604,7 +578,7 @@ fn check_stable_release_update(language: Option<&str>) -> Result<LegacyUpdateChe
     })
 }
 
-fn check_dev_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+fn check_dev_update(language: Option<&str>) -> Result<UpdateCheckResult, String> {
     if env_trimmed(SOROTTE_GITHUB_ARTIFACTS_URL_ENV).is_some() {
         check_dev_artifact_update(language)
     } else {
@@ -612,7 +586,7 @@ fn check_dev_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, S
     }
 }
 
-fn check_dev_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+fn check_dev_release_update(language: Option<&str>) -> Result<UpdateCheckResult, String> {
     let client = github_http_client()?;
     let release_url = env_trimmed(SOROTTE_GITHUB_DEV_RELEASE_URL_ENV)
         .unwrap_or_else(|| GITHUB_DEV_RELEASE_URL.to_owned());
@@ -621,8 +595,8 @@ fn check_dev_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckR
         release_manifest_and_package_url(&client, &release, UpdateChannel::Dev)?;
 
     if !dev_manifest_newer_than_current(&manifest) {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
+        return Ok(UpdateCheckResult {
+            status: UpdateCheckStatus::UpToDate,
             message: github_update_up_to_date_message(language, UpdateChannel::Dev),
             url: release.html_url,
             candidate: None,
@@ -639,8 +613,8 @@ fn check_dev_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckR
         release.html_url,
         UpdateCandidateSource::ReleaseAsset,
     );
-    Ok(LegacyUpdateCheckResult {
-        status: LegacyUpdateCheckStatus::UpdateAvailable,
+    Ok(UpdateCheckResult {
+        status: UpdateCheckStatus::UpdateAvailable,
         message: candidate.summary(),
         url: candidate.details_url.clone(),
         candidate: Some(candidate),
@@ -651,14 +625,14 @@ fn check_dev_release_update(language: Option<&str>) -> Result<LegacyUpdateCheckR
     })
 }
 
-fn check_dev_artifact_update(language: Option<&str>) -> Result<LegacyUpdateCheckResult, String> {
+fn check_dev_artifact_update(language: Option<&str>) -> Result<UpdateCheckResult, String> {
     let client = github_http_client()?;
     let artifacts_url = env_trimmed(SOROTTE_GITHUB_ARTIFACTS_URL_ENV)
         .ok_or_else(|| format!("{SOROTTE_GITHUB_ARTIFACTS_URL_ENV} must be set"))?;
     let response: GitHubArtifactsResponse = github_get_json(&client, &artifacts_url)?;
     let Some(artifact) = select_newest_dev_artifact(&response.artifacts) else {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
+        return Ok(UpdateCheckResult {
+            status: UpdateCheckStatus::UpToDate,
             message: github_update_up_to_date_message(language, UpdateChannel::Dev),
             url: Some("https://github.com/ropbet-radbyt/sorotte/actions".to_owned()),
             candidate: None,
@@ -670,8 +644,8 @@ fn check_dev_artifact_update(language: Option<&str>) -> Result<LegacyUpdateCheck
     };
 
     if !dev_artifact_newer_than_current(artifact) {
-        return Ok(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
+        return Ok(UpdateCheckResult {
+            status: UpdateCheckStatus::UpToDate,
             message: github_update_up_to_date_message(language, UpdateChannel::Dev),
             url: artifact
                 .workflow_run
@@ -703,8 +677,8 @@ fn check_dev_artifact_update(language: Option<&str>) -> Result<LegacyUpdateCheck
             .and_then(|run| run.html_url.clone()),
         source: UpdateCandidateSource::ActionsArtifact,
     };
-    Ok(LegacyUpdateCheckResult {
-        status: LegacyUpdateCheckStatus::UpdateAvailable,
+    Ok(UpdateCheckResult {
+        status: UpdateCheckStatus::UpdateAvailable,
         message: candidate.summary(),
         url: candidate.details_url.clone(),
         candidate: Some(candidate),
@@ -716,7 +690,7 @@ fn check_dev_artifact_update(language: Option<&str>) -> Result<LegacyUpdateCheck
 }
 
 pub(crate) fn should_run_automatic_update_check(
-    settings: Option<&StoredClientSettingsMvp>,
+    settings: Option<&StoredClientSettings>,
     now: std::time::SystemTime,
 ) -> bool {
     let Some(settings) = settings else {
@@ -737,14 +711,12 @@ pub(crate) fn automatic_update_check_due(
     if !automatic {
         return false;
     }
-    let Some(last_checked) =
-        last_checked_for_updates.and_then(parse_legacy_utc_timestamp_legacy_compatible)
-    else {
+    let Some(last_checked) = last_checked_for_updates.and_then(parse_utc_timestamp) else {
         return true;
     };
 
     now.duration_since(last_checked)
-        .map(|elapsed| elapsed.as_secs() > LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS)
+        .map(|elapsed| elapsed.as_secs() > DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS)
         .unwrap_or(false)
 }
 
@@ -1168,7 +1140,7 @@ fn update_target_file_is_replaceable(path: &Path) -> bool {
 fn github_update_response_override_result(
     body: &str,
     language: Option<&str>,
-) -> Result<Option<LegacyUpdateCheckResult>, String> {
+) -> Result<Option<UpdateCheckResult>, String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -1180,8 +1152,8 @@ fn github_update_response_override_result(
             UpdateChannel::Dev => dev_manifest_newer_than_current(&manifest),
         };
         if !update_available {
-            return Ok(Some(LegacyUpdateCheckResult {
-                status: LegacyUpdateCheckStatus::UpToDate,
+            return Ok(Some(UpdateCheckResult {
+                status: UpdateCheckStatus::UpToDate,
                 message: github_update_up_to_date_message(language, manifest.channel),
                 url: None,
                 candidate: None,
@@ -1197,8 +1169,8 @@ fn github_update_response_override_result(
             None,
             UpdateCandidateSource::ReleaseAsset,
         );
-        return Ok(Some(LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpdateAvailable,
+        return Ok(Some(UpdateCheckResult {
+            status: UpdateCheckStatus::UpdateAvailable,
             message: candidate.summary(),
             url: None,
             candidate: Some(candidate),
@@ -1744,98 +1716,6 @@ fn env_trimmed(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[cfg(test)]
-fn fetch_update_check_result_from_url(
-    url: &str,
-    language: Option<&str>,
-    user_initiated: bool,
-) -> Result<LegacyUpdateCheckResult, String> {
-    let language = normalized_language(language);
-    let client = http_client()
-        .map_err(|error| format!("failed to build update-check HTTP client: {error}"))?;
-    let response = client
-        .get(url)
-        .query(&[
-            ("version", LEGACY_SYNCPLAY_VERSION),
-            ("milestone", LEGACY_SYNCPLAY_MILESTONE),
-            ("release_number", LEGACY_SYNCPLAY_RELEASE_NUMBER),
-            ("language", language),
-            ("platform", legacy_update_check_platform_name()),
-            ("architecture", std::env::consts::ARCH),
-            ("machine", std::env::consts::ARCH),
-            (
-                "userInitiated",
-                if user_initiated { "True" } else { "False" },
-            ),
-        ])
-        .send()
-        .map_err(|error| format!("failed to run update check: {error}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "failed to run update check: HTTP {}",
-            response.status()
-        ));
-    }
-
-    let body = read_metadata_response(response)?;
-    parse_update_check_response(&body, Some(language), user_initiated)
-}
-
-#[cfg(test)]
-fn parse_update_check_response(
-    body: &str,
-    language: Option<&str>,
-    user_initiated: bool,
-) -> Result<LegacyUpdateCheckResult, String> {
-    let normalized = sanitize_wordpress_update_check_response(body);
-    let parsed = serde_json::from_str::<Value>(&normalized)
-        .map_err(|error| format!("failed to parse update-check response: {error}"))?;
-    let raw_status = parsed
-        .get("version-status")
-        .and_then(Value::as_str)
-        .unwrap_or("failed");
-    let status = LegacyUpdateCheckStatus::from_legacy_wire_value(raw_status);
-    let message = parsed
-        .get("version-message")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|message| localize_wire_update_message(message, language))
-        .unwrap_or_else(|| default_update_check_message(&status, language));
-    let mut url = parsed
-        .get("version-url")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    if url.is_none()
-        && matches!(
-            status,
-            LegacyUpdateCheckStatus::Failed | LegacyUpdateCheckStatus::Unknown(_)
-        )
-        && user_initiated
-    {
-        url = Some(SYNCPLAY_DOWNLOAD_URL.to_owned());
-    }
-    let public_servers = parsed
-        .get("public-servers")
-        .and_then(Value::as_str)
-        .map(parse_public_server_response)
-        .transpose()?;
-
-    Ok(LegacyUpdateCheckResult {
-        status,
-        message,
-        url,
-        candidate: None,
-        self_update_supported: false,
-        public_servers,
-        checked_at_utc: String::new(),
-        user_initiated,
-    })
-}
-
 fn read_metadata_response(response: reqwest::blocking::Response) -> Result<String, String> {
     if response
         .content_length()
@@ -1904,28 +1784,9 @@ fn sanitize_wordpress_public_server_response(body: &str) -> String {
         .replace(['\n', '\r'], "")
 }
 
-#[cfg(test)]
-fn sanitize_wordpress_update_check_response(body: &str) -> String {
-    body.replace("<p>", "")
-        .replace("</p>", "")
-        .replace("<br />", "")
-        .replace("&#8220;", "\"")
-        .replace("&#8221;", "\"")
-        .replace(['\n', '\r'], "")
-}
-
-#[cfg(test)]
-fn legacy_update_check_platform_name() -> &'static str {
-    match std::env::consts::OS {
-        "windows" => "win32",
-        "macos" => "darwin",
-        other => other,
-    }
-}
-
 fn normalized_language(language: Option<&str>) -> &'static str {
     language
-        .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+        .and_then(normalized_runtime_language_tag)
         .unwrap_or("en")
 }
 
@@ -1979,94 +1840,14 @@ fn public_server_list_failed_message(language: Option<&str>) -> &'static str {
     )
 }
 
-#[cfg(test)]
-fn default_update_check_message(
-    status: &LegacyUpdateCheckStatus,
-    language: Option<&str>,
-) -> String {
-    match status {
-        LegacyUpdateCheckStatus::UpToDate => localized_literal(
-            language,
-            "Sorotte is up to date",
-            "Sorotte ist auf dem neuesten Stand",
-            "Sorotte esta actualizado",
-            "Sorotte estas gxisdata",
-            "Sorotte on ajan tasalla",
-            "Sorotte est a jour",
-            "Sorotte e aggiornato",
-            "O Sorotte esta atualizado",
-            "Sorotte guncel",
-            "Sorotte obnovlen do poslednei versii",
-            "Sorotte yi shi zuixin banben",
-            "Sorotteneun choesin sangtaeimnida",
-        )
-        .to_owned(),
-        LegacyUpdateCheckStatus::UpdateAvailable => localized_literal(
-            language,
-            "A new version of Sorotte is available. Do you want to visit the release page?",
-            "Eine neue Version von Sorotte ist verfuegbar. Moechten Sie die Release-Seite besuchen?",
-            "Hay una nueva version de Sorotte disponible. Desea visitar la pagina de lanzamiento?",
-            "Nova versio de Sorotte disponeblas. Chu vi volas viziti la eldonan paghon?",
-            "Uusi Sorotte-versio on saatavilla. Haluatko avata julkaisusivun?",
-            "Une nouvelle version de Sorotte est disponible. Voulez-vous visiter la page de publication?",
-            "E disponibile una nuova versione di Sorotte. Vuoi visitare la pagina di rilascio?",
-            "Uma nova versao do Sorotte esta disponivel. Deseja visitar a pagina de lancamento?",
-            "Sorotte'nin yeni bir surumu mevcut. Surum sayfasini ziyaret etmek ister misiniz?",
-            "Dostupna novaia versiia Sorotte. Otkryt stranicu vypuska?",
-            "You xin de Sorotte banben ke yong. Yao fangwen fabu yemian ma?",
-            "Sorotte-ui saeroun beojeoni isseumnida. baepo peijireul bangmunhasigesseumnikka?",
-        )
-        .to_owned(),
-        LegacyUpdateCheckStatus::Checking
-        | LegacyUpdateCheckStatus::Failed
-        | LegacyUpdateCheckStatus::Unknown(_) => {
-            update_check_failed_notification_message(language)
-        }
-    }
-}
-
-#[cfg(test)]
-fn update_check_failed_notification_message(language: Option<&str>) -> String {
-    localized_literal(
-        language,
-        "Could not automatically check whether Sorotte {} is up to date. Want to visit https://syncplay.pl/ to manually check for updates?",
-        "Es konnte nicht automatisch geprueft werden, ob Sorotte {} aktuell ist. Moechten Sie https://syncplay.pl/ besuchen, um manuell nach Updates zu suchen?",
-        "No se pudo comprobar automaticamente si Sorotte {} esta actualizado. Desea visitar https://syncplay.pl/ para comprobar manualmente si hay actualizaciones?",
-        "Ne eblis auxtomate kontroli chu Sorotte {} estas gxisdata. Chu vi volas viziti https://syncplay.pl/ por mane kontroli gxisdatigojn?",
-        "Ei voitu tarkistaa automaattisesti, onko Sorotte {} ajan tasalla. Haluatko kayda osoitteessa https://syncplay.pl/ tarkistaaksesi paivitykset manuaalisesti?",
-        "Impossible de verifier automatiquement si Sorotte {} est a jour. Voulez-vous visiter https://syncplay.pl/ pour verifier manuellement les mises a jour?",
-        "Impossibile verificare automaticamente se Sorotte {} e aggiornato. Vuoi visitare https://syncplay.pl/ per controllare manualmente gli aggiornamenti?",
-        "Nao foi possivel verificar automaticamente se o Sorotte {} esta atualizado. Deseja visitar https://syncplay.pl/ para verificar atualizacoes manualmente?",
-        "Sorotte {}'nin guncel olup olmadigi otomatik olarak denetlenemedi. Guncellemeleri elle kontrol etmek icin https://syncplay.pl/ adresini ziyaret etmek ister misiniz?",
-        "Ne udalos avtomaticheski proverit, obnovlen li Sorotte {}. Hotite pereiti na https://syncplay.pl/ dlia ruchnoi proverki obnovlenii?",
-        "Wu fa zidong jiancha Sorotte {} shifou wei zuixin banben. Yao fangwen https://syncplay.pl/ shoudong jiancha gengxin ma?",
-        "Sorotte {}ga choesin beojeoninji jadongeuro hwaginhal su eopseotseumnida. susdong-euro eobdeiteureul hwaginhagi wihae https://syncplay.pl/ reul bangmunhasigesseumnikka?",
-    )
-    .replace("{}", LEGACY_SYNCPLAY_VERSION)
-}
-
-#[cfg(test)]
-fn localize_wire_update_message(message: &str, language: Option<&str>) -> String {
-    let trimmed = message.trim();
-    match trimmed {
-        "Sorotte is up to date" | "Sorotte is up to date." => {
-            default_update_check_message(&LegacyUpdateCheckStatus::UpToDate, language)
-        }
-        "A new version of Sorotte is available. Do you want to visit the release page?" => {
-            default_update_check_message(&LegacyUpdateCheckStatus::UpdateAvailable, language)
-        }
-        _ => trimmed.to_owned(),
-    }
-}
-
-pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::SystemTime) -> String {
+pub(super) fn utc_timestamp_string(now: std::time::SystemTime) -> String {
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let total_seconds = duration.as_secs() as i64;
     let days_since_epoch = total_seconds.div_euclid(86_400);
     let seconds_of_day = total_seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch);
+    let (year, month, day) = civil_from_days_since_unix_epoch(days_since_epoch);
     let hour = seconds_of_day / 3_600;
     let minute = (seconds_of_day % 3_600) / 60;
     let second = seconds_of_day % 60;
@@ -2074,7 +1855,7 @@ pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: std::time::Syst
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}")
 }
 
-fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Option<std::time::SystemTime> {
+fn parse_utc_timestamp(value: &str) -> Option<std::time::SystemTime> {
     let value = value.trim();
     let bytes = value.as_bytes();
     if bytes.len() != 23
@@ -2106,8 +1887,7 @@ fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Option<std::time
         return None;
     }
 
-    let days_since_epoch =
-        days_since_unix_epoch_from_civil_legacy_compatible(year, month as i64, day as i64);
+    let days_since_epoch = days_since_unix_epoch_from_civil(year, month as i64, day as i64);
     if days_since_epoch < 0 {
         return None;
     }
@@ -2120,7 +1900,7 @@ fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Option<std::time
     )
 }
 
-fn civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch: i64) -> (i64, i64, i64) {
+fn civil_from_days_since_unix_epoch(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -2136,7 +1916,7 @@ fn civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch: i64) -> 
     (year, month, day)
 }
 
-fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day: i64) -> i64 {
+fn days_since_unix_epoch_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let adjusted_year = year - if month <= 2 { 1 } else { 0 };
     let era = if adjusted_year >= 0 {
         adjusted_year
@@ -2162,15 +1942,13 @@ mod tests {
     };
 
     use super::{
-        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, LegacyUpdateCheckResult,
-        LegacyUpdateCheckStatus, SOROTTE_GUI_EXECUTABLE, SOROTTE_GUI_INSTALL_MARKER,
-        SOROTTE_GUI_TARGET, SelfUpdateCapability, StagedUpdate, StoredClientSettingsMvp,
-        UpdateCandidate, UpdateCandidateSource, UpdateChannel, UpdateManifest,
-        apply_self_update_capability, cleanup_failed_stage_dir, cleanup_update_staging_root,
-        cleanup_updates_root, default_update_check_message, fetch_public_servers_from_url,
-        fetch_update_check_result_from_url, normal_package_basename, parse_public_server_response,
-        parse_update_check_response, parse_version, safe_zip_relative_path,
-        sanitize_wordpress_public_server_response, sanitize_wordpress_update_check_response,
+        GitHubArtifact, GitHubReleaseAsset, GitHubWorkflowRun, SOROTTE_GUI_EXECUTABLE,
+        SOROTTE_GUI_INSTALL_MARKER, SOROTTE_GUI_TARGET, SelfUpdateCapability, StagedUpdate,
+        StoredClientSettings, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
+        UpdateCheckResult, UpdateCheckStatus, UpdateManifest, apply_self_update_capability,
+        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
+        fetch_public_servers_from_url, normal_package_basename, parse_public_server_response,
+        parse_version, safe_zip_relative_path, sanitize_wordpress_public_server_response,
         select_newest_dev_artifact, select_stable_gui_release_asset,
         self_update_capability_for_install_with_probe, should_run_automatic_update_check,
         staged_update_helper_args, validate_manifest, validate_sha256_bytes,
@@ -2312,8 +2090,8 @@ mod tests {
             details_url: Some("https://example.invalid/releases/9.9.9".to_owned()),
             source: UpdateCandidateSource::ReleaseAsset,
         };
-        let result = LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpdateAvailable,
+        let result = UpdateCheckResult {
+            status: UpdateCheckStatus::UpdateAvailable,
             message: candidate.summary(),
             url: candidate.details_url.clone(),
             candidate: Some(candidate.clone()),
@@ -2326,7 +2104,7 @@ mod tests {
         let protected =
             apply_self_update_capability(result, SelfUpdateCapability::RequiresElevation);
 
-        assert_eq!(protected.status, LegacyUpdateCheckStatus::UpdateAvailable);
+        assert_eq!(protected.status, UpdateCheckStatus::UpdateAvailable);
         assert_eq!(protected.url, candidate.details_url);
         assert_eq!(protected.candidate, Some(candidate));
         assert!(!protected.self_update_supported);
@@ -2675,11 +2453,11 @@ mod tests {
     }
 
     #[test]
-    fn public_server_response_parser_accepts_legacy_python_list_format() {
+    fn public_server_response_parser_accepts_syncplay_python_list_format() {
         let parsed = parse_public_server_response(
             "<p>[[' Primary ', ' syncplay.pl:8999 '], ['Backup', 'backup.example:9000']]</p>",
         )
-        .expect("legacy public-server list should parse");
+        .expect("Syncplay public-server list should parse");
 
         assert_eq!(
             parsed,
@@ -2694,52 +2472,6 @@ mod tests {
     fn public_server_response_parser_rejects_empty_results() {
         let error = parse_public_server_response("[]").expect_err("empty list should fail");
         assert!(error.contains("returned no servers"));
-    }
-
-    #[test]
-    fn wordpress_update_check_response_cleanup_matches_python_rules() {
-        let cleaned = sanitize_wordpress_update_check_response(
-            "<p>{&#8220;version-status&#8221;: &#8220;uptodate&#8221;}</p>\r\n",
-        );
-        assert_eq!(cleaned, "{\"version-status\": \"uptodate\"}");
-    }
-
-    #[test]
-    fn update_check_response_parser_accepts_legacy_json_and_public_servers() {
-        let parsed = parse_update_check_response(
-            r#"<p>{"version-status":"updateavailale","version-message":"New build available.","version-url":"https://syncplay.pl/download/","public-servers":"[['Primary','syncplay.pl:8999']]"}</p>"#,
-            Some("en"),
-            true,
-        )
-        .expect("legacy update response should parse");
-
-        assert_eq!(parsed.status, LegacyUpdateCheckStatus::UpdateAvailable);
-        assert_eq!(parsed.message, "New build available.");
-        assert_eq!(parsed.url.as_deref(), Some("https://syncplay.pl/download/"));
-        assert_eq!(
-            parsed.public_servers,
-            Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())])
-        );
-    }
-
-    #[test]
-    fn update_check_response_parser_falls_back_to_default_failure_message_for_unknown_status() {
-        let parsed =
-            parse_update_check_response(r#"{"version-status":"mystery"}"#, Some("en"), true)
-                .expect("unknown status should still parse");
-
-        assert_eq!(
-            parsed.status,
-            LegacyUpdateCheckStatus::Unknown("mystery".to_owned())
-        );
-        assert_eq!(
-            parsed.message,
-            default_update_check_message(
-                &LegacyUpdateCheckStatus::Unknown("mystery".to_owned()),
-                Some("en"),
-            )
-        );
-        assert_eq!(parsed.url.as_deref(), Some("https://syncplay.pl/download/"));
     }
 
     #[test]
@@ -2760,62 +2492,44 @@ mod tests {
     }
 
     #[test]
-    fn update_check_request_uses_selected_language_query_parameter_and_localizes_defaults() {
-        let (url, request_handle) = spawn_single_request_server(r#"{"version-status":"uptodate"}"#);
-
-        let parsed = fetch_update_check_result_from_url(&url, Some("fr"), true)
-            .expect("update-check request should parse the server response");
-
-        assert_eq!(parsed.status, LegacyUpdateCheckStatus::UpToDate);
-        assert_eq!(parsed.message, "Sorotte est a jour");
-        let request_line = request_handle
-            .join()
-            .expect("request capture thread should complete");
-        assert!(request_line.contains("language=fr"));
-        assert!(request_line.contains("userInitiated=True"));
-    }
-
-    #[test]
     fn automatic_update_check_runs_when_timestamp_is_missing_or_stale() {
         let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let stale = super::legacy_utc_timestamp_string_legacy_compatible(
-            now - Duration::from_secs(super::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS + 1),
+        let stale = super::utc_timestamp_string(
+            now - Duration::from_secs(super::DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS + 1),
         );
-        let fresh = super::legacy_utc_timestamp_string_legacy_compatible(
-            now - Duration::from_secs(super::LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS - 1),
+        let fresh = super::utc_timestamp_string(
+            now - Duration::from_secs(super::DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS - 1),
         );
 
         assert!(should_run_automatic_update_check(
-            Some(&StoredClientSettingsMvp {
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: None,
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ));
         assert!(should_run_automatic_update_check(
-            Some(&StoredClientSettingsMvp {
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: Some(stale),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ));
         assert!(!should_run_automatic_update_check(
-            Some(&StoredClientSettingsMvp {
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(true),
                 last_checked_for_updates: Some(fresh),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }),
             now,
         ));
         assert!(!should_run_automatic_update_check(
-            Some(&StoredClientSettingsMvp {
+            Some(&StoredClientSettings {
                 check_for_updates_automatically: Some(false),
-                last_checked_for_updates: Some(
-                    super::legacy_utc_timestamp_string_legacy_compatible(SystemTime::now())
-                ),
-                ..StoredClientSettingsMvp::default()
+                last_checked_for_updates: Some(super::utc_timestamp_string(SystemTime::now())),
+                ..StoredClientSettings::default()
             }),
             now,
         ));

@@ -157,14 +157,14 @@ fn cli_plex_config_uses_stored_settings_unless_env_overrides() {
     }
     env.set_var("SOROTTE_CLIENT_PLEX_SERVER_URL", "http://env-plex:32400");
 
-    let config = cli_plex_config_from_env_and_stored_settings(Some(&StoredClientSettingsMvp {
+    let config = cli_plex_config_from_env_and_stored_settings(Some(&StoredClientSettings {
         plex_sync_enabled: Some(true),
         plex_streaming_enabled: Some(true),
         plex_user_token: Some("stored-user-token".into()),
         plex_selected_server_id: Some("stored-machine".to_owned()),
         plex_selected_server_url: Some("http://stored-plex:32400".to_owned()),
         plex_selected_server_token: Some("stored-server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     }));
 
     assert!(config.enabled);

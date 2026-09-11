@@ -8,9 +8,7 @@ pub(super) fn localize_update_controller_access_message(
         .strip_prefix("Checked at: ")
         .and_then(|value| value.strip_suffix(" UTC"))
     {
-        return Some(localized_update_checked_at_line_legacy_compatible(
-            language, timestamp,
-        ));
+        return Some(localized_update_checked_at_line(language, timestamp));
     }
     if let Some((username, room)) = message
         .strip_suffix('.')

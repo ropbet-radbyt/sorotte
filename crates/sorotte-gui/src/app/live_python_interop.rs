@@ -5,7 +5,9 @@ mod waits;
 
 use std::{fmt, time::Duration};
 
-use sorotte_compat::{InteropError, LegacyPythonPeerChatMessage, LegacyServerPythonPeerHarness};
+use sorotte_compat::{
+    InteropError, SyncplayPythonPeerChatMessage, SyncplayServerPythonPeerHarness,
+};
 pub(crate) const LIVE_PYTHON_INTEROP_LOCAL_USERNAME: &str = "interop-gui-user";
 pub(crate) const LIVE_PYTHON_INTEROP_PEER_USERNAME: &str = "interop-py-peer";
 pub(crate) const LIVE_PYTHON_INTEROP_ROOM: &str = "interop-room";
@@ -45,8 +47,8 @@ pub(crate) struct LivePythonPeerInteropResult {
     pub gui_playlist_index: Option<usize>,
     pub peer_playlist: Vec<String>,
     pub peer_playlist_index: Option<usize>,
-    pub gui_chat_messages: Vec<LegacyPythonPeerChatMessage>,
-    pub peer_chat_messages: Vec<LegacyPythonPeerChatMessage>,
+    pub gui_chat_messages: Vec<SyncplayPythonPeerChatMessage>,
+    pub peer_chat_messages: Vec<SyncplayPythonPeerChatMessage>,
     pub widget_count: usize,
 }
 
@@ -120,7 +122,7 @@ pub(crate) fn live_python_interop_prerequisites_missing(
 
 pub(crate) fn run_live_python_peer_connect_flow()
 -> Result<LivePythonPeerInteropResult, LivePythonPeerInteropError> {
-    let mut harness = LegacyServerPythonPeerHarness::spawn(
+    let mut harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_ROOM,
     )?;
@@ -136,7 +138,7 @@ pub(crate) fn run_live_python_peer_connect_flow()
 
 pub(crate) fn run_live_python_peer_controlled_room_flow()
 -> Result<LivePythonPeerControlledRoomInteropResult, LivePythonPeerInteropError> {
-    let mut harness = LegacyServerPythonPeerHarness::spawn(
+    let mut harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_CONTROLLED_ROOM,
     )?;
@@ -153,7 +155,7 @@ pub(crate) fn run_live_python_peer_controlled_room_flow()
 #[cfg(test)]
 pub(crate) fn run_live_python_peer_detached_public_server_connect_flow()
 -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
-    let mut harness = LegacyServerPythonPeerHarness::spawn(
+    let mut harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_ROOM,
     )?;
@@ -171,7 +173,7 @@ pub(crate) fn run_live_python_peer_detached_public_server_connect_flow()
 #[cfg(test)]
 pub(crate) fn run_live_python_peer_startup_saved_connect_flow()
 -> Result<LivePythonPeerDetachedConnectInteropResult, LivePythonPeerInteropError> {
-    let mut harness = LegacyServerPythonPeerHarness::spawn(
+    let mut harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_ROOM,
     )?;
@@ -188,7 +190,7 @@ pub(crate) fn run_live_python_peer_startup_saved_connect_flow()
 #[cfg(test)]
 pub(crate) fn run_live_python_peer_shared_playlist_open_flow()
 -> Result<LivePythonPeerSharedPlaylistOpenInteropResult, LivePythonPeerInteropError> {
-    let mut harness = LegacyServerPythonPeerHarness::spawn(
+    let mut harness = SyncplayServerPythonPeerHarness::spawn(
         LIVE_PYTHON_INTEROP_PEER_USERNAME,
         LIVE_PYTHON_INTEROP_ROOM,
     )?;

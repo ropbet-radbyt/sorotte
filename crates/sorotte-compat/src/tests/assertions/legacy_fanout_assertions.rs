@@ -31,10 +31,10 @@ pub(in crate::tests) fn canonicalize_legacy_permanent_room_snapshot_setter(
     }
 }
 
-pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+pub(in crate::tests) fn assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
     scenario_name: &str,
 ) -> Result<(), InteropError> {
-    assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_overrides(
+    assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_overrides(
         scenario_name,
         None,
         None,
@@ -43,12 +43,12 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
     )
 }
 
-pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_motd_template(
+pub(in crate::tests) fn assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_motd_template(
     scenario_name: &str,
     runtime_motd_template: Option<&str>,
     legacy_motd_template: Option<&str>,
 ) -> Result<(), InteropError> {
-    assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_overrides(
+    assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_overrides(
         scenario_name,
         runtime_motd_template,
         legacy_motd_template,
@@ -57,14 +57,14 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
     )
 }
 
-pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_overrides(
+pub(in crate::tests) fn assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_overrides(
     scenario_name: &str,
     runtime_motd_template: Option<&str>,
     legacy_motd_template: Option<&str>,
     runtime_persistent_rooms_enabled: bool,
     legacy_persistent_rooms_enabled: bool,
 ) -> Result<(), InteropError> {
-    assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_full_overrides(
+    assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_full_overrides(
         scenario_name,
         runtime_motd_template,
         legacy_motd_template,
@@ -75,7 +75,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
     )
 }
 
-pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_scenario_with_full_overrides(
+pub(in crate::tests) fn assert_syncplay_server_fanout_matches_server_runtime_for_scenario_with_full_overrides(
     scenario_name: &str,
     runtime_motd_template: Option<&str>,
     legacy_motd_template: Option<&str>,
@@ -85,7 +85,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
     legacy_permanent_rooms: &[&str],
 ) -> Result<(), InteropError> {
     let normalization_options = normalization_options_for_legacy_scenario(scenario_name);
-    let mut timing_canonicalizer = LegacyTimingCanonicalizer::default();
+    let mut timing_canonicalizer = SyncplayTimingCanonicalizer::default();
     let steps = load_server_runtime_scenario_fixture(scenario_name)?;
     let rust_events = replay_server_runtime_scenario_steps_with_full_overrides(
         &steps,
@@ -93,9 +93,9 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
         runtime_persistent_rooms_enabled,
         runtime_permanent_rooms,
     )?;
-    let legacy_events = run_legacy_server_fanout_roundtrip_with_full_overrides(
+    let legacy_events = run_syncplay_server_fanout_roundtrip_with_full_overrides(
         &steps,
-        super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT,
+        super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT,
         legacy_motd_template,
         legacy_persistent_rooms_enabled,
         legacy_permanent_rooms,
@@ -119,7 +119,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
                     .expect("legacy outbound line should decode as JSON"),
                 normalization_options,
             );
-            timing_canonicalizer.canonicalize_message(&mut normalized, LegacyTimingSide::Legacy);
+            timing_canonicalizer.canonicalize_message(&mut normalized, SyncplayTimingSide::Legacy);
             canonicalize_legacy_hello_fields(&mut normalized);
             canonicalize_legacy_set_user_features(&mut normalized);
             canonicalize_legacy_list_fields(&mut normalized);
@@ -148,7 +148,7 @@ pub(in crate::tests) fn assert_legacy_server_fanout_matches_server_runtime_for_s
                     .expect("rust outbound line should decode as JSON"),
                 normalization_options,
             );
-            timing_canonicalizer.canonicalize_message(&mut normalized, LegacyTimingSide::Runtime);
+            timing_canonicalizer.canonicalize_message(&mut normalized, SyncplayTimingSide::Runtime);
             canonicalize_legacy_hello_fields(&mut normalized);
             canonicalize_legacy_set_user_features(&mut normalized);
             canonicalize_legacy_list_fields(&mut normalized);

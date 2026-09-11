@@ -1,5 +1,5 @@
 use super::remote_services;
-use super::runtime_localization::localized_update_notice_available_message_legacy_compatible;
+use super::runtime_localization::localized_update_notice_available_message;
 use super::shell_state::{
     GuiPendingOperationKind, GuiShellModal, GuiTransientNotificationLevel, MainWindowChatRow,
     SorotteGuiShellAppState,
@@ -112,10 +112,8 @@ impl SorotteGuiShellAppState {
     pub(super) fn announce_update_notice_available(&mut self) -> bool {
         if self.update_check.message.is_none() {
             self.update_check.message = Some(
-                localized_update_notice_available_message_legacy_compatible(Some(
-                    self.runtime_language_tag_legacy_compatible(),
-                ))
-                .to_owned(),
+                localized_update_notice_available_message(Some(self.runtime_language_tag()))
+                    .to_owned(),
             );
         }
         self.clear_action_error_and_refresh();
@@ -123,7 +121,7 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn update_check_language(&self) -> String {
-        self.runtime_language_tag_legacy_compatible().to_owned()
+        self.runtime_language_tag().to_owned()
     }
 
     pub(super) fn update_check_channel(&self) -> Option<String> {
@@ -135,7 +133,7 @@ impl SorotteGuiShellAppState {
     }
 
     pub(super) fn begin_update_check(&mut self, user_initiated: bool) -> bool {
-        self.update_check.status = Some(remote_services::LegacyUpdateCheckStatus::Checking);
+        self.update_check.status = Some(remote_services::UpdateCheckStatus::Checking);
         self.update_check.message = Some("Checking for updates".to_owned());
         self.update_check.user_initiated = user_initiated;
         self.update_check.download_state = remote_services::UpdateDownloadState::Idle;
@@ -146,7 +144,7 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn apply_update_check_result(
         &mut self,
-        result: remote_services::LegacyUpdateCheckResult,
+        result: remote_services::UpdateCheckResult,
     ) -> bool {
         let mut settings = self.configuration.to_stored_settings();
         settings.last_checked_for_updates = Some(result.checked_at_utc.clone());

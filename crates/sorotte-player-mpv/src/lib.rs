@@ -3,10 +3,10 @@ mod bridge;
 mod bridge_resource;
 mod constants;
 mod ipc;
-mod legacy_ui;
 pub mod lifecycle;
 pub mod managed_process;
 mod players;
+mod syncplay_ui;
 #[cfg(feature = "test-support")]
 mod test_support;
 pub mod transcript;
@@ -62,8 +62,8 @@ pub use bridge_resource::{
     materialize_bundled_sorotte_network_options_hook_in,
 };
 pub use ipc::MpvIpcConnectionEvent;
-pub use legacy_ui::{LegacySyncplayOsdKind, LegacySyncplayUiSettings};
 pub use players::{ConnectedMpvPlayer, SimulatedPlayer};
+pub use syncplay_ui::{SyncplayOsdKind, SyncplayUiSettings};
 
 #[cfg(test)]
 mod tests;

@@ -95,7 +95,7 @@ mod queries;
 mod readiness_v2;
 mod reconnect;
 
-pub use playlist::playback_uri_is_trusted_legacy_compatible;
+pub use playlist::playback_uri_is_trusted;
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

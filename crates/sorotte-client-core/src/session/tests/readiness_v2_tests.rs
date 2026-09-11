@@ -98,7 +98,7 @@ fn install_barrier_phase(
         quorum: None,
         deadline: 100.0,
         participants: BTreeMap::new(),
-        excluded_legacy_clients: BTreeSet::new(),
+        excluded_unsupported_clients: BTreeSet::new(),
     };
     session
         .apply_protocol_message(ProtocolMessage::set(
@@ -841,7 +841,7 @@ fn local_room_echo_fences_old_snapshot_before_new_membership_snapshot() {
 }
 
 #[test]
-fn v2_rooms_never_run_the_legacy_client_autoplay_countdown() {
+fn v2_rooms_never_run_the_syncplay_client_autoplay_countdown() {
     let session = active_v2_session();
     assert!(!session.autoplay_conditions_met(true, true, false, true));
 }

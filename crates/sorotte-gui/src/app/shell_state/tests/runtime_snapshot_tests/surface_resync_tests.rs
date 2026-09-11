@@ -6,10 +6,10 @@ use sorotte_protocol::TechnicalPlayabilityPhase;
 
 #[test]
 fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let initial_tree = state.shell_widget_tree();
@@ -57,9 +57,9 @@ fn gui_shell_app_state_only_enables_media_open_after_runtime_support_arrives() {
 
 #[test]
 fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
@@ -155,11 +155,11 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
 
 #[test]
 fn gui_shell_app_state_keeps_local_ready_transition_pending_until_runtime_matches() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(TEST_USERNAME.to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         room: Some("Room".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let runtime_snapshot = |is_ready| MainWindowRuntimeSnapshot {
@@ -211,15 +211,16 @@ fn gui_shell_app_state_keeps_local_ready_transition_pending_until_runtime_matche
 
 #[test]
 fn gui_shell_v2_runtime_retires_optimistic_pending_when_core_has_no_pending_operation() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(TEST_USERNAME.to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         room: Some("Room".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let runtime_snapshot = || {
-        let mut readiness = ParticipantReadinessPresentation::from_legacy(TEST_USERNAME, false);
+        let mut readiness =
+            ParticipantReadinessPresentation::from_syncplay_ready(TEST_USERNAME, false);
         readiness.protocol = ReadinessPresentationProtocol::V2;
         readiness.technical_phase = Some(TechnicalPlayabilityPhase::Playable);
         readiness.start_eligible = Some(false);
@@ -258,11 +259,11 @@ fn gui_shell_v2_runtime_retires_optimistic_pending_when_core_has_no_pending_oper
 
 #[test]
 fn gui_shell_app_state_replaces_pending_local_ready_target_before_runtime_matches() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some(TEST_USERNAME.to_owned()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
         room: Some("Room".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let runtime_snapshot = |is_ready| MainWindowRuntimeSnapshot {
@@ -325,8 +326,7 @@ fn gui_shell_app_state_replaces_pending_local_ready_target_before_runtime_matche
 
 #[test]
 fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuration_edits() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -411,9 +411,9 @@ fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuratio
 #[test]
 fn gui_shell_app_state_preserves_same_label_playlist_identity_source_and_undo_metadata_across_resync()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let entry_id = state.main_window.playlist[0].entry_id;
     {
@@ -465,8 +465,7 @@ fn gui_shell_app_state_preserves_same_label_playlist_identity_source_and_undo_me
 
 #[test]
 fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_edits() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -515,8 +514,7 @@ fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_room_
 
 #[test]
 fn gui_shell_app_state_preserves_connected_room_surface_across_configuration_room_edits() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -587,8 +585,7 @@ fn gui_shell_app_state_preserves_connected_room_surface_across_configuration_roo
 
 #[test]
 fn gui_shell_app_state_merges_runtime_main_window_users_with_configuration_runtime_room_updates() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {

@@ -5,7 +5,7 @@ impl ClientSession {
         &self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() || index < 0 {
+        if !self.shared_playlist_runtime_commands_allowed() || index < 0 {
             return Vec::new();
         }
 
@@ -18,7 +18,7 @@ impl ClientSession {
         if index_usize >= playlist.files.len() {
             return Vec::new();
         }
-        if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[index_usize]) {
+        if !self.playlist_target_switch_allowed(&playlist.files[index_usize]) {
             return Vec::new();
         }
 
@@ -45,8 +45,8 @@ impl ClientSession {
     }
 
     /// Builds the bounded room pause for an owned natural completion at a
-    /// no-loop boundary. The state remains an internal runtime obligation so
-    /// the public runtime-action enum can stay exhaustive and patch-compatible.
+    /// no-loop boundary. The runtime owns the physical-completion proof
+    /// required to publish this terminal state.
     pub(crate) fn terminal_state_for_verified_local_playlist_completion(
         &self,
         expected_index: i64,
@@ -84,7 +84,7 @@ impl ClientSession {
         &self,
         expected_index: i64,
     ) -> bool {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible()
+        if !self.shared_playlist_runtime_commands_allowed()
             || self.local_can_control() != Some(true)
         {
             return false;
@@ -102,11 +102,10 @@ impl ClientSession {
             return false;
         }
         if playlist.files.len() == 1 {
-            return !self.loop_single_files_enabled_legacy_compatible();
+            return !self.loop_single_files_enabled();
         }
         current_index.checked_add(1).is_some_and(|next_index| {
-            next_index >= playlist.files.len()
-                && !self.loop_at_end_of_playlist_enabled_legacy_compatible()
+            next_index >= playlist.files.len() && !self.loop_at_end_of_playlist_enabled()
         })
     }
 
@@ -114,7 +113,7 @@ impl ClientSession {
         &self,
         current_selection_already_proven: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
 
@@ -138,7 +137,7 @@ impl ClientSession {
         }
 
         if playlist.files.len() == 1 {
-            if !self.loop_single_files_enabled_legacy_compatible() {
+            if !self.loop_single_files_enabled() {
                 return Vec::new();
             }
             // A V2 replay is a fresh, server-coordinated playback episode. Sending
@@ -161,15 +160,15 @@ impl ClientSession {
             return Vec::new();
         };
         if next_index >= playlist.files.len() {
-            if !self.loop_at_end_of_playlist_enabled_legacy_compatible() {
+            if !self.loop_at_end_of_playlist_enabled() {
                 return Vec::new();
             }
-            if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[0]) {
+            if !self.playlist_target_switch_allowed(&playlist.files[0]) {
                 return Vec::new();
             }
             return vec![ClientRuntimeAction::SetPlaylistIndex { index: 0 }];
         }
-        if !self.playlist_target_switch_allowed_legacy_compatible(&playlist.files[next_index]) {
+        if !self.playlist_target_switch_allowed(&playlist.files[next_index]) {
             return Vec::new();
         }
 
@@ -183,7 +182,7 @@ impl ClientSession {
         file_name: String,
         select_after_queue: bool,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -211,7 +210,7 @@ impl ClientSession {
         }
         let mut files = current_files.clone();
         files.push(file_name);
-        self.capture_playlist_undo_snapshot_legacy_compatible(&room_name, &current_files, &files);
+        self.capture_playlist_undo_snapshot(&room_name, &current_files, &files);
 
         let target_index = if select_after_queue {
             files.len().saturating_sub(1)
@@ -233,7 +232,7 @@ impl ClientSession {
         &mut self,
         index: i64,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() || index < 0 {
+        if !self.shared_playlist_runtime_commands_allowed() || index < 0 {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -256,7 +255,7 @@ impl ClientSession {
 
         let mut files = current_files.clone();
         files.remove(delete_index);
-        self.capture_playlist_undo_snapshot_legacy_compatible(&room_name, &current_files, &files);
+        self.capture_playlist_undo_snapshot(&room_name, &current_files, &files);
 
         if files.is_empty() {
             return vec![ClientRuntimeAction::SetPlaylist { files }];
@@ -288,7 +287,7 @@ impl ClientSession {
         files: Vec<String>,
         selected_index: Option<usize>,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -309,11 +308,7 @@ impl ClientSession {
             .unwrap_or_default();
         let playlist_changed = files != current_files;
         if playlist_changed {
-            self.capture_playlist_undo_snapshot_legacy_compatible(
-                &room_name,
-                &current_files,
-                &files,
-            );
+            self.capture_playlist_undo_snapshot(&room_name, &current_files, &files);
         }
         if files.is_empty() {
             return playlist_changed
@@ -326,7 +321,7 @@ impl ClientSession {
             .filter(|index| *index < files.len())
             .or_else(|| {
                 Some(
-                    Self::local_playlist_target_index_from_changed_playlist_legacy_compatible(
+                    Self::local_playlist_target_index_from_changed_playlist(
                         &current_files,
                         current_index,
                         &files,
@@ -354,7 +349,7 @@ impl ClientSession {
     }
 
     pub fn runtime_actions_for_local_playlist_undo(&mut self) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -374,11 +369,7 @@ impl ClientSession {
             return Vec::new();
         }
 
-        self.capture_playlist_undo_snapshot_legacy_compatible(
-            &room_name,
-            &current_files,
-            &previous_files,
-        );
+        self.capture_playlist_undo_snapshot(&room_name, &current_files, &previous_files);
 
         if previous_files.is_empty() {
             return vec![ClientRuntimeAction::SetPlaylist {
@@ -386,13 +377,12 @@ impl ClientSession {
             }];
         }
 
-        let target_index =
-            Self::local_playlist_target_index_from_changed_playlist_legacy_compatible(
-                &current_files,
-                current_index,
-                &previous_files,
-            )
-            .min(previous_files.len().saturating_sub(1));
+        let target_index = Self::local_playlist_target_index_from_changed_playlist(
+            &current_files,
+            current_index,
+            &previous_files,
+        )
+        .min(previous_files.len().saturating_sub(1));
 
         vec![
             ClientRuntimeAction::SetPlaylist {
@@ -407,7 +397,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_remaining(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -431,21 +421,13 @@ impl ClientSession {
         }
 
         let mut shuffled_files = current_files.clone();
-        let seed =
-            self.next_playlist_shuffle_seed_legacy_compatible(&current_files, current_index, true);
-        Self::shuffle_playlist_slice_in_place_legacy_compatible(
-            &mut shuffled_files[shuffle_start..],
-            seed,
-        );
+        let seed = self.next_playlist_shuffle_seed(&current_files, current_index, true);
+        Self::shuffle_playlist_slice_in_place(&mut shuffled_files[shuffle_start..], seed);
         if shuffled_files == current_files {
             return Vec::new();
         }
 
-        self.capture_playlist_undo_snapshot_legacy_compatible(
-            &room_name,
-            &current_files,
-            &shuffled_files,
-        );
+        self.capture_playlist_undo_snapshot(&room_name, &current_files, &shuffled_files);
         vec![
             ClientRuntimeAction::SetPlaylist {
                 files: shuffled_files,
@@ -459,7 +441,7 @@ impl ClientSession {
     pub fn runtime_actions_for_local_playlist_shuffle_entire(
         &mut self,
     ) -> Vec<ClientRuntimeAction> {
-        if !self.shared_playlist_runtime_commands_allowed_legacy_compatible() {
+        if !self.shared_playlist_runtime_commands_allowed() {
             return Vec::new();
         }
         let Some(room_name) = self.model.room.name.clone() else {
@@ -475,20 +457,13 @@ impl ClientSession {
         }
         let current_index = playlist.index.and_then(|index| usize::try_from(index).ok());
         let mut shuffled_files = current_files.clone();
-        let seed = self.next_playlist_shuffle_seed_legacy_compatible(
-            &current_files,
-            current_index.unwrap_or(0),
-            false,
-        );
-        Self::shuffle_playlist_slice_in_place_legacy_compatible(&mut shuffled_files, seed);
+        let seed =
+            self.next_playlist_shuffle_seed(&current_files, current_index.unwrap_or(0), false);
+        Self::shuffle_playlist_slice_in_place(&mut shuffled_files, seed);
 
         let playlist_changed = shuffled_files != current_files;
         if playlist_changed {
-            self.capture_playlist_undo_snapshot_legacy_compatible(
-                &room_name,
-                &current_files,
-                &shuffled_files,
-            );
+            self.capture_playlist_undo_snapshot(&room_name, &current_files, &shuffled_files);
         }
 
         let mut actions = Vec::new();

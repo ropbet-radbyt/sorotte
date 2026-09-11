@@ -160,7 +160,7 @@ fn hello_advertises_playback_barrier_and_prepare_is_hidden_from_legacy_clients()
         assert_eq!(prepare.deadline, Some(105.0));
         let status = extension.status.expect("status should accompany prepare");
         assert_eq!(
-            status.excluded_legacy_clients,
+            status.excluded_unsupported_clients,
             BTreeSet::from(["legacy".to_owned()])
         );
     }

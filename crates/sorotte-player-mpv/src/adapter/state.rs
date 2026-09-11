@@ -204,45 +204,39 @@ impl fmt::Debug for MpvAdapter {
             )
             .field("playback_restart_sequence", &self.playback_restart_sequence)
             .field("next_command_id", &self.next_command_id)
+            .field("syncplay_ui_settings", &self.syncplay_ui_settings)
             .field(
-                "legacy_syncplay_ui_settings",
-                &self.legacy_syncplay_ui_settings,
+                "last_simulated_syncplay_osd_message",
+                &self.last_simulated_syncplay_osd_message,
             )
             .field(
-                "last_simulated_legacy_syncplay_osd_message",
-                &self.last_simulated_legacy_syncplay_osd_message,
+                "syncplay_osd_placement_overridden",
+                &self.syncplay_osd_placement_restore.is_some(),
             )
             .field(
-                "legacy_syncplay_osd_placement_overridden",
-                &self.legacy_syncplay_osd_placement_restore.is_some(),
+                "syncplayintf_script_loaded",
+                &self.syncplayintf_script_loaded,
             )
             .field(
-                "legacy_syncplayintf_script_loaded",
-                &self.legacy_syncplayintf_script_loaded,
+                "syncplayintf_options_applied",
+                &self.syncplayintf_options_applied,
+            )
+            .field("syncplayintf_script_name", &self.syncplayintf_script_name)
+            .field(
+                "syncplayintf_bridge_instance_id",
+                &self.syncplayintf_bridge_instance_id,
             )
             .field(
-                "legacy_syncplayintf_options_applied",
-                &self.legacy_syncplayintf_options_applied,
+                "syncplayintf_pending_options_generation",
+                &self.syncplayintf_pending_options_generation,
             )
             .field(
-                "legacy_syncplayintf_script_name",
-                &self.legacy_syncplayintf_script_name,
+                "syncplayintf_acknowledged_options_generation",
+                &self.syncplayintf_acknowledged_options_generation,
             )
             .field(
-                "legacy_syncplayintf_bridge_instance_id",
-                &self.legacy_syncplayintf_bridge_instance_id,
-            )
-            .field(
-                "legacy_syncplayintf_pending_options_generation",
-                &self.legacy_syncplayintf_pending_options_generation,
-            )
-            .field(
-                "legacy_syncplayintf_acknowledged_options_generation",
-                &self.legacy_syncplayintf_acknowledged_options_generation,
-            )
-            .field(
-                "legacy_syncplayintf_lease_reacquire_required",
-                &self.legacy_syncplayintf_lease_reacquire_required,
+                "syncplayintf_lease_reacquire_required",
+                &self.syncplayintf_lease_reacquire_required,
             )
             .field("sorotte_bridge_health", &self.sorotte_bridge_health)
             .field("ipc_endpoint", &self.ipc_endpoint)
@@ -341,31 +335,31 @@ impl Default for MpvAdapter {
             duration_metadata_generation: None,
             playback_restart_sequence: 0,
             next_command_id: 1,
-            legacy_syncplay_ui_settings: LegacySyncplayUiSettings::default(),
-            last_simulated_legacy_syncplay_osd_message: None,
-            legacy_syncplay_osd_placement_restore: None,
-            legacy_syncplayintf_script_loaded: false,
-            legacy_syncplayintf_options_applied: false,
-            legacy_syncplayintf_script_name: LEGACY_SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
-            legacy_syncplayintf_bridge_instance_id: None,
-            legacy_syncplayintf_owner_id: (*LEGACY_SYNCPLAYINTF_OWNER_ID).clone(),
-            legacy_syncplayintf_attachment_id: format!(
+            syncplay_ui_settings: SyncplayUiSettings::default(),
+            last_simulated_syncplay_osd_message: None,
+            syncplay_osd_placement_restore: None,
+            syncplayintf_script_loaded: false,
+            syncplayintf_options_applied: false,
+            syncplayintf_script_name: SYNCPLAYINTF_SCRIPT_NAME.to_owned(),
+            syncplayintf_bridge_instance_id: None,
+            syncplayintf_owner_id: (*SYNCPLAYINTF_OWNER_ID).clone(),
+            syncplayintf_attachment_id: format!(
                 "detached-{}",
-                NEXT_LEGACY_SYNCPLAYINTF_ATTACHMENT.fetch_add(1, Ordering::Relaxed)
+                NEXT_SYNCPLAYINTF_ATTACHMENT.fetch_add(1, Ordering::Relaxed)
             ),
-            legacy_syncplayintf_next_options_generation: 1,
-            legacy_syncplayintf_pending_options_generation: None,
-            legacy_syncplayintf_acknowledged_options_generation: None,
-            legacy_syncplayintf_options_ack_error: None,
-            legacy_syncplayintf_next_ping_nonce: 1,
-            legacy_syncplayintf_pending_ping_nonce: None,
-            legacy_syncplayintf_last_heartbeat_at: None,
-            legacy_syncplayintf_pending_heartbeat_command_id: None,
-            legacy_syncplayintf_last_discovery_at: None,
-            legacy_syncplayintf_lease_reacquire_required: false,
-            legacy_syncplayintf_runtime_rediscovery_required: false,
-            legacy_syncplayintf_runtime_recovery_attempts: 0,
-            legacy_syncplayintf_runtime_recovery_failure: None,
+            syncplayintf_next_options_generation: 1,
+            syncplayintf_pending_options_generation: None,
+            syncplayintf_acknowledged_options_generation: None,
+            syncplayintf_options_ack_error: None,
+            syncplayintf_next_ping_nonce: 1,
+            syncplayintf_pending_ping_nonce: None,
+            syncplayintf_last_heartbeat_at: None,
+            syncplayintf_pending_heartbeat_command_id: None,
+            syncplayintf_last_discovery_at: None,
+            syncplayintf_lease_reacquire_required: false,
+            syncplayintf_runtime_rediscovery_required: false,
+            syncplayintf_runtime_recovery_attempts: 0,
+            syncplayintf_runtime_recovery_failure: None,
             sorotte_bridge_health: SorotteBridgeHealth::Disabled,
             pending_sorotte_bridge_health_transitions: VecDeque::new(),
             ipc_endpoint: None,

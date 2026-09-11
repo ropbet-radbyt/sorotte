@@ -2,12 +2,11 @@ use super::*;
 
 use serde_json::Value;
 use sorotte_client_app::app_boundary::state::{
-    AutoplayThresholdOverride, StoredClientSettingsMvp,
-    stored_client_settings_runtime_snapshot_legacy_compatible,
+    AutoplayThresholdOverride, StoredClientSettings, stored_client_settings_runtime_snapshot,
 };
 use sorotte_client_core::{
-    DesyncCorrectionConfig, ReadinessAutoplayConfig, SYNCPLAY_COMPAT_VERSION_LEGACY,
-    SYNCPLAY_WIRE_VERSION_LEGACY, SessionBehaviorConfig, UnpauseActionMode,
+    DesyncCorrectionConfig, ReadinessAutoplayConfig, SYNCPLAY_COMPAT_VERSION,
+    SYNCPLAY_WIRE_VERSION, SessionBehaviorConfig, UnpauseActionMode,
 };
 use sorotte_protocol::{ProtocolMessage, SOROTTE_READINESS_RECONNECT_TOKEN, decode_message_line};
 

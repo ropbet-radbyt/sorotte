@@ -3,12 +3,12 @@ use std::sync::{Condvar, Mutex};
 use super::*;
 use crate::app::{
     feature_slices::updates,
-    remote_services::{LegacyUpdateCheckStatus, UpdateCandidateSource, UpdateChannel},
+    remote_services::{UpdateCandidateSource, UpdateChannel, UpdateCheckStatus},
     runtime_bridge::{GuiQueuedRuntimeOwner, GuiRuntimeRequest},
     runtime_owner::GuiPersistedConfigRuntimeOwner,
     shell_state::SorotteGuiShellAppState,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[derive(Default)]
 struct BlockGate {
@@ -61,7 +61,7 @@ impl BlockGate {
 #[derive(Clone)]
 struct FakeUpdateService {
     calls: Arc<Mutex<Vec<String>>>,
-    check_result: LegacyUpdateCheckResult,
+    check_result: UpdateCheckResult,
     download_result: UpdateDownloadResult,
     launch_result: UpdateApplyLaunchResult,
     blocked_check_language: Option<String>,
@@ -102,7 +102,7 @@ impl GuiUpdateService for FakeUpdateService {
         language: &str,
         user_initiated: bool,
         update_channel: Option<&str>,
-    ) -> LegacyUpdateCheckResult {
+    ) -> UpdateCheckResult {
         self.calls
             .lock()
             .expect("fake update calls should remain available")
@@ -182,9 +182,9 @@ fn staged_update() -> StagedUpdate {
     }
 }
 
-fn check_result() -> LegacyUpdateCheckResult {
-    LegacyUpdateCheckResult {
-        status: LegacyUpdateCheckStatus::UpdateAvailable,
+fn check_result() -> UpdateCheckResult {
+    UpdateCheckResult {
+        status: UpdateCheckStatus::UpdateAvailable,
         message: "An update is available.".to_owned(),
         url: Some("https://example.invalid/release".to_owned()),
         candidate: Some(candidate()),
@@ -377,10 +377,10 @@ fn blocked_update_job_leaves_session_transport_pumping_live() {
         .expect("client-core session runtime should bootstrap");
     owner.update_runtime = runtime;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let watchdog_gate = gate.clone();
     let (watchdog_done_tx, watchdog_done_rx) = mpsc::channel();
@@ -471,12 +471,12 @@ fn runtime_owner_routes_startup_check_through_update_coordinator() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.update_runtime = runtime;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         check_for_updates_automatically: Some(true),
         language: Some("fr".to_owned()),
         update_channel: Some("dev".to_owned()),
         last_checked_for_updates: None,
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -536,13 +536,13 @@ fn assert_startup_remote_jobs_complete_independently(update_completes_first: boo
         .update_runtime
         .reconcile(&update_view(true, "fr", Some("dev")));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         check_for_updates_automatically: Some(true),
         language: Some("fr".to_owned()),
         update_channel: Some("dev".to_owned()),
         last_checked_for_updates: None,
         public_servers: None,
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut projected_state = SorotteGuiShellAppState::from_stored_settings(&settings);
     let mut observed_state = SorotteGuiShellAppState::from_stored_settings(&settings);
@@ -948,7 +948,7 @@ fn previous_channel_generation_is_cancelled_and_its_result_is_ignored() {
     assert!(matches!(
         handle.drain_actions().as_slice(),
         [GuiShellAction::ApplyUpdateCheckResult(result)]
-            if result.status == LegacyUpdateCheckStatus::Failed
+            if result.status == UpdateCheckStatus::Failed
                 && result.message.contains("settings changed")
     ));
 

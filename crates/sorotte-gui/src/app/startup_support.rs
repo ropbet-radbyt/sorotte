@@ -166,7 +166,7 @@ impl GuiStartupConfigPathSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum GuiStartupPlayerIpcSource {
     ClientEnv(String),
-    LegacyEnv(String),
+    MpvEnv(String),
 }
 
 impl GuiStartupPlayerIpcSource {
@@ -183,12 +183,12 @@ impl GuiStartupPlayerIpcSource {
         lookup("SOROTTE_MPV_IPC_PATH")
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
-            .map(Self::LegacyEnv)
+            .map(Self::MpvEnv)
     }
 
     pub(super) fn ipc_path(&self) -> &str {
         match self {
-            Self::ClientEnv(path) | Self::LegacyEnv(path) => path,
+            Self::ClientEnv(path) | Self::MpvEnv(path) => path,
         }
     }
 
@@ -197,7 +197,7 @@ impl GuiStartupPlayerIpcSource {
             Self::ClientEnv(path) => {
                 format!("Startup will try mpv JSON IPC from SOROTTE_CLIENT_MPV_IPC_PATH ({path}).")
             }
-            Self::LegacyEnv(path) => {
+            Self::MpvEnv(path) => {
                 format!("Startup will try mpv JSON IPC from SOROTTE_MPV_IPC_PATH ({path}).")
             }
         }

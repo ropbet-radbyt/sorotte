@@ -1,9 +1,6 @@
 use sorotte_client_app::app_boundary::{
-    language::normalized_legacy_runtime_language_tag_legacy_compatible,
-    state::{
-        StoredClientSettingsMvp, parse_autoplay_min_users_override_legacy_compatible,
-        parse_unpause_action_mode_legacy_compatible,
-    },
+    language::normalized_runtime_language_tag,
+    state::{StoredClientSettings, parse_autoplay_min_users_override, parse_unpause_action_mode},
 };
 use sorotte_client_core::PrivacyMode;
 
@@ -21,7 +18,7 @@ use super::support::{
 mod tests;
 
 impl FirstRunConfigurationDialogDraft {
-    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let state = FirstRunConfigurationDialogState::from_stored_settings(settings);
         let sections = state.dialog_sections();
         debug_assert_eq!(
@@ -42,7 +39,7 @@ impl FirstRunConfigurationDialogDraft {
         }
     }
 
-    pub(super) fn to_stored_settings(&self) -> StoredClientSettingsMvp {
+    pub(super) fn to_stored_settings(&self) -> StoredClientSettings {
         let mut settings = self.settings.clone();
         match &self.server_password {
             SecretDraft::Unchanged => {}
@@ -56,14 +53,14 @@ impl FirstRunConfigurationDialogDraft {
         settings
     }
 
-    pub(super) fn has_unsaved_changes_against(&self, settings: &StoredClientSettingsMvp) -> bool {
+    pub(super) fn has_unsaved_changes_against(&self, settings: &StoredClientSettings) -> bool {
         self.to_stored_settings() != *settings
             || self.sections != Self::from_stored_settings(settings).sections
     }
 
     pub(super) fn changed_setting_ids_against(
         &self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) -> Vec<SettingId> {
         let persisted = Self::from_stored_settings(settings);
         let mut changed = SettingId::ALL
@@ -90,10 +87,10 @@ impl FirstRunConfigurationDialogDraft {
     }
 
     pub(super) fn merge_apply_requirement_from_settings(
-        baseline: &StoredClientSettingsMvp,
-        source: &StoredClientSettingsMvp,
+        baseline: &StoredClientSettings,
+        source: &StoredClientSettings,
         requirement: GuiSettingApplyRequirement,
-    ) -> StoredClientSettingsMvp {
+    ) -> StoredClientSettings {
         let mut merged = Self::from_stored_settings(baseline);
         let source = Self::from_stored_settings(source);
         for id in SettingId::ALL
@@ -248,7 +245,7 @@ impl FirstRunConfigurationDialogDraft {
             SettingId::PlaybackUnpauseAction => {
                 self.settings.unpause_action = normalized_editable_text(value)
                     .as_deref()
-                    .and_then(parse_unpause_action_mode_legacy_compatible);
+                    .and_then(parse_unpause_action_mode);
             }
             SettingId::PlaybackAutoplayMinUsers => {
                 self.settings.autoplay_min_users = normalized_editable_text(value)
@@ -257,19 +254,19 @@ impl FirstRunConfigurationDialogDraft {
                         if value.eq_ignore_ascii_case("app-default") {
                             None
                         } else {
-                            parse_autoplay_min_users_override_legacy_compatible(value)
+                            parse_autoplay_min_users_override(value)
                         }
                     });
             }
             SettingId::PrivacyFilename => {
                 self.settings.filename_privacy_mode = normalized_editable_text(value)
                     .as_deref()
-                    .and_then(PrivacyMode::from_legacy_name);
+                    .and_then(PrivacyMode::from_syncplay_name);
             }
             SettingId::PrivacyFilesize => {
                 self.settings.filesize_privacy_mode = normalized_editable_text(value)
                     .as_deref()
-                    .and_then(PrivacyMode::from_legacy_name);
+                    .and_then(PrivacyMode::from_syncplay_name);
             }
             SettingId::PrivacyTrustedDomains => {
                 self.settings.trusted_domains = parse_editable_string_list_text(value);
@@ -424,7 +421,7 @@ impl FirstRunConfigurationDialogDraft {
             SettingId::GeneralLanguage => {
                 self.settings.language = normalized_editable_text(value)
                     .as_deref()
-                    .and_then(normalized_legacy_runtime_language_tag_legacy_compatible)
+                    .and_then(normalized_runtime_language_tag)
                     .map(str::to_owned);
             }
             SettingId::GeneralUpdateChannel => {

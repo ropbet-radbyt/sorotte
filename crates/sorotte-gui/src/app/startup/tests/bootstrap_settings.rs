@@ -121,13 +121,13 @@ fn gui_startup_settings_from_lookup_loads_stored_config_before_rendering() {
         |_path| false,
         |path| {
             assert_eq!(path, std::path::Path::new("stored-sorotte.ini"));
-            Ok(Some(StoredClientSettingsMvp {
+            Ok(Some(StoredClientSettings {
                 host: Some("persisted.example".to_owned()),
                 port: Some(8999),
                 username: Some("persisted-user".to_owned()),
                 room: Some("persisted-room".to_owned()),
                 player_path: Some("C:/Players/mpv.exe".to_owned()),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }))
         },
     )
@@ -175,14 +175,14 @@ fn gui_startup_settings_from_lookup_overlays_bootstrap_on_loaded_config() {
         || None,
         |_path| false,
         |_path| {
-            Ok(Some(StoredClientSettingsMvp {
+            Ok(Some(StoredClientSettings {
                 host: Some("persisted.example".to_owned()),
                 port: Some(7777),
                 username: Some("persisted-user".to_owned()),
                 room: Some("persisted-room".to_owned()),
                 player_path: Some("C:/Players/mpv.exe".to_owned()),
                 ready_at_start: Some(true),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }))
         },
     )
@@ -213,9 +213,9 @@ fn gui_tcp_bootstrap_tls_policy_uses_merged_credentials_and_explicit_override() 
         || None,
         |_path| false,
         |_path| {
-            Ok(Some(StoredClientSettingsMvp {
+            Ok(Some(StoredClientSettings {
                 server_password: Some("persisted-secret".into()),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             }))
         },
     )
@@ -227,7 +227,7 @@ fn gui_tcp_bootstrap_tls_policy_uses_merged_credentials_and_explicit_override() 
         "an environment TCP bootstrap must not downgrade persisted credentials"
     );
 
-    let explicitly_plaintext = StoredClientSettingsMvp {
+    let explicitly_plaintext = StoredClientSettings {
         server_password: Some("persisted-secret".into()),
         tls_policy: Some("Plaintext".to_owned()),
         ..settings

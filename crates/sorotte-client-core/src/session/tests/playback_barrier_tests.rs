@@ -50,7 +50,7 @@ fn status(
         quorum: None,
         deadline: 115.0,
         participants: BTreeMap::<String, PlaybackBarrierParticipantStatus>::new(),
-        excluded_legacy_clients: BTreeSet::new(),
+        excluded_unsupported_clients: BTreeSet::new(),
     }
 }
 
@@ -515,7 +515,7 @@ fn barrier_extension_and_ordinary_playstate_remain_separate_in_mixed_rooms() {
     let mut session = barrier_session();
     let mut preparing_status = status(31, None, PlaybackBarrierPhase::Preparing);
     preparing_status
-        .excluded_legacy_clients
+        .excluded_unsupported_clients
         .insert("legacy-bob".to_owned());
     apply_extension(
         &mut session,
@@ -550,7 +550,7 @@ fn barrier_extension_and_ordinary_playstate_remain_separate_in_mixed_rooms() {
     assert!(
         session
             .playback_barrier_status()
-            .is_some_and(|status| status.excluded_legacy_clients.contains("legacy-bob"))
+            .is_some_and(|status| status.excluded_unsupported_clients.contains("legacy-bob"))
     );
     assert!(session.drain_compatibility_fallbacks().is_empty());
 

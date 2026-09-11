@@ -13,7 +13,7 @@ use std::{
 
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned, pki_types::ServerName};
 use sorotte_client_app::app_boundary::state::{
-    TlsPolicy, parse_host_and_optional_port_from_host_arg_legacy_compatible,
+    TlsPolicy, parse_host_and_optional_port_from_host_arg,
 };
 use sorotte_protocol::{
     PingPayload, ProtocolMessage, SOROTTE_MAX_PROTOCOL_LINE_BYTES, StatePayload,
@@ -467,7 +467,7 @@ impl GuiTcpSessionTransportDriver {
         tls_policy: TlsPolicy,
         resolver_service: Arc<GuiDnsResolverService>,
     ) -> Result<Self, String> {
-        let (host, port) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
+        let (host, port) = parse_host_and_optional_port_from_host_arg(host_arg);
         let Some(port) = port.or(Some(8999)) else {
             return Err("Session transport TCP port resolution failed.".to_owned());
         };
@@ -1180,7 +1180,7 @@ impl GuiThreadedTcpSessionTransportDriver {
         host_arg: &str,
         tls_policy: TlsPolicy,
     ) -> Result<Self, String> {
-        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(host_arg);
+        let (host, _) = parse_host_and_optional_port_from_host_arg(host_arg);
         if host.trim().is_empty() {
             return Err("Session transport TCP host resolution failed: host was empty.".to_owned());
         }

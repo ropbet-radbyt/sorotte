@@ -7,16 +7,16 @@ mod transaction;
 mod windows_security;
 mod writer;
 
-pub use parser::parse_sorotte_ini_stored_client_settings_mvp;
+pub use parser::parse_sorotte_ini_stored_client_settings;
 pub use paths::{
-    clear_sorotte_ini_stored_client_settings_mvp_at_path, create_private_directory,
-    edit_sorotte_ini_stored_client_settings_mvp_at_path,
-    load_sorotte_ini_stored_client_settings_mvp_from_path,
-    merge_sorotte_ini_stored_client_settings_mvp_at_path,
-    relocate_sorotte_ini_stored_client_settings_mvp_at_path,
-    update_sorotte_ini_stored_client_settings_mvp_at_path,
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path,
-    upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity_at_path,
+    clear_sorotte_ini_stored_client_settings_at_path, create_private_directory,
+    edit_sorotte_ini_stored_client_settings_at_path,
+    load_sorotte_ini_stored_client_settings_from_path,
+    merge_sorotte_ini_stored_client_settings_at_path,
+    relocate_sorotte_ini_stored_client_settings_at_path,
+    update_sorotte_ini_stored_client_settings_at_path,
+    upsert_sorotte_ini_stored_client_settings_at_path,
+    upsert_sorotte_ini_stored_client_settings_clearing_plex_identity_at_path,
     write_sorotte_ini_contents_atomically_at_path,
 };
 pub(crate) use paths::{
@@ -24,8 +24,8 @@ pub(crate) use paths::{
     update_sorotte_ini_contents_at_path,
 };
 pub use writer::{
-    upsert_sorotte_ini_stored_client_settings_mvp,
-    upsert_sorotte_ini_stored_client_settings_mvp_clearing_plex_identity,
+    upsert_sorotte_ini_stored_client_settings,
+    upsert_sorotte_ini_stored_client_settings_clearing_plex_identity,
 };
 
 #[cfg(test)]

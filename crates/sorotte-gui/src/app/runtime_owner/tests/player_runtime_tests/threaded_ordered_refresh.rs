@@ -160,7 +160,7 @@ impl LegacyGetterPayloads {
                 None,
             )),
             ordered_observation_batch: Some(PlayerObservationBatch {
-                legacy_playback_telemetry: Some(
+                playback_telemetry: Some(
                     PlayerPlaybackTelemetryUpdate::default()
                         .with_paused(false)
                         .with_position_seconds(999.0),
@@ -492,9 +492,9 @@ fn shutdown_and_assert_bounded(pump: &mut GuiThreadedRuntimeOwnerPump, probe: &A
 fn threaded_ordered_refresh_projects_success_without_calling_poisoned_legacy_getters() {
     let (mut runtime, mut pump, probe, repaint_rx) =
         threaded_runtime(LegacyGetterBehavior::Panic, 0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiNativeRuntimePump::pump(&mut pump, &state);
@@ -540,9 +540,9 @@ fn threaded_ordered_refresh_projects_success_without_calling_poisoned_legacy_get
 fn threaded_ordered_refresh_recovers_ack_failure_without_mixed_or_stale_delivery() {
     let (mut runtime, mut pump, probe, repaint_rx) =
         threaded_runtime(LegacyGetterBehavior::ContradictoryResponses, 1);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let token = PlayerEventAcknowledgementToken::new(PlayerAttachmentEpoch::new(1), 1);
 

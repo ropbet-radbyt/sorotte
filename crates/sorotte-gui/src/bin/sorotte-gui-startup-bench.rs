@@ -14,8 +14,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sorotte_client_app::app_boundary::{
-    persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path,
-    state::StoredClientSettingsMvp,
+    persistence::upsert_sorotte_ini_stored_client_settings_at_path, state::StoredClientSettings,
 };
 
 #[cfg(target_os = "windows")]
@@ -821,7 +820,7 @@ where
 }
 
 fn seed_config(config_path: &Path, port: Option<u16>) -> Result<(), String> {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: port.map(|_| "127.0.0.1".to_owned()),
         port,
         username: Some(BENCH_USERNAME.to_owned()),
@@ -835,9 +834,9 @@ fn seed_config(config_path: &Path, port: Option<u16>) -> Result<(), String> {
             ("Bench Primary".to_owned(), "127.0.0.1:8999".to_owned()),
             ("Bench Backup".to_owned(), "127.0.0.1:9000".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &settings).map_err(|error| {
+    upsert_sorotte_ini_stored_client_settings_at_path(config_path, &settings).map_err(|error| {
         format!(
             "failed to seed benchmark config {}: {error}",
             config_path.display()

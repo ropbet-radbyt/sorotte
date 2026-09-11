@@ -339,14 +339,14 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
         update: None,
     })));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".into()),
         room: Some("room1".into()),
         player_path: Some("mpv".into()),
         shared_playlist_enabled: Some(true),
         only_switch_to_trusted_domains: Some(false),
         trusted_domains: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     for _ in 0..12 {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -596,24 +596,24 @@ fn real_mpv_current_server_repro(pipelined_playlist: bool, network: bool, plex: 
         .complete_mpv_attachment_after_core_configuration(
             player,
             None,
-            &sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            &sorotte_player_mpv::SyncplayUiSettings::default(),
         )
         .unwrap();
     owner.report_external_player_availability(
         sorotte_client_core::ExternalPlayerAvailability::Connecting,
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".into()),
         room: Some(room_input.clone()),
         player_path: Some("mpv".into()),
         shared_playlist_enabled: Some(true),
         only_switch_to_trusted_domains: Some(false),
         trusted_domains: Some(Vec::new()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     if let Some(config) = &real_plex {
-        state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             username: Some("alice".into()),
             room: Some(room_input.clone()),
             player_path: Some("mpv".into()),
@@ -628,7 +628,7 @@ fn real_mpv_current_server_repro(pipelined_playlist: bool, network: bool, plex: 
             plex_selected_server_id: Some(config["server_id"].as_str().unwrap().into()),
             plex_selected_server_url: Some(config["server_url"].as_str().unwrap().into()),
             plex_selected_server_token: Some(config["token"].as_str().unwrap().into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     }
     for _ in 0..12 {

@@ -91,7 +91,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(12.5);
 
-    let state_a = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state_a = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         autoplay_initial_state: Some(true),
         dont_slow_down_with_me: Some(false),
         loop_single_files: Some(true),
@@ -100,13 +100,13 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
         autoplay_min_users: Some(
             sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(3),
         ),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .sync_detached_session_preferences_and_player_state(&state_a)
         .expect("first detached-session preference sync should succeed");
 
-    let state_b = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state_b = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         autoplay_initial_state: Some(false),
         dont_slow_down_with_me: Some(true),
         loop_single_files: Some(false),
@@ -115,7 +115,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
         autoplay_min_users: Some(
             sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(5),
         ),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .sync_detached_session_preferences_and_player_state(&state_b)
@@ -338,7 +338,7 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
     player_state

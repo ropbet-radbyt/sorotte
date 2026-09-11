@@ -221,8 +221,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions
         "server_runtime_controlled_room_permissions.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -237,8 +236,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_pas
         "server_runtime_controlled_room_invalid_password.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -254,8 +252,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_force
         "server_runtime_controlled_room_state_forced_correction.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -265,18 +262,19 @@ fn python_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_force
 }
 
 #[test]
-fn legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario() {
-    if !legacy_server_parity_assertions_enabled() {
+fn syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario()
+{
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
         return;
     }
-    match assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+    match assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
         "server_runtime_controlled_room_permissions.jsonl",
     ) {
         Ok(()) => {}
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy server fanout interop test skipped due to missing prerequisites: {err}"
             );
@@ -288,19 +286,19 @@ fn legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_perm
 }
 
 #[test]
-fn legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario()
+fn syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario()
  {
-    if !legacy_server_parity_assertions_enabled() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
         return;
     }
-    match assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+    match assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
         "server_runtime_controlled_room_invalid_password.jsonl",
     ) {
         Ok(()) => {}
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy server fanout interop test skipped due to missing prerequisites: {err}"
             );
@@ -312,19 +310,19 @@ fn legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_inva
 }
 
 #[test]
-fn legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario()
+fn syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario()
  {
-    if !legacy_server_parity_assertions_enabled() {
+    if !syncplay_server_parity_assertions_enabled() {
         eprintln!(
             "legacy server parity assertion skipped; set SYNCPLAY_ASSERT_LEGACY_FANOUT_PARITY=1 to enable"
         );
         return;
     }
-    match assert_legacy_server_fanout_matches_server_runtime_for_scenario(
+    match assert_syncplay_server_fanout_matches_server_runtime_for_scenario(
         "server_runtime_controlled_room_state_forced_correction.jsonl",
     ) {
         Ok(()) => {}
-        Err(err) if legacy_server_prerequisites_missing(&err) => {
+        Err(err) if syncplay_server_prerequisites_missing(&err) => {
             eprintln!(
                 "legacy server fanout interop test skipped due to missing prerequisites: {err}"
             );

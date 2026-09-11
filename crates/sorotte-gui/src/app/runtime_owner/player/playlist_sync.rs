@@ -230,7 +230,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
 
             // Always reassert the temporary transition hold after file
-            // confirmation. `pause_before_sync` is retained as the legacy
+            // confirmation. `pause_before_sync` is retained as the original
             // intent value, while successor room authority decides whether
             // playback ultimately stays paused or resumes.
             let command_id = match self
@@ -315,7 +315,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
 
         // Receipt sequencing, rather than value equality, proves that this is
-        // successor authority. Clear the legacy predecessor suppression even
+        // successor authority. Clear the predecessor suppression even
         // when the successor happens to carry the same playstate values.
         self.suppressed_attached_room_playstate_after_playlist_reset = None;
         let consumed_reset = self.session.as_mut().and_then(|session| {

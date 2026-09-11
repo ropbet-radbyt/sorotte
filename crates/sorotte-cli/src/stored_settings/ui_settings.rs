@@ -1,14 +1,14 @@
 use super::*;
 
-pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
-    settings: Option<&StoredClientSettingsMvp>,
-) -> LegacySyncplayUiSettings {
+pub(crate) fn syncplay_ui_settings_from_stored_settings(
+    settings: Option<&StoredClientSettings>,
+) -> SyncplayUiSettings {
     let resolved = settings
         .map(ClientConfig::resolve)
         .map(|resolution| resolution.config)
         .unwrap_or_default();
     let interface = resolved.interface;
-    LegacySyncplayUiSettings {
+    SyncplayUiSettings {
         show_osd: interface.show_osd,
         chat_output_enabled: interface.chat_output_enabled,
         chat_input_enabled: interface.chat_input_enabled,
@@ -36,12 +36,12 @@ pub(crate) fn legacy_syncplay_ui_settings_from_stored_settings(
     }
 }
 
-pub(crate) fn apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible(
+pub(crate) fn apply_syncplay_ui_settings_to_mpv_adapter(
     player: &mut MpvAdapter,
-    settings: Option<&StoredClientSettingsMvp>,
+    settings: Option<&StoredClientSettings>,
 ) -> SorotteBridgeHealth {
-    let resolved = legacy_syncplay_ui_settings_from_stored_settings(settings);
-    if let Err(error) = player.configure_legacy_syncplay_ui_settings(resolved) {
+    let resolved = syncplay_ui_settings_from_stored_settings(settings);
+    if let Err(error) = player.configure_syncplay_ui_settings(resolved) {
         return player.mark_sorotte_bridge_degraded(
             SorotteBridgeFailureKind::IpcCommand,
             format!("failed to configure mpv OSD/chat settings: {error}"),

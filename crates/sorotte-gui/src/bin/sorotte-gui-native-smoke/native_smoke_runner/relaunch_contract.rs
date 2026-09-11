@@ -208,10 +208,10 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
             ));
         }
         for store_name in ["MainWindow", "Interface", "MediaBrowseDialog"] {
-            let store_path = legacy_gui_qsettings_store_path(gui_state_root, store_name);
+            let store_path = syncplay_qsettings_store_path(gui_state_root, store_name);
             if store_path.exists() {
                 return Err(format!(
-                    "clear-GUI-data did not remove legacy GUI state file {}",
+                    "clear-GUI-data did not remove Syncplay GUI state file {}",
                     store_path.display()
                 ));
             }
@@ -334,7 +334,7 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         steps.push("clear-gui-data-relaunch-first-run".to_owned());
         steps.push("clear-gui-data-player-setup-blocked".to_owned());
 
-        let migration_settings = StoredClientSettingsMvp {
+        let migration_settings = StoredClientSettings {
             host: Some(MIGRATION_INI_SERVER_HOST.to_owned()),
             port: Some(MIGRATION_INI_SERVER_PORT.parse().unwrap()),
             username: Some(CONFIG_USERNAME_VALUE.to_owned()),
@@ -344,9 +344,9 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
                 MIGRATION_INI_SERVER_LABEL.to_owned(),
                 MIGRATION_INI_SERVER_ADDRESS.to_owned(),
             )]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(config_path, &migration_settings)
+        upsert_sorotte_ini_stored_client_settings_at_path(config_path, &migration_settings)
             .map_err(|error| {
                 format!(
                     "failed to seed config-migration config {}: {error}",

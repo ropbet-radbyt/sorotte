@@ -5,7 +5,7 @@ use sorotte_player_api::{
 
 const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
 const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
-const LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN: u64 = 3;
+const SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN: u64 = 3;
 const IPC_EVENT_FENCE_COMMAND_TOKEN: u64 = 4;
 const CACHE_PAUSE_READBACK_COMMAND_TOKEN: u64 = 5;
 
@@ -23,7 +23,7 @@ impl MpvAdapter {
         self.invalidate_cache_pause_readback_scope();
         self.transport_readback = transport_readback::TransportReadbackState::default();
         self.invalidate_network_media_options_hook_delivery();
-        self.legacy_syncplayintf_pending_heartbeat_command_id = None;
+        self.syncplayintf_pending_heartbeat_command_id = None;
     }
 
     fn cache_pause_readback_scope_is_current(&self, pending: &PendingCachePauseReadback) -> bool {
@@ -188,12 +188,10 @@ impl MpvAdapter {
                     match completion {
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
                             command_id,
-                            token: LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
-                        } if self.legacy_syncplayintf_pending_heartbeat_command_id
-                            == Some(command_id) =>
-                        {
-                            self.legacy_syncplayintf_pending_heartbeat_command_id = None;
-                            self.legacy_syncplayintf_last_heartbeat_at = Some(Instant::now());
+                            token: SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                        } if self.syncplayintf_pending_heartbeat_command_id == Some(command_id) => {
+                            self.syncplayintf_pending_heartbeat_command_id = None;
+                            self.syncplayintf_last_heartbeat_at = Some(Instant::now());
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
                             command_id,
@@ -276,12 +274,10 @@ impl MpvAdapter {
                         }
                         crate::ipc::MpvIpcNonblockingCommandCompletion::Failed {
                             command_id,
-                            token: LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                            token: SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
                             message,
-                        } if self.legacy_syncplayintf_pending_heartbeat_command_id
-                            == Some(command_id) =>
-                        {
-                            self.legacy_syncplayintf_pending_heartbeat_command_id = None;
+                        } if self.syncplayintf_pending_heartbeat_command_id == Some(command_id) => {
+                            self.syncplayintf_pending_heartbeat_command_id = None;
                             self.begin_sorotte_bridge_runtime_recovery(
                                 SorotteBridgeFailureKind::IpcCommand,
                                 format!("failed to renew Sorotte's mpv bridge lease: {message}"),
@@ -345,7 +341,7 @@ impl MpvAdapter {
                                 .to_owned(),
                         ),
                     );
-                    self.legacy_syncplayintf_pending_heartbeat_command_id = None;
+                    self.syncplayintf_pending_heartbeat_command_id = None;
                     self.begin_sorotte_bridge_runtime_recovery(
                         SorotteBridgeFailureKind::IpcCommand,
                         "Sorotte's mpv ordinary event queue overflowed; bridge state must be reacquired",
@@ -485,8 +481,8 @@ impl MpvAdapter {
             .next_network_media_options_hook_heartbeat_nonce;
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "heartbeatNonce": nonce,
         });
@@ -526,45 +522,42 @@ impl MpvAdapter {
         }
     }
 
-    fn maintain_legacy_syncplayintf_lease_nonblocking(&mut self) {
+    fn maintain_syncplayintf_lease_nonblocking(&mut self) {
         if !matches!(self.sorotte_bridge_health, SorotteBridgeHealth::Ready) {
             return;
         }
-        if !self.legacy_syncplay_ui_settings.chat_input_enabled {
-            self.legacy_syncplayintf_last_heartbeat_at = None;
-            self.legacy_syncplayintf_pending_heartbeat_command_id = None;
+        if !self.syncplay_ui_settings.chat_input_enabled {
+            self.syncplayintf_last_heartbeat_at = None;
+            self.syncplayintf_pending_heartbeat_command_id = None;
             return;
         }
-        if self
-            .legacy_syncplayintf_pending_heartbeat_command_id
-            .is_some()
-        {
+        if self.syncplayintf_pending_heartbeat_command_id.is_some() {
             return;
         }
-        if !self.legacy_syncplayintf_options_ready()
+        if !self.syncplayintf_options_ready()
             || self
-                .legacy_syncplayintf_last_heartbeat_at
-                .is_some_and(|last| last.elapsed() < LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL)
+                .syncplayintf_last_heartbeat_at
+                .is_some_and(|last| last.elapsed() < SYNCPLAYINTF_HEARTBEAT_INTERVAL)
         {
             return;
         }
-        let Some(payload) = self.legacy_syncplayintf_controller_payload() else {
+        let Some(payload) = self.syncplayintf_controller_payload() else {
             return;
         };
         let command = json!([
             MPV_COMMAND_SCRIPT_MESSAGE_TO,
-            self.legacy_syncplayintf_script_name.as_str(),
-            LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE,
+            self.syncplayintf_script_name.as_str(),
+            SYNCPLAYINTF_HEARTBEAT_MESSAGE,
             payload,
         ]);
         match self.ipc_client.as_mut().map(|client| {
             client.try_send_command_expect_success_nonblocking(
                 command,
-                LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
             )
         }) {
             Some(Ok(Some(command_id))) => {
-                self.legacy_syncplayintf_pending_heartbeat_command_id = Some(command_id);
+                self.syncplayintf_pending_heartbeat_command_id = Some(command_id);
             }
             Some(Ok(None)) => {}
             Some(Err(error)) => self.begin_sorotte_bridge_runtime_recovery(
@@ -581,7 +574,7 @@ impl MpvAdapter {
         // The optional bridge uses the same two-second lease as the core hook but has no
         // acknowledgement state that naturally reserves a later slot. Service it first so
         // network-hook event polling cannot monopolize the single IPC worker command slot.
-        self.maintain_legacy_syncplayintf_lease_nonblocking();
+        self.maintain_syncplayintf_lease_nonblocking();
         self.maintain_network_options_hook_lease_nonblocking();
         self.drain_runtime_lease_events_nonblocking();
     }
@@ -1365,7 +1358,7 @@ impl PlayerAdapter for MpvAdapter {
     fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
         // A later pump without a consumer reacquisition request acknowledges the previously
         // returned semantic terminals. Keep them until this boundary so a rejected batch can be
-        // reconstructed exactly, independent of the smaller legacy progress queue.
+        // reconstructed exactly, independent of the smaller typed command-progress queue.
         self.acknowledge_last_delivered_ordered_semantic_outcomes();
         self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
@@ -1506,7 +1499,7 @@ impl PlayerAdapter for MpvAdapter {
         Some(PlayerObservationBatch {
             dropped_events_through,
             ordered_events,
-            legacy_playback_telemetry: self.pending_playback_telemetry_update.take(),
+            playback_telemetry: self.pending_playback_telemetry_update.take(),
         })
     }
 
@@ -1615,7 +1608,7 @@ impl PlayerAdapter for MpvAdapter {
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
         self.maintain_runtime_integrations();
-        self.try_send_legacy_syncplayintf_options_if_pending();
+        self.try_send_syncplayintf_options_if_pending();
         if self.pending_chat_requests.is_empty() && !self.chat_input_polling_enabled() {
             return None;
         }
@@ -2825,7 +2818,7 @@ mod nonblocking_maintenance_tests {
                 })
             )
         }));
-        assert_eq!(batch.legacy_playback_telemetry, None);
+        assert_eq!(batch.playback_telemetry, None);
     }
 
     #[test]
@@ -3225,7 +3218,7 @@ mod nonblocking_maintenance_tests {
                         self.push(ack);
                     }
                 }
-            } else if message == Some(LEGACY_SYNCPLAYINTF_HEARTBEAT_MESSAGE) {
+            } else if message == Some(SYNCPLAYINTF_HEARTBEAT_MESSAGE) {
                 self.legacy_heartbeats.fetch_add(1, Ordering::Relaxed);
                 let event = self.ordinary_property_event();
                 self.push(event);
@@ -3265,10 +3258,10 @@ mod nonblocking_maintenance_tests {
             },
             Duration::from_millis(250),
         );
-        adapter.enable_test_legacy_chat_input();
+        adapter.enable_test_syncplay_chat_input();
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Ready;
-        adapter.legacy_syncplayintf_last_heartbeat_at =
-            Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+        adapter.syncplayintf_last_heartbeat_at =
+            Some(Instant::now() - SYNCPLAYINTF_HEARTBEAT_INTERVAL);
         adapter.network_options.network_media_options_hook_enabled = true;
         adapter.network_options.network_media_options_hook_loaded = true;
         adapter
@@ -3291,7 +3284,7 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
-    fn rejected_nonblocking_legacy_heartbeat_enters_recovery_without_blocking() {
+    fn rejected_nonblocking_syncplay_heartbeat_enters_recovery_without_blocking() {
         let command_timeout = Duration::from_millis(100);
         let mut adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
             RejectingHeartbeatTransport {
@@ -3299,10 +3292,10 @@ mod nonblocking_maintenance_tests {
             },
             command_timeout,
         );
-        adapter.enable_test_legacy_chat_input();
+        adapter.enable_test_syncplay_chat_input();
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Ready;
-        adapter.legacy_syncplayintf_last_heartbeat_at =
-            Some(Instant::now() - LEGACY_SYNCPLAYINTF_HEARTBEAT_INTERVAL);
+        adapter.syncplayintf_last_heartbeat_at =
+            Some(Instant::now() - SYNCPLAYINTF_HEARTBEAT_INTERVAL);
 
         let queued_at = Instant::now();
         PlayerAdapter::maintain_runtime_leases_nonblocking(&mut adapter);
@@ -3322,7 +3315,7 @@ mod nonblocking_maintenance_tests {
             adapter.sorotte_bridge_health(),
             SorotteBridgeHealth::Recovering
         ));
-        assert!(adapter.legacy_syncplayintf_last_heartbeat_at.is_none());
+        assert!(adapter.syncplayintf_last_heartbeat_at.is_none());
     }
 
     #[test]
@@ -3470,7 +3463,7 @@ mod nonblocking_maintenance_tests {
     ) {
         let (mut adapter, network_heartbeats, _legacy_heartbeats) =
             ready_adapter_with_control_lane_transport(ordering);
-        adapter.legacy_syncplay_ui_settings.chat_input_enabled = false;
+        adapter.syncplay_ui_settings.chat_input_enabled = false;
         adapter.sorotte_bridge_health = SorotteBridgeHealth::Disabled;
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
@@ -3655,8 +3648,8 @@ mod nonblocking_maintenance_tests {
         adapter
             .network_options
             .network_media_options_hook_pending_event_poll_command_id = Some(32);
-        adapter.legacy_syncplayintf_pending_heartbeat_command_id = Some(42);
-        adapter.legacy_syncplayintf_last_heartbeat_at = None;
+        adapter.syncplayintf_pending_heartbeat_command_id = Some(42);
+        adapter.syncplayintf_last_heartbeat_at = None;
         let client = adapter
             .ipc_client
             .as_mut()
@@ -3677,7 +3670,7 @@ mod nonblocking_maintenance_tests {
         client.inject_test_nonblocking_completion(
             crate::ipc::MpvIpcNonblockingCommandCompletion::Succeeded {
                 command_id: 41,
-                token: LEGACY_SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
+                token: SYNCPLAYINTF_HEARTBEAT_COMMAND_TOKEN,
             },
         );
 
@@ -3699,11 +3692,8 @@ mod nonblocking_maintenance_tests {
                 .network_media_options_hook_pending_event_poll_command_id,
             Some(32)
         );
-        assert_eq!(
-            adapter.legacy_syncplayintf_pending_heartbeat_command_id,
-            Some(42)
-        );
-        assert!(adapter.legacy_syncplayintf_last_heartbeat_at.is_none());
+        assert_eq!(adapter.syncplayintf_pending_heartbeat_command_id, Some(42));
+        assert!(adapter.syncplayintf_last_heartbeat_at.is_none());
         assert_eq!(
             adapter.network_options.network_media_options_hook_health,
             MpvNetworkOptionsHookHealth::Ready
@@ -4110,8 +4100,8 @@ mod nonblocking_maintenance_tests {
             },
             Duration::from_millis(100),
         );
-        adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
-        adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
+        adapter.syncplayintf_owner_id = "ordered-owner".to_owned();
+        adapter.syncplayintf_attachment_id = "ordered-attachment".to_owned();
         adapter.network_options.network_media_options_generation = 7;
         adapter.network_options.network_media_options_hook_enabled = true;
         adapter.network_options.network_media_options_hook_loaded = true;
@@ -4198,8 +4188,8 @@ mod nonblocking_maintenance_tests {
             },
             Duration::from_millis(100),
         );
-        adapter.legacy_syncplayintf_owner_id = "ordered-owner".to_owned();
-        adapter.legacy_syncplayintf_attachment_id = "ordered-attachment".to_owned();
+        adapter.syncplayintf_owner_id = "ordered-owner".to_owned();
+        adapter.syncplayintf_attachment_id = "ordered-attachment".to_owned();
         adapter.network_options.network_media_options_generation = 7;
         adapter.network_options.network_media_options_hook_enabled = true;
         adapter.network_options.network_media_options_hook_loaded = true;
@@ -4266,8 +4256,8 @@ mod nonblocking_maintenance_tests {
             MpvAdapter::with_network_options_hook_test_transport(RejectingHeartbeatTransport {
                 responses: VecDeque::new(),
             });
-        adapter.legacy_syncplayintf_owner_id = "causal-owner".to_owned();
-        adapter.legacy_syncplayintf_attachment_id = "causal-attachment".to_owned();
+        adapter.syncplayintf_owner_id = "causal-owner".to_owned();
+        adapter.syncplayintf_attachment_id = "causal-attachment".to_owned();
         adapter.configure_network_media_options([("cache-secs", "60")]);
         adapter.prepare_test_network_options_hook_v3_reducer();
         // The hook can advance its global sequence for work that does not

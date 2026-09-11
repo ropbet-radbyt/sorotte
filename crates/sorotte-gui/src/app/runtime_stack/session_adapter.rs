@@ -114,16 +114,12 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Err("Attached session runtime does not support room changes.".to_owned())
     }
 
-    fn set_room_with_legacy_fallback(&mut self, default_room: String) -> Result<(), String> {
+    fn set_room_with_default_fallback(&mut self, default_room: String) -> Result<(), String> {
         self.set_room(default_room)
     }
 
     fn set_local_ready(&mut self, _ready: bool) -> Result<(), String> {
         Err("Attached session runtime does not support local readiness changes.".to_owned())
-    }
-
-    fn mark_local_media_opened_not_ready(&mut self) -> Result<bool, String> {
-        Ok(false)
     }
 
     fn set_user_ready(&mut self, _username: String, _ready: bool) -> Result<(), String> {
@@ -623,7 +619,7 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    fn publish_local_file_legacy_compatible(
+    fn publish_local_file(
         &mut self,
         _file_payload: &Value,
         _filename_privacy_mode: PrivacyMode,

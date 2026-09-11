@@ -2,7 +2,7 @@
 use std::time::Instant;
 
 use super::{GuiSemanticDriver, GuiSemanticStep};
-use crate::app::StoredClientSettingsMvp;
+use crate::app::StoredClientSettings;
 
 fn user_rows(node: &crate::app::GuiWidgetNode) -> usize {
     usize::from(
@@ -13,7 +13,6 @@ fn user_rows(node: &crate::app::GuiWidgetNode) -> usize {
 }
 
 #[derive(Debug, serde::Serialize)]
-#[non_exhaustive]
 pub struct GuiProjectionMeasurement {
     pub pump_nanoseconds: Vec<u64>,
     pub widgets: usize,
@@ -32,7 +31,7 @@ pub(crate) fn measure_projection(
     let [GuiSemanticStep::ApplyMainWindowRuntimeSnapshot(snapshot)] = steps.as_slice() else {
         return Err("projection workload requires exactly one runtime snapshot".to_owned());
     };
-    let mut driver = GuiSemanticDriver::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut driver = GuiSemanticDriver::from_stored_settings(&StoredClientSettings::default());
     driver.run_steps(&steps)?;
     let mut result = GuiProjectionMeasurement {
         pump_nanoseconds: Vec::with_capacity(pumps),

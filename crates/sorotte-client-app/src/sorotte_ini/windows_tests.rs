@@ -29,7 +29,7 @@ use super::{
     },
     *,
 };
-use crate::legacy_settings::StoredClientSettingsMvp;
+use crate::stored_settings::StoredClientSettings;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -283,9 +283,9 @@ fn windows_inherited_acl_is_tightened_and_read_only_failure_preserves_bytes_and_
 fn windows_nested_new_settings_and_private_directories_use_protected_descriptors() {
     let fixture = Fixture::new("nested");
     let path = fixture.0.join("new").join("nested").join("sorotte.ini");
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             plex_user_token: Some("synthetic-token".into()),
             ..Default::default()
         },

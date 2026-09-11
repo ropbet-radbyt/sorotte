@@ -149,12 +149,12 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         }),
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_match_fingerprinting_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut inbound_snapshot = MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
     inbound_snapshot.chat.push(MainWindowRuntimeChatSnapshot {

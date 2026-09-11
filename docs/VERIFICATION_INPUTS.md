@@ -18,11 +18,10 @@ Writer-provided error text is omitted from retained health diagnostics.
 Schema version 1, digest representation, and healthy causal behavior remain
 unchanged. Event IDs remain within the schema's 128-byte/eight-digit limits.
 
-The public `EvidenceError` enum retains its 0.2.x variants. New recorder
-failures use a separate, non-exhaustive `RecordingFailure` type carried by the
-existing I/O variant; `EvidenceError::recording_failure` exposes the typed
-cause. Exhaustive downstream matches remain source-compatible, and sticky
-health still retains only the redacted first failure.
+`EvidenceError` represents recorder health, record-size limits, and sequence
+exhaustion directly through `RecordingFailed`, `RecordTooLarge`, and
+`SequenceExhausted`. The `Io` variant carries actual writer errors. Sticky
+health retains only the redacted first failure.
 
 `scripts/artifact_input.py` shares only serialization primitives. It rejects
 duplicate keys at any depth, NaN/Infinity, floats that overflow to infinity,

@@ -1,7 +1,7 @@
 use super::*;
 
 impl MediaSearchWorkflowShellState {
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let directories = settings
             .media_search_directories
             .clone()

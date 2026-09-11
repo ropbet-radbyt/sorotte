@@ -69,7 +69,7 @@ async fn run_reconnect_backoff(
 ) -> anyhow::Result<bool> {
     let _ = runtime.dispatch(ClientCommand::Reconnect { attempt: *retries });
     runtime.run_reconnect_retry(*retries)?;
-    flush_reconnect_notifications_legacy_compatible(runtime)?;
+    flush_reconnect_notifications(runtime)?;
     let mut reconnect_delay = None;
     let mut stop_requested = false;
     runtime.drain_reconnect_intents(
@@ -77,8 +77,7 @@ async fn run_reconnect_backoff(
         || stop_requested = true,
     );
 
-    let plan =
-        client_reconnect_backoff_plan_legacy_compatible(*retries, stop_requested, reconnect_delay);
+    let plan = client_reconnect_backoff_plan(*retries, stop_requested, reconnect_delay);
 
     if plan.stop_retrying {
         return Ok(true);
@@ -94,16 +93,14 @@ async fn run_reconnect_backoff(
     Ok(false)
 }
 
-async fn run_client_network_loop_event_plan_legacy_compatible(
+async fn run_client_network_loop_event_plan(
     runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
     network_start: &Instant,
     plan: ClientNetworkLoopEventPlan,
 ) -> anyhow::Result<ClientNetworkLoopExecutionOutcome> {
     if plan.return_success {
-        return Ok(client_network_loop_execution_outcome_legacy_compatible(
-            plan, false,
-        ));
+        return Ok(client_network_loop_execution_outcome(plan, false));
     }
     if plan.run_disconnect {
         ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
@@ -112,13 +109,13 @@ async fn run_client_network_loop_event_plan_legacy_compatible(
     }
     let reconnect_exhausted =
         plan.run_reconnect_backoff && run_reconnect_backoff(runtime, retries).await?;
-    Ok(client_network_loop_execution_outcome_legacy_compatible(
+    Ok(client_network_loop_execution_outcome(
         plan,
         reconnect_exhausted,
     ))
 }
 
-async fn run_client_network_loop_attempt_plan_legacy_compatible(
+async fn run_client_network_loop_attempt_plan(
     runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
     network_start: &Instant,
@@ -127,20 +124,14 @@ async fn run_client_network_loop_attempt_plan_legacy_compatible(
     if plan.reset_retries_before_event {
         *retries = 0;
     }
-    run_client_network_loop_event_plan_legacy_compatible(
-        runtime,
-        retries,
-        network_start,
-        plan.event,
-    )
-    .await
+    run_client_network_loop_event_plan(runtime, retries, network_start, plan.event).await
 }
 
-fn reconnect_exhausted_error_from_attempt_disposition_legacy_compatible(
+fn reconnect_exhausted_error_from_attempt_disposition(
     kind: ClientNetworkLoopReconnectExhaustedErrorKind,
     connect_error: Option<anyhow::Error>,
 ) -> anyhow::Error {
-    match client_network_loop_reconnect_exhausted_error_action_legacy_compatible(kind) {
+    match client_network_loop_reconnect_exhausted_error_action(kind) {
         ClientNetworkLoopReconnectExhaustedErrorAction::UseConnectError => connect_error
             .unwrap_or_else(|| {
                 anyhow!("connect-failure exhaustion did not include the original connect error")
@@ -214,31 +205,29 @@ struct ClientNetworkLoopStartupExecutionPlan {
     startup_plan: ClientNetworkLoopStartupPlan,
 }
 
-fn client_network_loop_startup_execution_plan_legacy_compatible(
+fn client_network_loop_startup_execution_plan(
     config: &ClientLoopConfig,
     startup_playlist_file_on_connect: Option<&str>,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) -> ClientNetworkLoopStartupExecutionPlan {
     ClientNetworkLoopStartupExecutionPlan {
-        diagnostics_config: client_loop_diagnostics_config(legacy_overrides),
-        startup_plan: client_network_loop_startup_plan_legacy_compatible(
-            ClientNetworkLoopStartupPlanInputs {
-                endpoint_host: &config.host,
-                endpoint_port: config.port,
-                stdin_enabled: env_flag_enabled("SOROTTE_CLIENT_STDIN"),
-                has_legacy_overrides: legacy_overrides.is_some(),
-                chat_message_on_connect: env_trimmed("SOROTTE_CLIENT_CHAT_MESSAGE").as_deref(),
-                startup_playlist_file_on_connect,
-            },
-        ),
+        diagnostics_config: client_loop_diagnostics_config(argument_overrides),
+        startup_plan: client_network_loop_startup_plan(ClientNetworkLoopStartupPlanInputs {
+            endpoint_host: &config.host,
+            endpoint_port: config.port,
+            stdin_enabled: env_flag_enabled("SOROTTE_CLIENT_STDIN"),
+            has_argument_overrides: argument_overrides.is_some(),
+            chat_message_on_connect: env_trimmed("SOROTTE_CLIENT_CHAT_MESSAGE").as_deref(),
+            startup_playlist_file_on_connect,
+        }),
     }
 }
 
-fn bootstrap_client_network_loop_state_legacy_compatible<F, G>(
+fn bootstrap_client_network_loop_state<F, G>(
     config: &ClientLoopConfig,
     startup_plan: ClientNetworkLoopStartupPlan,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
     notification_sink: F,
     file_difference_sink: G,
 ) -> anyhow::Result<ClientNetworkLoopBootstrapState<F, G>>
@@ -249,24 +238,25 @@ where
     let ClientNetworkLoopStartupPlan {
         endpoint,
         spawn_local_input_receiver,
-        apply_legacy_explicit_mpv_ipc_startup,
+        apply_explicit_mpv_ipc_startup,
         chat_message_on_connect,
         startup_playlist_file_on_connect,
     } = startup_plan;
-    let (mut runtime, managed_mpv_process_guard) =
-        create_client_runtime_with_managed_mpv_support(config, legacy_overrides, stored_settings)?;
+    let (mut runtime, managed_mpv_process_guard) = create_client_runtime_with_managed_mpv_support(
+        config,
+        argument_overrides,
+        stored_settings,
+    )?;
     let _ = runtime.dispatch(ClientCommand::Connect {
         endpoint: endpoint.clone(),
     });
-    if apply_legacy_explicit_mpv_ipc_startup
-        && let Some(overrides) = legacy_overrides
+    if apply_explicit_mpv_ipc_startup
+        && let Some(overrides) = argument_overrides
         && let Err(error) = runtime.with_player_io(|player| {
-            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-                player, overrides,
-            )
+            apply_startup_file_to_attached_player_if_explicit_mpv_ipc(player, overrides)
         })
     {
-        eprintln!("warning: failed legacy explicit-mpv-IPC startup file open: {error}");
+        eprintln!("warning: failed explicit-mpv-IPC startup file open: {error}");
     }
     Ok(ClientNetworkLoopBootstrapState {
         endpoint,
@@ -275,7 +265,7 @@ where
             chat_message_on_connect,
             startup_playlist_file_on_connect,
             local_input_rx: spawn_local_input_receiver
-                .then(spawn_local_input_receiver_legacy_compatible),
+                .then(crate::stdin_input::spawn_local_input_receiver),
             notification_sink,
             file_difference_sink,
             plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
@@ -289,7 +279,7 @@ where
     })
 }
 
-fn client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible<'a, F, G>(
+fn client_network_loop_transport_attempt_context_from_retry_state<'a, F, G>(
     endpoint: &'a str,
     config: &'a ClientLoopConfig,
     diagnostics_config: ClientLoopDiagnosticsConfig,
@@ -320,7 +310,7 @@ where
     }
 }
 
-async fn run_client_network_loop_retry_loop_legacy_compatible<F, G>(
+async fn run_client_network_loop_retry_loop<F, G>(
     config: &ClientLoopConfig,
     diagnostics_config: ClientLoopDiagnosticsConfig,
     network_start: &Instant,
@@ -331,8 +321,8 @@ where
     G: FnMut(&str) -> anyhow::Result<()>,
 {
     loop {
-        match run_client_network_loop_transport_attempt_legacy_compatible(
-            client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible(
+        match run_client_network_loop_transport_attempt(
+            client_network_loop_transport_attempt_context_from_retry_state(
                 &bootstrap.endpoint,
                 config,
                 diagnostics_config,
@@ -351,35 +341,29 @@ where
     }
 }
 
-async fn run_client_network_loop_from_startup_execution_plan_legacy_compatible(
+async fn run_client_network_loop_from_startup_execution_plan(
     config: &ClientLoopConfig,
     startup: ClientNetworkLoopStartupExecutionPlan,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
 ) -> anyhow::Result<()> {
     let ClientNetworkLoopStartupExecutionPlan {
         diagnostics_config,
         startup_plan,
     } = startup;
-    let bootstrap = bootstrap_client_network_loop_state_legacy_compatible(
+    let bootstrap = bootstrap_client_network_loop_state(
         config,
         startup_plan,
-        legacy_overrides,
+        argument_overrides,
         stored_settings,
         emit_autoplay_countdown_notification,
         emit_file_difference_notification,
     )?;
     let network_start = Instant::now();
-    run_client_network_loop_retry_loop_legacy_compatible(
-        config,
-        diagnostics_config,
-        &network_start,
-        bootstrap,
-    )
-    .await
+    run_client_network_loop_retry_loop(config, diagnostics_config, &network_start, bootstrap).await
 }
 
-async fn client_network_loop_transport_attempt_execution_plan_legacy_compatible<F, G>(
+async fn client_network_loop_transport_attempt_execution_plan<F, G>(
     endpoint: &str,
     launch: ConnectedSessionLaunchContext<'_, F, G>,
 ) -> anyhow::Result<(ClientNetworkLoopAttemptExecutionPlan, Option<anyhow::Error>)>
@@ -395,15 +379,13 @@ where
     .await;
     Ok(match connect_result {
         Ok(Ok(stream)) => {
-            match run_connected_client_session_with_legacy_startup_overrides_and_diagnostics(
+            match run_connected_client_session_with_startup_overrides_and_diagnostics(
                 stream, launch,
             )
             .await
             {
                 Ok(exit) => (
-                    client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible(
-                        exit,
-                    ),
+                    client_network_loop_attempt_execution_plan_for_connected_session_exit(exit),
                     None,
                 ),
                 // The caller deliberately converts every pre-session/session error into the
@@ -412,11 +394,11 @@ where
             }
         }
         Ok(Err(connect_err)) => (
-            client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+            client_network_loop_attempt_execution_plan_for_connect_failure(),
             Some(connect_err.into()),
         ),
         Err(_) => (
-            client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+            client_network_loop_attempt_execution_plan_for_connect_failure(),
             Some(anyhow!(
                 "TCP connection to {endpoint} timed out after {:.1} seconds",
                 connect_timeout.as_secs_f64()
@@ -425,7 +407,7 @@ where
     })
 }
 
-async fn run_client_network_loop_transport_attempt_legacy_compatible<F, G>(
+async fn run_client_network_loop_transport_attempt<F, G>(
     attempt: ClientNetworkLoopTransportAttemptContext<'_, F, G>,
 ) -> anyhow::Result<ClientNetworkLoopTransportAttemptOutcome>
 where
@@ -451,7 +433,7 @@ where
         network_options_health_reporter,
         tls_policy_override,
     } = launch;
-    let attempt_result = client_network_loop_transport_attempt_execution_plan_legacy_compatible(
+    let attempt_result = client_network_loop_transport_attempt_execution_plan(
         endpoint,
         ConnectedSessionLaunchContext {
             runtime: &mut *runtime,
@@ -476,22 +458,21 @@ where
                 now_seconds: network_start.elapsed().as_secs_f64(),
             }))?;
             (
-                client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible(),
+                client_network_loop_attempt_execution_plan_for_connect_failure(),
                 Some(error),
             )
         }
     };
-    let attempt_disposition =
-        client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible(
-            attempt_execution_plan,
-            run_client_network_loop_attempt_plan_legacy_compatible(
-                runtime,
-                retries,
-                network_start,
-                attempt_execution_plan.attempt_plan,
-            )
-            .await?,
-        );
+    let attempt_disposition = client_network_loop_attempt_disposition_for_execution_plan(
+        attempt_execution_plan,
+        run_client_network_loop_attempt_plan(
+            runtime,
+            retries,
+            network_start,
+            attempt_execution_plan.attempt_plan,
+        )
+        .await?,
+    );
     Ok(match attempt_disposition {
         ClientNetworkLoopAttemptDisposition::ReturnSuccess => {
             ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess
@@ -501,10 +482,7 @@ where
         }
         ClientNetworkLoopAttemptDisposition::ReconnectExhausted(kind) => {
             ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(
-                reconnect_exhausted_error_from_attempt_disposition_legacy_compatible(
-                    kind,
-                    connect_error,
-                ),
+                reconnect_exhausted_error_from_attempt_disposition(kind, connect_error),
             )
         }
     })
@@ -512,7 +490,7 @@ where
 
 #[cfg(test)]
 pub(crate) async fn run_client_network_loop(config: &ClientLoopConfig) -> anyhow::Result<()> {
-    run_client_network_loop_with_legacy_startup_overrides(config, None, None).await
+    run_client_network_loop_with_startup_overrides(config, None, None).await
 }
 
 /// Runs the production retry/connected-session loop around a caller-prepared
@@ -548,8 +526,8 @@ pub(crate) async fn run_client_network_loop_with_prepared_runtime_for_test(
     };
 
     loop {
-        match run_client_network_loop_transport_attempt_legacy_compatible(
-            client_network_loop_transport_attempt_context_from_retry_state_legacy_compatible(
+        match run_client_network_loop_transport_attempt(
+            client_network_loop_transport_attempt_context_from_retry_state(
                 &endpoint,
                 config,
                 diagnostics_config,
@@ -571,34 +549,34 @@ pub(crate) async fn run_client_network_loop_with_prepared_runtime_for_test(
 }
 
 #[cfg(test)]
-pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides(
+pub(crate) async fn run_client_network_loop_with_startup_overrides(
     config: &ClientLoopConfig,
     startup_playlist_file_on_connect: Option<&str>,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) -> anyhow::Result<()> {
-    run_client_network_loop_with_legacy_startup_overrides_and_stored_settings(
+    run_client_network_loop_with_startup_overrides_and_stored_settings(
         config,
         startup_playlist_file_on_connect,
-        legacy_overrides,
+        argument_overrides,
         None,
     )
     .await
 }
 
-pub(crate) async fn run_client_network_loop_with_legacy_startup_overrides_and_stored_settings(
+pub(crate) async fn run_client_network_loop_with_startup_overrides_and_stored_settings(
     config: &ClientLoopConfig,
     startup_playlist_file_on_connect: Option<&str>,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
 ) -> anyhow::Result<()> {
-    run_client_network_loop_from_startup_execution_plan_legacy_compatible(
+    run_client_network_loop_from_startup_execution_plan(
         config,
-        client_network_loop_startup_execution_plan_legacy_compatible(
+        client_network_loop_startup_execution_plan(
             config,
             startup_playlist_file_on_connect,
-            legacy_overrides,
+            argument_overrides,
         ),
-        legacy_overrides,
+        argument_overrides,
         stored_settings,
     )
     .await
@@ -658,7 +636,7 @@ mod shutdown_release_tests {
     #[test]
     fn cli_external_player_shutdown_restores_osd_before_releasing_bridge() {
         let (player, commands) = MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
-            sorotte_player_mpv::LegacySyncplayUiSettings::default(),
+            sorotte_player_mpv::SyncplayUiSettings::default(),
             Some(("top".to_owned(), 16)),
         );
         assert_eq!(
@@ -688,6 +666,6 @@ mod shutdown_release_tests {
             runtime.player().sorotte_bridge_health(),
             sorotte_player_mpv::SorotteBridgeHealth::Disabled
         );
-        assert!(!runtime.player().legacy_syncplayintf_options_ready());
+        assert!(!runtime.player().syncplayintf_options_ready());
     }
 }

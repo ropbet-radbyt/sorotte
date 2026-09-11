@@ -8,8 +8,7 @@ fn python_fanout_roundtrip_matches_runtime_on_state_ping_forward_delay_metrics()
         .expect("state ping-forward-delay scenario should replay through runtime");
     let python_events = match run_python_fanout_roundtrip(&steps) {
         Ok(events) => events,
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
             return;
         }
@@ -93,8 +92,7 @@ fn python_fanout_roundtrip_matches_runtime_on_state_ping_forward_delay_metrics()
 fn python_fanout_roundtrip_matches_server_runtime_on_fanout_scenario() {
     match assert_python_fanout_matches_server_runtime_for_scenario("server_runtime_fanout.jsonl") {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!("python fanout interop should succeed, got: {err}"),
@@ -141,8 +139,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_tls_send_available_scenario
 
     let python_events = match run_python_fanout_roundtrip_with_tls_available(&steps, true) {
         Ok(events) => events,
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             let _ = fs::remove_dir_all(&cert_path);
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
             return;
@@ -185,8 +182,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_state_propagation_scenario(
         "server_runtime_state_propagation.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -201,8 +197,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_s
         "server_runtime_state_metadata_forwarding.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -217,8 +212,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scen
         "server_runtime_state_periodic_timeout.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -233,8 +227,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_state_latency_metrics_scena
         "server_runtime_state_latency_metrics.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(

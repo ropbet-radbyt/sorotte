@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::commands::controlled_room_base_name_legacy_compatible;
+use sorotte_client_app::app_boundary::commands::controlled_room_base_name;
 
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{

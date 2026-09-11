@@ -1,4 +1,4 @@
-use sorotte_compat::LegacyPythonPeerChatMessage;
+use sorotte_compat::SyncplayPythonPeerChatMessage;
 
 use super::super::SorotteGuiShellAppState;
 use super::LIVE_PYTHON_INTEROP_LOCAL_USERNAME;
@@ -69,8 +69,8 @@ pub(in crate::app::live_python_interop) fn gui_playlist(
 }
 
 pub(in crate::app::live_python_interop) fn merge_peer_chat_messages(
-    destination: &mut Vec<LegacyPythonPeerChatMessage>,
-    additional: Vec<LegacyPythonPeerChatMessage>,
+    destination: &mut Vec<SyncplayPythonPeerChatMessage>,
+    additional: Vec<SyncplayPythonPeerChatMessage>,
 ) {
     for message in additional {
         if !destination.iter().any(|existing| existing == &message) {

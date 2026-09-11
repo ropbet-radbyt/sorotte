@@ -28,7 +28,7 @@ pub(crate) fn player_playback_telemetry_update_message(
     }
 }
 
-fn localized_player_telemetry_prefix_legacy_compatible(language: Option<&str>) -> &'static str {
+fn localized_player_telemetry_prefix(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Player-Telemetrie",
         Some("es") => "Telemetria del reproductor",
@@ -45,7 +45,7 @@ fn localized_player_telemetry_prefix_legacy_compatible(language: Option<&str>) -
     }
 }
 
-pub(crate) fn player_playback_telemetry_update_message_localized_legacy_compatible(
+pub(crate) fn player_playback_telemetry_update_message_localized(
     update: &PlayerPlaybackTelemetryUpdate,
     language: Option<&str>,
 ) -> Option<String> {
@@ -71,7 +71,7 @@ pub(crate) fn player_playback_telemetry_update_message_localized_legacy_compatib
     } else {
         Some(format!(
             "{}: {}",
-            localized_player_telemetry_prefix_legacy_compatible(language),
+            localized_player_telemetry_prefix(language),
             fields.join(" ")
         ))
     }
@@ -80,18 +80,17 @@ pub(crate) fn player_playback_telemetry_update_message_localized_legacy_compatib
 fn emit_player_playback_telemetry_update(
     update: &PlayerPlaybackTelemetryUpdate,
 ) -> anyhow::Result<()> {
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
-    let Some(message) = player_playback_telemetry_update_message_localized_legacy_compatible(
-        update,
-        language.as_deref(),
-    ) else {
+    let language = current_runtime_language_tag();
+    let Some(message) =
+        player_playback_telemetry_update_message_localized(update, language.as_deref())
+    else {
         return Ok(());
     };
     println!("{message}");
     Ok(())
 }
 
-fn localized_player_drift_prefix_legacy_compatible(language: Option<&str>) -> &'static str {
+fn localized_player_drift_prefix(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Player-Abweichung",
         Some("es") => "Desajuste del reproductor",
@@ -108,7 +107,7 @@ fn localized_player_drift_prefix_legacy_compatible(language: Option<&str>) -> &'
     }
 }
 
-fn localized_paused_mismatch_label_legacy_compatible(language: Option<&str>) -> &'static str {
+fn localized_paused_mismatch_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Pause-Abweichung",
         Some("es") => "desajuste de pausa",
@@ -125,7 +124,7 @@ fn localized_paused_mismatch_label_legacy_compatible(language: Option<&str>) -> 
     }
 }
 
-fn localized_position_mismatch_label_legacy_compatible(language: Option<&str>) -> &'static str {
+fn localized_position_mismatch_label(language: Option<&str>) -> &'static str {
     match language {
         Some("de") => "Positionsabweichung",
         Some("es") => "desajuste de posicion",
@@ -142,7 +141,7 @@ fn localized_position_mismatch_label_legacy_compatible(language: Option<&str>) -
     }
 }
 
-pub(crate) fn player_playback_drift_diagnostic_messages_localized_legacy_compatible(
+pub(crate) fn player_playback_drift_diagnostic_messages_localized(
     update: &PlayerPlaybackTelemetryUpdate,
     room_playstate: Option<&RoomPlaystateView>,
     language: Option<&str>,
@@ -158,8 +157,8 @@ pub(crate) fn player_playback_drift_diagnostic_messages_localized_legacy_compati
     {
         messages.push(format!(
             "{}: {} player={player_paused} room={room_paused}",
-            localized_player_drift_prefix_legacy_compatible(language),
-            localized_paused_mismatch_label_legacy_compatible(language),
+            localized_player_drift_prefix(language),
+            localized_paused_mismatch_label(language),
         ));
     }
 
@@ -170,8 +169,8 @@ pub(crate) fn player_playback_drift_diagnostic_messages_localized_legacy_compati
         if diff > PLAYER_DRIFT_DIAGNOSTIC_THRESHOLD_SECONDS {
             messages.push(format!(
                 "{}: {} player={player_position:.3} room={room_position:.3} diff={diff:.3}",
-                localized_player_drift_prefix_legacy_compatible(language),
-                localized_position_mismatch_label_legacy_compatible(language),
+                localized_player_drift_prefix(language),
+                localized_position_mismatch_label(language),
             ));
         }
     }
@@ -345,7 +344,7 @@ pub(crate) fn flush_player_playback_telemetry_diagnostics(
         return Ok(());
     }
 
-    let language = current_legacy_runtime_language_tag_legacy_compatible();
+    let language = current_runtime_language_tag();
     let room_playstate = runtime.session().current_room_playstate().cloned();
     let updates = runtime.drain_player_playback_telemetry_updates();
     for update in &updates {
@@ -353,7 +352,7 @@ pub(crate) fn flush_player_playback_telemetry_diagnostics(
             emit_player_playback_telemetry_update(update)?;
         }
         if log_drift {
-            for message in player_playback_drift_diagnostic_messages_localized_legacy_compatible(
+            for message in player_playback_drift_diagnostic_messages_localized(
                 update,
                 room_playstate.as_ref(),
                 language.as_deref(),

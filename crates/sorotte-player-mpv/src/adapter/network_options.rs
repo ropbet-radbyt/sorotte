@@ -409,8 +409,8 @@ impl MpvAdapter {
     pub(super) fn network_media_options_hook_controller_payload(&self) -> String {
         json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
         })
         .to_string()
@@ -456,8 +456,8 @@ impl MpvAdapter {
             .max(1);
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": self.network_options.network_media_options_generation,
             "heartbeatNonce": nonce,
         });
@@ -556,8 +556,8 @@ impl MpvAdapter {
         let generation = self.network_options.network_media_options_generation;
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": generation,
             "leaseMs": NETWORK_OPTIONS_HOOK_OWNER_LEASE_MS,
             "options": self.network_media_options_map(),
@@ -618,8 +618,8 @@ impl MpvAdapter {
         let generation = self.network_options.network_media_options_generation;
         let payload = json!({
             "protocol": SOROTTE_NETWORK_OPTIONS_PROTOCOL,
-            "ownerId": self.legacy_syncplayintf_owner_id,
-            "attachmentId": self.legacy_syncplayintf_attachment_id,
+            "ownerId": self.syncplayintf_owner_id,
+            "attachmentId": self.syncplayintf_attachment_id,
             "configurationGeneration": generation,
             "attempt": attempt_id,
         })
@@ -1373,9 +1373,9 @@ impl MpvAdapter {
         let parsed = serde_json::from_str::<Value>(payload?).ok()?;
         (parsed.get("protocol").and_then(Value::as_str) == Some(SOROTTE_NETWORK_OPTIONS_PROTOCOL)
             && parsed.get("ownerId").and_then(Value::as_str)
-                == Some(self.legacy_syncplayintf_owner_id.as_str())
+                == Some(self.syncplayintf_owner_id.as_str())
             && parsed.get("attachmentId").and_then(Value::as_str)
-                == Some(self.legacy_syncplayintf_attachment_id.as_str()))
+                == Some(self.syncplayintf_attachment_id.as_str()))
         .then_some(parsed)
     }
 

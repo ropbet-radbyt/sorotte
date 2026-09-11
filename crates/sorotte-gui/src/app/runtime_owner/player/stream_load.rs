@@ -440,16 +440,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
                 self.pending_attached_room_unpause_observation = None;
-                let preserve_ready_for_auto_advanced_playlist_item =
-                    self.playlist_auto_advance_eof_latched
-                        && self.session.as_ref().is_some_and(|session| {
-                            session.has_pending_playlist_index_reset_intent()
-                        });
-                if !preserve_ready_for_auto_advanced_playlist_item
-                    && let Some(session) = self.session.as_mut()
-                {
-                    let _ = session.mark_local_media_opened_not_ready();
-                }
                 Ok(StartedMediaLoad {
                     feedback_message: Self::media_open_success_message(
                         player_name,
@@ -539,16 +529,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_paused_for_cache = None;
                 self.player_cache_buffering_percent = None;
                 self.pending_attached_room_unpause_observation = None;
-                let preserve_ready_for_auto_advanced_playlist_item =
-                    self.playlist_auto_advance_eof_latched
-                        && self.session.as_ref().is_some_and(|session| {
-                            session.has_pending_playlist_index_reset_intent()
-                        });
-                if !preserve_ready_for_auto_advanced_playlist_item
-                    && let Some(session) = self.session.as_mut()
-                {
-                    let _ = session.mark_local_media_opened_not_ready();
-                }
                 Ok(StartedMediaLoad {
                     feedback_message: format!(
                         "Started loading Plex media stream through the attached {player_name} player: {logical_name}."

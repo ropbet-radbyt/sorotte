@@ -67,11 +67,11 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
         )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -286,11 +286,11 @@ fn gui_persisted_config_runtime_owner_clears_pending_room_change_request_for_pub
         )
         .expect("client-core tcp chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
@@ -516,11 +516,11 @@ fn gui_persisted_config_runtime_owner_republishes_local_file_after_public_server
     owner.last_published_media_match_signature = None;
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         public_servers: Some(vec![("Secondary".to_owned(), second_address.to_string())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);

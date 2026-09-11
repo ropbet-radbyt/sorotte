@@ -276,7 +276,7 @@ fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -284,7 +284,7 @@ fn assert_failed_local_candidate_falls_back_to_plex(mode: FirstOpenFailureMode) 
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
 
@@ -414,9 +414,9 @@ fn gui_persisted_config_runtime_owner_retries_repaired_same_path_after_file_evid
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
 
@@ -476,9 +476,9 @@ fn gui_persisted_config_runtime_owner_explicit_same_provider_request_retries_fai
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(adapter)));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![local_path.clone()], Some(0), false);
 
@@ -709,12 +709,12 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
     });
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![remote_file_name.to_owned()], Some(0), false);
 
@@ -898,14 +898,14 @@ fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_ch
     });
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
     owner.media_match_runtime_snapshot.health = crate::app::GuiMediaMatchToolHealth::Healthy;
@@ -1002,10 +1002,10 @@ fn gui_persisted_config_runtime_owner_prefers_local_media_for_plex_playlist_uri(
     owner.active_shared_playlist_index = Some(0);
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
 
@@ -1055,12 +1055,12 @@ fn gui_persisted_config_runtime_owner_prefers_unique_plex_filename_over_ambiguou
         .expect("second ambiguous Plex title should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![
             first_root.to_string_lossy().into_owned(),
             second_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
 
@@ -1129,9 +1129,9 @@ fn gui_persisted_config_runtime_owner_prefers_unique_plex_filename_over_ambiguou
         )]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
 
@@ -1207,12 +1207,12 @@ fn gui_persisted_config_runtime_owner_exhausts_indexed_filename_before_quick_tit
         ]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![
             first_root.to_string_lossy().into_owned(),
             second_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
     let expected = GuiUserMediaTargetResolution::Resolved {
@@ -1258,9 +1258,9 @@ fn gui_persisted_config_runtime_owner_waits_for_in_flight_filename_index_before_
         latest_progress: std::sync::Arc::new(std::sync::Mutex::new(None)),
         result_rx: pending_rx,
     });
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
 
@@ -1298,11 +1298,11 @@ fn gui_persisted_config_runtime_owner_exhausts_inventory_filename_before_indexed
     std::fs::write(&expected_path, b"filename")
         .expect("exact-inventory Plex filename should be written");
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
         &root,
@@ -1381,12 +1381,12 @@ fn gui_persisted_config_runtime_owner_keeps_plex_filename_ambiguity_authoritativ
         .expect("unique fallback title should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![
             first_root.to_string_lossy().into_owned(),
             second_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
 
@@ -1419,9 +1419,9 @@ fn gui_persisted_config_runtime_owner_prefers_exact_case_search_root_file_over_f
         sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
             .with_path(current_path.to_string_lossy().into_owned()),
     );
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -1481,9 +1481,9 @@ fn gui_persisted_config_runtime_owner_prefers_exact_case_indexed_file_over_folde
         )]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert_eq!(
@@ -1509,11 +1509,11 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
     let current_path = media_root.join("Pilot.mkv");
     std::fs::write(&current_path, b"current").expect("folded current fixture should be written");
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
@@ -1578,11 +1578,11 @@ fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded
     let folded_path = media_root.join("Pilot.mkv");
     std::fs::write(&folded_path, b"folded").expect("folded inventory fixture should be written");
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
@@ -1676,11 +1676,11 @@ fn gui_persisted_config_runtime_owner_reports_equal_exact_inventory_paths_as_amb
             .expect("exact-inventory fixture should be written");
     }
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
@@ -1746,9 +1746,9 @@ fn gui_persisted_config_runtime_owner_rejects_uncorroborated_current_player_plex
         )]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Show.S01E01.mkv";
 
@@ -1795,9 +1795,9 @@ fn gui_persisted_config_runtime_owner_uses_plex_title_when_uri_has_no_filename()
         .expect("title-only Plex fallback fixture should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot";
 
@@ -1822,9 +1822,9 @@ fn gui_persisted_config_runtime_owner_uses_plex_title_after_filename_class_no_ma
         .expect("Plex title fallback fixture should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot&file=Missing.S01E01.mkv";
 
@@ -1856,11 +1856,11 @@ fn gui_persisted_config_runtime_owner_preserves_plex_alias_priority_in_exact_inv
     std::fs::write(&expected_path, b"filename")
         .expect("filename inventory candidate should be written");
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_index_with_extraction_settings_and_cancel(
         &root,
@@ -1899,12 +1899,12 @@ fn gui_persisted_config_runtime_owner_excludes_case_folded_title_only_current_pa
     std::fs::write(&current_path, b"unrelated")
         .expect("collision inventory candidate should be written");
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     crate::app::media_match_support::rebuild_persisted_media_match_inventory_for_tests(
         &root,
@@ -2049,10 +2049,10 @@ fn gui_persisted_config_runtime_owner_keeps_matching_local_file_for_plex_uri_wit
         "Plex URIs without a size hint must not create loose basename matches"
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri], Some(0), false);
 
@@ -2128,10 +2128,10 @@ fn gui_persisted_config_runtime_owner_uses_indexed_nested_local_media_for_plex_p
 
     let plex_uri =
         "plex://machine-1/metadata/123?title=Episode%2001&file=%5Bgroup%5D%20episode%2001.mkv";
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
 
@@ -2172,10 +2172,10 @@ fn gui_persisted_config_runtime_owner_opens_stale_cached_local_media_before_refr
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
 
@@ -2206,10 +2206,10 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_resolution_for_automati
     owner.active_shared_playlist_index = Some(0);
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
 
@@ -2242,7 +2242,7 @@ fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_med
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(1);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
@@ -2251,7 +2251,7 @@ fn gui_persisted_config_runtime_owner_honors_selected_plex_source_when_local_med
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec!["Episode 1.mkv".to_owned(), "Episode 2.mkv".to_owned()],
@@ -2292,12 +2292,12 @@ fn gui_persisted_config_runtime_owner_honors_forced_media_match_over_available_l
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["Episode 2.mkv".to_owned()], Some(0), false);
     assert!(state.apply(GuiShellAction::SelectMainWindowPlaylistSource {
@@ -2339,12 +2339,12 @@ fn gui_persisted_config_runtime_owner_playlist_default_media_match_remains_local
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::SelectMainWindowPlaylistDefaultSource {
@@ -2400,12 +2400,12 @@ fn gui_persisted_config_runtime_owner_preferred_media_match_recovers_from_local_
     std::fs::write(&media_match_path, b"alternate Media Matching candidate")
         .expect("Media Matching fixture should be written");
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_match_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let direct_path = direct_path.to_string_lossy().into_owned();
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
@@ -2493,7 +2493,7 @@ fn gui_persisted_config_runtime_owner_falls_back_to_plex_after_media_match_open_
     std::fs::write(&media_match_path, b"broken Media Matching candidate")
         .expect("Media Matching fixture should be written");
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
@@ -2504,7 +2504,7 @@ fn gui_persisted_config_runtime_owner_falls_back_to_plex_after_media_match_open_
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
 
@@ -2596,11 +2596,11 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_search_inde
     owner.active_shared_playlist_index = Some(0);
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
 
@@ -2659,7 +2659,7 @@ fn gui_persisted_config_runtime_owner_waits_for_pending_local_index_before_ready
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         folder_search_timeout_seconds: Some(0.1),
@@ -2669,7 +2669,7 @@ fn gui_persisted_config_runtime_owner_waits_for_pending_local_index_before_ready
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri], Some(0), false);
 
@@ -2782,7 +2782,7 @@ fn gui_persisted_config_runtime_owner_does_not_block_ready_plex_for_scheduled_lo
     owner.attached_media_search_next_retry_at =
         Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
@@ -2791,7 +2791,7 @@ fn gui_persisted_config_runtime_owner_does_not_block_ready_plex_for_scheduled_lo
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
 
@@ -2865,7 +2865,7 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
     owner.attached_media_search_next_retry_at =
         Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
@@ -2874,7 +2874,7 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
 
@@ -2997,14 +2997,14 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misse
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
 
@@ -3041,11 +3041,11 @@ fn gui_persisted_config_runtime_owner_queues_selected_plex_stream_without_blocki
     owner.active_shared_playlist_index = Some(0);
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_streaming_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let outcome = owner.open_selected_playlist_media_path_through_attached_player_impl(
@@ -3075,7 +3075,7 @@ fn gui_persisted_config_runtime_owner_releases_only_the_matching_ready_plex_fall
  {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3083,7 +3083,7 @@ fn gui_persisted_config_runtime_owner_releases_only_the_matching_ready_plex_fall
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec!["Episode A.mkv".to_owned(), "Episode B.mkv".to_owned()],
@@ -3162,7 +3162,7 @@ fn gui_persisted_config_runtime_owner_releases_only_the_matching_ready_plex_fall
 fn gui_persisted_config_runtime_owner_releases_plex_result_completed_after_active_target_switch() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3170,7 +3170,7 @@ fn gui_persisted_config_runtime_owner_releases_plex_result_completed_after_activ
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec!["Episode A.mkv".to_owned(), "Episode B.mkv".to_owned()],
@@ -3246,7 +3246,7 @@ fn gui_persisted_config_runtime_owner_consumes_terminal_plex_results_without_can
     for (case, terminal_result) in terminal_results {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.active_shared_playlist_index = Some(0);
-        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
             plex_plugin_enabled: Some(true),
             plex_streaming_enabled: Some(true),
@@ -3254,7 +3254,7 @@ fn gui_persisted_config_runtime_owner_consumes_terminal_plex_results_without_can
             plex_selected_server_id: Some("machine-1".to_owned()),
             plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
             plex_selected_server_token: Some("server-token".into()),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
         state.apply_shared_playlist_entries(vec!["Episode A.mkv".to_owned()], Some(0), false);
         state.main_window.active_playlist_index = Some(0);
@@ -3301,7 +3301,7 @@ fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_matc
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3309,7 +3309,7 @@ fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_matc
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -3456,7 +3456,7 @@ fn gui_persisted_config_runtime_owner_retries_plex_miss_and_activates_later_matc
 fn gui_runtime_owner_reruns_active_automatic_miss_when_plex_server_context_changes() {
     let root = test_temp_root("automatic-plex-context-reresolution");
     let config_path = root.join("sorotte.ini");
-    let old_settings = StoredClientSettingsMvp {
+    let old_settings = StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3464,9 +3464,9 @@ fn gui_runtime_owner_reruns_active_automatic_miss_when_plex_server_context_chang
         plex_selected_server_id: Some("old-machine".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("old-server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &old_settings)
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &old_settings)
         .expect("the initial Plex settings should persist for the integration fixture");
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
@@ -3677,7 +3677,7 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3685,7 +3685,7 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![local_entry.to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -3778,7 +3778,7 @@ fn gui_persisted_config_runtime_owner_retries_selected_plex_source_when_worker_f
 fn gui_persisted_config_runtime_owner_pending_duplicate_source_tracks_entry_id_across_reorders() {
     let duplicate_label = "Episode 1.mkv";
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         plex_plugin_enabled: Some(true),
         plex_streaming_enabled: Some(true),
@@ -3786,7 +3786,7 @@ fn gui_persisted_config_runtime_owner_pending_duplicate_source_tracks_entry_id_a
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(
         vec![
@@ -4024,10 +4024,10 @@ fn gui_persisted_config_runtime_owner_retries_playlist_open_when_media_index_com
         result_rx,
     });
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
     state.main_window.active_playlist_index = Some(0);
@@ -4064,12 +4064,12 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     std::fs::write(&selected_media_path, b"test")
         .expect("Media Match inventory exact fixture should be written");
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
 
@@ -4147,12 +4147,12 @@ fn gui_persisted_config_runtime_owner_does_not_use_media_match_inventory_when_pl
     std::fs::write(&selected_media_path, b"test")
         .expect("Media Match disabled fixture should be written");
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(false),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
 
@@ -4217,12 +4217,12 @@ fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_mat
         ],
     );
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["Episode2.mkv".to_owned()], Some(0), false);
 
@@ -4329,12 +4329,12 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![playlist_target.to_owned()], Some(0), false);
 
@@ -4423,13 +4423,13 @@ fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist
     owner.media_match_remote_lookup_rx = Some(stale_rx);
     owner.media_match_remote_lookup_trigger_key = Some(format!("target={item_a}"));
 
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
         media_matching_plugin_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![item_a.to_owned(), item_b.to_owned()], Some(1), false);
     state.main_window.active_playlist_index = Some(1);
@@ -4542,12 +4542,12 @@ fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_fro
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -4644,12 +4644,12 @@ fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_withou
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -4770,7 +4770,7 @@ fn gui_persisted_config_runtime_owner_prefers_current_player_locality_for_duplic
     );
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
@@ -4778,7 +4778,7 @@ fn gui_persisted_config_runtime_owner_prefers_current_player_locality_for_duplic
             fallback_root.to_string_lossy().into_owned(),
             preferred_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -4867,9 +4867,9 @@ fn gui_persisted_config_runtime_owner_does_not_add_nested_current_player_root_wh
         sorotte_player_api::LocalFileUpdate::new("[mtbb-minis] bakemonogatari - 08.mkv")
             .with_path(current_path.to_string_lossy().into_owned()),
     );
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let roots = owner.automatic_media_search_roots(&state);
@@ -4897,7 +4897,7 @@ fn gui_persisted_config_runtime_owner_uses_current_player_parent_as_search_root_
         sorotte_player_api::LocalFileUpdate::new("[mtbb-minis] bakemonogatari - 08.mkv")
             .with_path(current_path.to_string_lossy().into_owned()),
     );
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let roots = owner.automatic_media_search_roots(&state);
     assert_eq!(
@@ -5019,13 +5019,13 @@ fn gui_persisted_config_runtime_owner_reports_direct_child_same_name_across_root
         .expect("second direct cross-root fixture should be written");
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![
             first_root.to_string_lossy().into_owned(),
             second_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![file_name.to_owned()], Some(0), false);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -5092,7 +5092,7 @@ fn gui_persisted_config_runtime_owner_reports_ambiguous_cached_names_and_allows_
     );
 
     owner.attached_media_search_index = Some(index);
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
         media_search_directories: Some(vec![root.to_string_lossy().into_owned()]),
         plex_plugin_enabled: Some(true),
@@ -5101,7 +5101,7 @@ fn gui_persisted_config_runtime_owner_reports_ambiguous_cached_names_and_allows_
         plex_selected_server_id: Some("machine-1".to_owned()),
         plex_selected_server_url: Some("http://127.0.0.1:32400".to_owned()),
         plex_selected_server_token: Some("server-token".into()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec!["episode2.mkv".to_owned()], Some(0), false);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -5224,7 +5224,7 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
     })));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(true),
@@ -5232,7 +5232,7 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
             good_root.to_string_lossy().into_owned(),
             bad_root.to_string_lossy().into_owned(),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
@@ -5329,9 +5329,9 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
 fn gui_persisted_config_runtime_owner_projects_media_index_progress_into_shell_state() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     state.main_window.shared_playlist_enabled = true;
     let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -5375,8 +5375,7 @@ fn gui_persisted_config_runtime_owner_projects_media_index_progress_into_shell_s
 fn gui_persisted_config_runtime_owner_coalesces_latest_media_index_progress_per_pump() {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(None));
     owner.pending_attached_media_resolution = Some(GuiPendingAttachedMediaResolution {
@@ -5460,8 +5459,7 @@ fn gui_persisted_config_runtime_owner_preserves_media_index_status_when_pending_
  {
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let (result_tx, result_rx) = std::sync::mpsc::channel();
     let latest_progress = std::sync::Arc::new(std::sync::Mutex::new(Some(
         GuiAttachedMediaSearchBuildProgress {

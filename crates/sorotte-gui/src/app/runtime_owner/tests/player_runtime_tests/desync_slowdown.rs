@@ -49,10 +49,10 @@ fn gui_runtime_owner_retries_failed_desync_slowdown_and_speed_restore_commands()
             .with_path("C:/Media/episode1.mkv".to_owned()),
     );
 
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     owner
@@ -144,15 +144,16 @@ fn slowdown_osd_follows_the_active_session_setting() {
         ),
         (None, false, None, None),
     ] {
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             language: language.map(str::to_owned),
             show_slowdown_osd: Some(show_slowdown_osd),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.active_session_settings = Some(
-            sorotte_client_app::app_boundary::state::
-                stored_client_settings_runtime_snapshot_legacy_compatible(&settings),
+            sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(
+                &settings,
+            ),
         );
         owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(
             sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
@@ -168,7 +169,7 @@ fn slowdown_osd_follows_the_active_session_setting() {
         };
         assert_eq!(
             player
-                .last_simulated_legacy_syncplay_osd_message()
+                .last_simulated_syncplay_osd_message()
                 .map(|(message, _)| message.as_str()),
             expected_slowdown_message,
             "slowdown OSD emission must be gated by the frozen active-session setting"
@@ -183,7 +184,7 @@ fn slowdown_osd_follows_the_active_session_setting() {
         };
         assert_eq!(
             player
-                .last_simulated_legacy_syncplay_osd_message()
+                .last_simulated_syncplay_osd_message()
                 .map(|(message, _)| message.as_str()),
             expected_restore_message,
             "normal-speed restoration must follow the same active-session OSD setting"

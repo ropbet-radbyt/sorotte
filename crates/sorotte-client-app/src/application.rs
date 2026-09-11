@@ -34,11 +34,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::{
-    legacy_settings::AutoplayThresholdOverride,
     runtime_config::{
         ClientConfig, RoomBufferingPolicy, StartSynchronizationPolicy, StartTimeoutAction,
         StreamingPlaybackConfig, StreamingQualityDowngradeSuggestion,
     },
+    stored_settings::AutoplayThresholdOverride,
 };
 
 const PLEX_SYNC_PUMP_INTERVAL: Duration = Duration::from_secs(1);
@@ -123,7 +123,7 @@ pub enum ClientCommand {
     },
     SetRoom {
         room: String,
-        legacy_fallback: bool,
+        default_room_fallback: bool,
     },
     SetReady {
         username: Option<String>,
@@ -761,7 +761,7 @@ where
         if !self
             .runtime
             .session()
-            .playlist_target_switch_allowed_legacy_compatible(&selection.target)
+            .playlist_target_switch_allowed(&selection.target)
         {
             self.pending_canonical_playlist_load = None;
             if !self
@@ -923,7 +923,7 @@ where
             // Always reassert the temporary transition hold after authoritative
             // file evidence. A load can change mpv's pause property even when
             // the preceding command was accepted. `pause_before_sync` remains
-            // part of the legacy-facing intent shape, while post-selection
+            // part of the Syncplay intent shape, while post-selection
             // room authority decides whether playback ultimately stays paused
             // or resumes.
             self.runtime.player_mut().set_paused(true)?;
@@ -1276,11 +1276,11 @@ where
             }
             ClientCommand::SetRoom {
                 room,
-                legacy_fallback,
+                default_room_fallback,
             } => (
                 "set-room",
-                if legacy_fallback {
-                    self.runtime.run_set_room_with_legacy_fallback(room)
+                if default_room_fallback {
+                    self.runtime.run_set_room_with_default_fallback(room)
                 } else {
                     self.runtime.run_set_room(room)
                 },
@@ -1469,7 +1469,7 @@ where
         )
     }
 
-    /// Applies a line when session scheduling and legacy ping timestamps use
+    /// Applies a line when session scheduling and Syncplay ping timestamps use
     /// different clock domains. GUI receipt timestamps are wall-clock values,
     /// while the CLI intentionally uses a monotonic runtime clock for session
     /// lifecycle timers and a wall clock for protocol ping echoes.
@@ -1513,7 +1513,7 @@ where
                 ProtocolMessage::State(state) if reconcile_inbound_state => {
                     state_sync_emitted |= self
                         .runtime
-                        .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+                        .run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
                             state.state,
                             dont_slow_down_with_me,
                             received_at_seconds,
@@ -1731,15 +1731,11 @@ where
         self.runtime.run_set_room(room)
     }
 
-    pub fn run_set_room_with_legacy_fallback(
+    pub fn run_set_room_with_default_fallback(
         &mut self,
         room: impl Into<String>,
     ) -> Result<bool, PlayerError> {
-        self.runtime.run_set_room_with_legacy_fallback(room)
-    }
-
-    pub fn run_local_media_opened_not_ready(&mut self) -> Result<bool, PlayerError> {
-        self.runtime.run_local_media_opened_not_ready()
+        self.runtime.run_set_room_with_default_fallback(room)
     }
 
     pub fn run_request_controller_auth(
@@ -1807,49 +1803,41 @@ where
         self.runtime.run_undo_seek()
     }
 
-    pub fn publish_local_file_legacy_compatible(
+    pub fn publish_local_file(
         &mut self,
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
         filesize_privacy_mode: PrivacyMode,
     ) -> Result<(), PlayerError> {
-        self.runtime.publish_local_file_legacy_compatible(
-            file_payload,
-            filename_privacy_mode,
-            filesize_privacy_mode,
-        )
+        self.runtime
+            .publish_local_file(file_payload, filename_privacy_mode, filesize_privacy_mode)
     }
 
-    pub fn publish_pending_local_file_update_legacy_compatible(
+    pub fn publish_pending_local_file_update(
         &mut self,
         filename_privacy_mode: sorotte_client_core::PrivacyMode,
         filesize_privacy_mode: sorotte_client_core::PrivacyMode,
     ) -> Result<bool, PlayerError> {
         let published = self
             .runtime
-            .publish_pending_local_file_update_legacy_compatible(
-                filename_privacy_mode,
-                filesize_privacy_mode,
-            )?;
+            .publish_pending_local_file_update(filename_privacy_mode, filesize_privacy_mode)?;
         if published {
             self.last_file_observation_attachment_revision = Some(self.player_attachment_revision);
         }
         Ok(published)
     }
 
-    pub fn publish_pending_local_file_update_legacy_compatible_at(
+    pub fn publish_pending_local_file_update_at(
         &mut self,
         filename_privacy_mode: sorotte_client_core::PrivacyMode,
         filesize_privacy_mode: sorotte_client_core::PrivacyMode,
         now_seconds: f64,
     ) -> Result<bool, PlayerError> {
-        let published = self
-            .runtime
-            .publish_pending_local_file_update_legacy_compatible_at(
-                filename_privacy_mode,
-                filesize_privacy_mode,
-                now_seconds,
-            )?;
+        let published = self.runtime.publish_pending_local_file_update_at(
+            filename_privacy_mode,
+            filesize_privacy_mode,
+            now_seconds,
+        )?;
         if published {
             self.last_file_observation_attachment_revision = Some(self.player_attachment_revision);
         }
@@ -1909,7 +1897,7 @@ where
         self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
     }
 
-    /// Runs legacy room pause synchronization for an application that owns
+    /// Runs Syncplay room pause synchronization for an application that owns
     /// canonical shared-playlist selection.
     ///
     /// Playlist selection and its successor playstate are separate wire
@@ -1918,7 +1906,7 @@ where
     /// EOF-idle player or the successor. Callers that have shared playlists
     /// disabled must use the ordinary method above: they do not own the reset
     /// transaction and must not let an unsolicited playlist frame suspend
-    /// normal legacy pause synchronization indefinitely.
+    /// normal Syncplay pause synchronization indefinitely.
     pub fn run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(
         &mut self,
         now_seconds: f64,
@@ -2350,33 +2338,30 @@ where
             .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
     }
 
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping(
         &mut self,
         state: StatePayload,
         dont_slow_down_with_me: bool,
     ) -> bool {
         self.runtime
-            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
-                state,
-                dont_slow_down_with_me,
-            )
+            .run_state_sync_reconcile_with_inbound_state_with_ping(state, dont_slow_down_with_me)
     }
 
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping_at(
         &mut self,
         state: StatePayload,
         dont_slow_down_with_me: bool,
         received_at_seconds: f64,
     ) -> bool {
         self.runtime
-            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+            .run_state_sync_reconcile_with_inbound_state_with_ping_at(
                 state,
                 dont_slow_down_with_me,
                 received_at_seconds,
             )
     }
 
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
         &mut self,
         state: StatePayload,
         dont_slow_down_with_me: bool,
@@ -2385,7 +2370,7 @@ where
         ping_received_at_seconds: f64,
     ) -> bool {
         self.runtime
-            .run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+            .run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
                 state,
                 dont_slow_down_with_me,
                 received_at_seconds,
@@ -2437,29 +2422,25 @@ where
         self.runtime.run_reconnect_playlist_restore_if_needed()
     }
 
-    pub fn current_room_playstate_legacy_ping_compatible_at(
+    pub fn current_room_playstate_with_ping_at(
         &self,
         now_seconds: f64,
     ) -> Option<RoomPlaystateView> {
         self.runtime
-            .current_room_playstate_legacy_ping_compatible_at(now_seconds)
+            .current_room_playstate_with_ping_at(now_seconds)
     }
 
-    pub fn current_room_playstate_legacy_ping_compatible_now(&self) -> Option<RoomPlaystateView> {
-        self.runtime
-            .current_room_playstate_legacy_ping_compatible_now()
+    pub fn current_room_playstate_with_ping_now(&self) -> Option<RoomPlaystateView> {
+        self.runtime.current_room_playstate_with_ping_now()
     }
 
     pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {
         self.runtime.projected_local_position_at(now_seconds)
     }
 
-    pub fn run_state_sync_heartbeat_legacy_ping_compatible(
-        &mut self,
-        dont_slow_down_with_me: bool,
-    ) -> bool {
+    pub fn run_state_sync_heartbeat_with_ping(&mut self, dont_slow_down_with_me: bool) -> bool {
         self.runtime
-            .run_state_sync_heartbeat_legacy_ping_compatible(dont_slow_down_with_me)
+            .run_state_sync_heartbeat_with_ping(dont_slow_down_with_me)
     }
 
     pub fn flush_queued_protocol_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
@@ -3330,7 +3311,7 @@ mod tests {
         let mut opted_out = application_with_pending_successor_selection();
         opted_out
             .run_room_pause_sync_if_needed_at(4.0)
-            .expect_err("a non-owner must preserve ordinary legacy pause synchronization");
+            .expect_err("a non-owner must preserve ordinary Syncplay pause synchronization");
         assert_eq!(
             opted_out.player().pause_calls,
             1,
@@ -3368,10 +3349,7 @@ mod tests {
 
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the selected file observation should publish")
         );
         assert!(
@@ -3415,10 +3393,7 @@ mod tests {
 
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the next file observation should publish")
         );
         assert!(
@@ -3494,10 +3469,7 @@ mod tests {
         );
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the initial file observation should publish")
         );
 
@@ -3544,10 +3516,7 @@ mod tests {
         assert_eq!(application.player().paused_when_opened, vec![false, true]);
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the replacement file observation should publish")
         );
         assert!(
@@ -3580,10 +3549,7 @@ mod tests {
         );
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the selected file observation should publish")
         );
         assert!(
@@ -3647,10 +3613,7 @@ mod tests {
         });
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("a delayed retiring-file observation should be reproducible")
         );
         assert!(application.runtime.last_local_file_update().is_some());
@@ -3746,10 +3709,7 @@ mod tests {
         );
         assert!(
             application
-                .publish_pending_local_file_update_legacy_compatible(
-                    PrivacyMode::SendRaw,
-                    PrivacyMode::SendRaw,
-                )
+                .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
                 .expect("the initial attachment should publish file evidence")
         );
         assert!(
@@ -4202,7 +4162,7 @@ mod tests {
         assert!(
             application
                 .runtime
-                .run_state_sync_heartbeat_legacy_ping_compatible(false)
+                .run_state_sync_heartbeat_with_ping(false)
         );
         let staged_state = application
             .pending_protocol_line()
@@ -4262,7 +4222,7 @@ mod tests {
         assert!(
             application
                 .runtime
-                .run_state_sync_heartbeat_legacy_ping_compatible(false)
+                .run_state_sync_heartbeat_with_ping(false)
         );
         let staged_state = application
             .pending_protocol_line()

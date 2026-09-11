@@ -76,7 +76,7 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
     env.remove_var(key_fallback_ipc);
 
     let result = (|| {
-        let overrides = LegacyClientArgOverrides {
+        let overrides = SyncplayClientArgOverrides {
             connect_requested: true,
             no_store: false,
             debug_requested: false,
@@ -121,11 +121,8 @@ fn explicit_mpv_ipc_cli_startup_smoke_applies_file_and_supported_player_args_to_
         };
 
         let applied =
-            apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-                &mut adapter,
-                &overrides,
-            )
-            .expect("explicit-mpv-IPC startup helper should succeed against real mpv");
+            apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut adapter, &overrides)
+                .expect("explicit-mpv-IPC startup helper should succeed against real mpv");
         assert!(
             applied,
             "startup helper should report that it applied actions"

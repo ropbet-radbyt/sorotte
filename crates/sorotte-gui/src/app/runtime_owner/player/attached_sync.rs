@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::runtime_localization::localize_gui_runtime_message_legacy_compatible;
+use crate::app::runtime_localization::localize_gui_runtime_message;
 use sorotte_client_core::DesyncCorrectionDispatchSnapshot;
 
 const ATTACHED_UNPAUSE_MIN_OBSERVED_ADVANCEMENT_SECONDS: f64 = 0.01;
@@ -41,7 +41,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 })
                 .flatten()
                 .map(|message| {
-                    localize_gui_runtime_message_legacy_compatible(
+                    localize_gui_runtime_message(
                         message,
                         Some(settings.config.interface.language.as_str()),
                     )
@@ -60,8 +60,8 @@ impl GuiPersistedConfigRuntimeOwner {
             Ok(()) => {
                 if let Some(message) = slowdown_osd_message.as_deref()
                     && let Some(player) = player.as_mpv_mut()
-                    && let Err(error) = player
-                        .show_syncplay_legacy_message(message, LegacySyncplayOsdKind::Notification)
+                    && let Err(error) =
+                        player.show_syncplay_message(message, SyncplayOsdKind::Notification)
                 {
                     eprintln!(
                         "warning: failed to display attached-player slowdown via mpv OSD: {error}"

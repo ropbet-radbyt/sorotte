@@ -194,12 +194,13 @@ fn resource(actor: &ServerActorHandle) -> Value {
 
 pub async fn network(fixture: Fixture) -> Result<Value, String> {
     let mut runtime = ServerRuntime::new();
-    let mut limits = ServerResourceLimits::default();
-    limits.active_connections = 16;
-    limits.unauthenticated_connections = 8;
-    limits.connections_per_address = 16;
-    limits.queued_bytes_per_peer = 512 * 1024;
-    limits.queued_bytes_total = 4 * 1024 * 1024;
+    let limits = ServerResourceLimits {
+        active_connections: 16,
+        unauthenticated_connections: 8,
+        connections_per_address: 16,
+        queued_bytes_per_peer: 512 * 1024,
+        queued_bytes_total: 4 * 1024 * 1024,
+    };
     runtime
         .set_resource_limits(limits)
         .map_err(|e| e.to_string())?;

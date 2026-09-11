@@ -4,6 +4,24 @@ Sorotte coordinates a room's shared playback intent while keeping each participa
 
 ## Language
 
+### Interoperability
+
+**Syncplay compatibility**:
+Interoperation with Python Syncplay clients and servers, including its protocol, settings formats, and player interface. This is a supported feature.
+_Avoid_: Legacy compatibility, legacy client when Syncplay is meant
+
+**Syncplay readiness**:
+The shared ready flag available through the Syncplay protocol. It expresses user readiness without the generation-scoped technical guarantees of coordinated start.
+_Avoid_: Legacy readiness
+
+**Participant without coordinated start support**:
+A room member whose negotiated capabilities do not support the room's generation-scoped readiness and playback barrier. This describes a capability, regardless of client product or age.
+_Avoid_: Legacy participant
+
+**Participant without detailed status support**:
+A room member whose client does not advertise participant-status reporting. This is distinct from a reporting client whose evidence is waiting, unavailable, or stale.
+_Avoid_: Legacy client, stale client
+
 ### Shared authority
 
 **Playback lifecycle**:

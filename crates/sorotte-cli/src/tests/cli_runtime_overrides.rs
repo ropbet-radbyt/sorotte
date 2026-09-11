@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
+fn apply_syncplay_client_arg_overrides_updates_client_loop_config() {
     let mut config = test_client_loop_config();
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -27,7 +27,7 @@ fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_overrides(&mut config, &overrides);
+    apply_syncplay_client_arg_overrides(&mut config, &overrides);
 
     assert_eq!(config.host, "legacy.example");
     assert_eq!(config.port, 3210);
@@ -43,9 +43,9 @@ fn apply_legacy_client_arg_overrides_updates_client_loop_config() {
 }
 
 #[test]
-fn apply_legacy_client_arg_overrides_prefers_explicit_password_flag() {
+fn apply_syncplay_client_arg_overrides_prefers_explicit_password_flag() {
     let mut config = test_client_loop_config();
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -69,7 +69,7 @@ fn apply_legacy_client_arg_overrides_prefers_explicit_password_flag() {
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_overrides(&mut config, &overrides);
+    apply_syncplay_client_arg_overrides(&mut config, &overrides);
     assert_eq!(
         config
             .controlled_room_password_override
@@ -163,10 +163,9 @@ fn reconnect_transition_notification_message_uses_legacy_style_wording() {
 }
 
 #[test]
-fn reconnect_transition_notification_message_localized_legacy_compatible_localizes_common_runtime_notifications()
- {
+fn reconnect_transition_notification_message_localized_localizes_common_runtime_notifications() {
     assert_eq!(
-        crate::reconnect_transition_notification_message_localized_legacy_compatible(
+        crate::reconnect_transition_notification_message_localized(
             &ReconnectTransitionNotification::Attempting {
                 retries: 2,
                 delay_seconds: 0.4,
@@ -176,21 +175,21 @@ fn reconnect_transition_notification_message_localized_legacy_compatible_localiz
         "Connexion au serveur perdue, tentative de reconnexion (retry=2, delay_seconds=0.400)"
     );
     assert_eq!(
-        crate::reconnect_transition_notification_message_localized_legacy_compatible(
+        crate::reconnect_transition_notification_message_localized(
             &ReconnectTransitionNotification::Connected,
             Some("pt_BR"),
         ),
         "Reconectado ao servidor"
     );
     assert_eq!(
-        crate::reconnect_transition_notification_message_localized_legacy_compatible(
+        crate::reconnect_transition_notification_message_localized(
             &ReconnectTransitionNotification::RestoringPlaylist,
             Some("de"),
         ),
         "Playlist nach Wiederverbindung wiederherstellen..."
     );
     assert_eq!(
-            crate::reconnect_transition_notification_message_localized_legacy_compatible(
+            crate::reconnect_transition_notification_message_localized(
                 &ReconnectTransitionNotification::StateRestoreValidationCorrectionRecoveryCooldownReenabled,
                 Some("fr"),
             ),
@@ -199,8 +198,8 @@ fn reconnect_transition_notification_message_localized_legacy_compatible_localiz
 }
 
 #[test]
-fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_env_config_missing()
-{
+fn apply_syncplay_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_env_config_missing()
+ {
     let mut managed = ManagedMpvLaunchEnvConfig {
         enabled: true,
         mpv_bin: None,
@@ -210,7 +209,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_
         connect_timeout_ms: None,
         connect_poll_interval_ms: None,
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -234,7 +233,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
 
     assert!(managed.enabled);
     assert_eq!(managed.mpv_bin, Some(PathBuf::from("C:/mpv/mpv.exe")));
@@ -246,7 +245,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_uses_player_path_and_file_when_
 }
 
 #[test]
-fn apply_legacy_client_arg_managed_mpv_overrides_does_not_override_explicit_env_managed_config() {
+fn apply_syncplay_client_arg_managed_mpv_overrides_does_not_override_explicit_env_managed_config() {
     let mut managed = ManagedMpvLaunchEnvConfig {
         enabled: true,
         mpv_bin: Some(PathBuf::from("D:/custom/mpv.exe")),
@@ -256,7 +255,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_does_not_override_explicit_env_
         connect_timeout_ms: None,
         connect_poll_interval_ms: None,
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -280,7 +279,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_does_not_override_explicit_env_
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
 
     assert_eq!(managed.mpv_bin, Some(PathBuf::from("D:/custom/mpv.exe")));
     assert_eq!(
@@ -291,9 +290,9 @@ fn apply_legacy_client_arg_managed_mpv_overrides_does_not_override_explicit_env_
 }
 
 #[test]
-fn apply_legacy_client_arg_managed_mpv_overrides_does_not_auto_enable_for_non_mpv_player_path() {
+fn apply_syncplay_client_arg_managed_mpv_overrides_does_not_auto_enable_for_non_mpv_player_path() {
     let mut managed = ManagedMpvLaunchEnvConfig::default();
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -317,7 +316,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_does_not_auto_enable_for_non_mp
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
 
     assert!(!managed.enabled);
     assert_eq!(managed.mpv_bin, None);
@@ -329,7 +328,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_does_not_auto_enable_for_non_mp
 }
 
 #[test]
-fn apply_legacy_client_arg_managed_mpv_overrides_preserves_launch_only_args_for_managed_launch() {
+fn apply_syncplay_client_arg_managed_mpv_overrides_preserves_launch_only_args_for_managed_launch() {
     let mut managed = ManagedMpvLaunchEnvConfig {
         enabled: true,
         mpv_bin: None,
@@ -339,7 +338,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_preserves_launch_only_args_for_
         connect_timeout_ms: None,
         connect_poll_interval_ms: None,
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -363,7 +362,7 @@ fn apply_legacy_client_arg_managed_mpv_overrides_preserves_launch_only_args_for_
         unknown_options: vec![],
     };
 
-    apply_legacy_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut managed, Some(&overrides));
 
     assert_eq!(
         managed.extra_args,

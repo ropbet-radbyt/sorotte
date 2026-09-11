@@ -211,7 +211,7 @@ The ordinary legacy local-file drain returns early in acknowledged batch mode.
 | `PlayerObservationBatch` | not drained; acknowledged delivery is selected instead | attempt binding, physical owner, semantic load result |
 | legacy `PlayerCommandProgress` | an ordered command result may be translated into the existing playlist-resolution presentation handler | physical terminality or load ownership |
 | legacy `PlayerMediaLoadOutcome` | an ordered, attempt-fenced result may be translated into existing presentation handlers | current attempt or independently authoritative success/failure |
-| legacy local-file update | not drained; ordered `LocalFileChanged` is owner-checked | path-based attempt inference |
+| unsequenced local-file update | not drained; ordered `LocalFileChanged` is owner-checked | path-based attempt inference |
 | legacy transport telemetry | not drained | ownership in acknowledged mode |
 
 The production GUI and client-core select one delivery mode before draining.

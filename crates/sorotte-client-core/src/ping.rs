@@ -1,16 +1,16 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ClientPingMetricsLegacyCompatible {
+pub struct ClientPingMetrics {
     client_rtt_seconds: f64,
     average_rtt_seconds: f64,
     server_rtt_seconds: f64,
     pub(crate) forward_delay_seconds: f64,
 }
 
-impl ClientPingMetricsLegacyCompatible {
+impl ClientPingMetrics {
     pub fn observe_inbound_state(&mut self, state: &StatePayload) {
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         self.observe_inbound_state_at(state, now_seconds);
     }
 
@@ -46,8 +46,8 @@ impl ClientPingMetricsLegacyCompatible {
         if self.average_rtt_seconds == 0.0 {
             self.average_rtt_seconds = current_rtt;
         }
-        self.average_rtt_seconds = self.average_rtt_seconds * LEGACY_PING_MOVING_AVERAGE_WEIGHT
-            + current_rtt * (1.0 - LEGACY_PING_MOVING_AVERAGE_WEIGHT);
+        self.average_rtt_seconds = self.average_rtt_seconds * DEFAULT_PING_MOVING_AVERAGE_WEIGHT
+            + current_rtt * (1.0 - DEFAULT_PING_MOVING_AVERAGE_WEIGHT);
         let positive_client_server_delta = (current_rtt - server_rtt).max(0.0);
         self.forward_delay_seconds = self.average_rtt_seconds / 2.0 + positive_client_server_delta;
     }
@@ -66,11 +66,11 @@ impl ClientPingMetricsLegacyCompatible {
 
     pub fn client_latency_calculation_now(self) -> f64 {
         let _ = self;
-        unix_wall_clock_time_seconds_legacy_compatible()
+        unix_wall_clock_time_seconds()
     }
 }
 
-pub(crate) fn unix_wall_clock_time_seconds_legacy_compatible() -> f64 {
+pub(crate) fn unix_wall_clock_time_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())

@@ -24,7 +24,7 @@ pub(super) fn run_sorotte_gui() {
         Ok(state) => state,
         Err(error) => {
             exit_after_startup_error(format!(
-                "sorotte-gui failed to load legacy GUI state: {error}"
+                "sorotte-gui failed to load Syncplay GUI state: {error}"
             ));
         }
     };

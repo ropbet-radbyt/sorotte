@@ -150,14 +150,14 @@ impl Default for SessionBehaviorConfig {
     fn default() -> Self {
         Self {
             pause_on_leave: true,
-            show_same_room_osd: LEGACY_SHOW_SAME_ROOM_OSD,
-            show_osd_warnings: LEGACY_SHOW_OSD_WARNINGS,
-            show_noncontroller_osd: LEGACY_SHOW_NONCONTROLLER_OSD,
-            show_different_room_osd: LEGACY_SHOW_DIFFERENT_ROOM_OSD,
+            show_same_room_osd: DEFAULT_SHOW_SAME_ROOM_OSD,
+            show_osd_warnings: DEFAULT_SHOW_OSD_WARNINGS,
+            show_noncontroller_osd: DEFAULT_SHOW_NONCONTROLLER_OSD,
+            show_different_room_osd: DEFAULT_SHOW_DIFFERENT_ROOM_OSD,
             loop_at_end_of_playlist: false,
             loop_single_files: false,
-            only_switch_to_trusted_domains: LEGACY_ONLY_SWITCH_TO_TRUSTED_DOMAINS,
-            trusted_domains: LEGACY_DEFAULT_TRUSTED_DOMAINS
+            only_switch_to_trusted_domains: DEFAULT_ONLY_SWITCH_TO_TRUSTED_DOMAINS,
+            trusted_domains: DEFAULT_TRUSTED_DOMAINS
                 .iter()
                 .map(|domain| (*domain).to_owned())
                 .collect(),
@@ -205,7 +205,7 @@ pub enum PrivacyMode {
 }
 
 impl PrivacyMode {
-    pub fn from_legacy_name(mode: &str) -> Option<Self> {
+    pub fn from_syncplay_name(mode: &str) -> Option<Self> {
         match mode {
             "SendRaw" => Some(Self::SendRaw),
             "SendHashed" => Some(Self::SendHashed),
@@ -232,8 +232,8 @@ impl Default for ReadinessAutoplayConfig {
             unpause_action: UnpauseActionMode::IfOthersReady,
             auto_play_threshold: None,
             autoplay_require_same_filenames: false,
-            show_duration_notification: LEGACY_SHOW_DURATION_NOTIFICATION,
-            different_duration_threshold_seconds: LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS,
+            show_duration_notification: DEFAULT_SHOW_DURATION_NOTIFICATION,
+            different_duration_threshold_seconds: DEFAULT_DIFFERENT_DURATION_THRESHOLD_SECONDS,
             autoplay_delay_seconds: DEFAULT_AUTOPLAY_DELAY_SECONDS,
             last_paused_diff_threshold_seconds: DEFAULT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS,
         }
@@ -249,7 +249,7 @@ pub struct ChatConfig {
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
-            max_chat_message_length: LEGACY_CHAT_MAX_MESSAGE_LENGTH,
+            max_chat_message_length: SYNCPLAY_CHAT_MAX_MESSAGE_LENGTH,
             apply_server_max_chat_message_length: true,
         }
     }

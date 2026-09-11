@@ -11,14 +11,13 @@ use std::{
 
 use sorotte_client_app::app_boundary::{
     persistence::{
-        format_serialized_public_servers_list_legacy_compatible,
-        load_sorotte_ini_stored_client_settings_mvp_from_path,
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path,
+        format_serialized_public_servers_list, load_sorotte_ini_stored_client_settings_from_path,
+        upsert_sorotte_ini_stored_client_settings_at_path,
     },
-    state::{AutoplayThresholdOverride, StoredClientSettingsMvp},
+    state::{AutoplayThresholdOverride, StoredClientSettings},
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
-use sorotte_compat::LegacyServerPythonPeerHarness;
+use sorotte_compat::SyncplayServerPythonPeerHarness;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {

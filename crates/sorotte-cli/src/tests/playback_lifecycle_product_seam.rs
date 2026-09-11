@@ -666,7 +666,7 @@ async fn readiness_gate_holds_for_a_delayed_member_and_includes_a_late_joiner_be
     // The raw observer is test instrumentation rather than a playback
     // participant. Every actual client in this scenario supports both V2
     // readiness and the playback barrier and remains in the required cohort.
-    server_runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeLegacy);
+    server_runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeUnsupported);
     let server = ServerActorHandle::spawn(server_runtime);
     let server_probe = server.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1534,7 +1534,7 @@ fn loaded_simulated_mpv_events_survive_the_first_owner_clock_observation() {
 
     assert!(
         runtime
-            .publish_pending_local_file_update_legacy_compatible(
+            .publish_pending_local_file_update(
                 config.filename_privacy_mode,
                 config.filesize_privacy_mode,
             )

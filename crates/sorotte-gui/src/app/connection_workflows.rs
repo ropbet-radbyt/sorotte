@@ -1,7 +1,7 @@
-use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg;
 
 use sorotte_client_app::app_boundary::state::{
-    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+    StoredClientSettings, stored_client_settings_runtime_snapshot,
 };
 
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
@@ -12,7 +12,7 @@ use super::shell_state::{
 use super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
-    pub(in crate::app) fn connect_once_runtime_settings(&self) -> StoredClientSettingsMvp {
+    pub(in crate::app) fn connect_once_runtime_settings(&self) -> StoredClientSettings {
         let draft = self.configuration.to_stored_settings();
         let mut settings = self.saved_configuration.clone();
         settings.host = draft.host;
@@ -28,7 +28,7 @@ impl SorotteGuiShellAppState {
     pub(in crate::app) fn submitted_saved_server_connect_settings(
         &self,
         intent: GuiSavedServerConnectIntent,
-    ) -> StoredClientSettingsMvp {
+    ) -> StoredClientSettings {
         match intent {
             GuiSavedServerConnectIntent::ConnectOnce => self.connect_once_runtime_settings(),
             GuiSavedServerConnectIntent::SaveAndConnect => self.configuration.to_stored_settings(),
@@ -39,7 +39,7 @@ impl SorotteGuiShellAppState {
         &self,
         intent: GuiSavedServerConnectIntent,
     ) -> Option<super::shell_state::GuiSavedSessionConnectTarget> {
-        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(
+        let runtime_settings = stored_client_settings_runtime_snapshot(
             &self.submitted_saved_server_connect_settings(intent),
         );
         GuiPersistedConfigRuntimeOwner::saved_server_connect_target_for_runtime_settings(
@@ -92,8 +92,7 @@ impl SorotteGuiShellAppState {
         };
         self.set_selected_public_server_index(Some(index));
 
-        let (host, port) =
-            parse_host_and_optional_port_from_host_arg_legacy_compatible(&row.address);
+        let (host, port) = parse_host_and_optional_port_from_host_arg(&row.address);
         let _ = self
             .configuration
             .apply_text_value(SettingId::ConnectionHost, &host);
@@ -348,7 +347,7 @@ impl SorotteGuiShellAppState {
             let Some(address) = normalized_editable_text(&address) else {
                 continue;
             };
-            let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+            let (host, _) = parse_host_and_optional_port_from_host_arg(&address);
             if host.trim().is_empty() {
                 continue;
             }
@@ -408,7 +407,7 @@ impl SorotteGuiShellAppState {
                 "Custom public-server label and address must both be non-empty.",
             );
         };
-        let (host, _) = parse_host_and_optional_port_from_host_arg_legacy_compatible(&address);
+        let (host, _) = parse_host_and_optional_port_from_host_arg(&address);
         if host.trim().is_empty() {
             return self.record_action_error("Custom public-server address is not valid.");
         }

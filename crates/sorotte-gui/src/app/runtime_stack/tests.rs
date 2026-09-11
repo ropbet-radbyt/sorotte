@@ -11,7 +11,7 @@ use crate::app::{
     MenuActionRuntimeOverride, MenuDialogRuntimeSnapshot, SorotteGuiShellAppState,
 };
 use sorotte_client_app::app_boundary::state::{
-    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+    StoredClientSettings, stored_client_settings_runtime_snapshot,
 };
 use sorotte_client_core::{
     ConnectionPhase, CoordinatorPlayerCommand, LogicalMediaId, MediaLoadIntent, MediaTransportKind,
@@ -26,8 +26,7 @@ fn sync_adapter_to_saved_session_settings(
     adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
     state: &SorotteGuiShellAppState,
 ) {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration);
+    let runtime_settings = stored_client_settings_runtime_snapshot(&state.saved_configuration);
     GuiSessionRuntimeAdapter::sync_runtime_settings(adapter, &runtime_settings)
         .expect("saved settings should initialize the active test session");
 }

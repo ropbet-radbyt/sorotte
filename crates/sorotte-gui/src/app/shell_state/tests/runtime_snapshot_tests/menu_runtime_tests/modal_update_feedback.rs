@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert_eq!(state.active_view, GuiShellView::Room);
@@ -30,8 +29,7 @@ fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
 
 #[test]
 fn gui_shell_app_state_announces_menu_and_dialog_events() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
     assert!(state.menus.tls_prompt_expected);
@@ -57,8 +55,7 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
 
 #[test]
 fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
     assert!(!state.apply(GuiShellAction::DismissUpdateNotice));
@@ -79,8 +76,7 @@ fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
 
 #[test]
 fn gui_shell_app_state_applies_user_initiated_update_check_results() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::BeginUpdateCheck {
         user_initiated: true,
@@ -91,9 +87,9 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
         "Checking for updates"
     );
 
-    assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
-        LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpdateAvailable,
+    assert!(
+        state.apply(GuiShellAction::ApplyUpdateCheckResult(UpdateCheckResult {
+            status: UpdateCheckStatus::UpdateAvailable,
             message: "A new version of Sorotte is available.".to_owned(),
             url: Some("https://syncplay.pl/download/".to_owned()),
             candidate: None,
@@ -101,8 +97,8 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
             public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
             checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
             user_initiated: true,
-        }
-    )));
+        }))
+    );
 
     assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
@@ -136,12 +132,11 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
 
 #[test]
 fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when_up_to_date() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
-    assert!(state.apply(GuiShellAction::ApplyUpdateCheckResult(
-        LegacyUpdateCheckResult {
-            status: LegacyUpdateCheckStatus::UpToDate,
+    assert!(
+        state.apply(GuiShellAction::ApplyUpdateCheckResult(UpdateCheckResult {
+            status: UpdateCheckStatus::UpToDate,
             message: "Sorotte is up to date".to_owned(),
             url: None,
             candidate: None,
@@ -149,8 +144,8 @@ fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when
             public_servers: None,
             checked_at_utc: "2026-03-08 09:10:11.123".to_owned(),
             user_initiated: false,
-        }
-    )));
+        }))
+    );
 
     assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
@@ -163,8 +158,7 @@ fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when
 
 #[test]
 fn gui_shell_app_state_auto_opens_new_runtime_prompt_flags() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
@@ -192,9 +186,9 @@ fn gui_shell_app_state_auto_opens_new_runtime_prompt_flags() {
 
 #[test]
 fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
@@ -268,8 +262,7 @@ fn gui_shell_app_state_rejects_unknown_menu_automation_ids_before_dispatch() {
 
 #[test]
 fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionPort,
@@ -332,8 +325,7 @@ fn gui_shell_app_state_applies_gui_feedback_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_feedback_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         !state.apply(GuiShellAction::ApplyGuiFeedbackRuntimeSnapshot(
@@ -372,8 +364,7 @@ fn gui_shell_app_state_rejects_invalid_gui_feedback_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_applies_gui_error_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
         GuiErrorRuntimeSnapshot {
@@ -395,8 +386,7 @@ fn gui_shell_app_state_applies_gui_error_runtime_snapshots() {
 
 #[test]
 fn gui_shell_app_state_rejects_invalid_gui_error_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!state.apply(GuiShellAction::ApplyGuiErrorRuntimeSnapshot(
         GuiErrorRuntimeSnapshot {

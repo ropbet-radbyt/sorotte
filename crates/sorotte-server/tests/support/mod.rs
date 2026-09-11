@@ -72,7 +72,7 @@ fn python_live_peer_prerequisites() -> Result<(), String> {
     ))
 }
 
-pub fn legacy_syncplay_root() -> Option<PathBuf> {
+pub fn syncplay_root() -> Option<PathBuf> {
     if let Some(path) = env::var_os("SYNCPLAY_LEGACY_ROOT").filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
         if path.join("syncplayServer.py").is_file() {
@@ -892,13 +892,13 @@ impl PythonPeer {
         password: Option<&str>,
         tls_ca_file: Option<&Path>,
     ) -> Option<Self> {
-        let Some(legacy_root) = legacy_syncplay_root() else {
+        let Some(legacy_root) = syncplay_root() else {
             if strict_release_required() {
                 panic!(
-                    "strict server release verification requires legacy Syncplay checkout at SYNCPLAY_LEGACY_ROOT or .interop-cache/syncplay-legacy"
+                    "strict server release verification requires Syncplay checkout at SYNCPLAY_LEGACY_ROOT or .interop-cache/syncplay-legacy"
                 );
             }
-            eprintln!("legacy Python client test skipped; missing legacy Syncplay checkout");
+            eprintln!("legacy Python client test skipped; missing Syncplay checkout");
             return None;
         };
         let probe = python_live_peer_probe_script();

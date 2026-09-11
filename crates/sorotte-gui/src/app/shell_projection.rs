@@ -6,7 +6,7 @@ mod menu_dialog;
 mod public_servers;
 
 use sorotte_client_app::app_boundary::state::{
-    StoredClientSettingsMvp, stored_client_settings_runtime_snapshot_legacy_compatible,
+    StoredClientSettings, stored_client_settings_runtime_snapshot,
 };
 
 use super::shell_state::{

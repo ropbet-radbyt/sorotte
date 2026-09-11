@@ -201,9 +201,9 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         pending_logical_media_override: None,
     };
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let media_root = test_temp_root("attached-media-open-seek");
     let episode1_path = media_root.join("episode1.mkv");
@@ -660,10 +660,10 @@ fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek
     owner.player_paused = Some(false);
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     owner
         .ensure_detached_client_core_chat_session(&state)

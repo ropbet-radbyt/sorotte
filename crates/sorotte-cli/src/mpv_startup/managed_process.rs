@@ -15,14 +15,14 @@ struct FinishedClientRuntime {
 
 pub(crate) fn create_client_runtime_with_managed_mpv_support(
     config: &ClientLoopConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
 ) -> anyhow::Result<(
     ClientApplication<MpvAdapter>,
     Option<ManagedMpvProcessGuard>,
 )> {
     let (player, managed_guard, managed_startup_media) =
-        create_mpv_adapter_and_optional_managed_process_from_env(legacy_overrides)?;
+        create_mpv_adapter_and_optional_managed_process_from_env(argument_overrides)?;
     let FinishedClientRuntime {
         runtime,
         managed_guard,
@@ -30,7 +30,7 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
         streaming_warning,
     } = finish_client_runtime_with_mpv(
         config,
-        legacy_overrides,
+        argument_overrides,
         stored_settings,
         player,
         managed_guard,
@@ -47,41 +47,41 @@ pub(crate) fn create_client_runtime_with_managed_mpv_support(
 
 fn finish_client_runtime_with_mpv(
     config: &ClientLoopConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
     player: MpvAdapter,
     managed_guard: Option<ManagedMpvProcessGuard>,
     managed_startup_media: Option<String>,
 ) -> anyhow::Result<FinishedClientRuntime> {
     finish_client_runtime_with_mpv_and_bridge_setup(
         config,
-        legacy_overrides,
+        argument_overrides,
         stored_settings,
         player,
         managed_guard,
         managed_startup_media,
-        apply_legacy_syncplay_ui_settings_to_mpv_adapter_legacy_compatible,
+        apply_syncplay_ui_settings_to_mpv_adapter,
     )
 }
 
 fn finish_client_runtime_with_mpv_and_bridge_setup<F>(
     config: &ClientLoopConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
     mut player: MpvAdapter,
     managed_guard: Option<ManagedMpvProcessGuard>,
     managed_startup_media: Option<String>,
     configure_bridge: F,
 ) -> anyhow::Result<FinishedClientRuntime>
 where
-    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettings>) -> SorotteBridgeHealth,
 {
     let session = create_client_session(config);
     let streaming = stored_settings
         .map(ClientConfig::resolve)
         .map(|resolution| resolution.config.playback.streaming)
         .unwrap_or_default();
-    let advanced_arguments = legacy_overrides
+    let advanced_arguments = argument_overrides
         .map(|overrides| overrides.player_args.as_slice())
         .unwrap_or_default();
     let effective_options = streaming.effective_mpv_options(advanced_arguments);
@@ -144,7 +144,7 @@ fn sorotte_bridge_warning_line(health: &SorotteBridgeHealth) -> Option<String> {
 #[cfg(test)]
 pub(crate) fn create_client_runtime_with_prepared_mpv_for_test(
     config: &ClientLoopConfig,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    stored_settings: Option<&StoredClientSettings>,
     player: MpvAdapter,
 ) -> anyhow::Result<(ClientApplication<MpvAdapter>, SorotteBridgeHealth)> {
     let FinishedClientRuntime {
@@ -160,12 +160,12 @@ pub(crate) fn create_client_runtime_with_prepared_mpv_for_test(
 #[cfg(test)]
 pub(crate) fn create_client_runtime_with_prepared_mpv_and_bridge_setup_for_test<F>(
     config: &ClientLoopConfig,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    stored_settings: Option<&StoredClientSettings>,
     player: MpvAdapter,
     configure_bridge: F,
 ) -> anyhow::Result<(ClientApplication<MpvAdapter>, SorotteBridgeHealth)>
 where
-    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettings>) -> SorotteBridgeHealth,
 {
     let FinishedClientRuntime {
         runtime,
@@ -188,8 +188,8 @@ where
 #[cfg(test)]
 pub(crate) fn create_client_runtime_with_prepared_mpv_and_startup_health_for_test<F>(
     config: &ClientLoopConfig,
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
+    stored_settings: Option<&StoredClientSettings>,
     player: MpvAdapter,
     configure_bridge: F,
 ) -> anyhow::Result<(
@@ -198,7 +198,7 @@ pub(crate) fn create_client_runtime_with_prepared_mpv_and_startup_health_for_tes
     Option<String>,
 )>
 where
-    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettingsMvp>) -> SorotteBridgeHealth,
+    F: FnOnce(&mut MpvAdapter, Option<&StoredClientSettings>) -> SorotteBridgeHealth,
 {
     let FinishedClientRuntime {
         runtime,
@@ -207,7 +207,7 @@ where
         streaming_warning,
     } = finish_client_runtime_with_mpv_and_bridge_setup(
         config,
-        legacy_overrides,
+        argument_overrides,
         stored_settings,
         player,
         None,
@@ -219,7 +219,7 @@ where
 }
 
 fn create_mpv_adapter_and_optional_managed_process_from_env(
-    legacy_overrides: Option<&LegacyClientArgOverrides>,
+    argument_overrides: Option<&SyncplayClientArgOverrides>,
 ) -> anyhow::Result<(MpvAdapter, Option<ManagedMpvProcessGuard>, Option<String>)> {
     let explicit_ipc_path = explicit_mpv_ipc_path_from_env();
     if let Some(ipc_path) = explicit_ipc_path {
@@ -231,7 +231,7 @@ fn create_mpv_adapter_and_optional_managed_process_from_env(
     }
 
     let mut managed_config = managed_mpv_launch_env_config_from_env();
-    apply_legacy_client_arg_managed_mpv_overrides(&mut managed_config, legacy_overrides);
+    apply_syncplay_client_arg_managed_mpv_overrides(&mut managed_config, argument_overrides);
     if !managed_config.enabled {
         #[cfg(test)]
         return Ok((SimulatedPlayer::new().into_inner(), None, None));
@@ -271,10 +271,8 @@ fn spawn_managed_mpv_and_attach(
             "managed mpv launch requested but no mpv binary was found; set SOROTTE_CLIENT_MPV_MANAGED_BIN"
         )
     })?;
-    let mpv_bin = resolve_managed_mpv_launch_program_legacy_compatible(&requested_mpv_bin);
-    if managed_mpv_launch_program_requires_existing_file_legacy_compatible(&mpv_bin)
-        && !mpv_bin.is_file()
-    {
+    let mpv_bin = resolve_managed_mpv_launch_program(&requested_mpv_bin);
+    if managed_mpv_launch_program_requires_existing_file(&mpv_bin) && !mpv_bin.is_file() {
         return Err(anyhow!(
             "managed mpv binary does not exist: {}",
             mpv_bin.display()
@@ -310,7 +308,7 @@ fn spawn_managed_mpv_and_attach(
     if let Some(parent) = mpv_bin.parent() {
         command.current_dir(parent);
     }
-    command.args(managed_mpv_launch_base_args_legacy_compatible(&ipc_path));
+    command.args(managed_mpv_launch_base_args(&ipc_path));
     if !config.extra_args.is_empty() {
         command.args(&config.extra_args);
     }
@@ -334,17 +332,7 @@ fn spawn_managed_mpv_and_attach(
     Ok((adapter, guard))
 }
 
-#[cfg(test)]
-pub(crate) fn managed_mpv_launch_base_args_legacy_compatible(ipc_path: &str) -> Vec<String> {
-    managed_mpv_launch_base_args(ipc_path)
-}
-
-#[cfg(not(test))]
-fn managed_mpv_launch_base_args_legacy_compatible(ipc_path: &str) -> Vec<String> {
-    managed_mpv_launch_base_args(ipc_path)
-}
-
-fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
+pub(crate) fn managed_mpv_launch_base_args(ipc_path: &str) -> Vec<String> {
     vec![
         "--pause".to_owned(),
         "--force-window=no".to_owned(),

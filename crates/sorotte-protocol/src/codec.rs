@@ -9,7 +9,7 @@ pub const DEFAULT_MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 pub const SOROTTE_MAX_PROTOCOL_LINE_BYTES: usize = 512 * 1024;
 pub const SOROTTE_LARGE_PROTOCOL_FRAMES_V1: &str = "sorotteLargeProtocolFramesV1";
 /// The pinned Python peer inherits Twisted LineReceiver's 16 KiB payload cap.
-pub const LEGACY_MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024;
+pub const SYNCPLAY_MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024;
 
 /// Measures encoded JSON without allocating a serialized copy, stopping as
 /// soon as it exceeds the byte budget. Delimiters are not counted.
@@ -473,7 +473,7 @@ mod tests {
         let overhead = super::encode_message_line(&empty).unwrap().len();
         for (limit, expected_bytes) in [
             (super::SOROTTE_MAX_PROTOCOL_LINE_BYTES, 524_288),
-            (super::LEGACY_MAX_PROTOCOL_LINE_BYTES, 16_384),
+            (super::SYNCPLAY_MAX_PROTOCOL_LINE_BYTES, 16_384),
         ] {
             for extra in [0, 1] {
                 let message: super::ProtocolMessage = serde_json::from_value(

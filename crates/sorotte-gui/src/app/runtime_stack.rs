@@ -23,8 +23,7 @@ use sorotte_client_app::app_boundary::application::{
 };
 use sorotte_client_app::app_boundary::state::{
     AutoplayThresholdOverride, RoomName, StoredClientSettingsRuntimeSnapshot,
-    StreamingQualityDowngradeSuggestion, Username,
-    parse_host_and_optional_port_from_host_arg_legacy_compatible,
+    StreamingQualityDowngradeSuggestion, Username, parse_host_and_optional_port_from_host_arg,
 };
 use sorotte_client_core::{
     AUTOPLAY_TICK_INTERVAL_SECONDS, ChatNotification, ClientEffect, ClientMediaMatchPeerFileState,
@@ -32,8 +31,8 @@ use sorotte_client_core::{
     DesyncCorrectionDispatchSnapshot, ExternalPlayerAvailability, LogicalMediaId, MediaLoadIntent,
     MediaLoadPlan, MediaTransportKind, PlaybackBarrierTimeoutAction, PlaybackCoordinationSnapshot,
     PlaybackCoordinatorAction, PlayerCommandCause, PrivacyMode, ProtocolLineLease,
-    RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION_LEGACY,
-    SYNCPLAY_WIRE_VERSION_LEGACY, legacy_server_password_token,
+    RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION, SYNCPLAY_WIRE_VERSION,
+    syncplay_server_password_token,
 };
 use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
 use sorotte_player_api::{
@@ -52,7 +51,7 @@ use super::shell_state::{
     GuiCommandAvailabilityState, GuiShellAction, GuiTransientNotificationLevel,
     SorotteGuiShellAppState,
 };
-use super::support::{legacy_chat_input_enabled, system_time_seconds};
+use super::support::{chat_input_enabled, system_time_seconds};
 
 pub(super) use self::client_core_adapter::GuiClientCoreChatSessionRuntimeAdapter;
 pub(super) use self::player::{

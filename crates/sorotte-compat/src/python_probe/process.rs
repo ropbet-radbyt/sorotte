@@ -15,7 +15,7 @@ pub(crate) fn run_python_probe_raw_with_overrides(
     permanent_rooms: &[&str],
     tls_available: bool,
 ) -> Result<String, InteropError> {
-    let legacy_checkout = ensure_legacy_syncplay_checkout_available()?;
+    let legacy_checkout = ensure_syncplay_checkout_available()?;
 
     let probe_script = python_handshake_probe_script_path();
     if !probe_script.is_file() {

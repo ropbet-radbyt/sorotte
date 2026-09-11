@@ -11,10 +11,7 @@ impl GuiPersistedConfigRuntimeOwner {
         ]);
     }
 
-    fn default_room_for_legacy_fallback(
-        &self,
-        projected_state: &SorotteGuiShellAppState,
-    ) -> String {
+    fn default_room_for_fallback(&self, projected_state: &SorotteGuiShellAppState) -> String {
         self.session_default_room
             .clone()
             .or_else(|| {
@@ -125,7 +122,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
     ) {
         let previous_room = projected_state.main_window.room_name.clone();
-        let default_room = self.default_room_for_legacy_fallback(projected_state);
+        let default_room = self.default_room_for_fallback(projected_state);
         let Some(session) = self.session.as_mut() else {
             self.pending_room_change_request = None;
             Self::push_runtime_error_notification(
@@ -137,7 +134,7 @@ impl GuiPersistedConfigRuntimeOwner {
         };
 
         let room_change_result = if default_room.is_empty() {
-            session.set_room_with_legacy_fallback(default_room)
+            session.set_room_with_default_fallback(default_room)
         } else {
             session.set_room(default_room)
         };

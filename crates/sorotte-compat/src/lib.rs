@@ -70,7 +70,7 @@ pub struct PythonProtocolTranscript {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyClientSetFileContractProbe {
+pub struct SyncplayClientSetFileContractProbe {
     pub file_payload_ignored: bool,
     pub empty_payload_ignored: bool,
     pub file_payload_calls: Vec<String>,
@@ -78,7 +78,7 @@ pub struct LegacyClientSetFileContractProbe {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LegacyClientUserFileMetadataProbe {
+pub struct SyncplayClientUserFileMetadataProbe {
     pub after_set_mixed: BTreeMap<String, Option<Value>>,
     pub after_set_empty: BTreeMap<String, Option<Value>>,
     pub after_list_mixed: BTreeMap<String, Option<Value>>,
@@ -86,13 +86,13 @@ pub struct LegacyClientUserFileMetadataProbe {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyPythonPeerChatMessage {
+pub struct SyncplayPythonPeerChatMessage {
     pub sender: String,
     pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyPythonPeerSnapshot {
+pub struct SyncplayPythonPeerSnapshot {
     pub username: String,
     pub room: String,
     pub local_ready: Option<bool>,
@@ -103,11 +103,11 @@ pub struct LegacyPythonPeerSnapshot {
     pub observed_user_controllers: BTreeMap<String, Option<bool>>,
     pub playlist: Vec<String>,
     pub playlist_index: Option<usize>,
-    pub chat_messages: Vec<LegacyPythonPeerChatMessage>,
+    pub chat_messages: Vec<SyncplayPythonPeerChatMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LegacyClientChatSendContractCase {
+pub struct SyncplayClientChatSendContractCase {
     pub message: String,
     pub protocol_logged: bool,
     pub server_version: String,
@@ -118,7 +118,7 @@ pub struct LegacyClientChatSendContractCase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyClientChatSendContractResult {
+pub struct SyncplayClientChatSendContractResult {
     pub sent_messages: Vec<String>,
     pub error_messages: Vec<String>,
     pub debug_messages: Vec<String>,
@@ -129,7 +129,7 @@ pub struct ServerRuntimeScenarioStep {
     pub client_id: String,
     pub request_line: String,
     pub advance_seconds: f64,
-    /// Optional wall-clock advance for the legacy Python implementation.
+    /// Optional wall-clock advance for the Python Syncplay implementation.
     ///
     /// Sorotte deliberately uses a longer liveness timeout. Timeout scenarios
     /// can therefore place both implementations at the same semantic boundary
@@ -168,24 +168,24 @@ impl std::fmt::Debug for ServerRuntimeScenarioEvent {
 }
 
 // This value is part of controlled-room hash compatibility; keep it byte-stable.
-const DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT: &str = "syncplay-rs-controlled-room-v1";
+const DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT: &str = "syncplay-rs-controlled-room-v1";
 // A cold Python/Twisted import under hosted all-feature test load can exceed
 // six seconds. Keep a bounded process-start allowance separate from the
 // protocol response deadlines below.
-const LEGACY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(15);
-const LEGACY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
-const LEGACY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
-const LEGACY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
-const LEGACY_SERVER_STARTUP_LOCK_WAIT: Duration = Duration::from_secs(30);
-const LEGACY_SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
-const LEGACY_SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
-const LEGACY_SYNCPLAY_BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
+const SYNCPLAY_SERVER_START_TIMEOUT: Duration = Duration::from_secs(15);
+const SYNCPLAY_SERVER_STEP_IDLE_WAIT: Duration = Duration::from_millis(60);
+const SYNCPLAY_SERVER_STEP_MIN_WAIT: Duration = Duration::from_millis(20);
+const SYNCPLAY_SERVER_STEP_MAX_WAIT: Duration = Duration::from_secs(2);
+const SYNCPLAY_SERVER_STARTUP_LOCK_WAIT: Duration = Duration::from_secs(30);
+const SYNCPLAY_UPSTREAM_REPO: &str = "https://github.com/Syncplay/syncplay.git";
+const SYNCPLAY_UPSTREAM_REF: &str = "v1.7.5";
+const SYNCPLAY_BOOTSTRAP_LOCK_WAIT: Duration = Duration::from_secs(120);
 
-static LEGACY_SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static LEGACY_SERVER_STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SYNCPLAY_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SYNCPLAY_SERVER_STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug)]
-struct LegacyServerClientConnection {
+struct SyncplayServerClientConnection {
     stream: TcpStream,
     pending_bytes: Vec<u8>,
 }
@@ -197,14 +197,14 @@ pub enum InteropError {
         #[source]
         source: Box<InteropError>,
     },
-    #[error("legacy syncplay checkout not found at {0}")]
-    LegacySyncplayCheckoutMissing(PathBuf),
+    #[error("Python Syncplay checkout not found at {0}")]
+    SyncplayCheckoutMissing(PathBuf),
     #[error("python handshake probe script not found at {0}")]
     PythonHandshakeProbeMissing(PathBuf),
     #[error("python live peer probe script not found at {0}")]
     PythonLivePeerProbeMissing(PathBuf),
-    #[error("legacy syncplay server entry script not found at {0}")]
-    LegacyServerEntryScriptMissing(PathBuf),
+    #[error("Python Syncplay server entry script not found at {0}")]
+    SyncplayServerEntryScriptMissing(PathBuf),
     #[error("failed to spawn python process '{python}': {source}")]
     PythonSpawn {
         python: String,
@@ -232,32 +232,32 @@ pub enum InteropError {
     #[error("invalid python batch response: {0}")]
     InvalidPythonBatchResponse(String),
     #[error(
-        "legacy server process exited before becoming reachable (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
+        "Python server process exited before becoming reachable (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
     )]
-    LegacyServerExited {
+    SyncplayServerExited {
         exit_code: Option<i32>,
         stdout: String,
         stderr: String,
     },
     #[error(
-        "legacy server did not accept connections on port {port} before timeout (stdout: '{stdout}', stderr: '{stderr}')"
+        "Python server did not accept connections on port {port} before timeout (stdout: '{stdout}', stderr: '{stderr}')"
     )]
-    LegacyServerStartTimeout {
+    SyncplayServerStartTimeout {
         port: u16,
         stdout: String,
         stderr: String,
     },
     #[error(
-        "legacy server did not expose permanent rooms {permanent_rooms:?} on port {port} before timeout"
+        "Python server did not expose permanent rooms {permanent_rooms:?} on port {port} before timeout"
     )]
-    LegacyServerPersistentRoomsStartTimeout {
+    SyncplayServerPersistentRoomsStartTimeout {
         port: u16,
         permanent_rooms: Vec<String>,
     },
     #[error(
-        "legacy server did not close its room-state startup probe on port {port} before timeout"
+        "Python server did not close its room-state startup probe on port {port} before timeout"
     )]
-    LegacyServerStartupProbeDisconnectTimeout { port: u16 },
+    SyncplayServerStartupProbeDisconnectTimeout { port: u16 },
     #[error(
         "python live peer process exited before reporting a successful connection (exit code: {exit_code:?}, stdout: '{stdout}', stderr: '{stderr}')"
     )]
@@ -270,14 +270,14 @@ pub enum InteropError {
         "python live peer process did not report a successful connection before timeout (stdout: '{stdout}', stderr: '{stderr}')"
     )]
     PythonLivePeerStartTimeout { stdout: String, stderr: String },
-    #[error("failed to initialize legacy client stream for '{client_id}': {source}")]
-    LegacyClientConnectionInit {
+    #[error("failed to initialize Python client stream for '{client_id}': {source}")]
+    SyncplayClientConnectionInit {
         client_id: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("missing legacy client stream for '{0}'")]
-    MissingLegacyClient(String),
+    #[error("missing Python client stream for '{0}'")]
+    MissingSyncplayClient(String),
     #[error("invalid server runtime scenario line: {0}")]
     InvalidScenarioStep(String),
     #[error(transparent)]
@@ -290,7 +290,7 @@ pub enum InteropError {
     ServerRuntime(#[from] ServerRuntimeError),
 }
 
-pub struct LegacyServerPythonPeerHarness {
+pub struct SyncplayServerPythonPeerHarness {
     host: String,
     address: String,
     port: u16,
@@ -306,11 +306,11 @@ pub struct LegacyServerPythonPeerHarness {
 }
 
 mod fixtures;
-mod legacy_process;
-mod legacy_server;
 mod python_peer;
 mod python_probe;
 mod scenario_replay;
+mod syncplay_process;
+mod syncplay_server;
 #[cfg(feature = "trace-capture")]
 mod trace_capture;
 
@@ -319,24 +319,14 @@ pub use self::fixtures::{
     fixture_path, load_server_runtime_scenario_fixture, parse_server_runtime_scenario_steps,
     protocol_fixture, protocol_fixture_dir, scenario_fixture_dir, scenario_fixture_path,
 };
-pub use self::legacy_process::{
-    interop_prerequisites_missing, legacy_syncplay_checkout_dir,
-    legacy_syncplay_server_entry_script_path, python_handshake_probe_script_path,
-    python_live_peer_probe_script_path, required_live_interop_enabled,
-};
-pub use self::legacy_server::{
-    run_legacy_server_fanout_roundtrip, run_legacy_server_fanout_roundtrip_with_overrides,
-    run_legacy_server_fanout_roundtrip_with_salt,
-    run_legacy_server_fanout_roundtrip_with_salt_and_motd_template,
-};
 pub use self::python_probe::{
     default_rust_client_hello_for_interop, run_python_handshake_roundtrip,
-    run_python_handshake_roundtrip_with_hello, run_python_legacy_client_chat_send_contract_batch,
-    run_python_legacy_client_set_file_contract_probe,
-    run_python_legacy_client_user_file_metadata_probe, run_python_privacy_file_payload_batch,
+    run_python_handshake_roundtrip_with_hello, run_python_privacy_file_payload_batch,
     run_python_protocol_roundtrip, run_python_same_fileduration_batch,
     run_python_same_fileduration_batch_with_overrides, run_python_same_filename_batch,
-    run_python_same_filesize_batch,
+    run_python_same_filesize_batch, run_python_syncplay_client_chat_send_contract_batch,
+    run_python_syncplay_client_set_file_contract_probe,
+    run_python_syncplay_client_user_file_metadata_probe,
 };
 pub use self::scenario_replay::{
     replay_server_runtime_scenario_fixture, replay_server_runtime_scenario_steps,
@@ -345,20 +335,31 @@ pub use self::scenario_replay::{
     run_python_fanout_roundtrip_with_motd_template, run_python_fanout_roundtrip_with_overrides,
     run_python_fanout_roundtrip_with_tls_available,
 };
+pub use self::syncplay_process::{
+    interop_prerequisites_missing, python_handshake_probe_script_path,
+    python_live_peer_probe_script_path, required_live_interop_enabled, syncplay_checkout_dir,
+    syncplay_server_entry_script_path,
+};
+pub use self::syncplay_server::{
+    run_syncplay_server_fanout_roundtrip, run_syncplay_server_fanout_roundtrip_with_overrides,
+    run_syncplay_server_fanout_roundtrip_with_salt,
+    run_syncplay_server_fanout_roundtrip_with_salt_and_motd_template,
+};
 #[cfg(feature = "trace-capture")]
 pub use self::trace_capture::{
-    capture_legacy_server_trace_fixture, capture_legacy_server_trace_fixture_with_overrides,
-    capture_legacy_server_trace_fixture_with_salt,
-    capture_legacy_server_trace_fixture_with_salt_and_motd_template, capture_python_trace_fixture,
-    capture_python_trace_fixture_with_motd_template, capture_python_trace_fixture_with_overrides,
+    capture_python_trace_fixture, capture_python_trace_fixture_with_motd_template,
+    capture_python_trace_fixture_with_overrides, capture_syncplay_server_trace_fixture,
+    capture_syncplay_server_trace_fixture_with_overrides,
+    capture_syncplay_server_trace_fixture_with_salt,
+    capture_syncplay_server_trace_fixture_with_salt_and_motd_template,
 };
 
-pub(crate) use self::legacy_process::*;
 #[cfg(test)]
-pub(crate) use self::python_probe::default_rust_client_hello_for_legacy_live_tls;
+pub(crate) use self::python_probe::default_rust_client_hello_for_syncplay_live_tls;
 pub(crate) use self::python_probe::{
     first_non_empty_stdout_line, python_bin_from_env, run_python_probe_raw_with_overrides,
 };
+pub(crate) use self::syncplay_process::*;
 
 #[cfg(test)]
 mod tests;

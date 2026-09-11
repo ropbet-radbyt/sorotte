@@ -28,7 +28,7 @@ pub(in crate::tests) fn read_next_protocol_line_from_pending(
 }
 
 pub(in crate::tests) fn read_plaintext_legacy_protocol_line_with_timeout(
-    connection: &mut super::LegacyServerClientConnection,
+    connection: &mut super::SyncplayServerClientConnection,
     timeout: Duration,
 ) -> Result<String, InteropError> {
     let deadline = Instant::now() + timeout;

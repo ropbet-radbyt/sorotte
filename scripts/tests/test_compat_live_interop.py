@@ -110,8 +110,8 @@ def valid_report() -> dict[str, object]:
         "oracle": {
             "path": ".interop-cache/syncplay-legacy",
             "repository": interop.PINNED_LEGACY_SYNCPLAY_REPOSITORY,
-            "expected_commit_sha": interop.PINNED_LEGACY_SYNCPLAY_SHA,
-            "observed_commit_sha": interop.PINNED_LEGACY_SYNCPLAY_SHA,
+            "expected_commit_sha": interop.PINNED_SYNCPLAY_SHA,
+            "observed_commit_sha": interop.PINNED_SYNCPLAY_SHA,
         },
         "prerequisites": {
             "python": {
@@ -528,7 +528,7 @@ class ClosedSchemaTests(unittest.TestCase):
         contradictory["accounting"]["executed_count"] = 2
         mutations.append(contradictory)
         selector = valid_report()
-        selector["execution"]["command"].insert(6, "legacy_server_")
+        selector["execution"]["command"].insert(6, "syncplay_server_")
         mutations.append(selector)
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(
@@ -722,7 +722,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             checkout["with"],
             {
                 "repository": "Syncplay/syncplay",
-                "ref": interop.PINNED_LEGACY_SYNCPLAY_SHA,
+                "ref": interop.PINNED_SYNCPLAY_SHA,
                 "path": ".interop-cache/syncplay-legacy",
                 "persist-credentials": False,
             },
@@ -764,13 +764,13 @@ class WorkflowPolicyTests(unittest.TestCase):
 
     def test_runner_commands_are_selector_free_and_coverage_is_fail_closed(self) -> None:
         self.assertEqual(interop.TEST_COMMAND[:6], interop.BASE_CARGO_COMMAND)
-        self.assertNotIn("legacy_server_", interop.TEST_COMMAND)
+        self.assertNotIn("syncplay_server_", interop.TEST_COMMAND)
         coverage = (
             ROOT / "scripts" / "coverage_profile_lanes.py"
         ).read_text(encoding="utf-8")
         self.assertIn('"SYNCPLAY_REQUIRE_LIVE_INTEROP": "1"', coverage)
         rust = (
-            ROOT / "crates" / "sorotte-compat" / "src" / "legacy_process.rs"
+            ROOT / "crates" / "sorotte-compat" / "src" / "syncplay_process.rs"
         ).read_text(encoding="utf-8")
         self.assertIn("SYNCPLAY_REQUIRE_LIVE_INTEROP", rust)
         self.assertIn(

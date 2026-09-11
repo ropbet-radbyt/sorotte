@@ -1,8 +1,6 @@
 use sorotte_client_app::app_boundary::{
-    commands::{
-        controlled_room_base_name_legacy_compatible, generate_room_password_legacy_compatible,
-    },
-    language::SUPPORTED_LEGACY_RUNTIME_LANGUAGE_TAGS_DISPLAY,
+    commands::{controlled_room_base_name, generate_room_password},
+    language::SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY,
 };
 
 use super::mpv_launch;

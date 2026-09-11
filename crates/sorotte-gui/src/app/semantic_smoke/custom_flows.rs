@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use super::super::{
     GuiAppHost, GuiLaunchMode, GuiPendingCompletionRequest, GuiPersistedConfigRuntimeOwner,
     GuiPersistedUiState, GuiQueuedRuntimeBridgeHandle, GuiRuntimeRequest, GuiShellAction,
-    GuiShellView, SorotteGuiShellAppState, StoredClientSettingsMvp, load_gui_ui_state_from_root,
+    GuiShellView, SorotteGuiShellAppState, StoredClientSettings, load_gui_ui_state_from_root,
     persist_gui_ui_state_at_root, run_gui_host_with_startup_actions_and_gui_state,
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path,
+    upsert_sorotte_ini_stored_client_settings_at_path,
 };
 use super::GuiSemanticScenarioReport;
 
@@ -60,14 +60,14 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
             )
         })?;
         let config_path = root.join("sorotte.ini");
-        let settings = StoredClientSettingsMvp {
+        let settings = StoredClientSettings {
             host: Some("persisted.example".to_owned()),
             room: Some("PersistenceRoom".to_owned()),
             player_path: Some("C:/Windows/System32/notepad.exe".to_owned()),
             media_search_directories: Some(vec!["C:/Media".to_owned()]),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         };
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &settings).map_err(
+        upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &settings).map_err(
             |error| {
                 format!(
                     "failed to seed semantic persistence-reset config {}: {error}",
@@ -137,7 +137,7 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
 
         let mut host = RecordingHost;
         let migrated_state = run_gui_host_with_startup_actions_and_gui_state(
-            &StoredClientSettingsMvp {
+            &StoredClientSettings {
                 host: Some("saved.example".to_owned()),
                 port: Some(8999),
                 public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
@@ -205,7 +205,7 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         if clear_state.active_view != GuiShellView::Setup {
             return Err("semantic clear-GUI-data flow did not restore the setup view".to_owned());
         }
-        if clear_state.saved_configuration != StoredClientSettingsMvp::default() {
+        if clear_state.saved_configuration != StoredClientSettings::default() {
             return Err(
                 "semantic clear-GUI-data flow did not restore the default saved configuration"
                     .to_owned(),
@@ -350,13 +350,13 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         let mut connect_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let connect_handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut connect_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
                 username: Some("semantic-user".to_owned()),
                 room: Some("semantic-room".to_owned()),
                 public_servers: Some(vec![("Primary".to_owned(), address.to_string())]),
                 tls_policy: Some("Plaintext".to_owned()),
                 shared_playlist_enabled: Some(true),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             });
 
         if !connect_state.apply(GuiShellAction::SelectPublicServer(0))
@@ -419,13 +419,13 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         let mut refresh_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let refresh_handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut refresh_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
                 public_servers: Some(vec![
                     (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
                     ("Duplicate".to_owned(), "SYNCPLAY.PL:8999".to_owned()),
                     ("Backup".to_owned(), "backup.example:9000".to_owned()),
                 ]),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             });
         if !refresh_state.apply(GuiShellAction::BeginPublicServerRefresh) {
             return Err("detached semantic refresh flow could not begin refresh".to_owned());
@@ -495,10 +495,10 @@ pub(super) fn run_gui_semantic_detached_runtime_ownership_flow()
         let mut search_owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         let search_handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut search_state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
                 media_search_directories: Some(vec![root.display().to_string()]),
                 shared_playlist_enabled: Some(true),
-                ..StoredClientSettingsMvp::default()
+                ..StoredClientSettings::default()
             });
         if !search_state.apply(GuiShellAction::SwitchView(GuiShellView::Setup))
             || !search_state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![

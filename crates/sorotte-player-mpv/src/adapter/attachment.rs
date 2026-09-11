@@ -109,11 +109,11 @@ impl MpvAdapter {
         self.ipc_client = Some(client);
         self.ipc_endpoint = Some(endpoint);
         self.ipc_reconnect_not_before = None;
-        self.reset_legacy_syncplayintf_attachment_for_new_ipc();
+        self.reset_syncplayintf_attachment_for_new_ipc();
         self.observers_registered = false;
         self.transport_observers_registered = false;
         self.reset_network_media_options_attachment_state();
-        self.legacy_syncplay_osd_placement_restore = None;
+        self.syncplay_osd_placement_restore = None;
         #[cfg(not(test))]
         {
             self.ensure_observers_registered_if_attached();

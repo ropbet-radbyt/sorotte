@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
@@ -26,17 +25,17 @@ fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
         },
     )));
 
-    let draft = StoredClientSettingsMvp {
+    let draft = StoredClientSettings {
         host: Some("draft.example".to_owned()),
         room: Some("DraftRoom".to_owned()),
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
         player_path: Some("mpv".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
@@ -72,8 +71,7 @@ fn gui_shell_app_state_applies_gui_configuration_runtime_snapshots() {
 #[test]
 fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuration_runtime_snapshots()
  {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::ApplyMainWindowRuntimeSnapshot(
         MainWindowRuntimeSnapshot {
@@ -131,15 +129,15 @@ fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuratio
         },
     )));
 
-    let draft = StoredClientSettingsMvp {
+    let draft = StoredClientSettings {
         host: Some("draft.example".to_owned()),
         room: Some("DraftRoom".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    let saved = StoredClientSettingsMvp {
+    let saved = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         room: Some("SavedRoom".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     assert!(
         state.apply(GuiShellAction::ApplyGuiConfigurationRuntimeSnapshot(
@@ -172,12 +170,12 @@ fn gui_shell_app_state_preserves_runtime_main_window_surface_across_configuratio
 
 #[test]
 fn gui_shell_app_state_preserves_public_server_selection_across_configuration_edits() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
             ("Beta".to_owned(), "beta.example:8999".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));
@@ -194,12 +192,12 @@ fn gui_shell_app_state_preserves_public_server_selection_across_configuration_ed
 
 #[test]
 fn gui_shell_app_state_preserves_public_server_selection_across_configuration_runtime_snapshots() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         public_servers: Some(vec![
             ("Alpha".to_owned(), "alpha.example:8999".to_owned()),
             ("Beta".to_owned(), "beta.example:8999".to_owned()),
         ]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::SelectPublicServer(1)));

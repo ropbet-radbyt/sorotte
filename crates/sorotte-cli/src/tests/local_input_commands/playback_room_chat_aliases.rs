@@ -244,7 +244,7 @@ fn parse_local_input_command_parses_room_aliases() {
     );
     assert_eq!(
         parse_local_input_command("room "),
-        Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        Some(LocalInputCommand::SetRoomWithDefaultFallback)
     );
     assert_eq!(
         parse_local_input_command("r room2"),
@@ -252,7 +252,7 @@ fn parse_local_input_command_parses_room_aliases() {
     );
     assert_eq!(
         parse_local_input_command("r "),
-        Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        Some(LocalInputCommand::SetRoomWithDefaultFallback)
     );
     assert_eq!(
         parse_local_input_command("/room room2"),
@@ -272,11 +272,11 @@ fn parse_local_input_command_parses_room_aliases() {
     );
     assert_eq!(
         parse_local_input_command("room"),
-        Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        Some(LocalInputCommand::SetRoomWithDefaultFallback)
     );
     assert_eq!(
         parse_local_input_command("r"),
-        Some(LocalInputCommand::SetRoomWithLegacyFallback)
+        Some(LocalInputCommand::SetRoomWithDefaultFallback)
     );
     assert_eq!(
         parse_local_input_command("/room"),

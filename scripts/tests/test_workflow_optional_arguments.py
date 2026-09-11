@@ -9,10 +9,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from scripts import release_qualification
+
 SELECTORS = {
     "dependency-policy.yml": ("selection", "dependencies"),
     "gui-native-interactive.yml": ("selection", "native"),
@@ -22,6 +26,17 @@ SELECTORS = {
 
 
 class WorkflowOptionalArgumentTests(unittest.TestCase):
+    def test_server_reference_command_reaches_the_qualification_verifier(self):
+        source = (ROOT / "scripts/server-release-verify.ps1").read_text(encoding="utf-8")
+        command = next(line.strip() for line in source.splitlines()
+                       if line.strip().startswith("& python scripts/release_qualification.py"))
+        arguments = shlex.split(command)[3:]
+        reference = ROOT / "target/reference checkout with spaces"
+        arguments = [str(reference) if arg == "$Path" else arg for arg in arguments]
+        with mock.patch.object(release_qualification, "verify_legacy") as verify:
+            self.assertEqual(release_qualification.main(arguments), 0)
+        verify.assert_called_once_with(reference)
+
     def test_actual_selector_commands_handle_unset_empty_and_present_force(self):
         if os.name == "nt":
             git = shutil.which("git")

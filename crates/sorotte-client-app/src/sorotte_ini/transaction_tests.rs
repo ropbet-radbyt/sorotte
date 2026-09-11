@@ -7,7 +7,7 @@ use std::{
 };
 
 use super::*;
-use crate::legacy_settings::StoredClientSettingsMvp;
+use crate::stored_settings::StoredClientSettings;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -120,20 +120,17 @@ fn settings_writer_process_fixture() {
             }));
         });
     }
-    update_sorotte_ini_stored_client_settings_mvp_at_path(
-        std::path::Path::new(&path),
-        |settings| {
-            writeln!(output, "entered").unwrap();
-            if mode == "first" {
-                receive(&mut reader, "release");
-                settings.username = Some("first-writer".into());
-            } else if mode == "conflicting" {
-                settings.username = Some("second-writer".into());
-            } else {
-                settings.room = Some("second-writer".into());
-            }
-        },
-    )
+    update_sorotte_ini_stored_client_settings_at_path(std::path::Path::new(&path), |settings| {
+        writeln!(output, "entered").unwrap();
+        if mode == "first" {
+            receive(&mut reader, "release");
+            settings.username = Some("first-writer".into());
+        } else if mode == "conflicting" {
+            settings.username = Some("second-writer".into());
+        } else {
+            settings.room = Some("second-writer".into());
+        }
+    })
     .unwrap();
     writeln!(output, "committed").unwrap();
 }
@@ -165,7 +162,7 @@ fn run_two_writers(mode: &str) {
     receive(&mut second_control, "committed");
     first.finish();
     second.finish();
-    let settings = load_sorotte_ini_stored_client_settings_mvp_from_path(&fixture.path())
+    let settings = load_sorotte_ini_stored_client_settings_from_path(&fixture.path())
         .unwrap()
         .unwrap();
     if mode == "conflicting" {
@@ -214,13 +211,13 @@ fn callback_panic_releases_lock_and_a_retry_invokes_a_new_callback_once() {
     let fixture = Fixture::new("callback-panic");
     std::fs::write(fixture.path(), "[client_settings]\nname=before\n").unwrap();
     let result = std::panic::catch_unwind(|| {
-        let _ = update_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), |_| {
+        let _ = update_sorotte_ini_stored_client_settings_at_path(&fixture.path(), |_| {
             panic!("injected callback failure")
         });
     });
     assert!(result.is_err());
     assert_eq!(
-        load_sorotte_ini_stored_client_settings_mvp_from_path(&fixture.path())
+        load_sorotte_ini_stored_client_settings_from_path(&fixture.path())
             .unwrap()
             .unwrap()
             .username
@@ -228,7 +225,7 @@ fn callback_panic_releases_lock_and_a_retry_invokes_a_new_callback_once() {
         Some("before")
     );
     let mut calls = 0;
-    update_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), |settings| {
+    update_sorotte_ini_stored_client_settings_at_path(&fixture.path(), |settings| {
         calls += 1;
         settings.username = Some("after".into());
     })
@@ -239,19 +236,19 @@ fn callback_panic_releases_lock_and_a_retry_invokes_a_new_callback_once() {
 #[test]
 fn initial_snapshot_can_be_saved_but_clear_of_a_missing_file_fences_that_snapshot() {
     let fixture = Fixture::new("initial-clear");
-    let snapshot = StoredClientSettingsMvp {
+    let snapshot = StoredClientSettings {
         username: Some("initial".into()),
         plex_user_token: Some("synthetic-token".into()),
         ..Default::default()
     };
     let initial =
-        merge_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), &snapshot, &snapshot)
+        merge_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &snapshot, &snapshot)
             .unwrap();
     assert_eq!(initial, snapshot);
-    clear_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path()).unwrap();
-    assert!(!clear_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path()).unwrap());
+    clear_sorotte_ini_stored_client_settings_at_path(&fixture.path()).unwrap();
+    assert!(!clear_sorotte_ini_stored_client_settings_at_path(&fixture.path()).unwrap());
     let stale =
-        merge_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), &snapshot, &snapshot)
+        merge_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &snapshot, &snapshot)
             .unwrap();
     assert!(stale.plex_user_token.is_none());
     assert!(stale.username.is_none());
@@ -497,15 +494,15 @@ fn unix_directory_alias_and_private_directory_mode_follow_the_contract() {
 #[test]
 fn stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets() {
     let fixture = Fixture::new("stale");
-    let baseline = StoredClientSettingsMvp {
+    let baseline = StoredClientSettings {
         username: Some("before".into()),
         server_password: Some("synthetic-password".into()),
         plex_user_token: Some("synthetic-user-token".into()),
         plex_selected_server_token: Some("synthetic-server-token".into()),
         ..Default::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), &baseline).unwrap();
-    edit_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), |settings| {
+    upsert_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &baseline).unwrap();
+    edit_sorotte_ini_stored_client_settings_at_path(&fixture.path(), |settings| {
         settings.server_password = None;
         settings.plex_user_token = None;
         settings.plex_selected_server_token = None;
@@ -515,16 +512,16 @@ fn stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets()
     let mut desired = baseline.clone();
     desired.username = Some("after".into());
     let saved =
-        merge_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), &baseline, &desired)
+        merge_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &baseline, &desired)
             .unwrap();
     assert_eq!(saved.username, desired.username);
     assert_eq!(saved.room.as_deref(), Some("independent-room"));
     assert!(saved.server_password.is_none());
     assert!(saved.plex_user_token.is_none());
     assert!(saved.plex_selected_server_token.is_none());
-    clear_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path()).unwrap();
+    clear_sorotte_ini_stored_client_settings_at_path(&fixture.path()).unwrap();
     let saved =
-        merge_sorotte_ini_stored_client_settings_mvp_at_path(&fixture.path(), &baseline, &desired)
+        merge_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &baseline, &desired)
             .unwrap();
     assert!(saved.server_password.is_none());
     assert!(saved.plex_user_token.is_none());
@@ -536,13 +533,13 @@ fn relocation_uses_current_source_and_rolls_back_failed_publication() {
     let fixture = Fixture::new("relocation");
     let source = fixture.path();
     let destination = fixture.0.join("destination.ini");
-    let baseline = StoredClientSettingsMvp {
+    let baseline = StoredClientSettings {
         username: Some("old".into()),
         plex_user_token: Some("synthetic-token".into()),
         ..Default::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&source, &baseline).unwrap();
-    edit_sorotte_ini_stored_client_settings_mvp_at_path(&source, |settings| {
+    upsert_sorotte_ini_stored_client_settings_at_path(&source, &baseline).unwrap();
+    edit_sorotte_ini_stored_client_settings_at_path(&source, |settings| {
         settings.plex_user_token = None;
     })
     .unwrap();
@@ -550,7 +547,7 @@ fn relocation_uses_current_source_and_rolls_back_failed_publication() {
     let before = std::fs::read(&destination).unwrap();
     let mut desired = baseline.clone();
     desired.username = Some("new".into());
-    let failed = relocate_sorotte_ini_stored_client_settings_mvp_at_path(
+    let failed = relocate_sorotte_ini_stored_client_settings_at_path(
         Some(&source),
         &destination,
         &baseline,
@@ -559,7 +556,7 @@ fn relocation_uses_current_source_and_rolls_back_failed_publication() {
     );
     assert!(failed.is_err());
     assert_eq!(std::fs::read(&destination).unwrap(), before);
-    let saved = relocate_sorotte_ini_stored_client_settings_mvp_at_path(
+    let saved = relocate_sorotte_ini_stored_client_settings_at_path(
         Some(&source),
         &destination,
         &baseline,

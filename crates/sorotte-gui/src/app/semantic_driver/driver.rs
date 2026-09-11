@@ -4,7 +4,7 @@ use super::super::{
     GuiPendingOperationKind, GuiPersistedConfigRuntimeOwner, GuiPreviewRuntimeBridge,
     GuiQueuedRuntimeBridgeHandle, GuiRuntimeRequest, GuiShellAction, GuiWidgetEguiRenderer,
     GuiWidgetKind, GuiWidgetNode, MainWindowRuntimeSnapshot, SorotteGuiShellAppState,
-    StoredClientSettingsMvp,
+    StoredClientSettings,
 };
 use super::super::{GuiNativeRuntimeBridge, local_command_dispatch::GuiShellDispatchPlan};
 use super::GuiSemanticStep;
@@ -22,7 +22,7 @@ impl GuiSemanticDriver {
         }
     }
 
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
+    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         Self::new(SorotteGuiShellAppState::from_stored_settings(settings))
     }
 

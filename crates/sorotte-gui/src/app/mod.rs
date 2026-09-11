@@ -78,18 +78,18 @@ use self::runtime_stack::{GuiOwnedPlayer, GuiTestPlayerAdapter};
 use self::shell_state::*;
 #[cfg(feature = "gui-semantic-smoke")]
 use self::startup::run_gui_host_with_startup_actions_and_gui_state;
-#[cfg(test)]
-use self::ui_state::legacy_gui_qsettings_store_path;
 #[cfg(feature = "gui-semantic-smoke")]
 use self::ui_state::load_gui_ui_state_from_root;
+#[cfg(test)]
+use self::ui_state::syncplay_qsettings_store_path;
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 use self::ui_state::{GuiPersistedUiState, persist_gui_ui_state_at_root};
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 use self::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
-use sorotte_client_app::app_boundary::persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path;
+use sorotte_client_app::app_boundary::persistence::upsert_sorotte_ini_stored_client_settings_at_path;
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuiLaunchMode {
@@ -107,7 +107,7 @@ impl GuiLaunchMode {
     }
 }
 
-const LEGACY_GUI_QSETTINGS_STORE_NAMES: [&str; 5] = [
+const SYNCPLAY_QSETTINGS_STORE_NAMES: [&str; 5] = [
     "PlayerList",
     "MediaBrowseDialog",
     "MainWindow",

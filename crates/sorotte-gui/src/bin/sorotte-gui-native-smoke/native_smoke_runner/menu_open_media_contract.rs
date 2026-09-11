@@ -13,9 +13,9 @@ pub(super) fn verify_menu_open_media_contract<D: NativeGuiDriver>(
     let player_observation_path = temp_root.join("menu-open-media-player.jsonl");
     fs::write(&media_path, b"menu-open-media-target")
         .map_err(|error| format!("failed to create menu Open Media target: {error}"))?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &config_path,
-        &StoredClientSettingsMvp::default(),
+        &StoredClientSettings::default(),
     )
     .map_err(|error| {
         format!(

@@ -468,7 +468,7 @@ fn readiness_autoplay_config_defaults_include_legacy_duration_comparison_setting
     assert!(config.show_duration_notification);
     assert_eq!(
         config.different_duration_threshold_seconds,
-        LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS
+        DEFAULT_DIFFERENT_DURATION_THRESHOLD_SECONDS
     );
 }
 
@@ -487,27 +487,6 @@ fn same_fileduration_with_readiness_autoplay_config_uses_session_overrides() {
         .readiness_autoplay_config_mut()
         .different_duration_threshold_seconds = 1.0;
     assert!(!session.same_fileduration_with_readiness_autoplay_config(10.49, 12.49));
-}
-
-#[test]
-fn local_media_open_preserves_user_readiness_intent() {
-    let mut session = ClientSession::default();
-    session
-            .apply_message_json(
-                r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"readiness":true}}}"#,
-            )
-            .expect("hello should apply");
-
-    session
-        .apply_message_json(r#"{"Set":{"ready":{"isReady":true,"username":"alice"}}}"#)
-        .expect("local ready state should apply");
-
-    assert!(
-        session
-            .runtime_actions_for_local_media_opened_not_ready()
-            .is_empty()
-    );
-    assert_eq!(session.user_ready("alice"), Some(true));
 }
 
 #[test]

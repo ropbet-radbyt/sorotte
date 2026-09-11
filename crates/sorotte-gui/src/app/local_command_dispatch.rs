@@ -1,8 +1,7 @@
 use sorotte_client_app::app_boundary::commands::{
     LocalInputCommandPlanningContext, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
-    local_input_error_output_line_legacy_compatible, parse_local_input_command,
-    plan_local_input_command_legacy_compatible, plan_local_input_dispatch_legacy_compatible,
-    render_local_input_display_lines_legacy_compatible,
+    local_input_error_output_line, parse_local_input_command, plan_local_input_command,
+    plan_local_input_dispatch, render_local_input_display_lines,
 };
 use sorotte_client_core::ClientSession;
 
@@ -13,8 +12,8 @@ use super::shell_state::{
 use super::support::{configured_room_name_text, joined_room_name_text, normalized_editable_text};
 use super::ui_state::GuiUpdateIndicatorAction;
 
-const LEGACY_SYNCPLAY_VERSION: &str = "1.7.5";
-const PLAYLIST_EMPTY_MESSAGE_LEGACY: &str = "Playlist is currently empty.";
+const SYNCPLAY_VERSION: &str = "1.7.5";
+const PLAYLIST_EMPTY_MESSAGE: &str = "Playlist is currently empty.";
 
 #[cfg(test)]
 mod tests;
@@ -439,11 +438,9 @@ fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShel
         current_room: current_room.as_deref(),
         configured_room: &configured_room,
     };
-    let planned_command = plan_local_input_command_legacy_compatible(command, &planning_context);
-    let dispatch = plan_local_input_dispatch_legacy_compatible(
-        planned_command,
-        state.shared_playlist_events_enabled(),
-    );
+    let planned_command = plan_local_input_command(command, &planning_context);
+    let dispatch =
+        plan_local_input_dispatch(planned_command, state.shared_playlist_events_enabled());
     extend_plan_for_dispatch(&mut plan, state, dispatch);
     plan
 }
@@ -478,11 +475,11 @@ fn extend_plan_for_dispatch(
         | PlannedLocalInputDispatch::EmitUnknownCommandHelp
         | PlannedLocalInputDispatch::EmitError(_) => append_system_chat_lines(
             plan,
-            render_local_input_display_lines_legacy_compatible(
+            render_local_input_display_lines(
                 &dispatch,
                 &ClientSession::default(),
                 None,
-                LEGACY_SYNCPLAY_VERSION,
+                SYNCPLAY_VERSION,
             )
             .unwrap_or_default(),
         ),
@@ -627,7 +624,7 @@ fn extend_plan_for_runtime_action(
             plan.runtime_requests
                 .push(GuiRuntimeRequest::RequestControllerAuth { room, password });
         }
-        PlannedLocalRuntimeAction::SetRoomWithLegacyFallback(_) => {
+        PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(_) => {
             plan.runtime_requests
                 .push(GuiRuntimeRequest::ReturnToDefaultRoom);
         }
@@ -655,7 +652,7 @@ fn append_system_chat_lines(plan: &mut GuiShellDispatchPlan, lines: Vec<String>)
 fn append_playlist_index_error(plan: &mut GuiShellDispatchPlan) {
     append_system_chat_lines(
         plan,
-        vec![local_input_error_output_line_legacy_compatible(
+        vec![local_input_error_output_line(
             sorotte_client_app::app_boundary::commands::LocalInputCommandErrorKind::PlaylistInvalidIndex,
             None,
         )],
@@ -683,7 +680,7 @@ fn validated_playlist_index(state: &SorotteGuiShellAppState, index: i64) -> Opti
 
 fn render_playlist_lines(state: &SorotteGuiShellAppState) -> Vec<String> {
     if state.main_window.playlist.is_empty() {
-        return vec![PLAYLIST_EMPTY_MESSAGE_LEGACY.to_owned()];
+        return vec![PLAYLIST_EMPTY_MESSAGE.to_owned()];
     }
 
     state

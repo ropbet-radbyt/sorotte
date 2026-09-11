@@ -515,7 +515,7 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     steps.push("surface-configuration".to_owned());
 
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         config_path,
         &expected_saved_configuration(&media_search_directory_value),
     )

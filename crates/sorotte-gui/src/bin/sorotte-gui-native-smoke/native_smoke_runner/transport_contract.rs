@@ -98,15 +98,15 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
     let transport_config_path = temp_root.join("sorotte-native-smoke-transport.ini");
     let _ = fs::remove_file(&transport_config_path);
     seed_native_smoke_config(&transport_config_path)?;
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(
+    upsert_sorotte_ini_stored_client_settings_at_path(
         &transport_config_path,
-        &StoredClientSettingsMvp {
+        &StoredClientSettings {
             host: Some("127.0.0.1".to_owned()),
             port: Some(primary_server.port),
             username: Some(TRANSPORT_SESSION_USERNAME.to_owned()),
             room: Some(TRANSPORT_SESSION_ROOM.to_owned()),
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         },
     )
     .map_err(|error| {

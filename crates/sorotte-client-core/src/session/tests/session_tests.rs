@@ -207,7 +207,7 @@ fn client_session_current_room_playstate_remote_authority_requires_remote_user_o
     );
     assert_eq!(
         session.current_room_playstate_authority(),
-        Some(RoomPlaystateAuthority::LegacyLocalEcho)
+        Some(RoomPlaystateAuthority::SyncplayLocalEcho)
     );
 
     session
@@ -222,7 +222,7 @@ fn client_session_current_room_playstate_remote_authority_requires_remote_user_o
 }
 
 #[test]
-fn local_room_command_target_with_legacy_fallback_prefers_local_room_over_file_name() {
+fn local_room_command_target_with_default_fallback_prefers_local_room_over_file_name() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -236,7 +236,7 @@ fn local_room_command_target_with_legacy_fallback_prefers_local_room_over_file_n
             .expect("local user update should apply");
 
     assert_eq!(
-        session.local_room_command_target_with_legacy_fallback("fallback-room"),
+        session.local_room_command_target_with_default_fallback("fallback-room"),
         "+Test:77F8DA30FB3E"
     );
 }

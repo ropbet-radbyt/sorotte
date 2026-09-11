@@ -11,7 +11,7 @@ use crate::app::{
     GuiPlayerSetupRuntimeSnapshot, GuiRuntimeRequest, GuiShellModal, GuiShellView, MenuActionId,
     SettingId,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[test]
 fn display_fixture_theme_selects_the_matching_global_palette() {
@@ -30,7 +30,7 @@ fn display_fixture_theme_selects_the_matching_global_palette() {
 
 #[test]
 fn gui_text_preview_host_uses_summary_and_widget_tree_output() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let mut host = GuiTextPreviewHost;
     let rendered = host.render(state);
 
@@ -101,7 +101,7 @@ fn gui_native_menu_effects_are_typed_and_only_run_after_reducer_acceptance() {
     }
 
     let mut disabled_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     for action_id in [
         MenuActionId::OpenMedia,
         MenuActionId::Seek,
@@ -163,8 +163,7 @@ fn gui_native_app_reads_drag_and_drop_test_override_from_lookup() {
 
 #[test]
 fn gui_text_preview_host_renders_player_setup_shell_state() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionHost,
         value: "player-setup.example".to_owned().into(),
@@ -191,9 +190,9 @@ fn gui_text_preview_host_renders_player_setup_shell_state() {
 
 #[test]
 fn gui_native_app_routes_player_setup_modal_retry_through_runtime_dispatch() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/totally-missing/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
@@ -239,8 +238,7 @@ fn gui_native_app_routes_player_setup_modal_retry_through_runtime_dispatch() {
 
 #[test]
 fn repro_retryable_streaming_hook_warning_does_not_interrupt_playback_with_setup_modal() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         state.apply(GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
@@ -266,9 +264,9 @@ fn repro_retryable_streaming_hook_warning_does_not_interrupt_playback_with_setup
 
 #[test]
 fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("C:/totally-missing/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Room)));
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
@@ -307,9 +305,9 @@ fn gui_native_app_routes_player_setup_modal_open_settings_to_connection_tab() {
 
 #[test]
 fn gui_native_app_preserves_active_playlist_index_for_replace_requests_when_selection_is_local() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(

@@ -91,7 +91,7 @@ pub(crate) fn replay_server_runtime_scenario_steps_with_full_overrides(
     permanent_rooms: &[&str],
 ) -> Result<Vec<ServerRuntimeScenarioEvent>, InteropError> {
     let mut runtime =
-        ServerRuntime::with_room_password_salt(DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT);
+        ServerRuntime::with_room_password_salt(DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT);
     if let Some(template) = motd_template
         .map(str::trim)
         .filter(|template| !template.is_empty())
@@ -100,7 +100,7 @@ pub(crate) fn replay_server_runtime_scenario_steps_with_full_overrides(
     }
     runtime.set_persistent_rooms_enabled(persistent_rooms_enabled);
     let temporary_rooms_db_path = if persistent_rooms_enabled && !permanent_rooms.is_empty() {
-        let path = create_temporary_legacy_rooms_db_file_path()?;
+        let path = create_temporary_syncplay_rooms_db_file_path()?;
         runtime.set_persistent_rooms_db_path(Some(path.clone()))?;
         Some(path)
     } else {

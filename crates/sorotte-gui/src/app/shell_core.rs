@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use sorotte_client_app::app_boundary::state::{
-    StoredClientSettingsMvp, parse_host_and_optional_port_from_host_arg_legacy_compatible,
-    stored_client_settings_runtime_snapshot_legacy_compatible,
+    StoredClientSettings, parse_host_and_optional_port_from_host_arg,
+    stored_client_settings_runtime_snapshot,
 };
 
 use super::shell_state::{
@@ -14,14 +14,12 @@ use super::shell_state::{
     MediaSearchWorkflowShellState, MenuActionId, MenuActionRuntimeOverride, MenuDialogShellState,
     PublicServerBrowserShellState, SettingId, SorotteGuiShellAppState,
 };
-use super::support::{
-    configured_room_name_text, legacy_chat_input_enabled, normalized_editable_text,
-};
+use super::support::{chat_input_enabled, configured_room_name_text, normalized_editable_text};
 use super::ui_state::{GuiPersistedUiState, GuiUpdateCheckState};
 
 impl SorotteGuiShellAppState {
-    pub(super) fn from_stored_settings(settings: &StoredClientSettingsMvp) -> Self {
-        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(settings);
+    pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
+        let runtime_settings = stored_client_settings_runtime_snapshot(settings);
         let mut shell_settings = settings.clone();
         shell_settings.room = runtime_settings
             .config
@@ -114,8 +112,7 @@ impl SorotteGuiShellAppState {
         if raw_host.is_empty() {
             return None;
         }
-        let (normalized_host, _) =
-            parse_host_and_optional_port_from_host_arg_legacy_compatible(raw_host);
+        let (normalized_host, _) = parse_host_and_optional_port_from_host_arg(raw_host);
         let normalized_host = normalized_host.trim();
         if normalized_host.is_empty() {
             return None;
@@ -153,7 +150,7 @@ impl SorotteGuiShellAppState {
         {
             settings.room = Some(room);
         }
-        let runtime_settings = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let runtime_settings = stored_client_settings_runtime_snapshot(&settings);
         let address = format!("{normalized_host}:{port}");
         Some(GuiSavedSessionConnectTarget {
             address,
@@ -298,10 +295,10 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn chat_send_unavailable_reason_from_settings(
         &self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
         session_runtime_available: bool,
     ) -> Option<String> {
-        if !legacy_chat_input_enabled(settings) {
+        if !chat_input_enabled(settings) {
             return Some("Chat input is disabled in Chat settings.".to_owned());
         }
         if self.pending_operation.is_some() {
@@ -524,7 +521,7 @@ impl SorotteGuiShellAppState {
         self.last_media_dialog_directory = directory;
     }
 
-    pub(super) fn reset_to_first_run_state(&mut self, settings: StoredClientSettingsMvp) {
+    pub(super) fn reset_to_first_run_state(&mut self, settings: StoredClientSettings) {
         *self = Self::from_stored_settings(&settings);
     }
 
@@ -752,7 +749,7 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
         &mut self,
-        settings: &StoredClientSettingsMvp,
+        settings: &StoredClientSettings,
     ) {
         let baseline_menus = MenuDialogShellState::from_stored_settings(settings);
         self.runtime_menu_action_overrides
@@ -887,7 +884,7 @@ mod mpv_version_presentation_tests {
         let detail = crate::app::mpv_launch::mpv_upgrade_required_diagnostic(&version_error)
             .expect("unsupported version errors should produce upgrade guidance");
         let mut state =
-            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
         state.player_setup_issue = Some(GuiPlayerSetupIssue {
             kind: GuiPlayerSetupIssueKind::IpcAttachFailed,
             message: format!("mpv JSON IPC attach failed: {detail}"),

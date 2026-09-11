@@ -6,8 +6,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_username_conflict_scenario(
         "server_runtime_username_conflict.jsonl",
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -24,8 +23,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_motd_template_scenario() {
         Some(MOTD_TEMPLATE_RUNTIME_AND_PROBE),
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => {
@@ -42,8 +40,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_motd_template_outdated_clie
         Some(MOTD_TEMPLATE_RUNTIME_AND_PROBE),
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -62,8 +59,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_notice_sce
         true,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -82,8 +78,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_lifecycle_
         true,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -104,8 +99,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenar
         PERMANENT_ROOMS_FILE_LIST,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -125,8 +119,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_li
         true,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(

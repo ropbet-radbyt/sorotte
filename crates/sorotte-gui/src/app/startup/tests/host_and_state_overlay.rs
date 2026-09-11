@@ -17,7 +17,7 @@ fn run_gui_host_passes_shell_state_through_host_boundary() {
     }
 
     let mut host = RecordingHost::default();
-    let rendered = run_gui_host(&StoredClientSettingsMvp::default(), &mut host);
+    let rendered = run_gui_host(&StoredClientSettings::default(), &mut host);
 
     assert_eq!(rendered, "host:setup");
     assert!(host.saw_configuration_view);
@@ -36,9 +36,9 @@ fn run_gui_host_with_startup_actions_and_gui_state_restores_non_ini_state() {
         }
     }
 
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         media_search_directories: Some(vec!["C:/Media".to_owned()]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let persisted_ui_state = GuiPersistedUiState {
         active_view: Some(GuiShellView::Setup),
@@ -102,11 +102,11 @@ fn run_gui_host_with_startup_actions_and_gui_state_prefers_gui_public_servers_ov
         }
     }
 
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: Some("saved.example".to_owned()),
         port: Some(8999),
         public_servers: Some(vec![("Saved".to_owned(), "saved.example:8999".to_owned())]),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let persisted_ui_state = GuiPersistedUiState {
         active_view: Some(GuiShellView::Setup),

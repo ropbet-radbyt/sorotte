@@ -228,7 +228,7 @@ fn help_text() -> &'static str {
         "  --ipv6-only                      Bind IPv6 listen socket\n",
         "  --interface-ipv4 [ip]            Bind to specific IPv4 address\n",
         "  --interface-ipv6 [ip]            Bind to specific IPv6 address\n\n",
-        "Environment overrides (legacy bootstrap compatibility):\n",
+        "Environment overrides:\n",
         "  SOROTTE_SERVER_PORT\n",
         "  SOROTTE_PASSWORD\n",
         "  SOROTTE_SERVER_PASSWORD\n",

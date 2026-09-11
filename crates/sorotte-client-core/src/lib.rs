@@ -164,27 +164,27 @@ const DEFAULT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS: f64 = 2.0;
 const DEFAULT_AUTOPLAY_DELAY_SECONDS: f64 = 3.0;
 const AUTOPLAY_COUNTDOWN_STEP_SECONDS: f64 = 1.0;
 const RECENTLY_ADVANCED_GRACE_SECONDS: f64 = 5.0;
-const LEGACY_SHOW_DURATION_NOTIFICATION: bool = true;
-const LEGACY_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
-const LEGACY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
-const LEGACY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
-const LEGACY_FALLBACK_MAX_USERNAME_LENGTH: usize = 16;
-const LEGACY_FALLBACK_MAX_ROOM_NAME_LENGTH: usize = 35;
-const LEGACY_FALLBACK_MAX_FILENAME_LENGTH: usize = 250;
-pub const SYNCPLAY_WIRE_VERSION_LEGACY: &str = "1.2.255";
-pub const SYNCPLAY_COMPAT_VERSION_LEGACY: &str = "1.7.5";
-const LEGACY_CHAT_MIN_VERSION: &str = "1.5.0";
-const LEGACY_USER_READY_MIN_VERSION: &str = "1.3.0";
-const LEGACY_MANAGED_ROOMS_MIN_VERSION: &str = "1.3.0";
-const LEGACY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
+const DEFAULT_SHOW_DURATION_NOTIFICATION: bool = true;
+const DEFAULT_DIFFERENT_DURATION_THRESHOLD_SECONDS: f64 = 2.5;
+const SYNCPLAY_CHAT_MAX_MESSAGE_LENGTH: usize = 150;
+const SYNCPLAY_FALLBACK_MAX_CHAT_MESSAGE_LENGTH: usize = 50;
+const SYNCPLAY_FALLBACK_MAX_USERNAME_LENGTH: usize = 16;
+const SYNCPLAY_FALLBACK_MAX_ROOM_NAME_LENGTH: usize = 35;
+const SYNCPLAY_FALLBACK_MAX_FILENAME_LENGTH: usize = 250;
+pub const SYNCPLAY_WIRE_VERSION: &str = "1.2.255";
+pub const SYNCPLAY_COMPAT_VERSION: &str = "1.7.5";
+const SYNCPLAY_CHAT_MIN_VERSION: &str = "1.5.0";
+const SYNCPLAY_USER_READY_MIN_VERSION: &str = "1.3.0";
+const SYNCPLAY_MANAGED_ROOMS_MIN_VERSION: &str = "1.3.0";
+const SYNCPLAY_SHARED_PLAYLIST_MIN_VERSION: &str = "1.4.0";
 const MAX_PENDING_LOCAL_PLAYLIST_ECHOES: usize = 64;
-const LEGACY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
-const LEGACY_SHOW_SAME_ROOM_OSD: bool = true;
-const LEGACY_SHOW_OSD_WARNINGS: bool = true;
-const LEGACY_SHOW_NONCONTROLLER_OSD: bool = false;
-const LEGACY_SHOW_DIFFERENT_ROOM_OSD: bool = false;
-const LEGACY_ONLY_SWITCH_TO_TRUSTED_DOMAINS: bool = true;
-const LEGACY_DEFAULT_TRUSTED_DOMAINS: [&str; 2] = ["youtube.com", "youtu.be"];
+const SYNCPLAY_SET_OTHERS_READINESS_MIN_VERSION: &str = "1.7.2";
+const DEFAULT_SHOW_SAME_ROOM_OSD: bool = true;
+const DEFAULT_SHOW_OSD_WARNINGS: bool = true;
+const DEFAULT_SHOW_NONCONTROLLER_OSD: bool = false;
+const DEFAULT_SHOW_DIFFERENT_ROOM_OSD: bool = false;
+const DEFAULT_ONLY_SWITCH_TO_TRUSTED_DOMAINS: bool = true;
+const DEFAULT_TRUSTED_DOMAINS: [&str; 2] = ["youtube.com", "youtu.be"];
 const DEFAULT_RECONNECT_STATE_RESTORE_AUTOCORRECT: bool = true;
 const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_RECONNECT_STATE_RESTORE_CORRECTION_RETRY_COOLDOWN_TICKS: u32 = 1;
@@ -202,9 +202,9 @@ const MUSIC_FORMATS: [&str; 8] = [
     ".mp3", ".m4a", ".m4p", ".wav", ".aiff", ".r", ".ogg", ".flac",
 ];
 pub const AUTOPLAY_TICK_INTERVAL_SECONDS: f64 = AUTOPLAY_COUNTDOWN_STEP_SECONDS;
-const LEGACY_PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
+const DEFAULT_PING_MOVING_AVERAGE_WEIGHT: f64 = 0.85;
 
-pub fn legacy_server_password_token(password: &str) -> String {
+pub fn syncplay_server_password_token(password: &str) -> String {
     lowercase_hex(Md5::digest(password.as_bytes()))
 }
 
@@ -317,8 +317,8 @@ pub use self::notifications::{
     ReconnectTransitionNotification, UserChangeNotification,
 };
 pub use self::outbox::ProtocolLineLease;
-pub use self::ping::ClientPingMetricsLegacyCompatible;
-pub(crate) use self::ping::unix_wall_clock_time_seconds_legacy_compatible;
+pub use self::ping::ClientPingMetrics;
+pub(crate) use self::ping::unix_wall_clock_time_seconds;
 pub use self::playback_coordinator::{
     CoordinatorCommandId, CoordinatorPlayerCommand, DegradedPlaybackReason, DesiredRoomPlayback,
     DesiredRoomPlaybackUpdateKind, LogicalMediaId, MediaLoadIntent, MediaLoadPlan,
@@ -339,9 +339,7 @@ pub use self::runtime::{
     PlaybackCoordinationSnapshot,
 };
 pub(crate) use self::session::ClientSessionLocalActionSnapshot;
-pub use self::session::{
-    ClientSession, DesyncCorrectionDispatchSnapshot, playback_uri_is_trusted_legacy_compatible,
-};
+pub use self::session::{ClientSession, DesyncCorrectionDispatchSnapshot, playback_uri_is_trusted};
 pub use self::views::{
     ClientMediaMatchPeerFileState, ClientParticipantStatusFreshness, ClientParticipantStatusView,
     ClientUserView, RoomPlaylistView, RoomPlaystateAuthority, RoomPlaystateView,

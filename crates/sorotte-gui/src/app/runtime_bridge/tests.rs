@@ -6,7 +6,7 @@ use crate::app::{
     GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent, GuiShellAction,
     GuiShellView, MainWindowPlaylistRow, SecretDraft, SettingId, SorotteGuiShellAppState,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[test]
 fn gui_runtime_request_debug_redacts_controller_password() {
@@ -31,12 +31,12 @@ fn gui_preview_runtime_bridge_maps_selected_media_files_to_preview_actions() {
         std::fs::write(path, b"test").expect("preview media fixture should be written");
     }
     let shared_playlist_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
             shared_playlist_enabled: Some(true),
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         });
     let fallback_state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let mut runtime = GuiPreviewRuntimeBridge;
 
     assert_eq!(
@@ -116,9 +116,9 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
     let root = test_temp_root("preview-shared-playlist-insert");
     let media_path = root.join("episode2.mkv");
     std::fs::write(&media_path, b"test").expect("preview insert fixture should be written");
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     assert!(
         state.apply(GuiShellAction::AnnounceSharedPlaylistLoaded(vec![
@@ -149,11 +149,11 @@ fn gui_preview_runtime_bridge_merges_shared_playlist_inserts_into_existing_rows(
 
 #[test]
 fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(true),
         public_servers: Some(vec![("Primary".to_owned(), "syncplay.pl:8999".to_owned())]),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 
@@ -221,14 +221,14 @@ fn gui_preview_runtime_bridge_maps_pending_operations_to_preview_actions() {
 
 #[test]
 fn gui_preview_runtime_bridge_saves_configuration_for_explicit_save_and_connect() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         server_password: Some("old-secret".into()),
         player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 
@@ -283,12 +283,12 @@ fn gui_preview_runtime_bridge_saves_configuration_for_explicit_save_and_connect(
 
 #[test]
 fn gui_preview_runtime_bridge_connect_once_never_saves_the_draft() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         port: Some(8999),
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut runtime = GuiPreviewRuntimeBridge;
 

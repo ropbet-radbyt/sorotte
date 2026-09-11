@@ -71,7 +71,7 @@ pub enum ExternalPlayerAvailability {
     Failed,
 }
 
-fn participant_status_legacy_position_fallback(
+fn participant_status_list_position_fallback(
     external_player_availability: Option<ExternalPlayerAvailability>,
     transport_telemetry_ever_observed: bool,
 ) -> bool {
@@ -694,7 +694,7 @@ impl RuntimePlaybackCoordination {
     /// Starts an observation-backed reconnect correction episode.
     ///
     /// The first desired-state update after this call is always a new forced
-    /// revision. This is deliberately separate from the legacy reconnect
+    /// revision. This is deliberately separate from the reconnect
     /// validator: accepting a player command cannot complete this episode.
     pub(crate) fn begin_reconnect_reconciliation(&mut self) -> bool {
         if self.reconnect_reconciliation.is_some() {
@@ -1307,7 +1307,7 @@ impl RuntimePlaybackCoordination {
         self.rebase_transport(update, external_now_seconds)
     }
 
-    /// Records an EOF discovered by a legacy attached-player surface that
+    /// Records an EOF discovered by a unsequenced attached-player surface that
     /// cannot provide generation-aware transport telemetry. Keeping the
     /// observation in the merged transport snapshot makes the ordinary
     /// player-transition classifier treat the pause edge as technical rather
@@ -1404,7 +1404,7 @@ impl RuntimePlaybackCoordination {
         let Some(authority) = session.current_room_playstate_authority() else {
             return Vec::new();
         };
-        let canonical_local_echo = authority == RoomPlaystateAuthority::LegacyLocalEcho
+        let canonical_local_echo = authority == RoomPlaystateAuthority::SyncplayLocalEcho
             && !self.local_seek_correction_is_current(session);
         let Some(projected) = session.current_room_playstate_at(external_now_seconds) else {
             return Vec::new();
@@ -1462,8 +1462,8 @@ impl RuntimePlaybackCoordination {
                 .map_or((Some(media_generation), None), |status| {
                     (Some(media_generation), status.config.state_revision)
                 }),
-            RoomPlaystateAuthority::LegacyRemoteUser
-            | RoomPlaystateAuthority::LegacyLocalEcho
+            RoomPlaystateAuthority::SyncplayRemoteUser
+            | RoomPlaystateAuthority::SyncplayLocalEcho
             | RoomPlaystateAuthority::ServerBarrier { .. } => (None, None),
         };
         let authority_may_accept_local_intent = self
@@ -1523,7 +1523,7 @@ impl RuntimePlaybackCoordination {
         let mut defer_local_play_retirement = false;
         if matches!(
             authority,
-            RoomPlaystateAuthority::LegacyLocalEcho | RoomPlaystateAuthority::LegacyRemoteUser
+            RoomPlaystateAuthority::SyncplayLocalEcho | RoomPlaystateAuthority::SyncplayRemoteUser
         ) && raw.do_seek != Some(true)
             && !paused
             && player_confirms_local_intent
@@ -1842,11 +1842,11 @@ impl RuntimePlaybackCoordination {
                 DesiredRoomPlaybackUpdateKind::AuthoritativeSeekAfterSupersededDispatch
             } else if explicit_seek_changed {
                 match authority {
-                    RoomPlaystateAuthority::LegacyLocalEcho if canonical_local_echo => {
+                    RoomPlaystateAuthority::SyncplayLocalEcho if canonical_local_echo => {
                         DesiredRoomPlaybackUpdateKind::ExplicitSeekAlreadyDispatched
                     }
-                    RoomPlaystateAuthority::LegacyLocalEcho
-                    | RoomPlaystateAuthority::LegacyRemoteUser => {
+                    RoomPlaystateAuthority::SyncplayLocalEcho
+                    | RoomPlaystateAuthority::SyncplayRemoteUser => {
                         DesiredRoomPlaybackUpdateKind::ExplicitSeek
                     }
                     RoomPlaystateAuthority::ServerBarrier { .. }
@@ -2312,7 +2312,7 @@ impl RuntimePlaybackCoordination {
                                 && matches!(command.completion, PlayerCommandCompletion::Completed { .. })
                                 && observation.observed_at_seconds >= command.issued_at_seconds
                         })
-                        && authority == Some(RoomPlaystateAuthority::LegacyRemoteUser)
+                        && authority == Some(RoomPlaystateAuthority::SyncplayRemoteUser)
                         && session.current_room_playstate().is_some_and(|playstate| {
                             playstate.paused == Some(true)
                         }))
@@ -2745,7 +2745,7 @@ where
         actions
     }
 
-    /// Feeds a legacy attached-player EOF signal through the same technical
+    /// Feeds a unsequenced attached-player EOF signal through the same technical
     /// readiness and causal-classification path as an adapter-reported
     /// `PlayerTransportPhase::Ended` observation.
     pub fn observe_external_player_end_of_file(
@@ -2855,7 +2855,7 @@ where
             .is_some()
             || self.last_local_file_update.is_some()
             || self.pending_natural_playback_completion.is_some();
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         let actions = self.playback_coordination.retire_media();
         self.last_local_file_update = None;
         self.pending_natural_playback_completion = None;
@@ -3524,7 +3524,7 @@ where
         match self.execute_causal_pause_command(
             paused,
             PlayerCommandCause::Recovery,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         ) {
             Ok(()) => {
                 self.session.model.playback.local_paused = Some(paused);

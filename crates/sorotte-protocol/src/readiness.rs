@@ -303,7 +303,8 @@ pub enum StartParticipationRole {
     #[default]
     Required,
     Spectator,
-    ExcludedLegacy,
+    #[serde(rename = "excludedLegacy")]
+    ExcludedUnsupported,
 }
 
 /// Policy for rooms containing peers that cannot participate in the
@@ -315,9 +316,10 @@ pub enum MixedReadinessPolicy {
     /// until every live room member can join the authoritative cohort.
     #[default]
     RequireAllMembers,
-    /// Explicit compatibility opt-in which excludes legacy peers from the
-    /// automatic-start cohort.
-    ExcludeLegacy,
+    /// Explicit opt-in which excludes peers without coordinated start support
+    /// from the automatic-start cohort. Keep the established wire spelling.
+    #[serde(rename = "excludeLegacy")]
+    ExcludeUnsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -355,7 +357,8 @@ pub enum StartGateDegradedReason {
     Cancelled,
     TimedOut,
     NoRequiredParticipants,
-    IncompatibleLegacyParticipant,
+    #[serde(rename = "incompatibleLegacyParticipant")]
+    UnsupportedParticipant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

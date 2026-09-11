@@ -2,11 +2,11 @@ use super::*;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifications() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         chat_output_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -89,11 +89,11 @@ fn gui_session_treats_chat_disabled_as_active_after_hello() {
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main_window_snapshot() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut playback_ready_snapshot =
         MainWindowRuntimeSnapshot::from_shell_state(&state.main_window);
@@ -180,10 +180,10 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selection_when_session_playlist_index_changes()
  {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
@@ -233,11 +233,11 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_local_playlist_selecti
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_chat_events() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");

@@ -230,7 +230,7 @@ impl<'a> ClientSessionUpdate<'a> {
         &mut self,
         message: ProtocolMessage,
     ) -> Result<(), ProtocolError> {
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         let is_hello = matches!(&message, ProtocolMessage::Hello(_));
         let confirms_room_membership = matches!(
             &message,
@@ -554,13 +554,8 @@ where
                 .with_size_bytes(size_bytes)
                 .with_path(path),
         );
-        self.open_media(
-            path,
-            logical_id,
-            kind,
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        )
-        .map(|_| ())
+        self.open_media(path, logical_id, kind, unix_wall_clock_time_seconds())
+            .map(|_| ())
     }
 
     pub fn unload(&mut self) -> Result<(), PlayerError> {
@@ -657,7 +652,7 @@ where
         let command = PlayerCommand::SetPaused(paused);
         let issued_at_seconds = self
             .playback_coordination
-            .standalone_command_issued_at_seconds(unix_wall_clock_time_seconds_legacy_compatible());
+            .standalone_command_issued_at_seconds(unix_wall_clock_time_seconds());
         match self.player.execute_tracked(command.clone()) {
             Ok(command_id) => {
                 self.playback_coordination
@@ -730,7 +725,7 @@ where
             session,
             player,
             control,
-            ping_metrics_legacy_compatible: ClientPingMetricsLegacyCompatible::default(),
+            ping_metrics: ClientPingMetrics::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             pending_ordered_local_file_updates: EffectOutbox::default(),
             last_local_file_update: None,
@@ -750,7 +745,7 @@ where
             return Ok(());
         }
 
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         self.session
             .begin_local_playlist_index_reset_intent(true, now_seconds);
         self.session.apply_player_playback_telemetry_update(
@@ -827,11 +822,7 @@ where
             }
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 let cause = self.system_pause_command_cause(*paused);
-                self.execute_causal_pause_command(
-                    *paused,
-                    cause,
-                    unix_wall_clock_time_seconds_legacy_compatible(),
-                )?;
+                self.execute_causal_pause_command(*paused, cause, unix_wall_clock_time_seconds())?;
             } else {
                 ClientSession::dispatch_runtime_actions(
                     std::slice::from_ref(action),
@@ -870,7 +861,7 @@ where
                 self.execute_causal_pause_command(
                     *paused,
                     pause_cause,
-                    unix_wall_clock_time_seconds_legacy_compatible(),
+                    unix_wall_clock_time_seconds(),
                 )?;
             } else if let (
                 ClientRuntimeAction::SetPlaylistIndex { index },
@@ -915,7 +906,8 @@ where
                 PlayerCommandCause::RoomBufferingPolicy
             }
             Some(
-                RoomPlaystateAuthority::LegacyRemoteUser | RoomPlaystateAuthority::LegacyLocalEcho,
+                RoomPlaystateAuthority::SyncplayRemoteUser
+                | RoomPlaystateAuthority::SyncplayLocalEcho,
             )
             | None => PlayerCommandCause::RemoteRoomSynchronization,
         }
@@ -973,7 +965,7 @@ where
                 let result = self.execute_causal_pause_command(
                     paused,
                     cause,
-                    unix_wall_clock_time_seconds_legacy_compatible(),
+                    unix_wall_clock_time_seconds(),
                 );
                 if local_user_transport && result.is_err() {
                     self.playback_coordination
@@ -1079,7 +1071,7 @@ where
         self.last_local_file_update.as_ref()
     }
 
-    pub fn current_room_playstate_legacy_ping_compatible_at(
+    pub fn current_room_playstate_with_ping_at(
         &self,
         now_seconds: f64,
     ) -> Option<RoomPlaystateView> {
@@ -1087,7 +1079,7 @@ where
         if room_playstate.paused == Some(false)
             && let Some(position) = room_playstate.position
         {
-            let forward_delay = self.ping_metrics_legacy_compatible.forward_delay_seconds();
+            let forward_delay = self.ping_metrics.forward_delay_seconds();
             if forward_delay.is_finite() && forward_delay > 0.0 {
                 room_playstate.position = Some(position + forward_delay);
             }
@@ -1095,10 +1087,8 @@ where
         Some(room_playstate)
     }
 
-    pub fn current_room_playstate_legacy_ping_compatible_now(&self) -> Option<RoomPlaystateView> {
-        self.current_room_playstate_legacy_ping_compatible_at(
-            unix_wall_clock_time_seconds_legacy_compatible(),
-        )
+    pub fn current_room_playstate_with_ping_now(&self) -> Option<RoomPlaystateView> {
+        self.current_room_playstate_with_ping_at(unix_wall_clock_time_seconds())
     }
 
     pub fn projected_local_position_at(&self, now_seconds: f64) -> Option<f64> {

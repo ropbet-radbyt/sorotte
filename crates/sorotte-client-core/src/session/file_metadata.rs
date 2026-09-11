@@ -40,7 +40,7 @@ impl ClientSession {
 
         let filename = match (&current_file.name, &other_file.name) {
             (Some(current_name), Some(other_name)) => {
-                !Self::same_filename_legacy_like(current_name, other_name)
+                !Self::filenames_match(current_name, other_name)
             }
             (None, None) => false,
             _ => true,
@@ -48,7 +48,7 @@ impl ClientSession {
 
         let filesize = match (&current_file.size, &other_file.size) {
             (Some(current_size), Some(other_size)) => {
-                !Self::same_domain_filesize_legacy_like(current_size, other_size)
+                !Self::file_sizes_match(current_size, other_size)
             }
             (None, None) => false,
             _ => true,
@@ -134,7 +134,7 @@ impl ClientSession {
             .collect()
     }
 
-    pub(super) fn same_hashed_legacy_like(
+    pub(super) fn privacy_hashes_match(
         left_raw: &str,
         left_hash: &str,
         right_raw: &str,
@@ -173,7 +173,7 @@ impl ClientSession {
         lowercase_hex(Sha256::digest(filesize_raw.as_bytes()))[..12].to_owned()
     }
 
-    pub(super) fn filename_with_privacy_mode_legacy_like(
+    pub(super) fn filename_with_privacy_mode(
         file_name: &Value,
         privacy_mode: PrivacyMode,
     ) -> Option<String> {
@@ -199,7 +199,7 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn filesize_with_privacy_mode_legacy_like(
+    pub(super) fn filesize_with_privacy_mode(
         size: &Value,
         privacy_mode: PrivacyMode,
     ) -> Option<Value> {
@@ -213,7 +213,7 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn filesize_is_zero_legacy_like(filesize: &Value) -> bool {
+    pub(super) fn filesize_is_zero(filesize: &Value) -> bool {
         match filesize {
             Value::Number(number) => {
                 if let Some(signed) = number.as_i64() {
@@ -236,8 +236,8 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn same_filesize_legacy_like(left: &Value, right: &Value) -> bool {
-        if Self::filesize_is_zero_legacy_like(left) || Self::filesize_is_zero_legacy_like(right) {
+    pub(super) fn filesize_values_match(left: &Value, right: &Value) -> bool {
+        if Self::filesize_is_zero(left) || Self::filesize_is_zero(right) {
             return true;
         }
 
@@ -250,11 +250,11 @@ impl ClientSession {
 
         let left_hash = Self::hash_filesize_for_compare(&left_raw);
         let right_hash = Self::hash_filesize_for_compare(&right_raw);
-        Self::same_hashed_legacy_like(&left_raw, &left_hash, &right_raw, &right_hash)
+        Self::privacy_hashes_match(&left_raw, &left_hash, &right_raw, &right_hash)
     }
 
-    pub(super) fn same_domain_filesize_legacy_like(left: &FileSize, right: &FileSize) -> bool {
-        Self::same_filesize_legacy_like(&left.to_json_value(), &right.to_json_value())
+    pub(super) fn file_sizes_match(left: &FileSize, right: &FileSize) -> bool {
+        Self::filesize_values_match(&left.to_json_value(), &right.to_json_value())
     }
 
     pub(super) fn round_half_to_even(value: f64) -> f64 {
@@ -275,7 +275,7 @@ impl ClientSession {
         }
     }
 
-    pub(super) fn same_fileduration_legacy_like(
+    pub(super) fn durations_match(
         left: f64,
         right: f64,
         show_duration_notification: bool,
@@ -334,10 +334,10 @@ impl ClientSession {
         let right_stripped = Self::strip_filename_for_compare(right, strip_url);
         let left_hash = Self::hash_filename_for_compare(&left_stripped);
         let right_hash = Self::hash_filename_for_compare(&right_stripped);
-        Self::same_hashed_legacy_like(&left_stripped, &left_hash, &right_stripped, &right_hash)
+        Self::privacy_hashes_match(&left_stripped, &left_hash, &right_stripped, &right_hash)
     }
 
-    pub(super) fn same_filename_legacy_like(left: &str, right: &str) -> bool {
+    pub(super) fn filenames_match(left: &str, right: &str) -> bool {
         if left == PRIVACY_HIDDEN_FILENAME || right == PRIVACY_HIDDEN_FILENAME {
             return true;
         }

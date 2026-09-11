@@ -9,8 +9,7 @@ fn gui_portable_smoke_regression_surfaces_first_run_player_setup_blocker() {
         &|_name| None,
     );
     let handle = GuiQueuedRuntimeBridgeHandle::default();
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionHost,
@@ -75,11 +74,11 @@ fn gui_portable_smoke_regression_surfaces_first_run_player_setup_blocker() {
 
 #[test]
 fn gui_portable_smoke_regression_surfaces_existing_config_player_recovery() {
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         host: Some("existing.example".to_owned()),
         room: Some("Cinema".to_owned()),
         player_path: Some("C:/totally-missing/mpv.exe".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.sync_player_from_lookup_and_settings(&|_name| None, Some(&settings), true);

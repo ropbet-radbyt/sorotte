@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn legacy_timing_canonicalizer_aligns_latency_from_independent_clock_origins() {
-    let mut canonicalizer = LegacyTimingCanonicalizer::default();
+    let mut canonicalizer = SyncplayTimingCanonicalizer::default();
     let mut legacy_message = json!({
         "State": {
             "ping": {
@@ -17,8 +17,8 @@ fn legacy_timing_canonicalizer_aligns_latency_from_independent_clock_origins() {
             }
         }
     });
-    canonicalizer.canonicalize_message(&mut legacy_message, LegacyTimingSide::Legacy);
-    canonicalizer.canonicalize_message(&mut runtime_message, LegacyTimingSide::Runtime);
+    canonicalizer.canonicalize_message(&mut legacy_message, SyncplayTimingSide::Legacy);
+    canonicalizer.canonicalize_message(&mut runtime_message, SyncplayTimingSide::Runtime);
     assert_eq!(legacy_message, runtime_message);
 
     let mut legacy_next = json!({
@@ -35,14 +35,14 @@ fn legacy_timing_canonicalizer_aligns_latency_from_independent_clock_origins() {
             }
         }
     });
-    canonicalizer.canonicalize_message(&mut legacy_next, LegacyTimingSide::Legacy);
-    canonicalizer.canonicalize_message(&mut runtime_next, LegacyTimingSide::Runtime);
+    canonicalizer.canonicalize_message(&mut legacy_next, SyncplayTimingSide::Legacy);
+    canonicalizer.canonicalize_message(&mut runtime_next, SyncplayTimingSide::Runtime);
     assert_eq!(legacy_next, runtime_next);
 }
 
 #[test]
 fn legacy_timing_canonicalizer_aligns_server_rtt_from_independent_nonzero_origins() {
-    let mut canonicalizer = LegacyTimingCanonicalizer::default();
+    let mut canonicalizer = SyncplayTimingCanonicalizer::default();
     let mut legacy_message = json!({
         "State": {
             "ping": {
@@ -59,8 +59,8 @@ fn legacy_timing_canonicalizer_aligns_server_rtt_from_independent_nonzero_origin
             }
         }
     });
-    canonicalizer.canonicalize_message(&mut legacy_message, LegacyTimingSide::Legacy);
-    canonicalizer.canonicalize_message(&mut runtime_message, LegacyTimingSide::Runtime);
+    canonicalizer.canonicalize_message(&mut legacy_message, SyncplayTimingSide::Legacy);
+    canonicalizer.canonicalize_message(&mut runtime_message, SyncplayTimingSide::Runtime);
     assert_eq!(
         legacy_message
             .pointer("/State/ping/serverRtt")

@@ -6,8 +6,8 @@ use sorotte_client_app::app_boundary::{
     application::{ClientApplication, ClientCommand, ClientEvent, PlexClientConfig},
     commands::{
         LocalInputCommandPlanningContext, PlannedLocalInputDispatch, parse_local_input_command,
-        plan_local_input_command_legacy_compatible, plan_local_input_dispatch_legacy_compatible,
-        render_local_input_display_lines_legacy_compatible as shared_render_local_input_display_lines_legacy_compatible,
+        plan_local_input_command, plan_local_input_dispatch,
+        render_local_input_display_lines as shared_render_local_input_display_lines,
     },
     diagnostics::ReconnectCorrectionDiagnosticsState,
     notifications::FileDifferenceNotificationState,
@@ -23,26 +23,23 @@ use sorotte_client_app::app_boundary::{
         ConnectedSessionOuterLoopExitKind as ConnectedSessionExit, ConnectedSessionProtocolPlan,
         ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
         ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        client_network_loop_attempt_disposition_for_execution_plan_legacy_compatible,
-        client_network_loop_attempt_execution_plan_for_connect_failure_legacy_compatible,
-        client_network_loop_attempt_execution_plan_for_connected_session_exit_legacy_compatible,
-        client_network_loop_execution_outcome_legacy_compatible,
-        client_network_loop_reconnect_exhausted_error_action_legacy_compatible,
-        client_network_loop_startup_plan_legacy_compatible,
-        client_reconnect_backoff_plan_legacy_compatible,
-        connected_session_autoplay_tick_event_execution_plan_legacy_compatible,
-        connected_session_drain_actions_legacy_compatible,
-        connected_session_inbound_message_event_execution_plan_legacy_compatible,
-        connected_session_inbound_post_apply_actions_legacy_compatible,
-        connected_session_local_input_event_execution_plan_legacy_compatible,
-        connected_session_player_coordination_tick_event_execution_plan_legacy_compatible,
-        connected_session_runtime_step_actions_legacy_compatible,
+        client_network_loop_attempt_disposition_for_execution_plan,
+        client_network_loop_attempt_execution_plan_for_connect_failure,
+        client_network_loop_attempt_execution_plan_for_connected_session_exit,
+        client_network_loop_execution_outcome,
+        client_network_loop_reconnect_exhausted_error_action, client_network_loop_startup_plan,
+        client_reconnect_backoff_plan, connected_session_autoplay_tick_event_execution_plan,
+        connected_session_drain_actions, connected_session_inbound_message_event_execution_plan,
+        connected_session_inbound_post_apply_actions,
+        connected_session_local_input_event_execution_plan,
+        connected_session_player_coordination_tick_event_execution_plan,
+        connected_session_runtime_step_actions,
     },
-    state::{ClientConfig, StoredClientSettingsMvp, TlsPolicy},
+    state::{ClientConfig, StoredClientSettings, TlsPolicy},
 };
 use sorotte_client_core::{
-    AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION_LEGACY,
-    legacy_server_password_token,
+    AUTOPLAY_TICK_INTERVAL_SECONDS, AutoplayCountdownNotification, SYNCPLAY_COMPAT_VERSION,
+    syncplay_server_password_token,
 };
 use sorotte_player_api::PlayerAdapter;
 use sorotte_player_mpv::MpvAdapter;
@@ -57,59 +54,54 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
-use crate::client_args::LegacyClientArgOverrides;
+use crate::client_args::SyncplayClientArgOverrides;
 use crate::client_config::{
-    ClientLoopConfig, client_hello_features_legacy_compatible, derive_runtime_loop_inputs,
-    shared_playlists_enabled_cli_legacy_compatible,
+    ClientLoopConfig, client_hello_features, derive_runtime_loop_inputs,
+    shared_playlists_enabled_cli,
 };
 use crate::diagnostics_config::{ClientLoopDiagnosticsConfig, client_loop_diagnostics_config};
 use crate::env_support::{env_flag_enabled, env_flag_override, env_non_negative_f64, env_trimmed};
-use crate::language_support::current_legacy_runtime_language_tag_legacy_compatible;
+use crate::language_support::current_runtime_language_tag;
 use crate::local_runtime_actions::{
-    CliNetworkOptionsHealthReporter, PLAYER_CHAT_INPUT_POLL_INTERVAL_MS,
-    drain_player_chat_input_legacy_compatible, publish_pending_local_file_updates,
-    run_planned_local_runtime_action_legacy_compatible,
+    CliNetworkOptionsHealthReporter, PLAYER_CHAT_INPUT_POLL_INTERVAL_MS, drain_player_chat_input,
+    publish_pending_local_file_updates, run_planned_local_runtime_action,
 };
 use crate::mpv_startup::{
-    ManagedMpvProcessGuard,
-    apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible,
+    ManagedMpvProcessGuard, apply_startup_file_to_attached_player_if_explicit_mpv_ipc,
     create_client_runtime_with_managed_mpv_support,
 };
 use crate::notifications::{
     ReadinessNotificationState, SeekPreparationNotificationState,
     emit_autoplay_countdown_notification, emit_file_difference_notification,
-    emit_reconnect_correction_diagnostic, flush_autoplay_notifications_legacy_compatible,
-    flush_chat_notifications_legacy_compatible,
-    flush_controller_auth_notifications_legacy_compatible,
-    flush_file_difference_notifications_legacy_compatible,
+    emit_reconnect_correction_diagnostic, flush_autoplay_notifications, flush_chat_notifications,
+    flush_controller_auth_notifications, flush_file_difference_notifications,
     flush_player_playback_telemetry_diagnostics, flush_readiness_status_notifications,
-    flush_reconnect_correction_diagnostics_to_sink,
-    flush_reconnect_notifications_legacy_compatible, flush_seek_preparation_notifications,
-    flush_user_change_notifications_legacy_compatible,
+    flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications,
+    flush_seek_preparation_notifications, flush_user_change_notifications,
 };
 use crate::protocol_io::{
     InboundProtocolLineReader, flush_runtime_protocol_lines, flush_runtime_protocol_lines_until,
     write_protocol_line,
 };
-use crate::startup_playlist::emit_startup_playlist_load_from_file_legacy_compatible;
-use crate::stdin_input::{recv_local_input_line, spawn_local_input_receiver_legacy_compatible};
+use crate::startup_playlist::emit_startup_playlist_load_from_file;
+use crate::stdin_input::recv_local_input_line;
 
 mod connected_session;
 mod network_loop;
 
 use self::connected_session::{
     ConnectedSessionLaunchContext, emit_application_service_events,
-    run_connected_client_session_with_legacy_startup_overrides_and_diagnostics,
+    run_connected_client_session_with_startup_overrides_and_diagnostics,
 };
 
 #[cfg(test)]
 pub(crate) use self::connected_session::client_runtime_now_seconds;
 #[cfg(test)]
 pub(super) use self::connected_session::{
-    run_connected_client_session, run_connected_client_session_with_legacy_startup_overrides,
-    run_connected_client_session_with_plex_config_for_test,
+    run_connected_client_session, run_connected_client_session_with_plex_config_for_test,
+    run_connected_client_session_with_startup_overrides,
 };
-pub(super) use self::network_loop::run_client_network_loop_with_legacy_startup_overrides_and_stored_settings;
+pub(super) use self::network_loop::run_client_network_loop_with_startup_overrides_and_stored_settings;
 #[cfg(test)]
 pub(super) use self::network_loop::{
     run_client_network_loop, run_client_network_loop_with_prepared_runtime_for_test,
@@ -137,7 +129,7 @@ where
 }
 
 pub(super) fn cli_plex_config_from_env_and_stored_settings(
-    stored_settings: Option<&StoredClientSettingsMvp>,
+    stored_settings: Option<&StoredClientSettings>,
 ) -> PlexClientConfig {
     let mut config = PlexClientConfig {
         enabled: env_flag_enabled("SOROTTE_CLIENT_PLEX_SYNC"),

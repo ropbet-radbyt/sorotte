@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg_legacy_compatible;
+use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg;
 
 use super::shell_state::{
     GuiConfigurationTextValue, GuiDialogControlKind, GuiFocusedConfigurationControlState,

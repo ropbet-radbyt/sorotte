@@ -13,11 +13,11 @@ use proptest::{
 };
 use sorotte_client_app::app_boundary::{
     persistence::{
-        parse_sorotte_ini_stored_client_settings_mvp, upsert_sorotte_ini_stored_client_settings_mvp,
+        parse_sorotte_ini_stored_client_settings, upsert_sorotte_ini_stored_client_settings,
     },
     state::{
-        AutoplayThresholdOverride, StartSynchronizationPolicy, StoredClientSettingsV1,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
+        AutoplayThresholdOverride, StartSynchronizationPolicy, StoredClientSettings,
+        stored_client_settings_runtime_snapshot,
     },
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
@@ -84,7 +84,7 @@ fn render_legacy_lines(lines: Vec<String>, words: [u64; 4]) -> String {
     rendered
 }
 
-fn legacy_scalar_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1) {
+fn legacy_scalar_fixture(words: [u64; 4]) -> (String, StoredClientSettings) {
     const LANGUAGES: [(&str, &str); 6] = [
         ("PT-br", "pt_BR"),
         ("pt-PT", "pt_PT"),
@@ -239,7 +239,7 @@ fn legacy_scalar_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1) {
         "futureKey = preserved-but-ignored".to_owned(),
     ];
 
-    let expected = StoredClientSettingsV1 {
+    let expected = StoredClientSettings {
         language: Some(language.to_owned()),
         check_for_updates_automatically: Some(flag(0)),
         update_channel: Some("dev".to_owned()),
@@ -269,13 +269,13 @@ fn legacy_scalar_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1) {
         plex_plugin_enabled: Some(flag(8)),
         plex_sync_enabled: Some(flag(9)),
         plex_streaming_enabled: Some(flag(10)),
-        ..StoredClientSettingsV1::default()
+        ..StoredClientSettings::default()
     };
 
     (render_legacy_lines(lines, words), expected)
 }
 
-fn legacy_collection_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1) {
+fn legacy_collection_fixture(words: [u64; 4]) -> (String, StoredClientSettings) {
     let room_a = format!("room-{:08x}", words[0] as u32);
     let room_b = format!("room-{:08x}", words[1] as u32);
     let domain_a = format!("media-{:08x}.example", words[2] as u32);
@@ -331,7 +331,7 @@ fn legacy_collection_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1
     let mut expected_arguments = BTreeMap::new();
     expected_arguments.insert(player_a, vec![argument_a, "--no-border".to_owned()]);
     expected_arguments.insert(player_b, vec!["--fs".to_owned()]);
-    let expected = StoredClientSettingsV1 {
+    let expected = StoredClientSettings {
         room_list: Some(vec![room_a, room_b]),
         trusted_domains: Some(vec![domain_a, domain_b]),
         media_search_directories: Some(vec![directory_a, directory_b]),
@@ -340,7 +340,7 @@ fn legacy_collection_fixture(words: [u64; 4]) -> (String, StoredClientSettingsV1
             ("Primary".to_owned(), server_a),
             ("Backup".to_owned(), server_b),
         ]),
-        ..StoredClientSettingsV1::default()
+        ..StoredClientSettings::default()
     };
 
     (render_legacy_lines(lines, words), expected)
@@ -468,25 +468,25 @@ fn malformed_fixture(selectors: [u8; 8], words: [u64; 4]) -> String {
 
 fn assert_canonical_migration(
     legacy: &str,
-    expected: &StoredClientSettingsV1,
+    expected: &StoredClientSettings,
 ) -> Result<(), TestCaseError> {
-    let parsed = parse_sorotte_ini_stored_client_settings_mvp(legacy);
+    let parsed = parse_sorotte_ini_stored_client_settings(legacy);
     prop_assert_eq!(&parsed, expected);
 
-    let in_place = upsert_sorotte_ini_stored_client_settings_mvp(legacy, &parsed);
-    let in_place_parsed = parse_sorotte_ini_stored_client_settings_mvp(&in_place);
+    let in_place = upsert_sorotte_ini_stored_client_settings(legacy, &parsed);
+    let in_place_parsed = parse_sorotte_ini_stored_client_settings(&in_place);
     prop_assert_eq!(&in_place_parsed, expected);
 
-    let canonical = upsert_sorotte_ini_stored_client_settings_mvp("", &parsed);
-    let canonical_parsed = parse_sorotte_ini_stored_client_settings_mvp(&canonical);
+    let canonical = upsert_sorotte_ini_stored_client_settings("", &parsed);
+    let canonical_parsed = parse_sorotte_ini_stored_client_settings(&canonical);
     prop_assert_eq!(&canonical_parsed, expected);
     prop_assert_eq!(
-        upsert_sorotte_ini_stored_client_settings_mvp("", &canonical_parsed),
+        upsert_sorotte_ini_stored_client_settings("", &canonical_parsed),
         canonical
     );
 
-    let before = stored_client_settings_runtime_snapshot_legacy_compatible(&parsed);
-    let after = stored_client_settings_runtime_snapshot_legacy_compatible(&canonical_parsed);
+    let before = stored_client_settings_runtime_snapshot(&parsed);
+    let after = stored_client_settings_runtime_snapshot(&canonical_parsed);
     prop_assert_eq!(after, before);
     Ok(())
 }
@@ -501,7 +501,7 @@ proptest! {
         let (legacy, expected) = legacy_scalar_fixture(words);
         assert_canonical_migration(&legacy, &expected)?;
 
-        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&expected);
+        let snapshot = stored_client_settings_runtime_snapshot(&expected);
         prop_assert!(
             snapshot.validation_issues.is_empty(),
             "generated valid legacy settings produced issues: {:?}",
@@ -528,9 +528,9 @@ proptest! {
         words in any::<[u64; 4]>(),
     ) {
         let legacy = malformed_fixture(selectors, words);
-        let expected = StoredClientSettingsV1 {
+        let expected = StoredClientSettings {
             username: Some("valid-sentinel-user".to_owned()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
         assert_canonical_migration(&legacy, &expected)?;
     }

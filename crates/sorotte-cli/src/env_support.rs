@@ -13,15 +13,15 @@ pub(super) fn env_trimmed(name: &str) -> Option<String> {
 
 pub(super) fn env_flag_enabled(name: &str) -> bool {
     env_trimmed(name)
-        .and_then(|value| parse_env_bool_legacy_compatible(&value))
+        .and_then(|value| parse_env_bool(&value))
         .unwrap_or(false)
 }
 
 pub(super) fn env_flag_override(name: &str) -> Option<bool> {
-    env_trimmed(name).and_then(|value| parse_env_bool_legacy_compatible(&value))
+    env_trimmed(name).and_then(|value| parse_env_bool(&value))
 }
 
-pub(super) fn parse_env_bool_legacy_compatible(value: &str) -> Option<bool> {
+pub(super) fn parse_env_bool(value: &str) -> Option<bool> {
     let normalized = value.trim();
     if normalized.is_empty() {
         return None;
@@ -43,16 +43,16 @@ pub(super) fn parse_env_bool_legacy_compatible(value: &str) -> Option<bool> {
     None
 }
 
-pub(super) fn parse_env_port_legacy_compatible(value: &str) -> Option<u16> {
+pub(super) fn parse_env_port(value: &str) -> Option<u16> {
     let port = value.trim().parse::<u16>().ok()?;
     (port > 0).then_some(port)
 }
 
 pub(super) fn env_port(name: &str) -> Option<u16> {
-    env_trimmed(name).and_then(|value| parse_env_port_legacy_compatible(&value))
+    env_trimmed(name).and_then(|value| parse_env_port(&value))
 }
 
-pub(super) fn parse_env_string_list_legacy_compatible(value: &str) -> Option<Vec<String>> {
+pub(super) fn parse_env_string_list(value: &str) -> Option<Vec<String>> {
     let values: Vec<String> = value
         .split([',', ';', '\n', '\r'])
         .map(str::trim)
@@ -67,7 +67,7 @@ pub(super) fn parse_env_string_list_legacy_compatible(value: &str) -> Option<Vec
 }
 
 pub(super) fn env_string_list(name: &str) -> Option<Vec<String>> {
-    env_trimmed(name).and_then(|value| parse_env_string_list_legacy_compatible(&value))
+    env_trimmed(name).and_then(|value| parse_env_string_list(&value))
 }
 
 pub(super) fn env_u32(name: &str) -> Option<u32> {
@@ -82,15 +82,15 @@ pub(super) fn env_usize(name: &str) -> Option<usize> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-pub(super) fn parse_env_non_negative_f64_legacy_compatible(value: &str) -> Option<f64> {
+pub(super) fn parse_env_non_negative_f64(value: &str) -> Option<f64> {
     let parsed = value.trim().parse::<f64>().ok()?;
     (parsed.is_finite() && parsed >= 0.0).then_some(parsed)
 }
 
 pub(super) fn env_non_negative_f64(name: &str) -> Option<f64> {
-    env_trimmed(name).and_then(|value| parse_env_non_negative_f64_legacy_compatible(&value))
+    env_trimmed(name).and_then(|value| parse_env_non_negative_f64(&value))
 }
 
 pub(super) fn env_privacy_mode(name: &str) -> Option<PrivacyMode> {
-    env_trimmed(name).and_then(|value| PrivacyMode::from_legacy_name(value.as_str()))
+    env_trimmed(name).and_then(|value| PrivacyMode::from_syncplay_name(value.as_str()))
 }

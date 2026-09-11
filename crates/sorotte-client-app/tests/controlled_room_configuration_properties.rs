@@ -10,15 +10,14 @@ use proptest::{
     test_runner::{Config as ProptestConfig, RngSeed},
 };
 use sorotte_client_app::app_boundary::{
-    commands::controlled_room_base_name_legacy_compatible,
+    commands::controlled_room_base_name,
     persistence::{
-        parse_sorotte_ini_stored_client_settings_mvp, upsert_sorotte_ini_stored_client_settings_mvp,
+        parse_sorotte_ini_stored_client_settings, upsert_sorotte_ini_stored_client_settings,
     },
     state::{
-        StoredClientSettingsEnvPresence, StoredClientSettingsV1, TlsPolicy,
-        normalize_controlled_room_input_legacy_compatible,
-        stored_client_settings_config_plan_legacy_compatible,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
+        StoredClientSettings, StoredClientSettingsEnvPresence, TlsPolicy,
+        normalize_controlled_room_input, stored_client_settings_config_plan,
+        stored_client_settings_runtime_snapshot,
     },
 };
 
@@ -140,7 +139,7 @@ fn valid_controlled_room(words: [u64; 4], password: Option<&str>) -> String {
     }
 }
 
-fn effective_room_model(settings: &StoredClientSettingsV1) -> Option<(String, Option<String>)> {
+fn effective_room_model(settings: &StoredClientSettings) -> Option<(String, Option<String>)> {
     settings
         .room
         .as_deref()
@@ -225,16 +224,16 @@ proptest! {
         let password = generated_password(words);
         let input = valid_controlled_room(words, with_password.then_some(password.as_str()));
         let expected = model_normalize_controlled_room(&input);
-        let actual = normalize_controlled_room_input_legacy_compatible(input);
+        let actual = normalize_controlled_room_input(input);
         prop_assert_eq!(&actual, &expected);
 
         let normalized_again =
-            normalize_controlled_room_input_legacy_compatible(actual.0.clone());
+            normalize_controlled_room_input(actual.0.clone());
         prop_assert_eq!(normalized_again, (actual.0.clone(), None));
 
         if let Some(password) = actual.1.as_deref() {
             let reconstructed =
-                normalize_controlled_room_input_legacy_compatible(format!("{}:{password}", actual.0));
+                normalize_controlled_room_input(format!("{}:{password}", actual.0));
             prop_assert_eq!(reconstructed, actual.clone());
         }
 
@@ -247,7 +246,7 @@ proptest! {
             .expect("generated canonical room should have a hash suffix")
             .0;
         prop_assert_eq!(
-            controlled_room_base_name_legacy_compatible(&actual.0),
+            controlled_room_base_name(&actual.0),
             expected_base,
         );
     }
@@ -261,15 +260,15 @@ proptest! {
         let expected = model_normalize_controlled_room(&input);
         prop_assert_eq!(expected.1.as_deref(), None);
 
-        let actual = normalize_controlled_room_input_legacy_compatible(input.clone());
+        let actual = normalize_controlled_room_input(input.clone());
         prop_assert_eq!(&actual, &expected);
 
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             room: Some(input),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
-        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
-        let plan = stored_client_settings_config_plan_legacy_compatible(
+        let snapshot = stored_client_settings_runtime_snapshot(&settings);
+        let plan = stored_client_settings_config_plan(
             &settings,
             &StoredClientSettingsEnvPresence::default(),
         );
@@ -295,46 +294,46 @@ proptest! {
         let alternate_password = generated_password(alternate_words);
         let alternate = valid_controlled_room(alternate_words, Some(&alternate_password));
         let settings = match selector % 5 {
-            0 => StoredClientSettingsV1 {
+            0 => StoredClientSettings {
                 room: Some(primary.clone()),
                 room_list: Some(vec![alternate]),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             },
-            1 => StoredClientSettingsV1 {
+            1 => StoredClientSettings {
                 room_list: Some(vec![" \t ".to_owned(), primary.clone(), alternate]),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             },
-            2 => StoredClientSettingsV1 {
+            2 => StoredClientSettings {
                 room: Some(" \r\n ".to_owned()),
                 room_list: Some(vec![primary.clone(), alternate]),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             },
-            3 => StoredClientSettingsV1 {
+            3 => StoredClientSettings {
                 room: Some(format!("ordinary-{:016x}", words[0])),
                 room_list: Some(vec![primary]),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             },
-            _ => StoredClientSettingsV1 {
+            _ => StoredClientSettings {
                 room: Some(malformed_room(selector, words)),
                 room_list: Some(vec![primary]),
-                ..StoredClientSettingsV1::default()
+                ..StoredClientSettings::default()
             },
         };
 
-        let rendered = upsert_sorotte_ini_stored_client_settings_mvp("", &settings);
-        let parsed = parse_sorotte_ini_stored_client_settings_mvp(&rendered);
-        let canonical = upsert_sorotte_ini_stored_client_settings_mvp("", &parsed);
-        let canonical_parsed = parse_sorotte_ini_stored_client_settings_mvp(&canonical);
+        let rendered = upsert_sorotte_ini_stored_client_settings("", &settings);
+        let parsed = parse_sorotte_ini_stored_client_settings(&rendered);
+        let canonical = upsert_sorotte_ini_stored_client_settings("", &parsed);
+        let canonical_parsed = parse_sorotte_ini_stored_client_settings(&canonical);
         prop_assert_eq!(&canonical_parsed, &parsed);
         prop_assert_eq!(
-            upsert_sorotte_ini_stored_client_settings_mvp("", &canonical_parsed),
+            upsert_sorotte_ini_stored_client_settings("", &canonical_parsed),
             canonical,
         );
 
         let expected = effective_room_model(&settings);
-        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
+        let snapshot = stored_client_settings_runtime_snapshot(&settings);
         let reparsed_snapshot =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&parsed);
+            stored_client_settings_runtime_snapshot(&parsed);
         prop_assert_eq!(&reparsed_snapshot, &snapshot);
         prop_assert_eq!(
             snapshot.settings.room.as_deref(),
@@ -355,7 +354,7 @@ proptest! {
 
         let unrelated = unrelated_environment(words);
         let unshadowed =
-            stored_client_settings_config_plan_legacy_compatible(&settings, &unrelated);
+            stored_client_settings_config_plan(&settings, &unrelated);
         prop_assert_eq!(
             unshadowed.room.as_deref(),
             expected.as_ref().map(|(room, _)| room.as_str()),
@@ -368,7 +367,7 @@ proptest! {
         let mut room_shadow = unrelated;
         room_shadow.room = true;
         let shadowed =
-            stored_client_settings_config_plan_legacy_compatible(&settings, &room_shadow);
+            stored_client_settings_config_plan(&settings, &room_shadow);
         let mut expected_shadowed = unshadowed;
         expected_shadowed.room = None;
         expected_shadowed.controlled_room_password_override = None;
@@ -387,14 +386,14 @@ proptest! {
             .1
             .as_deref()
             .expect("generated room marker should survive normalization");
-        let settings = StoredClientSettingsV1 {
+        let settings = StoredClientSettings {
             server_password: Some(server_marker.clone().into()),
             room: Some(room.clone()),
-            ..StoredClientSettingsV1::default()
+            ..StoredClientSettings::default()
         };
 
-        let snapshot = stored_client_settings_runtime_snapshot_legacy_compatible(&settings);
-        let plan = stored_client_settings_config_plan_legacy_compatible(
+        let snapshot = stored_client_settings_runtime_snapshot(&settings);
+        let plan = stored_client_settings_config_plan(
             &settings,
             &StoredClientSettingsEnvPresence::default(),
         );
@@ -418,7 +417,7 @@ proptest! {
             prop_assert!(!debug.contains(&server_marker), "{label} exposed the server marker");
         }
 
-        let server_shadowed = stored_client_settings_config_plan_legacy_compatible(
+        let server_shadowed = stored_client_settings_config_plan(
             &settings,
             &StoredClientSettingsEnvPresence {
                 server_password: true,
@@ -432,7 +431,7 @@ proptest! {
             plan.controlled_room_password_override.clone(),
         );
 
-        let room_shadowed = stored_client_settings_config_plan_legacy_compatible(
+        let room_shadowed = stored_client_settings_config_plan(
             &settings,
             &StoredClientSettingsEnvPresence {
                 room: true,

@@ -166,25 +166,25 @@ where
             })
     }
 
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping(
         &mut self,
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
     ) -> bool {
-        self.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+        self.run_state_sync_reconcile_with_inbound_state_with_ping_at(
             inbound_state,
             dont_slow_down_with_me,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         )
     }
 
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping_at(
         &mut self,
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
         received_at_seconds: f64,
     ) -> bool {
-        self.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+        self.run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
             inbound_state,
             dont_slow_down_with_me,
             received_at_seconds,
@@ -194,9 +194,9 @@ where
     }
 
     /// Reconciles an inbound State while preserving separate receipt, reply,
-    /// and legacy ping clocks. The local playback sample is projected to the
+    /// and Syncplay ping clocks. The local playback sample is projected to the
     /// reply clock; inbound room state remains anchored to network receipt.
-    pub fn run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at_clocks(
+    pub fn run_state_sync_reconcile_with_inbound_state_with_ping_at_clocks(
         &mut self,
         inbound_state: StatePayload,
         dont_slow_down_with_me: bool,
@@ -205,19 +205,18 @@ where
         ping_received_at_seconds: f64,
     ) -> bool {
         let inbound_state = normalize_client_state_payload(inbound_state);
-        self.ping_metrics_legacy_compatible
+        self.ping_metrics
             .observe_normalized_inbound_state_at(&inbound_state, ping_received_at_seconds);
         let local_state_change_global_playstate = self
-            .adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
+            .adjusted_inbound_playstate_for_local_state_change_with_ping(
                 &inbound_state,
                 received_at_seconds,
                 response_at_seconds,
             );
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             inbound_state,
-            self.ping_metrics_legacy_compatible
-                .client_latency_calculation_now(),
-            self.ping_metrics_legacy_compatible.client_rtt_seconds(),
+            self.ping_metrics.client_latency_calculation_now(),
+            self.ping_metrics.client_rtt_seconds(),
             dont_slow_down_with_me,
             local_state_change_global_playstate,
             StateSyncReconcileClocks {
@@ -234,7 +233,7 @@ where
         client_rtt: f64,
         dont_slow_down_with_me: bool,
     ) -> bool {
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
         self.run_state_sync_reconcile_with_inbound_state_with_local_state_change_override(
             normalize_client_state_payload(inbound_state),
             client_latency_calculation,
@@ -338,7 +337,7 @@ where
         )
     }
 
-    pub(crate) fn adjusted_inbound_playstate_for_local_state_change_legacy_ping_compatible(
+    pub(crate) fn adjusted_inbound_playstate_for_local_state_change_with_ping(
         &self,
         inbound_state: &ClientStateUpdate,
         received_at_seconds: f64,
@@ -347,8 +346,7 @@ where
         let playstate = inbound_state.playstate.as_ref()?;
         let mut position = playstate.position;
         if playstate.paused == Some(false) {
-            let mut projection_seconds =
-                self.ping_metrics_legacy_compatible.forward_delay_seconds();
+            let mut projection_seconds = self.ping_metrics.forward_delay_seconds();
             let response_delay_seconds = response_at_seconds - received_at_seconds;
             if response_delay_seconds.is_finite() && response_delay_seconds > 0.0 {
                 projection_seconds += response_delay_seconds;
@@ -369,22 +367,17 @@ where
         })
     }
 
-    pub fn run_state_sync_heartbeat_legacy_ping_compatible(
-        &mut self,
-        dont_slow_down_with_me: bool,
-    ) -> bool {
+    pub fn run_state_sync_heartbeat_with_ping(&mut self, dont_slow_down_with_me: bool) -> bool {
         if !self.session.is_active() {
             return false;
         }
         self.control.activate_protocol_connection_generation();
 
         self.sync_player_playback_telemetry_into_session_and_buffer();
-        let now_seconds = unix_wall_clock_time_seconds_legacy_compatible();
+        let now_seconds = unix_wall_clock_time_seconds();
 
-        let client_latency_calculation = self
-            .ping_metrics_legacy_compatible
-            .client_latency_calculation_now();
-        let client_rtt = self.ping_metrics_legacy_compatible.client_rtt_seconds();
+        let client_latency_calculation = self.ping_metrics.client_latency_calculation_now();
+        let client_rtt = self.ping_metrics.client_rtt_seconds();
         let local_pause_mutation_intent = self
             .playback_coordination
             .active_local_pause_state_mutation_intent(&self.session);

@@ -225,7 +225,7 @@ impl super::MenuDialogShellState {
 mod tests {
     use std::collections::HashSet;
 
-    use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+    use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
     use super::*;
 
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn menu_action_ids_cover_every_presented_menu_action() {
         let menus = super::super::MenuDialogShellState::from_stored_settings(
-            &StoredClientSettingsMvp::default(),
+            &StoredClientSettings::default(),
         );
         assert_eq!(
             menus

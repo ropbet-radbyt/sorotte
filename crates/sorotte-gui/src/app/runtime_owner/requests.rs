@@ -8,16 +8,16 @@ use std::path::{Path, PathBuf};
 
 use sorotte_client_app::app_boundary::{
     commands::{
-        PlannedLocalRuntimeAction, localized_current_offset_message_legacy_compatible,
-        plan_local_offset_runtime_dispatch_legacy_compatible,
+        PlannedLocalRuntimeAction, localized_current_offset_message,
+        plan_local_offset_runtime_dispatch,
     },
     persistence::{
-        edit_sorotte_ini_stored_client_settings_mvp_at_path,
-        load_sorotte_ini_stored_client_settings_mvp_from_path,
-        merge_sorotte_ini_stored_client_settings_mvp_at_path,
-        relocate_sorotte_ini_stored_client_settings_mvp_at_path,
+        edit_sorotte_ini_stored_client_settings_at_path,
+        load_sorotte_ini_stored_client_settings_from_path,
+        merge_sorotte_ini_stored_client_settings_at_path,
+        relocate_sorotte_ini_stored_client_settings_at_path,
     },
-    state::stored_client_settings_runtime_snapshot_legacy_compatible,
+    state::stored_client_settings_runtime_snapshot,
     storage::{
         SorotteClientStoragePaths, SorotteClientStorageSource, current_sorotte_client_install_root,
         default_sorotte_client_config_root, ensure_sorotte_client_storage_root, normalize_path,
@@ -80,16 +80,15 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         projected_state: &SorotteGuiShellAppState,
         patch: &GuiPersistedSettingsPatch,
-    ) -> Result<sorotte_client_app::app_boundary::state::StoredClientSettingsMvp, String> {
+    ) -> Result<sorotte_client_app::app_boundary::state::StoredClientSettings, String> {
         let Some(config_path) = self.persisted_settings_config_path_for_request(projected_state)
         else {
             return Err("no writable GUI config path is available".to_owned());
         };
-        let settings =
-            edit_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, |settings| {
-                patch.apply_to(settings);
-            })
-            .map_err(|error| error.to_string())?;
+        let settings = edit_sorotte_ini_stored_client_settings_at_path(&config_path, |settings| {
+            patch.apply_to(settings);
+        })
+        .map_err(|error| error.to_string())?;
         self.config_path = Some(config_path);
         self.apply_patch_to_active_session_settings(patch);
         Ok(settings)

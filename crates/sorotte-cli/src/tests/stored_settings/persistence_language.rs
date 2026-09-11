@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn persist_and_load_sorotte_cli_stored_settings_mvp_roundtrips_via_env_override_path() {
+fn persist_and_load_sorotte_cli_stored_settings_roundtrips_via_env_override_path() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -53,15 +53,14 @@ fn persist_and_load_sorotte_cli_stored_settings_mvp_roundtrips_via_env_override_
         show_different_room_osd_override: Some(false),
         ..test_client_loop_config()
     };
-    persist_sorotte_cli_stored_settings_mvp_legacy_compatible(&config)
-        .expect("persisted settings should succeed");
+    persist_sorotte_cli_stored_settings(&config).expect("persisted settings should succeed");
 
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(
         loaded,
-        StoredClientSettingsMvp {
+        StoredClientSettings {
             language: Some("en".to_owned()),
             check_for_updates_automatically: None,
             last_checked_for_updates: None,
@@ -135,7 +134,7 @@ fn persist_and_load_sorotte_cli_stored_settings_mvp_roundtrips_via_env_override_
             show_noncontroller_osd: Some(true),
             show_different_room_osd: Some(false),
             show_contact_info: None,
-            ..StoredClientSettingsMvp::default()
+            ..StoredClientSettings::default()
         }
     );
 
@@ -182,7 +181,7 @@ fn persist_and_load_sorotte_cli_stored_settings_mvp_roundtrips_via_env_override_
 }
 
 #[test]
-fn persist_sorotte_cli_language_setting_legacy_compatible_updates_general_language() {
+fn persist_sorotte_cli_language_setting_updates_general_language() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -197,9 +196,8 @@ fn persist_sorotte_cli_language_setting_legacy_compatible_updates_general_langua
     let config_path = temp_dir.join("sorotte.ini");
     std::fs::write(&config_path, "[general]\nlanguage = en\n").expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_language_setting_legacy_compatible("fr")
-        .expect("language setting should persist");
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    persist_sorotte_cli_language_setting("fr").expect("language setting should persist");
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(loaded.language.as_deref(), Some("fr"));
@@ -216,7 +214,7 @@ fn persist_sorotte_cli_language_setting_legacy_compatible_updates_general_langua
 }
 
 #[test]
-fn persist_sorotte_cli_language_setting_legacy_compatible_normalizes_supported_aliases() {
+fn persist_sorotte_cli_language_setting_normalizes_supported_aliases() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key = "SOROTTE_CLIENT_CONFIG_PATH";
     let prior = std::env::var_os(key);
@@ -232,9 +230,8 @@ fn persist_sorotte_cli_language_setting_legacy_compatible_normalizes_supported_a
     let config_path = temp_dir.join("sorotte.ini");
     std::fs::write(&config_path, "[general]\nlanguage = en\n").expect("seed config should write");
     env.set_var(key, &config_path);
-    persist_sorotte_cli_language_setting_legacy_compatible("PT-br")
-        .expect("language alias should persist");
-    let loaded = load_sorotte_cli_stored_settings_mvp_legacy_compatible()
+    persist_sorotte_cli_language_setting("PT-br").expect("language alias should persist");
+    let loaded = load_sorotte_cli_stored_settings()
         .expect("load should succeed")
         .expect("settings should exist");
     assert_eq!(loaded.language.as_deref(), Some("pt_BR"));

@@ -3,33 +3,32 @@ use super::*;
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_session_and_reconnects_with_them()
  {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            username: Some("alice".to_owned()),
-            room: Some("room1".to_owned()),
-            autoplay_initial_state: Some(true),
-            autoplay_require_same_filenames: Some(true),
-            pause_on_leave: Some(false),
-            loop_at_end_of_playlist: Some(true),
-            loop_single_files: Some(true),
-            only_switch_to_trusted_domains: Some(false),
-            trusted_domains: Some(vec!["*.example.com/videos".to_owned()]),
-            rewind_on_desync: Some(false),
-            fastforward_on_desync: Some(false),
-            slow_on_desync: Some(false),
-            dont_slow_down_with_me: Some(true),
-            rewind_threshold_seconds: Some(1.5),
-            fastforward_threshold_seconds: Some(4.0),
-            slowdown_threshold_seconds: Some(0.75),
-            unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
-            autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
-            show_duration_notification: Some(false),
-            show_same_room_osd: Some(false),
-            show_osd_warnings: Some(false),
-            show_noncontroller_osd: Some(true),
-            show_different_room_osd: Some(true),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        autoplay_initial_state: Some(true),
+        autoplay_require_same_filenames: Some(true),
+        pause_on_leave: Some(false),
+        loop_at_end_of_playlist: Some(true),
+        loop_single_files: Some(true),
+        only_switch_to_trusted_domains: Some(false),
+        trusted_domains: Some(vec!["*.example.com/videos".to_owned()]),
+        rewind_on_desync: Some(false),
+        fastforward_on_desync: Some(false),
+        slow_on_desync: Some(false),
+        dont_slow_down_with_me: Some(true),
+        rewind_threshold_seconds: Some(1.5),
+        fastforward_threshold_seconds: Some(4.0),
+        slowdown_threshold_seconds: Some(0.75),
+        unpause_action: Some(UnpauseActionMode::IfMinUsersReady),
+        autoplay_min_users: Some(AutoplayThresholdOverride::Set(3)),
+        show_duration_notification: Some(false),
+        show_same_room_osd: Some(false),
+        show_osd_warnings: Some(false),
+        show_noncontroller_osd: Some(true),
+        show_different_room_osd: Some(true),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
         "alice",
         "room1",
@@ -213,11 +212,10 @@ fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runtime_settings_blank()
 {
-    let runtime_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            room: Some("room1".to_owned()),
-            ..StoredClientSettingsMvp::default()
-        });
+    let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        room: Some("room1".to_owned()),
+        ..StoredClientSettings::default()
+    });
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
 
@@ -241,16 +239,14 @@ fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runt
 fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_without_reconnect() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
-    let disabled_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            dont_slow_down_with_me: Some(false),
-            ..StoredClientSettingsMvp::default()
-        });
-    let enabled_settings =
-        stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-            dont_slow_down_with_me: Some(true),
-            ..StoredClientSettingsMvp::default()
-        });
+    let disabled_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        dont_slow_down_with_me: Some(false),
+        ..StoredClientSettings::default()
+    });
+    let enabled_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+        dont_slow_down_with_me: Some(true),
+        ..StoredClientSettings::default()
+    });
 
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &disabled_settings)
         .expect("initial runtime settings should sync");

@@ -10,7 +10,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         // outbox sink APIs instead so failed effects remain retryable.
         let mut actions = Vec::new();
         let mut trailing_actions = Vec::new();
-        let language = Some(state.runtime_language_tag_legacy_compatible());
+        let language = Some(state.runtime_language_tag());
         if let Err(error) = self.runtime.run_user_change_notifications_if_needed() {
             actions.push(GuiShellAction::PushTransientNotification {
                 level: GuiTransientNotificationLevel::Error,

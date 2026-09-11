@@ -742,13 +742,10 @@ fn list_position_is_preserved_only_as_a_named_legacy_snapshot() {
         .expect("List snapshot should apply");
 
     assert_eq!(
-        session.user_legacy_list_position_snapshot_seconds("bob"),
+        session.user_list_position_snapshot_seconds("bob"),
         Some(12.5)
     );
-    assert_eq!(
-        session.user_legacy_list_position_snapshot_seconds("invalid"),
-        None
-    );
+    assert_eq!(session.user_list_position_snapshot_seconds("invalid"), None);
     assert!(
         session.user_participant_status_at("bob", 0.0).is_none(),
         "List position must never masquerade as live participant telemetry"
@@ -839,7 +836,6 @@ fn scope_and_snapshot_apply_transactionally_without_precise_scope_rollback() {
                             ParticipantStatusSnapshotMode::Full => "full",
                             ParticipantStatusSnapshotMode::Compact => "compact",
                             ParticipantStatusSnapshotMode::Unavailable => "unavailable",
-                            _ => "unknown",
                         },
                         "participants": {"bob": view},
                     },

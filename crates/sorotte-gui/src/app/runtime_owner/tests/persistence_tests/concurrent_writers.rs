@@ -1,7 +1,7 @@
 use super::*;
 use sorotte_client_app::app_boundary::persistence::{
-    clear_sorotte_ini_stored_client_settings_mvp_at_path,
-    edit_sorotte_ini_stored_client_settings_mvp_at_path,
+    clear_sorotte_ini_stored_client_settings_at_path,
+    edit_sorotte_ini_stored_client_settings_at_path,
 };
 
 #[test]
@@ -9,7 +9,7 @@ fn gui_stale_full_save_keeps_independent_changes_and_never_restores_cleared_cred
     for clear_file in [false, true] {
         let root = test_temp_root("concurrent-settings-full-save");
         let config_path = root.join("sorotte.ini");
-        let baseline = StoredClientSettingsMvp {
+        let baseline = StoredClientSettings {
             host: Some("localhost".into()),
             username: Some("before".into()),
             room: Some("before-room".into()),
@@ -17,14 +17,14 @@ fn gui_stale_full_save_keeps_independent_changes_and_never_restores_cleared_cred
             plex_user_token: Some("synthetic-token".into()),
             ..Default::default()
         };
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &baseline).unwrap();
+        upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &baseline).unwrap();
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
         let handle = GuiQueuedRuntimeBridgeHandle::default();
         let mut state = SorotteGuiShellAppState::from_stored_settings(&baseline);
         if clear_file {
-            clear_sorotte_ini_stored_client_settings_mvp_at_path(&config_path).unwrap();
+            clear_sorotte_ini_stored_client_settings_at_path(&config_path).unwrap();
         } else {
-            edit_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, |settings| {
+            edit_sorotte_ini_stored_client_settings_at_path(&config_path, |settings| {
                 settings.room = Some("independent-room".into());
                 settings.server_password = None;
                 settings.plex_user_token = None;
@@ -47,7 +47,7 @@ fn gui_stale_full_save_keeps_independent_changes_and_never_restores_cleared_cred
                 .iter()
                 .any(|action| matches!(action, GuiShellAction::CompleteConfigurationSave(_)))
         );
-        let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+        let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
             .unwrap()
             .unwrap();
         assert_eq!(disk.username.as_deref(), Some("edited-name"));
@@ -66,23 +66,23 @@ fn gui_stale_full_save_keeps_independent_changes_and_never_restores_cleared_cred
 fn gui_feature_patch_uses_current_disk_state_after_an_independent_credential_clear() {
     let root = test_temp_root("concurrent-settings-feature-patch");
     let config_path = root.join("sorotte.ini");
-    let baseline = StoredClientSettingsMvp {
+    let baseline = StoredClientSettings {
         room: Some("old-room".into()),
         plex_user_token: Some("synthetic-token".into()),
         plex_streaming_enabled: Some(false),
         ..Default::default()
     };
-    upsert_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, &baseline).unwrap();
+    upsert_sorotte_ini_stored_client_settings_at_path(&config_path, &baseline).unwrap();
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path.clone()));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&baseline);
-    edit_sorotte_ini_stored_client_settings_mvp_at_path(&config_path, |settings| {
+    edit_sorotte_ini_stored_client_settings_at_path(&config_path, |settings| {
         settings.room = Some("independent-room".into());
         settings.plex_user_token = None;
     })
     .unwrap();
     assert!(owner.handle_toggle_plex_streaming_request(&handle, &mut state, true));
-    let disk = load_sorotte_ini_stored_client_settings_mvp_from_path(&config_path)
+    let disk = load_sorotte_ini_stored_client_settings_from_path(&config_path)
         .unwrap()
         .unwrap();
     assert_eq!(disk.room.as_deref(), Some("independent-room"));

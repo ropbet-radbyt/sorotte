@@ -4,8 +4,7 @@ use super::*;
 fn python_fanout_roundtrip_matches_server_runtime_on_chat_room_scoping_scenario() {
     match assert_python_fanout_matches_server_runtime_for_scenario(CHAT_ROOM_SCOPING_SCENARIO) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -20,8 +19,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_room_switch_sender_sco
         CHAT_ROOM_SWITCH_SENDER_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -37,8 +35,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_room_switch_peer_trans
         CHAT_ROOM_SWITCH_PEER_TRANSITION_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -54,8 +51,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_room_switch_object_pay
         CHAT_ROOM_SWITCH_OBJECT_PAYLOAD_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -70,8 +66,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_double_room_switch_sco
         CHAT_DOUBLE_ROOM_SWITCH_SCOPING_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -86,8 +81,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_username_normalization
         CHAT_USERNAME_NORMALIZATION_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(
@@ -102,8 +96,7 @@ fn python_fanout_roundtrip_matches_server_runtime_on_chat_payload_normalization_
         CHAT_PAYLOAD_NORMALIZATION_SCENARIO,
     ) {
         Ok(()) => {}
-        Err(InteropError::LegacySyncplayCheckoutMissing(_))
-        | Err(InteropError::PythonSpawn { .. }) => {
+        Err(InteropError::SyncplayCheckoutMissing(_)) | Err(InteropError::PythonSpawn { .. }) => {
             eprintln!("python fanout interop test skipped due to missing local prerequisites");
         }
         Err(err) => panic!(

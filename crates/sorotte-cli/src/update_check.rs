@@ -1,21 +1,20 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sorotte_client_app::app_boundary::{
-    persistence::update_sorotte_ini_stored_client_settings_mvp_at_path,
-    state::StoredClientSettingsMvp,
+    persistence::update_sorotte_ini_stored_client_settings_at_path, state::StoredClientSettings,
 };
 
-use crate::client_args::LegacyClientArgOverrides;
+use crate::client_args::SyncplayClientArgOverrides;
 use crate::config_paths::resolve_sorotte_cli_config_path;
 
-pub(super) const LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 7 * 86400;
+pub(super) const DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS: u64 = 7 * 86400;
 
-pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: SystemTime) -> String {
+pub(super) fn utc_timestamp_string(now: SystemTime) -> String {
     let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
     let total_seconds = duration.as_secs() as i64;
     let days_since_epoch = total_seconds.div_euclid(86_400);
     let seconds_of_day = total_seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch);
+    let (year, month, day) = civil_from_days_since_unix_epoch(days_since_epoch);
     let hour = seconds_of_day / 3_600;
     let minute = (seconds_of_day % 3_600) / 60;
     let second = seconds_of_day % 60;
@@ -23,7 +22,7 @@ pub(super) fn legacy_utc_timestamp_string_legacy_compatible(now: SystemTime) -> 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{millis:03}")
 }
 
-pub(super) fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Option<SystemTime> {
+pub(super) fn parse_utc_timestamp(value: &str) -> Option<SystemTime> {
     let value = value.trim();
     let bytes = value.as_bytes();
     if bytes.len() != 23
@@ -55,8 +54,7 @@ pub(super) fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Optio
         return None;
     }
 
-    let days_since_epoch =
-        days_since_unix_epoch_from_civil_legacy_compatible(year, month as i64, day as i64);
+    let days_since_epoch = days_since_unix_epoch_from_civil(year, month as i64, day as i64);
     if days_since_epoch < 0 {
         return None;
     }
@@ -65,7 +63,7 @@ pub(super) fn parse_legacy_utc_timestamp_legacy_compatible(value: &str) -> Optio
     Some(UNIX_EPOCH + Duration::from_secs(total_seconds) + Duration::from_millis(millis))
 }
 
-fn civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch: i64) -> (i64, i64, i64) {
+fn civil_from_days_since_unix_epoch(days_since_epoch: i64) -> (i64, i64, i64) {
     let z = days_since_epoch + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -81,7 +79,7 @@ fn civil_from_days_since_unix_epoch_legacy_compatible(days_since_epoch: i64) -> 
     (year, month, day)
 }
 
-fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day: i64) -> i64 {
+fn days_since_unix_epoch_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let adjusted_year = year - if month <= 2 { 1 } else { 0 };
     let era = if adjusted_year >= 0 {
         adjusted_year
@@ -95,8 +93,8 @@ fn days_since_unix_epoch_from_civil_legacy_compatible(year: i64, month: i64, day
     era * 146_097 + doe - 719_468
 }
 
-pub(super) fn should_run_headless_automatic_update_check_legacy_compatible(
-    settings: Option<&StoredClientSettingsMvp>,
+pub(super) fn should_run_headless_automatic_update_check(
+    settings: Option<&StoredClientSettings>,
     now: SystemTime,
 ) -> bool {
     let Some(settings) = settings else {
@@ -108,47 +106,45 @@ pub(super) fn should_run_headless_automatic_update_check_legacy_compatible(
     let Some(last_checked) = settings
         .last_checked_for_updates
         .as_deref()
-        .and_then(parse_legacy_utc_timestamp_legacy_compatible)
+        .and_then(parse_utc_timestamp)
     else {
         return true;
     };
 
     now.duration_since(last_checked)
-        .map(|elapsed| elapsed.as_secs() > LEGACY_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS)
+        .map(|elapsed| elapsed.as_secs() > DEFAULT_AUTOMATIC_UPDATE_CHECK_FREQUENCY_SECONDS)
         .unwrap_or(false)
 }
 
-pub(super) fn persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible(
+pub(super) fn persist_sorotte_cli_last_checked_for_updates_setting(
     timestamp: &str,
 ) -> anyhow::Result<()> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
-    update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+    update_sorotte_ini_stored_client_settings_at_path(&path, |settings| {
         settings.last_checked_for_updates = Some(timestamp.to_owned());
     })
 }
 
-pub(super) fn apply_headless_automatic_update_check_legacy_compatible(
-    overrides: &LegacyClientArgOverrides,
-    settings: Option<&StoredClientSettingsMvp>,
+pub(super) fn apply_headless_automatic_update_check(
+    overrides: &SyncplayClientArgOverrides,
+    settings: Option<&StoredClientSettings>,
 ) {
     let now = SystemTime::now();
-    if !should_run_headless_automatic_update_check_legacy_compatible(settings, now) {
+    if !should_run_headless_automatic_update_check(settings, now) {
         return;
     }
 
     eprintln!(
-        "info: legacy automatic update check is due; sorotte-cli records the headless check timestamp but does not perform GUI update dialogs or remote update probing"
+        "info: automatic update check is due; sorotte-cli records the headless check timestamp but does not perform GUI update dialogs or remote update probing"
     );
     if overrides.no_store {
         return;
     }
 
-    let timestamp = legacy_utc_timestamp_string_legacy_compatible(now);
-    if let Err(error) =
-        persist_sorotte_cli_last_checked_for_updates_setting_legacy_compatible(&timestamp)
-    {
-        eprintln!("warning: failed to persist legacy lastCheckedForUpdates setting: {error}");
+    let timestamp = utc_timestamp_string(now);
+    if let Err(error) = persist_sorotte_cli_last_checked_for_updates_setting(&timestamp) {
+        eprintln!("warning: failed to persist lastCheckedForUpdates setting: {error}");
     }
 }

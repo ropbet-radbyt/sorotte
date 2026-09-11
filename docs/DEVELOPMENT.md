@@ -65,24 +65,16 @@ attempts and owned cleanup. Its 1,200-second phase limit and the 55/45-minute
 Linux/Windows job limits are ceilings; additional runtime must be measured from
 the resulting receipts rather than inferred from these budgets.
 
-For public Rust API changes, install the pinned compatibility checker and
-compare every affected public crate with the exact pull-request base commit:
+Rust crates are internal workspace components. Change their APIs and all workspace
+callers together; do not retain aliases, no-op methods, or alternate types solely
+for hypothetical downstream Rust consumers. Syncplay protocol interoperability
+and settings import remain supported compatibility contracts and retain their
+behavioral tests.
 
-```powershell
-cargo install cargo-semver-checks --version 0.50.0 --locked
-./scripts/check-semver.ps1 -BaselineRev <full-base-sha>
-```
-
-The wrapper checks all public workspace crates and uses a validated short
-temporary `CARGO_TARGET_DIR` outside the checkout. This avoids the nested
-baseline build paths exceeding the Windows linker path limit, restores any
-existing target override, and removes its temporary directory when complete.
-
-The required Linux pull-request check fetches full Git history and runs that
-comparison against `github.event.pull_request.base.sha`. Keep public structs
-and enums extensible through constructors, builders, accessors, and
-`#[non_exhaustive]` where appropriate; additive wire compatibility alone does
-not establish Rust source compatibility.
+Use [the terminology glossary](../CONTEXT.md) and the
+[compatibility cleanup audit](audits/compatibility-terminology-cleanup-2026-09-11.md)
+to distinguish supported Syncplay behavior, missing peer capabilities, and
+persisted formats. Name the actual feature or format instead of calling it `legacy`.
 
 Pull-request CI keeps the public `Rust all-feature behavior (Windows)` and
 `coverage-diff` checks stable, but their expensive work is deliberately

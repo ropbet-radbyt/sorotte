@@ -34,7 +34,7 @@ fn reconnect_correction_metrics_delta_message_formats_changed_counters() {
 }
 
 #[test]
-fn reconnect_correction_metrics_delta_message_localized_legacy_compatible_localizes_prefix() {
+fn reconnect_correction_metrics_delta_message_localized_localizes_prefix() {
     let previous = ReconnectStateRestoreCorrectionMetrics {
         correction_actions_attempted: 1,
         ..ReconnectStateRestoreCorrectionMetrics::default()
@@ -44,7 +44,7 @@ fn reconnect_correction_metrics_delta_message_localized_legacy_compatible_locali
         ..ReconnectStateRestoreCorrectionMetrics::default()
     };
 
-    let message = crate::reconnect_correction_metrics_delta_message_localized_legacy_compatible(
+    let message = crate::reconnect_correction_metrics_delta_message_localized(
         Some(&previous),
         &current,
         Some("pt_BR"),
@@ -118,7 +118,7 @@ fn reconnect_correction_state_snapshot_message_formats_key_fields() {
 }
 
 #[test]
-fn reconnect_correction_state_snapshot_message_localized_legacy_compatible_localizes_prefix() {
+fn reconnect_correction_state_snapshot_message_localized_localizes_prefix() {
     let snapshot = ReconnectStateRestoreCorrectionStateSnapshot {
         validation_pending: true,
         retry_attempts: 1,
@@ -135,10 +135,8 @@ fn reconnect_correction_state_snapshot_message_localized_legacy_compatible_local
         correction_reenabled_for_recovery_cycle: false,
     };
 
-    let message = crate::reconnect_correction_state_snapshot_message_localized_legacy_compatible(
-        &snapshot,
-        Some("es"),
-    );
+    let message =
+        crate::reconnect_correction_state_snapshot_message_localized(&snapshot, Some("es"));
     assert!(message.starts_with("Estado de correccion de reconexion: "));
     assert!(message.contains("policy=auto"));
 }
@@ -233,7 +231,7 @@ fn reconnect_correction_metrics_delta_alert_lines_emit_text_and_json_when_thresh
 }
 
 #[test]
-fn reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible_localize_prefix() {
+fn reconnect_correction_metrics_delta_alert_lines_localized_localize_prefix() {
     let previous = ReconnectStateRestoreCorrectionMetrics {
         correction_action_failures: 1,
         ..ReconnectStateRestoreCorrectionMetrics::default()
@@ -247,7 +245,7 @@ fn reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible_lo
         ..crate::ReconnectCorrectionDiagnosticsAlertThresholds::default()
     };
 
-    let alerts = crate::reconnect_correction_metrics_delta_alert_lines_localized_legacy_compatible(
+    let alerts = crate::reconnect_correction_metrics_delta_alert_lines_localized(
         Some(&previous),
         &current,
         &thresholds,
@@ -460,7 +458,7 @@ fn reconnect_correction_diagnostics_alert_thresholds_from_env_parses_values() {
 }
 
 #[test]
-fn apply_legacy_client_arg_diagnostics_overrides_enables_debug_defaults() {
+fn apply_syncplay_client_arg_diagnostics_overrides_enables_debug_defaults() {
     let config = crate::ClientLoopDiagnosticsConfig {
         log_player_telemetry: false,
         log_player_drift: false,
@@ -468,12 +466,12 @@ fn apply_legacy_client_arg_diagnostics_overrides_enables_debug_defaults() {
         reconnect_correction_diagnostics_alert_thresholds:
             crate::ReconnectCorrectionDiagnosticsAlertThresholds::default(),
     };
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         debug_requested: true,
-        ..LegacyClientArgOverrides::default()
+        ..SyncplayClientArgOverrides::default()
     };
 
-    let updated = crate::apply_legacy_client_arg_diagnostics_overrides(config, Some(&overrides));
+    let updated = crate::apply_syncplay_client_arg_diagnostics_overrides(config, Some(&overrides));
 
     assert!(updated.log_player_telemetry);
     assert!(updated.log_player_drift);

@@ -1,31 +1,31 @@
 use super::*;
 
-pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
+pub(in crate::tests) fn run_syncplay_server_tls_upgrade_roundtrip_with_cert_path(
     tls_cert_path: &Path,
 ) -> Result<(String, String), InteropError> {
-    let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
+    let legacy_checkout = super::ensure_syncplay_checkout_available()?;
 
-    let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
-    if !legacy_server_entry.is_file() {
-        return Err(InteropError::LegacyServerEntryScriptMissing(
-            legacy_server_entry,
+    let syncplay_server_entry = super::syncplay_server_entry_script_path();
+    if !syncplay_server_entry.is_file() {
+        return Err(InteropError::SyncplayServerEntryScriptMissing(
+            syncplay_server_entry,
         ));
     }
 
-    let mut port_lease = super::reserve_legacy_server_port()?;
+    let mut port_lease = super::reserve_syncplay_server_port()?;
     let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
     command
-        .arg(&legacy_server_entry)
+        .arg(&syncplay_server_entry)
         .arg("--port")
         .arg(port.to_string())
         .arg("--ipv4-only")
         .arg("--interface-ipv4")
         .arg("127.0.0.1")
         .arg("--salt")
-        .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+        .arg(super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT)
         .arg("--tls")
         .arg(tls_cert_path)
         .current_dir(legacy_checkout)
@@ -42,17 +42,17 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         })?;
 
     let result = (|| {
-        super::wait_for_legacy_server_startup(port, &mut child)?;
+        super::wait_for_syncplay_server_startup(port, &mut child)?;
         drop(port_lease);
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
-        let stream = super::connect_legacy_client_stream(port, "legacy-tls-client")?;
-        let mut connection = super::LegacyServerClientConnection {
+        let stream = super::connect_syncplay_client_stream(port, "legacy-tls-client")?;
+        let mut connection = super::SyncplayServerClientConnection {
             stream,
             pending_bytes: Vec::new(),
         };
         let request_line =
-            super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            super::prepare_syncplay_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
         connection.stream.write_all(request_line.as_bytes())?;
         connection.stream.write_all(b"\r\n")?;
         connection.stream.flush()?;
@@ -84,7 +84,7 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         let mut tls_stream = open_legacy_tls_client_stream(connection.stream, tls_cert_path)?;
 
         let hello_line = encode_message_line(&ProtocolMessage::hello(
-            super::default_rust_client_hello_for_legacy_live_tls(),
+            super::default_rust_client_hello_for_syncplay_live_tls(),
         ))?;
         tls_stream.write_all(hello_line.as_bytes())?;
         tls_stream.write_all(b"\r\n")?;
@@ -113,36 +113,36 @@ pub(in crate::tests) fn run_legacy_server_tls_upgrade_roundtrip_with_cert_path(
         Ok((tls_response_line, hello_response_line))
     })();
 
-    super::terminate_legacy_server_process(&mut child);
+    super::terminate_syncplay_server_process(&mut child);
     result
 }
 
-pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
+pub(in crate::tests) fn run_syncplay_server_tls_logged_client_send_denied_roundtrip_with_cert_path(
     tls_cert_path: &Path,
 ) -> Result<String, InteropError> {
-    let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
+    let legacy_checkout = super::ensure_syncplay_checkout_available()?;
 
-    let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
-    if !legacy_server_entry.is_file() {
-        return Err(InteropError::LegacyServerEntryScriptMissing(
-            legacy_server_entry,
+    let syncplay_server_entry = super::syncplay_server_entry_script_path();
+    if !syncplay_server_entry.is_file() {
+        return Err(InteropError::SyncplayServerEntryScriptMissing(
+            syncplay_server_entry,
         ));
     }
 
-    let mut port_lease = super::reserve_legacy_server_port()?;
+    let mut port_lease = super::reserve_syncplay_server_port()?;
     let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
     command
-        .arg(&legacy_server_entry)
+        .arg(&syncplay_server_entry)
         .arg("--port")
         .arg(port.to_string())
         .arg("--ipv4-only")
         .arg("--interface-ipv4")
         .arg("127.0.0.1")
         .arg("--salt")
-        .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+        .arg(super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT)
         .arg("--tls")
         .arg(tls_cert_path)
         .current_dir(legacy_checkout)
@@ -159,18 +159,18 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
         })?;
 
     let result = (|| {
-        super::wait_for_legacy_server_startup(port, &mut child)?;
+        super::wait_for_syncplay_server_startup(port, &mut child)?;
         drop(port_lease);
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
         // First verify TLS is actually available for unlogged clients in this legacy setup.
-        let probe_stream = super::connect_legacy_client_stream(port, "legacy-tls-probe")?;
-        let mut probe_connection = super::LegacyServerClientConnection {
+        let probe_stream = super::connect_syncplay_client_stream(port, "legacy-tls-probe")?;
+        let mut probe_connection = super::SyncplayServerClientConnection {
             stream: probe_stream,
             pending_bytes: Vec::new(),
         };
         let tls_request_line =
-            super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            super::prepare_syncplay_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
         probe_connection
             .stream
             .write_all(tls_request_line.as_bytes())?;
@@ -192,13 +192,13 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
             )));
         }
 
-        let stream = super::connect_legacy_client_stream(port, "legacy-tls-logged-client")?;
-        let mut connection = super::LegacyServerClientConnection {
+        let stream = super::connect_syncplay_client_stream(port, "legacy-tls-logged-client")?;
+        let mut connection = super::SyncplayServerClientConnection {
             stream,
             pending_bytes: Vec::new(),
         };
         let hello_line = encode_message_line(&ProtocolMessage::hello(
-            super::default_rust_client_hello_for_legacy_live_tls(),
+            super::default_rust_client_hello_for_syncplay_live_tls(),
         ))?;
         connection.stream.write_all(hello_line.as_bytes())?;
         connection.stream.write_all(b"\r\n")?;
@@ -244,36 +244,36 @@ pub(in crate::tests) fn run_legacy_server_tls_logged_client_send_denied_roundtri
         Ok(logged_tls_response_line)
     })();
 
-    super::terminate_legacy_server_process(&mut child);
+    super::terminate_syncplay_server_process(&mut child);
     result
 }
 
-pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_send_with_cert_path(
+pub(in crate::tests) fn run_syncplay_server_tls_rotation_invalidates_subsequent_send_with_cert_path(
     tls_cert_path: &Path,
 ) -> Result<(String, String), InteropError> {
-    let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
+    let legacy_checkout = super::ensure_syncplay_checkout_available()?;
 
-    let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
-    if !legacy_server_entry.is_file() {
-        return Err(InteropError::LegacyServerEntryScriptMissing(
-            legacy_server_entry,
+    let syncplay_server_entry = super::syncplay_server_entry_script_path();
+    if !syncplay_server_entry.is_file() {
+        return Err(InteropError::SyncplayServerEntryScriptMissing(
+            syncplay_server_entry,
         ));
     }
 
-    let mut port_lease = super::reserve_legacy_server_port()?;
+    let mut port_lease = super::reserve_syncplay_server_port()?;
     let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
     command
-        .arg(&legacy_server_entry)
+        .arg(&syncplay_server_entry)
         .arg("--port")
         .arg(port.to_string())
         .arg("--ipv4-only")
         .arg("--interface-ipv4")
         .arg("127.0.0.1")
         .arg("--salt")
-        .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+        .arg(super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT)
         .arg("--tls")
         .arg(tls_cert_path)
         .current_dir(legacy_checkout)
@@ -290,17 +290,17 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
         })?;
 
     let result = (|| {
-        super::wait_for_legacy_server_startup(port, &mut child)?;
+        super::wait_for_syncplay_server_startup(port, &mut child)?;
         drop(port_lease);
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
-        let initial_stream = super::connect_legacy_client_stream(port, "legacy-tls-initial")?;
-        let mut initial_connection = super::LegacyServerClientConnection {
+        let initial_stream = super::connect_syncplay_client_stream(port, "legacy-tls-initial")?;
+        let mut initial_connection = super::SyncplayServerClientConnection {
             stream: initial_stream,
             pending_bytes: Vec::new(),
         };
         let tls_request_line =
-            super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            super::prepare_syncplay_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
         initial_connection
             .stream
             .write_all(tls_request_line.as_bytes())?;
@@ -327,10 +327,10 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
             &tls_cert_path.join("cert.pem"),
             "legacy-rotated-invalid",
         )?;
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
-        let rotated_stream = super::connect_legacy_client_stream(port, "legacy-tls-rotated")?;
-        let mut rotated_connection = super::LegacyServerClientConnection {
+        let rotated_stream = super::connect_syncplay_client_stream(port, "legacy-tls-rotated")?;
+        let mut rotated_connection = super::SyncplayServerClientConnection {
             stream: rotated_stream,
             pending_bytes: Vec::new(),
         };
@@ -358,36 +358,36 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_invalidates_subsequent_se
         Ok((initial_response_line, rotated_response_line))
     })();
 
-    super::terminate_legacy_server_process(&mut child);
+    super::terminate_syncplay_server_process(&mut child);
     result
 }
 
-pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_restored_with_cert_path(
+pub(in crate::tests) fn run_syncplay_server_tls_rotation_recovers_after_bundle_restored_with_cert_path(
     tls_cert_path: &Path,
 ) -> Result<(String, String, String), InteropError> {
-    let legacy_checkout = super::ensure_legacy_syncplay_checkout_available()?;
+    let legacy_checkout = super::ensure_syncplay_checkout_available()?;
 
-    let legacy_server_entry = super::legacy_syncplay_server_entry_script_path();
-    if !legacy_server_entry.is_file() {
-        return Err(InteropError::LegacyServerEntryScriptMissing(
-            legacy_server_entry,
+    let syncplay_server_entry = super::syncplay_server_entry_script_path();
+    if !syncplay_server_entry.is_file() {
+        return Err(InteropError::SyncplayServerEntryScriptMissing(
+            syncplay_server_entry,
         ));
     }
 
-    let mut port_lease = super::reserve_legacy_server_port()?;
+    let mut port_lease = super::reserve_syncplay_server_port()?;
     let port = port_lease.port();
     let python_bin = super::python_bin_from_env();
     let python_bin_display = python_bin.to_string_lossy().to_string();
     let mut command = Command::new(&python_bin);
     command
-        .arg(&legacy_server_entry)
+        .arg(&syncplay_server_entry)
         .arg("--port")
         .arg(port.to_string())
         .arg("--ipv4-only")
         .arg("--interface-ipv4")
         .arg("127.0.0.1")
         .arg("--salt")
-        .arg(super::DEFAULT_LEGACY_SERVER_CONTROLLED_ROOM_SALT)
+        .arg(super::DEFAULT_SYNCPLAY_SERVER_CONTROLLED_ROOM_SALT)
         .arg("--tls")
         .arg(tls_cert_path)
         .current_dir(legacy_checkout)
@@ -404,15 +404,15 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
         })?;
 
     let result = (|| {
-        super::wait_for_legacy_server_startup(port, &mut child)?;
+        super::wait_for_syncplay_server_startup(port, &mut child)?;
         drop(port_lease);
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
         let tls_request_line =
-            super::prepare_legacy_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
+            super::prepare_syncplay_server_request_line(r#"{"TLS":{"startTLS":"send"}}"#)?;
 
-        let initial_stream = super::connect_legacy_client_stream(port, "legacy-tls-initial")?;
-        let mut initial_connection = super::LegacyServerClientConnection {
+        let initial_stream = super::connect_syncplay_client_stream(port, "legacy-tls-initial")?;
+        let mut initial_connection = super::SyncplayServerClientConnection {
             stream: initial_stream,
             pending_bytes: Vec::new(),
         };
@@ -442,10 +442,10 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
             &tls_cert_path.join("cert.pem"),
             "legacy-rotated-invalid",
         )?;
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
-        let rotated_stream = super::connect_legacy_client_stream(port, "legacy-tls-rotated")?;
-        let mut rotated_connection = super::LegacyServerClientConnection {
+        let rotated_stream = super::connect_syncplay_client_stream(port, "legacy-tls-rotated")?;
+        let mut rotated_connection = super::SyncplayServerClientConnection {
             stream: rotated_stream,
             pending_bytes: Vec::new(),
         };
@@ -475,10 +475,10 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
             &tls_cert_path.join("cert.pem"),
             TEST_TLS_CERT_PEM,
         )?;
-        super::ensure_legacy_server_is_running(&mut child)?;
+        super::ensure_syncplay_server_is_running(&mut child)?;
 
-        let recovered_stream = super::connect_legacy_client_stream(port, "legacy-tls-recovered")?;
-        let mut recovered_connection = super::LegacyServerClientConnection {
+        let recovered_stream = super::connect_syncplay_client_stream(port, "legacy-tls-recovered")?;
+        let mut recovered_connection = super::SyncplayServerClientConnection {
             stream: recovered_stream,
             pending_bytes: Vec::new(),
         };
@@ -510,19 +510,19 @@ pub(in crate::tests) fn run_legacy_server_tls_rotation_recovers_after_bundle_res
         ))
     })();
 
-    super::terminate_legacy_server_process(&mut child);
+    super::terminate_syncplay_server_process(&mut child);
     result
 }
 
-pub(in crate::tests) fn legacy_server_tls_prerequisites_missing(error: &InteropError) -> bool {
+pub(in crate::tests) fn syncplay_server_tls_prerequisites_missing(error: &InteropError) -> bool {
     if required_live_interop_enabled() {
         return false;
     }
-    if legacy_server_prerequisites_missing(error) {
+    if syncplay_server_prerequisites_missing(error) {
         return true;
     }
     match error {
-        InteropError::LegacyServerExited { stdout, stderr, .. } => {
+        InteropError::SyncplayServerExited { stdout, stderr, .. } => {
             let lowered = format!("{stdout}\n{stderr}").to_ascii_lowercase();
             lowered.contains("no module named 'openssl'")
                 || lowered.contains("unable import openssl")

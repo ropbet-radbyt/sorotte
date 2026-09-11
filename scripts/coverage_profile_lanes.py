@@ -40,7 +40,7 @@ import artifact_input
 SCHEMA_VERSION = 2
 REPORT_KIND = "sorotte-coverage-profile-lanes"
 PINNED_CARGO_LLVM_COV_VERSION = "0.9.1"
-PINNED_LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
+PINNED_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_LOG_BYTES = 128 * 1024 * 1024
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -82,7 +82,7 @@ COMPAT_COMMAND = (
     "-p",
     "sorotte-compat",
     "--all-features",
-    "legacy_server_",
+    "syncplay_server_",
     "--",
     "--nocapture",
 )
@@ -131,27 +131,27 @@ EXPECTED_SEMANTIC_SCENARIOS = (
     "readiness-v2-flow",
 )
 REQUIRED_COMPAT_TESTS = (
-    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
-    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
-    "tests::controlled_room_fanout_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
-    "tests::legacy_server_port_lease_serializes_startup_allocation",
-    "tests::legacy_server_request_shim_preserves_explicit_features",
-    "tests::legacy_server_request_shim_synthesizes_python_version_defaults_for_omitted_features",
-    "tests::legacy_tls_tests::legacy_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
-    "tests::legacy_tls_tests::legacy_server_live_tls_send_is_denied_for_logged_client",
-    "tests::legacy_tls_tests::legacy_server_live_tls_rotation_invalidates_subsequent_send",
-    "tests::legacy_tls_tests::legacy_server_live_tls_rotation_recovers_after_bundle_restored",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_outdated_client_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_motd_template_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_lifecycle_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_notice_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario",
-    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_username_conflict_scenario",
-    "tests::state_fanout_tests::legacy_state_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario",
-    "tests::state_fanout_tests::legacy_state_tests::legacy_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario",
-    "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_latency_metrics_matches_runtime_core_behavior",
-    "tests::state_fanout_tests::legacy_state_tests::legacy_server_state_propagation_matches_runtime_core_behavior",
+    "tests::controlled_room_fanout_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_invalid_password_scenario",
+    "tests::controlled_room_fanout_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_permissions_scenario",
+    "tests::controlled_room_fanout_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_controlled_room_state_forced_correction_scenario",
+    "tests::syncplay_server_port_lease_serializes_startup_allocation",
+    "tests::syncplay_server_request_shim_preserves_explicit_features",
+    "tests::syncplay_server_request_shim_synthesizes_python_version_defaults_for_omitted_features",
+    "tests::legacy_tls_tests::syncplay_server_live_tls_upgrade_roundtrip_supports_post_upgrade_hello_over_same_socket",
+    "tests::legacy_tls_tests::syncplay_server_live_tls_send_is_denied_for_logged_client",
+    "tests::legacy_tls_tests::syncplay_server_live_tls_rotation_invalidates_subsequent_send",
+    "tests::legacy_tls_tests::syncplay_server_live_tls_rotation_recovers_after_bundle_restored",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_motd_template_outdated_client_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_motd_template_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_permanent_rooms_file_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_lifecycle_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_notice_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_persistent_rooms_timeout_list_updates_scenario",
+    "tests::rooms_motd_fanout_tests::legacy_rooms_motd_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_username_conflict_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_state_metadata_forwarding_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::syncplay_server_fanout_roundtrip_matches_server_runtime_on_state_periodic_timeout_scenario",
+    "tests::state_fanout_tests::legacy_state_tests::syncplay_server_state_latency_metrics_matches_runtime_core_behavior",
+    "tests::state_fanout_tests::legacy_state_tests::syncplay_server_state_propagation_matches_runtime_core_behavior",
 )
 COMPAT_SKIP_MARKERS = (
     "assertion skipped",
@@ -813,7 +813,7 @@ def required_libtest_oracle(
 def compatibility_oracle(stdout: bytes, stderr: bytes) -> dict[str, Any]:
     return required_libtest_oracle(
         stdout, stderr, label="compatibility", kind="libtest-required-live-reference",
-        required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "legacy_server_" in name,
+        required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "syncplay_server_" in name,
         skip_markers=COMPAT_SKIP_MARKERS,
     )
 
@@ -1064,7 +1064,7 @@ def validate_oracle(lane: str, value: Any) -> None:
     elif lane == "compat-live-tls":
         validate_required_libtest(
             oracle, label=lane, kind="libtest-required-live-reference",
-            required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "legacy_server_" in name,
+            required=REQUIRED_COMPAT_TESTS, accepts=lambda name: "syncplay_server_" in name,
         )
         return
     else:
@@ -1142,7 +1142,7 @@ def validate_report_document(document: Any) -> Mapping[str, Any]:
         label="legacy reference",
     )
     require_string(reference.get("path"), label="legacy reference path")
-    if reference.get("commit_sha") != PINNED_LEGACY_SYNCPLAY_SHA:
+    if reference.get("commit_sha") != PINNED_SYNCPLAY_SHA:
         raise CoverageProfileLaneError(
             "coverage profile report uses an unpinned legacy reference"
         )
@@ -1391,7 +1391,7 @@ def verify_legacy_reference(
     path = resolve_within(
         repo_root,
         pathlib.Path(configured),
-        label="legacy Syncplay checkout",
+        label="Syncplay checkout",
     )
     process = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "HEAD"],
@@ -1402,18 +1402,18 @@ def verify_legacy_reference(
     )
     if process.returncode != 0:
         raise CoverageProfileLaneError(
-            "legacy Syncplay checkout is missing or is not a Git worktree"
+            "Syncplay checkout is missing or is not a Git worktree"
         )
     try:
         commit = process.stdout.decode("ascii", errors="strict").strip()
     except UnicodeError as error:
         raise CoverageProfileLaneError(
-            f"legacy Syncplay revision is not ASCII: {error}"
+            f"Syncplay revision is not ASCII: {error}"
         ) from error
-    if commit != PINNED_LEGACY_SYNCPLAY_SHA or not FULL_SHA.fullmatch(commit):
+    if commit != PINNED_SYNCPLAY_SHA or not FULL_SHA.fullmatch(commit):
         raise CoverageProfileLaneError(
-            "legacy Syncplay checkout must be pinned to "
-            f"{PINNED_LEGACY_SYNCPLAY_SHA}, received {commit!r}"
+            "Syncplay checkout must be pinned to "
+            f"{PINNED_SYNCPLAY_SHA}, received {commit!r}"
         )
     return {
         "path": repo_relative(repo_root, path),

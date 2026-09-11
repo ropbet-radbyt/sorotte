@@ -218,7 +218,7 @@ impl GuiPersistedConfigRuntimeOwner {
             sync_error = Some(error);
         }
 
-        // Evaluate the legacy gate against the state that existed before this
+        // Evaluate the Syncplay gate against the state that existed before this
         // gesture. Recording Play as Ready must not make the same gesture
         // bypass a readiness rejection. The semantic intent is still recorded
         // before any physical player command is attempted below.

@@ -7,7 +7,7 @@ use crate::app::GuiShellView;
 use crate::app::testing::support::{
     TEST_USERNAME, test_default_sorotte_config_env_root, test_default_sorotte_config_target,
 };
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 mod bootstrap_settings;
 mod host_and_state_overlay;

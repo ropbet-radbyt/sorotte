@@ -298,7 +298,7 @@ fn reconciled_self_origin_state_uses_the_runtime_clock_for_correction_grace() {
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
 
-    runtime.run_state_sync_reconcile_with_inbound_state_legacy_ping_compatible_at(
+    runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
         StatePayload::new().with_playstate(
             PlaystatePayload::new()
                 .with_position(0.0)

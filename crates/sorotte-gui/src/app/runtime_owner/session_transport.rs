@@ -384,12 +384,11 @@ impl GuiPersistedConfigRuntimeOwner {
         room: impl Into<String>,
     ) -> Result<(Self, GuiQueuedSessionTransportHandle), String> {
         let room = room.into();
-        let runtime_settings =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&StoredClientSettingsMvp {
-                username: Some(username.into()),
-                room: Some(room.clone()),
-                ..StoredClientSettingsMvp::default()
-            });
+        let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+            username: Some(username.into()),
+            room: Some(room.clone()),
+            ..StoredClientSettings::default()
+        });
         let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
             runtime_settings
                 .config

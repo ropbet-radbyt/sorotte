@@ -1,26 +1,26 @@
 use super::*;
 
-fn push_unique_pathbuf_legacy_compatible(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+fn push_unique_pathbuf(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !paths.iter().any(|existing| existing == &candidate) {
         paths.push(candidate);
     }
 }
 
 #[cfg(windows)]
-fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+fn managed_mpv_launch_candidate_file_names() -> &'static [&'static str] {
     &["mpv.exe", "mpv.com"]
 }
 
 #[cfg(not(windows))]
-fn managed_mpv_launch_candidate_file_names_legacy_compatible() -> &'static [&'static str] {
+fn managed_mpv_launch_candidate_file_names() -> &'static [&'static str] {
     &["mpv"]
 }
 
-pub(crate) fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &Path) -> PathBuf {
+pub(crate) fn resolve_managed_mpv_launch_program(requested: &Path) -> PathBuf {
     let mut candidates = vec![requested.to_path_buf()];
     if requested.is_dir() || !requested.exists() {
-        for file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
-            push_unique_pathbuf_legacy_compatible(&mut candidates, requested.join(file_name));
+        for file_name in managed_mpv_launch_candidate_file_names() {
+            push_unique_pathbuf(&mut candidates, requested.join(file_name));
         }
     }
     if !requested.exists()
@@ -29,11 +29,8 @@ pub(crate) fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &P
     {
         let normalized = file_name.trim().to_ascii_lowercase();
         if matches!(normalized.as_str(), "mpv" | "mpv.exe" | "mpv.com") {
-            for candidate_file_name in managed_mpv_launch_candidate_file_names_legacy_compatible() {
-                push_unique_pathbuf_legacy_compatible(
-                    &mut candidates,
-                    parent.join(candidate_file_name),
-                );
+            for candidate_file_name in managed_mpv_launch_candidate_file_names() {
+                push_unique_pathbuf(&mut candidates, parent.join(candidate_file_name));
             }
         }
     }
@@ -43,9 +40,7 @@ pub(crate) fn resolve_managed_mpv_launch_program_legacy_compatible(requested: &P
         .unwrap_or_else(|| requested.to_path_buf())
 }
 
-pub(crate) fn managed_mpv_launch_program_requires_existing_file_legacy_compatible(
-    path: &Path,
-) -> bool {
+pub(crate) fn managed_mpv_launch_program_requires_existing_file(path: &Path) -> bool {
     path.is_absolute()
         || path
             .to_string_lossy()

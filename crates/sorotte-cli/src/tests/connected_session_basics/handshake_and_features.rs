@@ -605,7 +605,7 @@ async fn connected_client_session_includes_shared_playlists_feature_in_hello_whe
         assert_eq!(hello_message.hello.version, "1.2.255");
         assert_eq!(
             hello_message.hello.realversion.as_deref(),
-            Some(sorotte_client_core::SYNCPLAY_COMPAT_VERSION_LEGACY)
+            Some(sorotte_client_core::SYNCPLAY_COMPAT_VERSION)
         );
         let features = hello_message
             .hello

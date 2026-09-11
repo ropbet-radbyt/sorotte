@@ -2,10 +2,10 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 use sorotte_client_app::app_boundary::{
-    persistence::upsert_sorotte_ini_stored_client_settings_mvp_at_path,
+    persistence::upsert_sorotte_ini_stored_client_settings_at_path,
     state::{
-        StoredClientSettingsMvp, StoredClientSettingsRuntimeSnapshot,
-        stored_client_settings_runtime_snapshot_legacy_compatible,
+        StoredClientSettings, StoredClientSettingsRuntimeSnapshot,
+        stored_client_settings_runtime_snapshot,
     },
 };
 use sorotte_client_core::PlayerCommandCause;
@@ -33,7 +33,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn detached_runtime_settings_for_state(
         state: &SorotteGuiShellAppState,
     ) -> StoredClientSettingsRuntimeSnapshot {
-        stored_client_settings_runtime_snapshot_legacy_compatible(&state.saved_configuration)
+        stored_client_settings_runtime_snapshot(&state.saved_configuration)
     }
 
     fn session_runtime_settings_for_state(
@@ -130,7 +130,7 @@ impl GuiPersistedConfigRuntimeOwner {
         Ok(())
     }
 
-    fn local_file_payload_legacy_compatible(local_file: Option<&LocalFileUpdate>) -> Value {
+    fn local_file_payload(local_file: Option<&LocalFileUpdate>) -> Value {
         let mut payload = Map::new();
         let Some(local_file) = local_file else {
             return Value::Object(payload);
@@ -167,7 +167,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if !self.media_match_wire_signature_allowed_for_local_file(state, local_file) {
             return None;
         }
-        let root = self.legacy_gui_qsettings_root();
+        let root = self.syncplay_qsettings_root();
         let root = root.as_deref()?;
         let path = local_file.and_then(|local_file| local_file.path.as_deref())?;
         media_match_wire_value_for_path(root, path)
@@ -454,8 +454,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .as_ref()
                 .is_some_and(|session| session.server_handshake_completed());
         if publish_file {
-            let mut file_payload =
-                Self::local_file_payload_legacy_compatible(player_local_file.as_ref());
+            let mut file_payload = Self::local_file_payload(player_local_file.as_ref());
             Self::attach_media_match_wire_signature_to_file_payload(
                 &mut file_payload,
                 media_match_signature.as_ref(),
@@ -463,7 +462,7 @@ impl GuiPersistedConfigRuntimeOwner {
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
             };
-            session.publish_local_file_legacy_compatible(
+            session.publish_local_file(
                 &file_payload,
                 filename_privacy_mode,
                 filesize_privacy_mode,
@@ -685,7 +684,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         projected_state: &SorotteGuiShellAppState,
         intent: GuiSavedServerConnectIntent,
-        submitted_settings: &StoredClientSettingsMvp,
+        submitted_settings: &StoredClientSettings,
     ) -> Result<(), String> {
         if intent != GuiSavedServerConnectIntent::SaveAndConnect {
             return Ok(());
@@ -696,7 +695,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .ok_or_else(|| {
                 "Configuration save failed: no writable GUI config path is available".to_owned()
             })?;
-        upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, submitted_settings)
+        upsert_sorotte_ini_stored_client_settings_at_path(&path, submitted_settings)
             .map_err(|error| format!("Configuration save failed: {error}"))?;
         self.config_path = Some(path);
         Ok(())
@@ -730,7 +729,7 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut SorotteGuiShellAppState,
         clear_pending: bool,
         intent: GuiSavedServerConnectIntent,
-        submitted_settings: StoredClientSettingsMvp,
+        submitted_settings: StoredClientSettings,
     ) {
         self.complete_saved_server_connect_runtime_with_submission(
             handle,
@@ -745,7 +744,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut SorotteGuiShellAppState,
         clear_pending: bool,
-        submitted: Option<(GuiSavedServerConnectIntent, StoredClientSettingsMvp)>,
+        submitted: Option<(GuiSavedServerConnectIntent, StoredClientSettings)>,
     ) {
         let (connect_intent, active_settings) = submitted.unwrap_or_else(|| {
             (
@@ -793,8 +792,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 return;
             }
         }
-        let runtime_settings =
-            stored_client_settings_runtime_snapshot_legacy_compatible(&active_settings);
+        let runtime_settings = stored_client_settings_runtime_snapshot(&active_settings);
         let Some(target) =
             Self::saved_server_connect_target_for_runtime_settings(&runtime_settings)
         else {

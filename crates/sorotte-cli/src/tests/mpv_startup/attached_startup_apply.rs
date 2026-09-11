@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file() {
+fn apply_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file() {
     #[derive(Default)]
     struct RecordingPlayer {
         opened: Vec<String>,
@@ -24,7 +24,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file()
     env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
     env.remove_var(key_fallback_ipc);
 
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -49,11 +49,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file()
     };
     let mut player = RecordingPlayer::default();
 
-    let opened =
-        apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-            &mut player,
-            &overrides,
-        )
+    let opened = apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut player, &overrides)
         .expect("open_file should succeed");
     assert!(opened);
     assert_eq!(player.opened, vec!["movie.mkv".to_owned()]);
@@ -69,7 +65,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_opens_file()
 }
 
 #[test]
-fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runtime_commands_and_supported_player_args()
+fn apply_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runtime_commands_and_supported_player_args()
  {
     #[derive(Default)]
     struct RecordingPlayer {
@@ -190,7 +186,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runt
     env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
     env.remove_var(key_fallback_ipc);
 
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -256,11 +252,8 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runt
     let mut player = RecordingPlayer::default();
 
     let applied =
-        apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-            &mut player,
-            &overrides,
-        )
-        .expect("supported explicit-mpv-IPC startup subset should apply");
+        apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut player, &overrides)
+            .expect("supported explicit-mpv-IPC startup subset should apply");
     assert!(applied);
     assert_eq!(
         player.events,
@@ -302,7 +295,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_applies_runt
 }
 
 #[test]
-fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_without_ipc_env() {
+fn apply_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_without_ipc_env() {
     #[derive(Default)]
     struct RecordingPlayer {
         opened: Vec<String>,
@@ -325,7 +318,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_withou
     env.remove_var(key_client_ipc);
     env.remove_var(key_fallback_ipc);
 
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -350,11 +343,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_withou
     };
     let mut player = RecordingPlayer::default();
 
-    let opened =
-        apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-            &mut player,
-            &overrides,
-        )
+    let opened = apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut player, &overrides)
         .expect("helper should skip cleanly");
     assert!(!opened);
     assert!(player.opened.is_empty());
@@ -370,7 +359,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_skips_withou
 }
 
 #[test]
-fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_player_errors() {
+fn apply_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_player_errors() {
     struct FailingPlayer;
     impl PlayerAdapter for FailingPlayer {
         fn name(&self) -> &'static str {
@@ -385,7 +374,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
     let key_client_ipc = "SOROTTE_CLIENT_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -410,16 +399,9 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
     };
     let mut player = FailingPlayer;
 
-    let error = apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-        &mut player,
-        &overrides,
-    )
-    .expect_err("player error should propagate");
-    assert!(
-        error
-            .to_string()
-            .contains("failed opening legacy startup file")
-    );
+    let error = apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut player, &overrides)
+        .expect_err("player error should propagate");
+    assert!(error.to_string().contains("failed opening startup file"));
 
     match old_client_ipc {
         Some(value) => env.set_var(key_client_ipc, value),
@@ -428,7 +410,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_propagates_p
 }
 
 #[test]
-fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_redacts_player_arg_errors() {
+fn apply_startup_file_to_attached_player_if_explicit_mpv_ipc_redacts_player_arg_errors() {
     const PLAYER_ARG_ERROR_CANARY: &str = "PLAYER_ARG_ERROR_SIGNED_URL_CANARY";
 
     struct FailingPlayer;
@@ -445,7 +427,7 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_redacts_play
     let key_client_ipc = "SOROTTE_CLIENT_MPV_IPC_PATH";
     let old_client_ipc = std::env::var_os(key_client_ipc);
     env.set_var(key_client_ipc, r"\\.\pipe\syncplay-test");
-    let overrides = LegacyClientArgOverrides {
+    let overrides = SyncplayClientArgOverrides {
         connect_requested: true,
         no_store: false,
         debug_requested: false,
@@ -472,13 +454,10 @@ fn apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_redacts_play
     };
     let mut player = FailingPlayer;
 
-    let error = apply_legacy_startup_file_to_attached_player_if_explicit_mpv_ipc_legacy_compatible(
-        &mut player,
-        &overrides,
-    )
-    .expect_err("player error should propagate");
+    let error = apply_startup_file_to_attached_player_if_explicit_mpv_ipc(&mut player, &overrides)
+        .expect_err("player error should propagate");
     let rendered = error.to_string();
-    assert!(rendered.contains("failed applying legacy explicit-mpv-IPC startup option"));
+    assert!(rendered.contains("failed applying explicit-mpv-IPC startup option"));
     assert!(!rendered.contains(PLAYER_ARG_ERROR_CANARY));
     assert!(!rendered.contains("script-opts"));
     assert!(!rendered.contains("?Signature="));

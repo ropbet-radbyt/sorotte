@@ -1,7 +1,7 @@
 use super::{
-    ConnectedMpvPlayer, LegacySyncplayOsdKind, LegacySyncplayUiSettings,
-    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
-    SimulatedPlayer, SorotteBridgeFailureKind, SorotteBridgeHealth,
+    ConnectedMpvPlayer, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
+    MpvNetworkMediaOptionsTransitionOutcome, SimulatedPlayer, SorotteBridgeFailureKind,
+    SorotteBridgeHealth, SyncplayOsdKind, SyncplayUiSettings,
 };
 #[cfg(feature = "test-support")]
 use super::{
@@ -9,12 +9,11 @@ use super::{
     MpvNetworkOptionsHookHealthTransition,
 };
 use crate::constants::{
-    LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
-    LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED, LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG,
-    LEGACY_SYNCPLAYINTF_PROTOCOL, LEGACY_SYNCPLAYINTF_RELEASE_MESSAGE,
-    LEGACY_SYNCPLAYINTF_SCRIPT_NAME, MPV_COMMAND_GET_PROPERTY, MPV_COMMAND_LOADFILE,
-    MPV_COMMAND_STOP, MPV_EVENT_START_FILE, MPV_PROPERTY_DURATION, MPV_PROPERTY_FILE_SIZE,
-    MPV_PROPERTY_PATH, MPV_PROPERTY_PLAYLIST,
+    MPV_COMMAND_GET_PROPERTY, MPV_COMMAND_LOADFILE, MPV_COMMAND_STOP, MPV_EVENT_START_FILE,
+    MPV_PROPERTY_DURATION, MPV_PROPERTY_FILE_SIZE, MPV_PROPERTY_PATH, MPV_PROPERTY_PLAYLIST,
+    SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED, SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED,
+    SYNCPLAYINTF_CLIENT_MESSAGE_PONG, SYNCPLAYINTF_PROTOCOL, SYNCPLAYINTF_RELEASE_MESSAGE,
+    SYNCPLAYINTF_SCRIPT_NAME,
 };
 use crate::ipc::{MpvJsonIpcTransport, read_line_from_stream};
 use serde_json::{Value, json};
@@ -41,10 +40,10 @@ mod ipc_process_fault_tests;
 mod ipc_tests;
 #[cfg(unix)]
 mod ipc_unix_socket_fault_tests;
-mod legacy_ui_tests;
 mod network_options_lua_tests;
 mod smoke_tests;
 mod state_tests;
+mod syncplay_ui_tests;
 mod syncplayintf_lua_tests;
 
 const FAKE_SYNCPLAYINTF_PONG_EVENT: &str = "__SOROTTE_SYNCPLAYINTF_PONG__";
@@ -263,17 +262,15 @@ impl MpvJsonIpcTransport for FakeTransport {
 fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option<String> {
     let message_name = match marker {
         FAKE_SYNCPLAYINTF_PONG_EVENT | FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT => {
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_PONG
+            SYNCPLAYINTF_CLIENT_MESSAGE_PONG
         }
-        FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT => LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
+        FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT => SYNCPLAYINTF_CLIENT_MESSAGE_LEASE_EXPIRED,
         FAKE_SYNCPLAYINTF_ACK_EVENT
         | FAKE_SYNCPLAYINTF_STALE_ACK_EVENT
         | FAKE_SYNCPLAYINTF_FUTURE_ACK_EVENT
         | FAKE_SYNCPLAYINTF_REJECTED_ACK_EVENT
         | FAKE_SYNCPLAYINTF_SETTINGS_REJECTED_ACK_EVENT
-        | FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT => {
-            LEGACY_SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED
-        }
+        | FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT => SYNCPLAYINTF_CLIENT_MESSAGE_OPTIONS_APPLIED,
         _ => return None,
     };
     if marker == FAKE_SYNCPLAYINTF_MALFORMED_ACK_EVENT {
@@ -299,18 +296,18 @@ fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option
         FAKE_SYNCPLAYINTF_PONG_EVENT | FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT
     ) {
         json!({
-            "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+            "protocol": SYNCPLAYINTF_PROTOCOL,
             "nonce": request_payload.get("nonce")?,
             "bridgeInstanceId": if marker == FAKE_SYNCPLAYINTF_RELOADED_PONG_EVENT {
                 "reloaded-test-bridge"
             } else {
                 "test-bridge"
             },
-            "scriptName": LEGACY_SYNCPLAYINTF_SCRIPT_NAME,
+            "scriptName": SYNCPLAYINTF_SCRIPT_NAME,
         })
     } else if marker == FAKE_SYNCPLAYINTF_LEASE_EXPIRED_EVENT {
         json!({
-            "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+            "protocol": SYNCPLAYINTF_PROTOCOL,
             "bridgeInstanceId": request_payload.get("bridgeInstanceId")?,
             "ownerId": request_payload.get("ownerId")?,
             "attachmentId": request_payload.get("attachmentId")?,
@@ -328,7 +325,7 @@ fn fake_syncplayintf_event_for_marker(marker: &str, writes: &[String]) -> Option
             _ => "applied",
         };
         json!({
-            "protocol": LEGACY_SYNCPLAYINTF_PROTOCOL,
+            "protocol": SYNCPLAYINTF_PROTOCOL,
             "bridgeInstanceId": request_payload.get("bridgeInstanceId")?,
             "ownerId": request_payload.get("ownerId")?,
             "attachmentId": request_payload.get("attachmentId")?,

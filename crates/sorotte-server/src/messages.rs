@@ -83,7 +83,7 @@ pub(crate) fn readiness_set_message(extension: ReadinessSetExtension) -> Protoco
     ProtocolMessage::set(SetPayload::new().with_readiness_v2(extension))
 }
 
-pub(crate) fn readiness_legacy_chat_message(
+pub(crate) fn readiness_syncplay_chat_message(
     set_by_username: &str,
     username: &str,
     is_ready: bool,
@@ -245,6 +245,6 @@ pub(crate) fn server_feature_list(
         SOROTTE_READINESS_V2: readiness_enabled,
         SOROTTE_PARTICIPANT_STATUS_V1: true,
         SOROTTE_LARGE_PROTOCOL_FRAMES_V1: true,
-        "uiMode": LEGACY_UI_MODE_UNKNOWN,
+        "uiMode": SYNCPLAY_UI_MODE_UNKNOWN,
     })
 }

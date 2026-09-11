@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn gui_shell_app_state_projects_configuration_widget_trees() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         host: Some("syncplay.example".to_owned()),
         chat_input_enabled: Some(true),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     assert!(state.apply(GuiShellAction::FocusConfigurationControl(
@@ -74,8 +74,7 @@ fn gui_shell_app_state_projects_configuration_widget_trees() {
 
 #[test]
 fn gui_shell_app_state_distinguishes_default_draft_and_stored_setting_origins() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectConfigurationTab(
         GuiConfigurationTab::PlaybackSearch,
     )));
@@ -111,8 +110,8 @@ fn gui_shell_app_state_distinguishes_default_draft_and_stored_setting_origins() 
 
 #[test]
 fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        ..StoredClientSettingsMvp::default()
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -173,8 +172,7 @@ fn gui_shell_app_state_projects_player_setup_into_configuration_widgets() {
 
 #[test]
 fn gui_shell_app_state_projects_actionable_setup_alerts_only_after_feedback() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         state
@@ -243,8 +241,8 @@ fn gui_shell_app_state_projects_actionable_setup_alerts_only_after_feedback() {
 
 #[test]
 fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
-        ..StoredClientSettingsMvp::default()
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        ..StoredClientSettings::default()
     });
 
     assert!(
@@ -353,8 +351,7 @@ fn gui_shell_app_state_projects_stream_support_into_plugins_widgets() {
 
 #[test]
 fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(
         GuiPluginSelection::MediaMatching,
     )));
@@ -553,8 +550,7 @@ fn gui_shell_app_state_projects_media_match_plugin_widgets_and_actions() {
 
 #[test]
 fn gui_shell_app_state_projects_disabled_media_match_as_disabled_not_healthy() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(
         GuiPluginSelection::MediaMatching,
     )));
@@ -634,8 +630,7 @@ fn gui_shell_app_state_projects_disabled_media_match_as_disabled_not_healthy() {
 
 #[test]
 fn gui_shell_app_state_projects_media_match_remediation_progress_into_widgets() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(
         GuiPluginSelection::MediaMatching,
     )));
@@ -673,8 +668,7 @@ fn gui_shell_app_state_projects_media_match_remediation_progress_into_widgets() 
 
 #[test]
 fn gui_shell_app_state_disables_media_match_rebuild_when_tools_missing() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(
         GuiPluginSelection::MediaMatching,
     )));
@@ -718,8 +712,7 @@ fn gui_shell_app_state_disables_media_match_rebuild_when_tools_missing() {
 
 #[test]
 fn gui_shell_app_state_projects_only_selected_plugin_detail() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     let plugins = state.plugins_widget_tree();
     assert!(plugins.find("plugins:stream-support").is_some());
@@ -750,7 +743,7 @@ fn gui_shell_app_state_projects_only_selected_plugin_detail() {
 
 #[test]
 fn gui_shell_app_state_projects_plugin_enablement_gates_without_losing_subsettings() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         stream_support_plugin_enabled: Some(false),
         media_matching_plugin_enabled: Some(false),
         plex_plugin_enabled: Some(false),
@@ -761,7 +754,7 @@ fn gui_shell_app_state_projects_plugin_enablement_gates_without_losing_subsettin
         plex_streaming_enabled: Some(true),
         plex_user_token: Some("user-token".into()),
         plex_selected_server_url: Some("https://plex.example".to_owned()),
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     });
 
     let plugins = state.plugins_widget_tree();
@@ -860,8 +853,7 @@ fn gui_shell_app_state_projects_plugin_enablement_gates_without_losing_subsettin
 
 #[test]
 fn gui_shell_app_state_projects_empty_plex_server_discovery_status() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
     assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
         GuiPlexRuntimeSnapshot {
@@ -888,8 +880,7 @@ fn gui_shell_app_state_projects_empty_plex_server_discovery_status() {
 
 #[test]
 fn gui_shell_app_state_projects_plex_as_connection_and_server_cards() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
     assert!(state.apply(GuiShellAction::ApplyGuiPlexRuntimeSnapshot(
         GuiPlexRuntimeSnapshot {
@@ -952,8 +943,7 @@ fn gui_shell_app_state_projects_plex_as_connection_and_server_cards() {
 
 #[test]
 fn gui_shell_app_state_treats_plex_media_miss_as_sync_issue_not_plugin_error() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     assert!(state.apply(GuiShellAction::SelectPlugin(GuiPluginSelection::Plex)));
     let miss = "No unambiguous Plex match for [EG]Gurren_Lagann_03_BD(720p_10bit)[BB5590A5].mkv"
         .to_owned();
@@ -1039,8 +1029,7 @@ fn gui_shell_app_state_treats_plex_media_miss_as_sync_issue_not_plugin_error() {
 
 #[test]
 fn gui_shell_app_state_projects_stream_helper_remediation_progress_into_widgets() {
-    let mut state =
-        SorotteGuiShellAppState::from_stored_settings(&StoredClientSettingsMvp::default());
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert!(
         state.apply(GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(

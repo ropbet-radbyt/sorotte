@@ -1,35 +1,30 @@
 use super::*;
 
 #[cfg(test)]
-pub(crate) fn parse_sorotte_ini_stored_client_settings_mvp(
-    contents: &str,
-) -> StoredClientSettingsMvp {
-    shared_parse_sorotte_ini_stored_client_settings_mvp(contents)
+pub(crate) fn parse_sorotte_ini_stored_client_settings(contents: &str) -> StoredClientSettings {
+    shared_parse_sorotte_ini_stored_client_settings(contents)
 }
 
 #[cfg(test)]
-pub(crate) fn upsert_sorotte_ini_stored_client_settings_mvp(
+pub(crate) fn upsert_sorotte_ini_stored_client_settings(
     existing_contents: &str,
-    settings: &StoredClientSettingsMvp,
+    settings: &StoredClientSettings,
 ) -> String {
-    shared_upsert_sorotte_ini_stored_client_settings_mvp(existing_contents, settings)
+    shared_upsert_sorotte_ini_stored_client_settings(existing_contents, settings)
 }
 
-pub(crate) fn load_sorotte_cli_stored_settings_mvp_legacy_compatible()
--> anyhow::Result<Option<StoredClientSettingsMvp>> {
+pub(crate) fn load_sorotte_cli_stored_settings() -> anyhow::Result<Option<StoredClientSettings>> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(None);
     };
-    shared_load_sorotte_ini_stored_client_settings_mvp_from_path(&path)
+    shared_load_sorotte_ini_stored_client_settings_from_path(&path)
 }
 
-pub(crate) fn persist_sorotte_cli_stored_settings_mvp_legacy_compatible(
-    config: &ClientLoopConfig,
-) -> anyhow::Result<()> {
+pub(crate) fn persist_sorotte_cli_stored_settings(config: &ClientLoopConfig) -> anyhow::Result<()> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
-    let settings = StoredClientSettingsMvp {
+    let settings = StoredClientSettings {
         language: None,
         check_for_updates_automatically: None,
         update_channel: None,
@@ -115,56 +110,50 @@ pub(crate) fn persist_sorotte_cli_stored_settings_mvp_legacy_compatible(
         plex_selected_server_id: None,
         plex_selected_server_url: None,
         plex_selected_server_token: None,
-        ..StoredClientSettingsMvp::default()
+        ..StoredClientSettings::default()
     };
-    shared_upsert_sorotte_ini_stored_client_settings_mvp_at_path(&path, &settings)
+    shared_upsert_sorotte_ini_stored_client_settings_at_path(&path, &settings)
 }
 
-pub(crate) fn persist_sorotte_cli_language_setting_legacy_compatible(
-    language: &str,
-) -> anyhow::Result<()> {
-    let Some(language) = normalized_legacy_runtime_language_tag_legacy_compatible(language) else {
+pub(crate) fn persist_sorotte_cli_language_setting(language: &str) -> anyhow::Result<()> {
+    let Some(language) = normalized_runtime_language_tag(language) else {
         return Ok(());
     };
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
-    shared_update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+    shared_update_sorotte_ini_stored_client_settings_at_path(&path, |settings| {
         settings.language = Some(language.to_owned());
     })
 }
 
-pub(crate) fn persist_sorotte_cli_player_path_setting_legacy_compatible(
-    player_path: &str,
-) -> anyhow::Result<()> {
+pub(crate) fn persist_sorotte_cli_player_path_setting(player_path: &str) -> anyhow::Result<()> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
-    shared_update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+    shared_update_sorotte_ini_stored_client_settings_at_path(&path, |settings| {
         settings.player_path = Some(player_path.to_owned());
     })
 }
 
-pub(crate) fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible(
+pub(crate) fn persist_sorotte_cli_per_player_arguments_setting(
     player_path: &str,
     player_args: &[String],
 ) -> anyhow::Result<()> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(());
     };
-    shared_update_sorotte_ini_stored_client_settings_mvp_at_path(&path, |settings| {
+    shared_update_sorotte_ini_stored_client_settings_at_path(&path, |settings| {
         let mut per_player_arguments = settings.per_player_arguments.take().unwrap_or_default();
         if let Some(normalized_player_path) =
-            normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
-                player_path,
-            )
+            normalize_player_path_for_stored_per_player_arguments_lookup(player_path)
         {
             let duplicate_keys = per_player_arguments
                 .keys()
                 .filter(|stored_player_path| stored_player_path.as_str() != player_path)
                 .filter_map(|stored_player_path| {
                     let normalized_stored_path =
-                        normalize_player_path_for_stored_per_player_arguments_lookup_legacy_compatible(
+                        normalize_player_path_for_stored_per_player_arguments_lookup(
                             stored_player_path,
                         )?;
                     (normalized_stored_path == normalized_player_path)
@@ -180,11 +169,11 @@ pub(crate) fn persist_sorotte_cli_per_player_arguments_setting_legacy_compatible
     })
 }
 
-pub(crate) fn clear_sorotte_cli_stored_settings_legacy_compatible() -> anyhow::Result<bool> {
+pub(crate) fn clear_sorotte_cli_stored_settings() -> anyhow::Result<bool> {
     let Some(path) = resolve_sorotte_cli_config_path()? else {
         return Ok(false);
     };
-    shared_clear_sorotte_ini_stored_client_settings_mvp_at_path(&path)
+    shared_clear_sorotte_ini_stored_client_settings_at_path(&path)
 }
 
 fn sorotte_gui_state_store_names() -> [&'static str; 5] {

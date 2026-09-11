@@ -1251,6 +1251,41 @@ fn readiness_v2_canonical_snapshot_and_result_roundtrip() {
 }
 
 #[test]
+fn capability_based_readiness_names_preserve_existing_wire_spellings() {
+    for (encoded, expected) in [
+        (
+            serde_json::to_value(MixedReadinessPolicy::ExcludeUnsupported).unwrap(),
+            json!("excludeLegacy"),
+        ),
+        (
+            serde_json::to_value(StartParticipationRole::ExcludedUnsupported).unwrap(),
+            json!("excludedLegacy"),
+        ),
+        (
+            serde_json::to_value(super::StartGateDegradedReason::UnsupportedParticipant).unwrap(),
+            json!("incompatibleLegacyParticipant"),
+        ),
+    ] {
+        assert_eq!(encoded, expected);
+    }
+    let wire = json!({
+        "mediaGeneration": 7,
+        "phase": "preparing",
+        "policy": "allEligible",
+        "deadline": 100.0,
+        "participants": {},
+        "excludedLegacyClients": ["syncplay-peer"]
+    });
+    let status: super::PlaybackBarrierStatusPayload = serde_json::from_value(wire.clone()).unwrap();
+    assert!(
+        status
+            .excluded_unsupported_clients
+            .contains("syncplay-peer")
+    );
+    assert_eq!(serde_json::to_value(status).unwrap(), wire);
+}
+
+#[test]
 fn mixed_readiness_policy_exposes_only_implemented_room_policies() {
     assert_eq!(
         serde_json::from_str::<MixedReadinessPolicy>(r#""requireAllMembers""#)
@@ -1260,7 +1295,7 @@ fn mixed_readiness_policy_exposes_only_implemented_room_policies() {
     assert_eq!(
         serde_json::from_str::<MixedReadinessPolicy>(r#""excludeLegacy""#)
             .expect("the explicit compatibility policy should decode"),
-        MixedReadinessPolicy::ExcludeLegacy
+        MixedReadinessPolicy::ExcludeUnsupported
     );
     assert!(
         serde_json::from_str::<MixedReadinessPolicy>(r#""askController""#).is_err(),

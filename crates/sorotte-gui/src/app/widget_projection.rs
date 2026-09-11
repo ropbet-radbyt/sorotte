@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 use super::shell_state::{
     MainWindowChatRow, MainWindowRoomRow, MainWindowRuntimeSnapshot, MainWindowShellState,
@@ -10,7 +10,7 @@ use super::shell_state::{
 impl SorotteGuiShellAppState {
     fn reapply_runtime_main_window_surface_from_snapshot(
         &mut self,
-        previous_settings: &StoredClientSettingsMvp,
+        previous_settings: &StoredClientSettings,
         current_snapshot: &MainWindowRuntimeSnapshot,
     ) {
         let previous_baseline = MainWindowRuntimeSnapshot::from_shell_state(
@@ -225,7 +225,7 @@ impl SorotteGuiShellAppState {
 
     fn preserves_runtime_dialog_expectations(
         &self,
-        previous_settings: &StoredClientSettingsMvp,
+        previous_settings: &StoredClientSettings,
     ) -> (bool, bool) {
         let previous_baseline = MenuDialogShellState::from_stored_settings(previous_settings);
         (
@@ -236,7 +236,7 @@ impl SorotteGuiShellAppState {
 
     fn preserves_runtime_public_server_surface(
         &self,
-        previous_settings: &StoredClientSettingsMvp,
+        previous_settings: &StoredClientSettings,
     ) -> bool {
         let previous_baseline =
             PublicServerBrowserShellState::from_stored_settings(previous_settings);
@@ -246,7 +246,7 @@ impl SorotteGuiShellAppState {
 
     fn preserves_runtime_media_search_surface(
         &self,
-        previous_settings: &StoredClientSettingsMvp,
+        previous_settings: &StoredClientSettings,
     ) -> bool {
         let previous_baseline =
             MediaSearchWorkflowShellState::from_stored_settings(previous_settings);
@@ -256,7 +256,7 @@ impl SorotteGuiShellAppState {
 
     pub(super) fn sync_derived_surfaces_from_configuration_settings(
         &mut self,
-        previous_settings: &StoredClientSettingsMvp,
+        previous_settings: &StoredClientSettings,
     ) {
         let preserved_main_window_runtime_snapshot =
             MainWindowRuntimeSnapshot::from_shell_state(&self.main_window);
@@ -326,7 +326,7 @@ impl SorotteGuiShellAppState {
         self.sync_playback_menu_actions_from_runtime_state(self.commands.can_toggle_pause);
     }
 
-    pub(super) fn resync_from_settings(&mut self, settings: StoredClientSettingsMvp) {
+    pub(super) fn resync_from_settings(&mut self, settings: StoredClientSettings) {
         let previous_settings = self.configuration.to_stored_settings();
         let active_view = self.active_view;
         let active_application_language = self.active_application_language.clone();

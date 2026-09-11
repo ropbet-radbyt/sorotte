@@ -75,7 +75,7 @@ impl ClientSession {
         self.model.controller.reidentify_intent = None;
         self.model.room.users.clear();
         self.model.room.participant_status_capabilities.clear();
-        self.model.room.legacy_list_position_snapshots.clear();
+        self.model.room.list_position_snapshots.clear();
         self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
@@ -164,7 +164,7 @@ impl ClientSession {
             local_paused,
             client_latency_calculation,
             client_rtt,
-            unix_wall_clock_time_seconds_legacy_compatible(),
+            unix_wall_clock_time_seconds(),
         )
     }
 
@@ -315,7 +315,7 @@ impl ClientSession {
                     paused: local_paused,
                     base_transport_revision: self.current_room_transport_revision(),
                 }),
-                received_at_seconds: unix_wall_clock_time_seconds_legacy_compatible(),
+                received_at_seconds: unix_wall_clock_time_seconds(),
             },
         )
     }

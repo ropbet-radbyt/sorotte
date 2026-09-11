@@ -15,9 +15,7 @@ pub(super) fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
         reconnect_state_restore_correction_policy_mode_override: env_trimmed(
             "SOROTTE_CLIENT_RECONNECT_RESTORE_CORRECTION_POLICY",
         )
-        .and_then(|value| {
-            parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(&value)
-        }),
+        .and_then(|value| parse_reconnect_state_restore_correction_policy_mode(&value)),
         reconnect_state_restore_position_tolerance_seconds: env_non_negative_f64(
             "SOROTTE_CLIENT_RECONNECT_RESTORE_POSITION_TOLERANCE_SECONDS",
         ),
@@ -54,7 +52,7 @@ pub(super) fn behavior_overrides_from_env() -> ClientBehaviorOverrides {
     }
 }
 
-pub(crate) fn parse_reconnect_state_restore_correction_policy_mode_legacy_compatible(
+pub(crate) fn parse_reconnect_state_restore_correction_policy_mode(
     value: &str,
 ) -> Option<ReconnectStateRestoreCorrectionPolicyMode> {
     let normalized = value.trim().to_ascii_lowercase();
@@ -82,9 +80,9 @@ pub(crate) fn parse_reconnect_state_restore_correction_policy_mode_legacy_compat
 pub(super) fn readiness_overrides_from_env() -> ReadinessAutoplayOverrides {
     ReadinessAutoplayOverrides {
         unpause_action: env_trimmed("SOROTTE_CLIENT_UNPAUSE_ACTION")
-            .and_then(|value| parse_unpause_action_mode_legacy_compatible(&value)),
+            .and_then(|value| parse_unpause_action_mode(&value)),
         auto_play_threshold: env_trimmed("SOROTTE_CLIENT_AUTOPLAY_MIN_USERS")
-            .and_then(|value| parse_autoplay_min_users_override_legacy_compatible(&value)),
+            .and_then(|value| parse_autoplay_min_users_override(&value)),
         autoplay_delay_seconds: env_non_negative_f64("SOROTTE_CLIENT_AUTOPLAY_DELAY_SECONDS"),
         last_paused_diff_threshold_seconds: env_non_negative_f64(
             "SOROTTE_CLIENT_LAST_PAUSED_DIFF_THRESHOLD_SECONDS",

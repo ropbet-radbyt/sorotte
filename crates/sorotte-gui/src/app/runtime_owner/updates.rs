@@ -11,7 +11,7 @@ use std::{
 use super::super::{
     feature_slices::updates::{Command, RuntimePolicy, RuntimeView},
     remote_services::{
-        self, LegacyUpdateCheckResult, StagedUpdate, UpdateApplyLaunchResult, UpdateCandidate,
+        self, StagedUpdate, UpdateApplyLaunchResult, UpdateCandidate, UpdateCheckResult,
         UpdateDownloadResult, UpdateDownloadState,
     },
     runtime_queue::GuiQueuedRuntimeBridgeHandle,
@@ -28,7 +28,7 @@ pub(super) trait GuiUpdateService: Send + Sync {
         language: &str,
         user_initiated: bool,
         update_channel: Option<&str>,
-    ) -> LegacyUpdateCheckResult;
+    ) -> UpdateCheckResult;
 
     fn download_and_stage_update(
         &self,
@@ -57,7 +57,7 @@ impl GuiUpdateService for SystemGuiUpdateService {
         language: &str,
         user_initiated: bool,
         update_channel: Option<&str>,
-    ) -> LegacyUpdateCheckResult {
+    ) -> UpdateCheckResult {
         remote_services::check_for_updates(Some(language), user_initiated, update_channel)
     }
 
@@ -383,7 +383,7 @@ impl GuiUpdateRuntime {
         for action in actions {
             match action {
                 GuiShellAction::BeginUpdateCheck { user_initiated } => {
-                    self.model.status = Some(remote_services::LegacyUpdateCheckStatus::Checking);
+                    self.model.status = Some(remote_services::UpdateCheckStatus::Checking);
                     self.model.message = Some("Checking for updates".to_owned());
                     self.model.user_initiated = *user_initiated;
                     self.model.download_state = UpdateDownloadState::Idle;
@@ -641,7 +641,7 @@ impl GuiUpdateRuntime {
         self.failure_actions_at(
             kind,
             message,
-            remote_services::legacy_utc_timestamp_string_legacy_compatible(SystemTime::now()),
+            remote_services::utc_timestamp_string(SystemTime::now()),
         )
     }
 
@@ -653,18 +653,16 @@ impl GuiUpdateRuntime {
     ) -> Vec<GuiShellAction> {
         match kind {
             UpdateJobKind::Check { user_initiated, .. } => {
-                vec![GuiShellAction::ApplyUpdateCheckResult(
-                    LegacyUpdateCheckResult {
-                        status: remote_services::LegacyUpdateCheckStatus::Failed,
-                        message,
-                        url: None,
-                        candidate: None,
-                        self_update_supported: false,
-                        public_servers: None,
-                        checked_at_utc,
-                        user_initiated,
-                    },
-                )]
+                vec![GuiShellAction::ApplyUpdateCheckResult(UpdateCheckResult {
+                    status: remote_services::UpdateCheckStatus::Failed,
+                    message,
+                    url: None,
+                    candidate: None,
+                    self_update_supported: false,
+                    public_servers: None,
+                    checked_at_utc,
+                    user_initiated,
+                })]
             }
             UpdateJobKind::Download | UpdateJobKind::DownloadAndInstall => {
                 vec![GuiShellAction::ApplyUpdateDownloadResult(

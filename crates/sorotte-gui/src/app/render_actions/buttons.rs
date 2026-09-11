@@ -488,15 +488,14 @@ impl GuiWidgetEguiRenderer {
                 .controlled_room_create_session
                 .as_ref()
                 .and_then(|session| {
-                    let room_name =
-                        controlled_room_base_name_legacy_compatible(&session.room_buffer);
+                    let room_name = controlled_room_base_name(&session.room_buffer);
                     nonempty_room_name_text(&room_name)
                 })
                 .map(|room| {
                     vec![
                         GuiShellAction::RequestControllerAuth {
                             room,
-                            password: generate_room_password_legacy_compatible().into(),
+                            password: generate_room_password().into(),
                         },
                         GuiShellAction::CancelCreateControlledRoomEdit,
                     ]
@@ -639,7 +638,7 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn actions_for_player_setup_autodetect() -> Vec<GuiShellAction> {
-        let Some(path) = mpv_launch::autodetect_mpv_player_path_legacy_compatible() else {
+        let Some(path) = mpv_launch::autodetect_mpv_player_path() else {
             let message =
                 "Automatic mpv detection did not find an executable. Choose mpv.exe manually."
                     .to_owned();

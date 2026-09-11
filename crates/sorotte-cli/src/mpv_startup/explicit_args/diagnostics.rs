@@ -1,7 +1,7 @@
 use super::*;
 
-pub(crate) fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
-    diagnostics: &LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
+pub(crate) fn explicit_mpv_ipc_startup_player_arg_diagnostic_lines(
+    diagnostics: &ExplicitMpvIpcStartupPlayerArgDiagnostics,
     applied_supported_commands: usize,
 ) -> Vec<String> {
     let ignored_count = diagnostics.malformed_tokens.len() + diagnostics.unsupported_tokens.len();
@@ -31,11 +31,11 @@ pub(crate) fn legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy
     lines
 }
 
-pub(crate) fn emit_legacy_explicit_mpv_ipc_startup_player_arg_diagnostics_legacy_compatible(
-    diagnostics: &LegacyExplicitMpvIpcStartupPlayerArgDiagnostics,
+pub(crate) fn emit_explicit_mpv_ipc_startup_player_arg_diagnostics(
+    diagnostics: &ExplicitMpvIpcStartupPlayerArgDiagnostics,
     applied_supported_commands: usize,
 ) {
-    for line in legacy_explicit_mpv_ipc_startup_player_arg_diagnostic_lines_legacy_compatible(
+    for line in explicit_mpv_ipc_startup_player_arg_diagnostic_lines(
         diagnostics,
         applied_supported_commands,
     ) {

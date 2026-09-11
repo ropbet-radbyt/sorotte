@@ -1,4 +1,4 @@
-use sorotte_client_app::app_boundary::state::StoredClientSettingsMvp;
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_secret::SecretValue;
 
 use super::super::GuiLaunchMode;
@@ -860,6 +860,6 @@ pub(in crate::app) struct FirstRunConfigurationDialogDraft {
     pub(in crate::app) compatibility_startup_entry_count: usize,
     pub(in crate::app) ignored_startup_exception_count: usize,
     pub(in crate::app) sections: Vec<GuiDialogSection>,
-    pub(in crate::app) settings: StoredClientSettingsMvp,
+    pub(in crate::app) settings: StoredClientSettings,
     pub(in crate::app) server_password: SecretDraft,
 }

@@ -17,16 +17,20 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
     match error {
         ServerRuntimeError::Protocol(ProtocolError::InvalidJson(_)) => {
             let Some(commands) = top_level_protocol_commands(json_line) else {
-                return Some(format!("{LEGACY_SERVER_NOT_JSON_ERROR_PREFIX} {json_line}"));
+                return Some(format!(
+                    "{SYNCPLAY_SERVER_NOT_JSON_ERROR_PREFIX} {json_line}"
+                ));
             };
             if commands.iter().any(|command| command == "Hello") {
-                return Some(LEGACY_SERVER_HELLO_ERROR.to_owned());
+                return Some(SYNCPLAY_SERVER_HELLO_ERROR.to_owned());
             }
             if commands
                 .iter()
                 .any(|command| known_protocol_command(command))
             {
-                return Some(format!("{LEGACY_SERVER_NOT_JSON_ERROR_PREFIX} {json_line}"));
+                return Some(format!(
+                    "{SYNCPLAY_SERVER_NOT_JSON_ERROR_PREFIX} {json_line}"
+                ));
             }
             let command_payload = decode_line(json_line)
                 .ok()
@@ -38,8 +42,8 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
                 .unwrap_or(Value::Null);
             Some(unknown_command_error_message(&command_payload))
         }
-        ServerRuntimeError::MissingSession(_) => Some(LEGACY_SERVER_NOT_KNOWN_ERROR.to_owned()),
-        ServerRuntimeError::InvalidHello => Some(LEGACY_SERVER_HELLO_ERROR.to_owned()),
+        ServerRuntimeError::MissingSession(_) => Some(SYNCPLAY_SERVER_NOT_KNOWN_ERROR.to_owned()),
+        ServerRuntimeError::InvalidHello => Some(SYNCPLAY_SERVER_HELLO_ERROR.to_owned()),
         ServerRuntimeError::Protocol(ProtocolError::ServerError { message }) => {
             Some(message.clone())
         }
@@ -48,7 +52,7 @@ fn protocol_drop_error_message(error: &ServerRuntimeError, json_line: &str) -> O
 }
 
 fn unknown_command_error_message(payload: &Value) -> String {
-    format!("{LEGACY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX} {payload}")
+    format!("{SYNCPLAY_SERVER_UNKNOWN_COMMAND_ERROR_PREFIX} {payload}")
 }
 
 fn normalize_non_negative_participant_status_value(
@@ -490,10 +494,10 @@ impl ServerRuntime {
                     ));
                 return Ok(vec![DirectedProtocolMessage::new(
                     client_id,
-                    ProtocolMessage::error_message(LEGACY_SERVER_PASSWORD_REQUIRED_ERROR),
+                    ProtocolMessage::error_message(SYNCPLAY_SERVER_PASSWORD_REQUIRED_ERROR),
                 )]);
             };
-            if !server_password_token_matches_legacy_compatible(
+            if !server_password_token_matches(
                 server_password_token.expose_secret(),
                 required_password_token.expose_secret(),
             ) {
@@ -504,7 +508,7 @@ impl ServerRuntime {
                     ));
                 return Ok(vec![DirectedProtocolMessage::new(
                     client_id,
-                    ProtocolMessage::error_message(LEGACY_SERVER_WRONG_PASSWORD_ERROR),
+                    ProtocolMessage::error_message(SYNCPLAY_SERVER_WRONG_PASSWORD_ERROR),
                 )]);
             }
         }
@@ -1235,7 +1239,7 @@ impl ServerRuntime {
                         None
                     };
                     let requested_username = username.as_deref().unwrap_or(&session.username);
-                    if let Some(v2_outbound) = self.apply_legacy_readiness_to_v2(
+                    if let Some(v2_outbound) = self.apply_syncplay_ready_to_readiness_v2(
                         client_id,
                         requested_username,
                         is_ready,
@@ -1244,7 +1248,7 @@ impl ServerRuntime {
                         outbound_messages.extend(v2_outbound);
                         continue;
                     }
-                    // Preserve the byte shape expected by legacy-only rooms:
+                    // Preserve the byte shape expected by rooms without Sorotte extensions:
                     // Python Syncplay does not synthesize `setBy` for ordinary
                     // self-Ready fanout. Controller overrides retain their
                     // authenticated actor in every room; V2/mixed self updates
@@ -1271,13 +1275,13 @@ impl ServerRuntime {
                                     ready_message.clone(),
                                 ));
                             }
-                            let chat_message = readiness_legacy_chat_message(
+                            let chat_message = readiness_syncplay_chat_message(
                                 &session.username,
                                 requested_username,
                                 is_ready,
                             );
                             for peer_client in
-                                self.legacy_readiness_chat_clients_in_room(&session.room)
+                                self.syncplay_readiness_chat_clients_in_room(&session.room)
                             {
                                 outbound_messages.push(DirectedProtocolMessage::new(
                                     peer_client,
@@ -1918,7 +1922,7 @@ impl ServerRuntime {
                     RoomPauseOwner::None | RoomPauseOwner::User { .. }
                 )
             });
-        let legacy_transport_change = can_control_room
+        let syncplay_transport_change = can_control_room
             && pause_changed
             && !readiness_v2_transport
             && !pause_is_already_automatic;
@@ -1958,11 +1962,11 @@ impl ServerRuntime {
             ));
             return Ok(barrier_outbound);
         }
-        if accepted_v2_user_transport || legacy_transport_change {
+        if accepted_v2_user_transport || syncplay_transport_change {
             barrier_outbound
                 .extend(self.retire_awaiting_playback_barrier_decision(client_id, &session.room));
         }
-        if (accepted_v2_user_transport || legacy_transport_change) && observed_paused {
+        if (accepted_v2_user_transport || syncplay_transport_change) && observed_paused {
             barrier_outbound
                 .extend(self.claim_user_pause_ownership(&session.room, &session.username));
         } else if observed_paused

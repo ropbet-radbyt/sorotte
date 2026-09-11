@@ -189,7 +189,7 @@ Ignored producer failures remain observable at finalization; invalid or partiall
 - Proof: [concurrent_emitters_observe_one_sticky_failure_without_further_writes](../crates/sorotte-lifecycle-evidence/src/failure_tests.rs); `cargo test --locked -p sorotte-lifecycle-evidence --lib concurrent_emitters_observe_one_sticky_failure_without_further_writes`.
 - Proof: [product_writer_faults_reach_the_python_lifecycle_consumer](../crates/sorotte-lifecycle-evidence/src/failure_tests.rs); `cargo test --locked -p sorotte-lifecycle-evidence --lib product_writer_faults_reach_the_python_lifecycle_consumer`.
 - Environment: Windows and Linux; Python for actual Rust-producer-to-consumer fault proof.
-- Capability: **implemented**. Local evidence: Sticky validation/I/O/privacy/concurrency and Rust-to-Python fault cases passed. All 15 public crates passed the 0.2.8 semver comparison after RecordingFailure was carried through the existing Io variant.
+- Capability: **implemented**. Local evidence: Sticky validation/I/O/privacy/concurrency and Rust-to-Python fault cases passed. Recorder failure classes are represented directly by EvidenceError; Io carries actual writer errors.
 - Remaining proof: For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted.
 
 ### Strict verification input boundaries (A12)

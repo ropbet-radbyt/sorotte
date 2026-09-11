@@ -171,12 +171,12 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
         .expect("real mpv should launch in the production ownership container");
 
     let mut owner = connect_with_retry(&endpoint);
-    let mut settings = LegacySyncplayUiSettings {
+    let mut settings = SyncplayUiSettings {
         chat_move_osd: false,
-        ..LegacySyncplayUiSettings::default()
+        ..SyncplayUiSettings::default()
     };
     owner
-        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .configure_syncplay_ui_settings(settings.clone())
         .expect("core mpv UI settings should apply");
     assert_eq!(
         owner.configure_bundled_sorotte_bridge(),
@@ -186,7 +186,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
 
     settings.chat_input_enabled = false;
     owner
-        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .configure_syncplay_ui_settings(settings.clone())
         .expect("dynamic input disable should apply");
     assert_eq!(
         owner.configure_bundled_sorotte_bridge(),
@@ -194,7 +194,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
     );
     settings.chat_input_enabled = true;
     owner
-        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .configure_syncplay_ui_settings(settings.clone())
         .expect("dynamic input re-enable should apply");
     assert_eq!(
         owner.configure_bundled_sorotte_bridge(),
@@ -204,7 +204,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
     let mut contender = connect_with_retry(&endpoint);
     contender.set_test_sorotte_bridge_owner_id("real-mpv-contending-owner");
     contender
-        .configure_legacy_syncplay_ui_settings(settings.clone())
+        .configure_syncplay_ui_settings(settings.clone())
         .expect("contender core mpv settings should apply independently");
     let contender_task = std::thread::spawn(move || {
         let health = contender.configure_bundled_sorotte_bridge();
@@ -326,7 +326,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
 
     settings.chat_input_enabled = false;
     contender
-        .configure_legacy_syncplay_ui_settings(settings)
+        .configure_syncplay_ui_settings(settings)
         .expect("new owner should dynamically disable input");
     assert_eq!(
         contender.configure_bundled_sorotte_bridge(),

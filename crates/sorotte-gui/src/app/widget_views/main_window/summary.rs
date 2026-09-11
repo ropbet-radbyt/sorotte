@@ -338,7 +338,7 @@ impl SorotteGuiShellAppState {
                 {
                     readiness
                 } else {
-                    legacy_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_legacy(
+                    legacy_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_syncplay_ready(
                         user.username.clone(),
                         user.is_ready,
                     );

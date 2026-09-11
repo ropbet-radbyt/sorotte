@@ -3,8 +3,7 @@ use crate::{PendingUserTransportEvidence, READINESS_USER_TRANSPORT_GRACE_SECONDS
 use sorotte_client_app::app_boundary::{
     application::{ClientApplication, ClientApplicationSettings, ClientCommand},
     state::{
-        ClientConfig, StartSynchronizationConfig, StartSynchronizationPolicy,
-        StoredClientSettingsV1,
+        ClientConfig, StartSynchronizationConfig, StartSynchronizationPolicy, StoredClientSettings,
     },
 };
 use sorotte_client_core::{
@@ -700,7 +699,7 @@ fn strict_mixed_room_policy_blocks_automatic_start_and_explains_legacy_incompati
         .find_map(|extension| extension.status)
         .expect("capable client should receive the canonical cohort policy");
     assert_eq!(
-        status.excluded_legacy_clients,
+        status.excluded_unsupported_clients,
         BTreeSet::from(["legacy".to_owned()]),
         "legacy exclusion must be explicit rather than inferred from absence"
     );
@@ -714,7 +713,7 @@ fn strict_mixed_room_policy_blocks_automatic_start_and_explains_legacy_incompati
         snapshot.start_gate_phase,
         RoomStartGatePhase::Degraded {
             media_generation: 1,
-            reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+            reason: StartGateDegradedReason::UnsupportedParticipant,
         }
     );
     assert!(!runtime.playback_barrier_policy_satisfied("room"));
@@ -754,7 +753,7 @@ fn strict_mixed_room_policy_blocks_automatic_start_and_explains_legacy_incompati
         runtime.room_readiness["room"].start_gate_phase,
         RoomStartGatePhase::Degraded {
             media_generation: 1,
-            reason: StartGateDegradedReason::IncompatibleLegacyParticipant,
+            reason: StartGateDegradedReason::UnsupportedParticipant,
         },
         "the legacy participant must be the sole remaining blocker"
     );
@@ -844,7 +843,7 @@ fn active_readiness_barrier_refreshes_legacy_exclusions_on_join_and_disconnect()
     assert_eq!(barrier.phase, PlaybackBarrierPhase::Preparing);
     assert_eq!(barrier.prepare.media_generation, generation);
     assert_eq!(
-        barrier.excluded_legacy_clients,
+        barrier.excluded_unsupported_clients,
         BTreeSet::from(["legacy".to_owned()])
     );
     assert_eq!(
@@ -862,7 +861,7 @@ fn active_readiness_barrier_refreshes_legacy_exclusions_on_join_and_disconnect()
     let barrier = &runtime.room_playback_barriers["room"];
     assert_eq!(barrier.phase, PlaybackBarrierPhase::Preparing);
     assert_eq!(barrier.prepare.media_generation, generation);
-    assert!(barrier.excluded_legacy_clients.is_empty());
+    assert!(barrier.excluded_unsupported_clients.is_empty());
     assert_eq!(
         barrier
             .participants
@@ -963,9 +962,9 @@ fn legacy_ready_bridge_preserves_v2_fences_and_authenticated_controller_compatib
 }
 
 #[test]
-fn mixed_room_excludes_barrier_capable_legacy_client_from_v2_commit_cohort() {
+fn mixed_room_excludes_barrier_capable_syncplay_client_from_v2_commit_cohort() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeLegacy);
+    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeUnsupported);
     runtime
         .handle_line("alice-client", &readiness_hello("alice", "room"))
         .expect("readiness hello should succeed");
@@ -996,7 +995,7 @@ fn mixed_room_excludes_barrier_capable_legacy_client_from_v2_commit_cohort() {
         BTreeSet::from(["alice".to_owned()])
     );
     assert_eq!(
-        status.excluded_legacy_clients,
+        status.excluded_unsupported_clients,
         BTreeSet::from(["legacy".to_owned()])
     );
 
@@ -1049,13 +1048,13 @@ fn readiness_only_members_are_excluded_and_an_empty_required_cohort_cannot_commi
     let readiness_only = &runtime.room_readiness["room"].participants["readiness-only"].record;
     assert_eq!(
         readiness_only.participation_role,
-        StartParticipationRole::ExcludedLegacy
+        StartParticipationRole::ExcludedUnsupported
     );
     assert!(!readiness_only.start_eligible);
     let barrier = &runtime.room_playback_barriers["room"];
     assert!(barrier.participants.is_empty());
     assert_eq!(
-        barrier.excluded_legacy_clients,
+        barrier.excluded_unsupported_clients,
         BTreeSet::from(["legacy".to_owned(), "readiness-only".to_owned()])
     );
     assert!(!runtime.playback_barrier_policy_satisfied("room"));
@@ -1097,7 +1096,7 @@ fn feature_changes_reconcile_required_role_and_active_barrier_membership() {
         runtime.room_readiness["room"].participants["alice"]
             .record
             .participation_role,
-        StartParticipationRole::ExcludedLegacy
+        StartParticipationRole::ExcludedUnsupported
     );
     assert!(
         runtime.room_playback_barriers["room"]
@@ -1105,7 +1104,7 @@ fn feature_changes_reconcile_required_role_and_active_barrier_membership() {
             .is_empty()
     );
     assert_eq!(
-        runtime.room_playback_barriers["room"].excluded_legacy_clients,
+        runtime.room_playback_barriers["room"].excluded_unsupported_clients,
         BTreeSet::from(["alice".to_owned()])
     );
     assert!(!runtime.playback_barrier_policy_satisfied("room"));
@@ -1127,7 +1126,7 @@ fn feature_changes_reconcile_required_role_and_active_barrier_membership() {
     );
     assert!(
         runtime.room_playback_barriers["room"]
-            .excluded_legacy_clients
+            .excluded_unsupported_clients
             .is_empty()
     );
 
@@ -2542,7 +2541,7 @@ fn same_username_without_reconnect_token_gets_fresh_intent_and_epoch() {
 #[test]
 fn restored_start_eligible_membership_rechecks_active_gate_on_reconnect() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeLegacy);
+    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeUnsupported);
     let mut reconnect_tokens = BTreeMap::new();
     for (client_id, username) in [("alice-client", "alice"), ("bob-client", "bob")] {
         let hello = runtime
@@ -2885,9 +2884,9 @@ fn loaded_media_without_applied_target_cannot_commit_an_otherwise_eligible_parti
 
 #[test]
 fn explicit_wait_all_settings_wait_for_every_ready_and_playable_participant() {
-    let stored_wait_all = StoredClientSettingsV1 {
+    let stored_wait_all = StoredClientSettings {
         streaming_start_policy: Some("wait-all".to_owned()),
-        ..StoredClientSettingsV1::default()
+        ..StoredClientSettings::default()
     };
     let configured_wait_all = ClientConfig::try_from_stored(&stored_wait_all)
         .expect("explicit wait-all stored settings should resolve");
@@ -3059,7 +3058,7 @@ fn explicit_wait_all_settings_wait_for_every_ready_and_playable_participant() {
 #[test]
 fn new_generation_does_not_steal_user_pause_without_explicit_ready_rearm() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeLegacy);
+    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeUnsupported);
     runtime
         .handle_line("alice-client", &readiness_hello("alice", "room"))
         .expect("readiness hello should succeed");
@@ -3300,7 +3299,7 @@ fn telemetry_first_final_eof_preserves_system_pause_ownership_without_playlist_c
 #[test]
 fn excluded_legacy_controller_eof_pause_preserves_system_ownership_and_v2_commit() {
     let mut runtime = ServerRuntime::default();
-    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeLegacy);
+    runtime.set_mixed_readiness_policy(MixedReadinessPolicy::ExcludeUnsupported);
     runtime.set_time_now_override_seconds(Some(100.0));
     runtime
         .handle_line("alice-client", &readiness_hello("alice", "room"))
@@ -3359,7 +3358,7 @@ fn excluded_legacy_controller_eof_pause_preserves_system_ownership_and_v2_commit
         )
         .expect("V2 controller should open the next generation");
     assert_eq!(
-        runtime.room_playback_barriers["room"].excluded_legacy_clients,
+        runtime.room_playback_barriers["room"].excluded_unsupported_clients,
         BTreeSet::from(["legacy".to_owned()])
     );
     assert_eq!(
