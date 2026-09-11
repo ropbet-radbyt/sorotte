@@ -2643,6 +2643,20 @@ def lexical_non_coverable_lines(
         ):
             result.add(number)
             continue
+        # Constant-valued fields and Some(unit-variant) patterns have no
+        # independent operation. Keep calls, guards, indexing and arithmetic
+        # outside this allowance; recorded coverage still takes precedence.
+        constant_path = (
+            r"(?:[A-Z][A-Z0-9_]*|"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*::)+[A-Z][A-Za-z0-9_]*)"
+        )
+        if re.fullmatch(
+            rf"(?:[A-Za-z_][A-Za-z0-9_]*:\s*{constant_path}|"
+            rf"Some\(\s*{constant_path}\s*\)),",
+            code_stripped,
+        ):
+            result.add(number)
+            continue
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*:\s*,", code_stripped):
             result.add(number)
             continue

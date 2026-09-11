@@ -410,63 +410,62 @@ fn reconnect_correction_state_threshold_alert_json_line(
     .to_string()
 }
 
+fn metric_delta_alert_lines(
+    previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
+    current: &ReconnectStateRestoreCorrectionMetrics,
+    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
+    mut format: impl FnMut(&str, u64, u64, u64) -> String,
+) -> Vec<String> {
+    let baseline = previous.copied().unwrap_or_default();
+    let metrics = [
+        (
+            "actions_failed",
+            thresholds.action_failures_delta,
+            baseline.correction_action_failures,
+            current.correction_action_failures,
+        ),
+        (
+            "retry_exhaustions",
+            thresholds.retry_exhaustions_delta,
+            baseline.correction_retry_exhaustions,
+            current.correction_retry_exhaustions,
+        ),
+        (
+            "disables_after_repeated_mismatches",
+            thresholds.disables_after_repeated_mismatches_delta,
+            baseline.correction_disables_after_repeated_mismatches,
+            current.correction_disables_after_repeated_mismatches,
+        ),
+    ];
+    metrics
+        .into_iter()
+        .filter_map(|(label, threshold, baseline, current)| {
+            let threshold = threshold?;
+            let delta = current.saturating_sub(baseline);
+            (delta >= threshold && delta > 0).then(|| format(label, delta, current, threshold))
+        })
+        .collect()
+}
+
 pub fn reconnect_correction_metrics_delta_alert_lines(
     previous: Option<&ReconnectStateRestoreCorrectionMetrics>,
     current: &ReconnectStateRestoreCorrectionMetrics,
     thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
     format: ReconnectCorrectionDiagnosticsFormat,
 ) -> Vec<String> {
-    let baseline = previous.copied().unwrap_or_default();
-    let mut alerts = Vec::new();
-
-    macro_rules! push_metric_alert {
-        ($threshold_field:ident, $metric_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let current_total = current.$metric_field;
-                let baseline_total = baseline.$metric_field;
-                let delta = current_total.saturating_sub(baseline_total);
-                if delta >= threshold && delta > 0 {
-                    let message = match format {
-                        ReconnectCorrectionDiagnosticsFormat::Text => {
-                            reconnect_correction_metric_delta_alert_text(
-                                $metric_label,
-                                delta,
-                                current_total,
-                                threshold,
-                            )
-                        }
-                        ReconnectCorrectionDiagnosticsFormat::Json => {
-                            reconnect_correction_metric_delta_alert_json_line(
-                                $metric_label,
-                                delta,
-                                current_total,
-                                threshold,
-                            )
-                        }
-                    };
-                    alerts.push(message);
-                }
+    metric_delta_alert_lines(
+        previous,
+        current,
+        thresholds,
+        |label, delta, total, threshold| match format {
+            ReconnectCorrectionDiagnosticsFormat::Text => {
+                reconnect_correction_metric_delta_alert_text(label, delta, total, threshold)
             }
-        };
-    }
-
-    push_metric_alert!(
-        action_failures_delta,
-        correction_action_failures,
-        "actions_failed"
-    );
-    push_metric_alert!(
-        retry_exhaustions_delta,
-        correction_retry_exhaustions,
-        "retry_exhaustions"
-    );
-    push_metric_alert!(
-        disables_after_repeated_mismatches_delta,
-        correction_disables_after_repeated_mismatches,
-        "disables_after_repeated_mismatches"
-    );
-
-    alerts
+            ReconnectCorrectionDiagnosticsFormat::Json => {
+                reconnect_correction_metric_delta_alert_json_line(label, delta, total, threshold)
+            }
+        },
+    )
 }
 
 pub fn reconnect_correction_metrics_delta_alert_lines_localized(
@@ -475,43 +474,50 @@ pub fn reconnect_correction_metrics_delta_alert_lines_localized(
     thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
     language: Option<&str>,
 ) -> Vec<String> {
-    let baseline = previous.copied().unwrap_or_default();
-    let mut alerts = Vec::new();
+    metric_delta_alert_lines(
+        previous,
+        current,
+        thresholds,
+        |label, delta, total, threshold| {
+            reconnect_correction_metric_delta_alert_text_localized(
+                label, delta, total, threshold, language,
+            )
+        },
+    )
+}
 
-    macro_rules! push_metric_alert {
-        ($threshold_field:ident, $metric_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let delta = current.$metric_field.saturating_sub(baseline.$metric_field);
-                if delta >= threshold && delta > 0 {
-                    alerts.push(reconnect_correction_metric_delta_alert_text_localized(
-                        $metric_label,
-                        delta,
-                        current.$metric_field,
-                        threshold,
-                        language,
-                    ));
-                }
-            }
-        };
-    }
-
-    push_metric_alert!(
-        action_failures_delta,
-        correction_action_failures,
-        "actions_failed"
-    );
-    push_metric_alert!(
-        retry_exhaustions_delta,
-        correction_retry_exhaustions,
-        "retry_exhaustions"
-    );
-    push_metric_alert!(
-        disables_after_repeated_mismatches_delta,
-        correction_disables_after_repeated_mismatches,
-        "disables_after_repeated_mismatches"
-    );
-
-    alerts
+fn state_threshold_alert_lines(
+    previous: Option<&ReconnectStateRestoreCorrectionStateSnapshot>,
+    current: &ReconnectStateRestoreCorrectionStateSnapshot,
+    thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
+    mut format: impl FnMut(&str, u32, u32) -> String,
+) -> Vec<String> {
+    let metrics = [
+        (
+            "consecutive_mismatch_cycles",
+            thresholds.consecutive_mismatch_cycles,
+            previous
+                .map(|snapshot| snapshot.consecutive_mismatch_cycles)
+                .unwrap_or(0),
+            current.consecutive_mismatch_cycles,
+        ),
+        (
+            "consecutive_retry_exhaustions",
+            thresholds.consecutive_retry_exhaustions,
+            previous
+                .map(|snapshot| snapshot.consecutive_retry_exhaustions)
+                .unwrap_or(0),
+            current.consecutive_retry_exhaustions,
+        ),
+    ];
+    metrics
+        .into_iter()
+        .filter_map(|(label, threshold, previous, current)| {
+            let threshold = threshold?;
+            (previous < threshold && current >= threshold)
+                .then(|| format(label, current, threshold))
+        })
+        .collect()
 }
 
 pub fn reconnect_correction_state_threshold_alert_lines(
@@ -520,50 +526,16 @@ pub fn reconnect_correction_state_threshold_alert_lines(
     thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
     format: ReconnectCorrectionDiagnosticsFormat,
 ) -> Vec<String> {
-    let mut alerts = Vec::new();
-
-    macro_rules! push_crossing_alert {
-        ($threshold_field:ident, $snapshot_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let previous_value = previous
-                    .map(|snapshot| snapshot.$snapshot_field)
-                    .unwrap_or(0);
-                let current_value = current.$snapshot_field;
-                if previous_value < threshold && current_value >= threshold {
-                    let message = match format {
-                        ReconnectCorrectionDiagnosticsFormat::Text => {
-                            reconnect_correction_state_threshold_alert_text(
-                                $metric_label,
-                                current_value,
-                                threshold,
-                            )
-                        }
-                        ReconnectCorrectionDiagnosticsFormat::Json => {
-                            reconnect_correction_state_threshold_alert_json_line(
-                                $metric_label,
-                                current_value,
-                                threshold,
-                            )
-                        }
-                    };
-                    alerts.push(message);
-                }
+    state_threshold_alert_lines(previous, current, thresholds, |label, value, threshold| {
+        match format {
+            ReconnectCorrectionDiagnosticsFormat::Text => {
+                reconnect_correction_state_threshold_alert_text(label, value, threshold)
             }
-        };
-    }
-
-    push_crossing_alert!(
-        consecutive_mismatch_cycles,
-        consecutive_mismatch_cycles,
-        "consecutive_mismatch_cycles"
-    );
-    push_crossing_alert!(
-        consecutive_retry_exhaustions,
-        consecutive_retry_exhaustions,
-        "consecutive_retry_exhaustions"
-    );
-
-    alerts
+            ReconnectCorrectionDiagnosticsFormat::Json => {
+                reconnect_correction_state_threshold_alert_json_line(label, value, threshold)
+            }
+        }
+    })
 }
 
 fn reconnect_correction_state_threshold_alert_lines_localized(
@@ -572,39 +544,9 @@ fn reconnect_correction_state_threshold_alert_lines_localized(
     thresholds: &ReconnectCorrectionDiagnosticsAlertThresholds,
     language: Option<&str>,
 ) -> Vec<String> {
-    let mut alerts = Vec::new();
-
-    macro_rules! push_crossing_alert {
-        ($threshold_field:ident, $snapshot_field:ident, $metric_label:literal) => {
-            if let Some(threshold) = thresholds.$threshold_field {
-                let previous_value = previous
-                    .map(|snapshot| snapshot.$snapshot_field)
-                    .unwrap_or(0);
-                let current_value = current.$snapshot_field;
-                if previous_value < threshold && current_value >= threshold {
-                    alerts.push(reconnect_correction_state_threshold_alert_text_localized(
-                        $metric_label,
-                        current_value,
-                        threshold,
-                        language,
-                    ));
-                }
-            }
-        };
-    }
-
-    push_crossing_alert!(
-        consecutive_mismatch_cycles,
-        consecutive_mismatch_cycles,
-        "consecutive_mismatch_cycles"
-    );
-    push_crossing_alert!(
-        consecutive_retry_exhaustions,
-        consecutive_retry_exhaustions,
-        "consecutive_retry_exhaustions"
-    );
-
-    alerts
+    state_threshold_alert_lines(previous, current, thresholds, |label, value, threshold| {
+        reconnect_correction_state_threshold_alert_text_localized(label, value, threshold, language)
+    })
 }
 
 pub fn next_reconnect_correction_diagnostic_lines(
