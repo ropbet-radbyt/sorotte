@@ -4,7 +4,7 @@ schema_version = 1
 id = "player-runtime-0"
 owner = "player-runtime"
 contract = "Own player processes, IPC recovery, and executable bridge resources."
-roots = ["crates/sorotte-player-mpv/src/adapter.rs", "crates/sorotte-player-mpv/src/ipc.rs", "crates/sorotte-player-mpv/src/bridge.rs", "crates/sorotte-player-mpv/src/bridge_resource.rs", "crates/sorotte-player-mpv/src/players.rs", "crates/sorotte-player-mpv/src/managed_process.rs"]
+roots = ["crates/sorotte-player-mpv/src/adapter.rs", "crates/sorotte-player-mpv/src/ipc.rs", "crates/sorotte-player-mpv/src/bridge.rs", "crates/sorotte-player-mpv/src/bridge_resource.rs", "crates/sorotte-player-mpv/src/managed_process.rs"]
 
 [[boundary]]
 id = "client-runtime-1"

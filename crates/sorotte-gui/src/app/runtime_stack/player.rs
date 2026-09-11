@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fs::OpenOptions, io::Write, path::PathBuf};
+use std::{fs::OpenOptions, io::Write, path::PathBuf};
 
 use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
@@ -39,12 +39,18 @@ impl PlayerAdapter for GuiNoopClientRuntimePlayer {
     }
 }
 
-#[derive(Default)]
 pub(in super::super) struct GuiTestPlayerAdapter {
-    local_file_updates: VecDeque<LocalFileUpdate>,
-    playback_updates: VecDeque<PlayerPlaybackTelemetryUpdate>,
-    media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
+    adapter: Box<MpvAdapter>,
     open_file_observation_path: Option<PathBuf>,
+}
+
+impl Default for GuiTestPlayerAdapter {
+    fn default() -> Self {
+        Self {
+            adapter: Box::new(MpvAdapter::simulated()),
+            open_file_observation_path: None,
+        }
+    }
 }
 
 const TEST_PLAYER_OBSERVATION_PATH_ENV: &str = "SOROTTE_GUI_TEST_PLAYER_OBSERVATION_PATH";
@@ -65,7 +71,10 @@ pub(in crate::app) fn local_file_update_for_player_path(path: &str) -> LocalFile
 mod path_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use sorotte_player_api::PlayerAdapter;
+    use sorotte_player_api::{
+        PlayerAdapter, PlayerCommandSemanticResult, PlayerEvent, PlayerEventDeliveryMode,
+        PlayerSemanticOutcome,
+    };
 
     use super::{GuiOwnedPlayer, GuiTestPlayerAdapter, local_file_update_for_player_path};
 
@@ -130,12 +139,76 @@ mod path_tests {
         player
             .open_file("episode.mkv")
             .expect("the GUI test player should accept a media load");
+        let GuiOwnedPlayer::Test(adapter) = &player else {
+            unreachable!();
+        };
+        assert_eq!(adapter.adapter.current_path(), Some("episode.mkv"));
 
         player
             .unload()
             .expect("the GUI owner should forward canonical media retirement");
 
-        assert!(player.take_local_file_update().is_none());
+        let GuiOwnedPlayer::Test(adapter) = &player else {
+            unreachable!();
+        };
+        assert_eq!(adapter.adapter.current_path(), None);
+    }
+
+    #[test]
+    fn gui_test_player_delivers_scoped_load_completion_until_acknowledged() {
+        let mut player = GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default());
+        assert_eq!(
+            player.player_event_delivery_mode(),
+            PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        );
+        while let Some(batch) = player.take_player_event_batch() {
+            player
+                .acknowledge_player_event_batch(batch.acknowledgement_token)
+                .expect("initial snapshot should acknowledge");
+        }
+
+        let started = player
+            .open_file_tracked("episode.mkv")
+            .expect("the GUI test player should track the media load");
+        let command_id = started.player_command_id.expect("load should be tracked");
+        let batch = player
+            .take_player_event_batch()
+            .expect("media load should produce ordered observations");
+        let generation = batch
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                PlayerEvent::LocalFileChanged {
+                    media_generation,
+                    update,
+                    ..
+                } if update.path.as_deref() == Some("episode.mkv") => Some(*media_generation),
+                _ => None,
+            })
+            .expect("file identity should carry its load generation");
+        assert!(batch.semantic_outcomes.iter().any(|outcome| {
+            matches!(
+                &outcome.outcome,
+                PlayerSemanticOutcome::Command(outcome)
+                    if outcome.command_id == command_id
+                        && outcome.media_generation == Some(generation)
+                        && outcome.result == PlayerCommandSemanticResult::Completed
+            )
+        }));
+        let redelivered = player
+            .take_player_event_batch()
+            .expect("unacknowledged load should be redelivered");
+        assert_eq!(
+            redelivered.acknowledgement_token,
+            batch.acknowledgement_token
+        );
+        assert_eq!(redelivered.sequence_boundary, batch.sequence_boundary);
+        assert_eq!(redelivered.semantic_outcomes, batch.semantic_outcomes);
+
+        player
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .expect("consumed observations should acknowledge");
+        assert!(player.take_player_event_batch().is_none());
     }
 }
 
@@ -194,54 +267,63 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
         self.record_open_file_observation(path)?;
-        self.local_file_updates
-            .push_back(local_file_update_for_player_path(path));
-        self.media_load_outcomes
-            .push_back(PlayerMediaLoadOutcome::success(path, Some(path.to_owned())));
-        self.playback_updates.push_back(
-            PlayerPlaybackTelemetryUpdate::default()
-                // Managed mpv is launched with `--pause`; reporting an
-                // unpaused open here invents a native Play gesture and can
-                // incorrectly promote the local user to Ready.
-                .with_paused(true)
-                .with_position_seconds(0.0),
-        );
-        Ok(())
+        // Match managed mpv's paused startup without inventing a native Play.
+        self.adapter.set_paused(true)?;
+        self.adapter.open_file(path)
+    }
+
+    fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        if let PlayerCommand::OpenFile(path) = &command {
+            self.record_open_file_observation(path)?;
+            self.adapter.set_paused(true)?;
+        }
+        self.adapter.execute_tracked(command)
+    }
+
+    fn capabilities(&self) -> sorotte_player_api::PlayerCapabilities {
+        self.adapter.capabilities()
+    }
+
+    fn maintain_runtime_leases_nonblocking(&mut self) {
+        self.adapter.maintain_runtime_leases_nonblocking();
+    }
+
+    fn maintain_runtime_integrations(&mut self) {
+        self.adapter.maintain_runtime_integrations();
     }
 
     fn unload(&mut self) -> Result<(), sorotte_player_api::PlayerError> {
-        self.local_file_updates.clear();
-        self.media_load_outcomes.clear();
-        self.playback_updates.clear();
-        Ok(())
+        self.adapter.unload()
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
-        self.playback_updates
-            .push_back(PlayerPlaybackTelemetryUpdate::default().with_paused(paused));
-        Ok(())
+        self.adapter.set_paused(paused)
     }
 
     fn set_position(
         &mut self,
         position_seconds: f64,
     ) -> Result<(), sorotte_player_api::PlayerError> {
-        self.playback_updates.push_back(
-            PlayerPlaybackTelemetryUpdate::default().with_position_seconds(position_seconds),
-        );
-        Ok(())
+        self.adapter.set_position(position_seconds)
     }
 
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.local_file_updates.pop_front()
+    fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
+        self.adapter.set_playback_rate(rate)
     }
 
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.playback_updates.pop_front()
+    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
+        self.adapter.player_event_delivery_mode()
     }
 
-    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        self.media_load_outcomes.pop_front()
+    fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
+        self.adapter.take_player_event_batch()
+    }
+
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: PlayerEventAcknowledgementToken,
+    ) -> Result<(), PlayerError> {
+        self.adapter.acknowledge_player_event_batch(token)
     }
 }
 
@@ -259,13 +341,26 @@ pub(in super::super) struct GuiStartedMediaLoad {
 }
 
 impl GuiOwnedPlayer {
-    pub(in super::super) fn name(&self) -> &'static str {
+    fn adapter(&self) -> &dyn PlayerAdapter {
         match self {
-            Self::Test(player) => player.name(),
-            Self::Mpv(player) => player.name(),
+            Self::Test(player) => player,
+            Self::Mpv(player) => player.as_ref(),
             #[cfg(test)]
-            Self::Custom(player) => player.name(),
+            Self::Custom(player) => player.as_ref(),
         }
+    }
+
+    fn adapter_mut(&mut self) -> &mut dyn PlayerAdapter {
+        match self {
+            Self::Test(player) => player,
+            Self::Mpv(player) => player.as_mut(),
+            #[cfg(test)]
+            Self::Custom(player) => player.as_mut(),
+        }
+    }
+
+    pub(in super::super) fn name(&self) -> &'static str {
+        self.adapter().name()
     }
 
     pub(in super::super) fn as_mpv_mut(&mut self) -> Option<&mut MpvAdapter> {
@@ -336,48 +431,23 @@ impl PlayerAdapter for GuiOwnedPlayer {
     }
 
     fn maintain_runtime_leases_nonblocking(&mut self) {
-        match self {
-            Self::Test(player) => player.maintain_runtime_leases_nonblocking(),
-            Self::Mpv(player) => player.maintain_runtime_leases_nonblocking(),
-            #[cfg(test)]
-            Self::Custom(player) => player.maintain_runtime_leases_nonblocking(),
-        }
+        self.adapter_mut().maintain_runtime_leases_nonblocking()
     }
 
     fn maintain_runtime_integrations(&mut self) {
-        match self {
-            Self::Test(player) => player.maintain_runtime_integrations(),
-            Self::Mpv(player) => player.maintain_runtime_integrations(),
-            #[cfg(test)]
-            Self::Custom(player) => player.maintain_runtime_integrations(),
-        }
+        self.adapter_mut().maintain_runtime_integrations()
     }
 
     fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.open_file(path),
-            Self::Mpv(player) => player.open_file(path),
-            #[cfg(test)]
-            Self::Custom(player) => player.open_file(path),
-        }
+        self.adapter_mut().open_file(path)
     }
 
     fn unload(&mut self) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.unload(),
-            Self::Mpv(player) => player.unload(),
-            #[cfg(test)]
-            Self::Custom(player) => player.unload(),
-        }
+        self.adapter_mut().unload()
     }
 
     fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
-        match self {
-            Self::Test(player) => player.execute_tracked(command),
-            Self::Mpv(player) => player.execute_tracked(command),
-            #[cfg(test)]
-            Self::Custom(player) => player.execute_tracked(command),
-        }
+        self.adapter_mut().execute_tracked(command)
     }
 
     fn set_option_string(
@@ -385,180 +455,85 @@ impl PlayerAdapter for GuiOwnedPlayer {
         name: &str,
         value: &str,
     ) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.set_option_string(name, value),
-            Self::Mpv(player) => player.set_option_string(name, value),
-            #[cfg(test)]
-            Self::Custom(player) => player.set_option_string(name, value),
-        }
+        self.adapter_mut().set_option_string(name, value)
     }
 
     fn apply_profile(&mut self, profile: &str) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.apply_profile(profile),
-            Self::Mpv(player) => player.apply_profile(profile),
-            #[cfg(test)]
-            Self::Custom(player) => player.apply_profile(profile),
-        }
+        self.adapter_mut().apply_profile(profile)
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.set_paused(paused),
-            Self::Mpv(player) => player.set_paused(paused),
-            #[cfg(test)]
-            Self::Custom(player) => player.set_paused(paused),
-        }
+        self.adapter_mut().set_paused(paused)
     }
 
     fn set_position(
         &mut self,
         position_seconds: f64,
     ) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.set_position(position_seconds),
-            Self::Mpv(player) => player.set_position(position_seconds),
-            #[cfg(test)]
-            Self::Custom(player) => player.set_position(position_seconds),
-        }
+        self.adapter_mut().set_position(position_seconds)
     }
 
     fn set_playback_rate(&mut self, rate: f64) -> Result<(), sorotte_player_api::PlayerError> {
-        match self {
-            Self::Test(player) => player.set_playback_rate(rate),
-            Self::Mpv(player) => player.set_playback_rate(rate),
-            #[cfg(test)]
-            Self::Custom(player) => player.set_playback_rate(rate),
-        }
+        self.adapter_mut().set_playback_rate(rate)
     }
 
     fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        match self {
-            Self::Test(player) => player.take_local_file_update(),
-            Self::Mpv(player) => player.take_local_file_update(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_local_file_update(),
-        }
+        self.adapter_mut().take_local_file_update()
     }
 
     fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
-        match self {
-            Self::Test(player) => player.take_local_file_observation(),
-            Self::Mpv(player) => player.take_local_file_observation(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_local_file_observation(),
-        }
+        self.adapter_mut().take_local_file_observation()
     }
 
     fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
-        match self {
-            Self::Test(player) => player.take_media_load_observation(),
-            Self::Mpv(player) => player.take_media_load_observation(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_media_load_observation(),
-        }
+        self.adapter_mut().take_media_load_observation()
     }
 
     fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
-        match self {
-            Self::Test(player) => player.take_ordered_event_batch(),
-            Self::Mpv(player) => player.take_ordered_event_batch(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_ordered_event_batch(),
-        }
+        self.adapter_mut().take_ordered_event_batch()
     }
 
     fn request_ordered_event_reacquisition(&mut self) {
-        match self {
-            Self::Test(player) => player.request_ordered_event_reacquisition(),
-            Self::Mpv(player) => player.request_ordered_event_reacquisition(),
-            #[cfg(test)]
-            Self::Custom(player) => player.request_ordered_event_reacquisition(),
-        }
+        self.adapter_mut().request_ordered_event_reacquisition()
     }
 
     fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        match self {
-            Self::Test(player) => player.take_playback_telemetry_update(),
-            Self::Mpv(player) => player.take_playback_telemetry_update(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_playback_telemetry_update(),
-        }
+        self.adapter_mut().take_playback_telemetry_update()
     }
 
     fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        match self {
-            Self::Test(player) => player.take_transport_telemetry_update(),
-            Self::Mpv(player) => player.take_transport_telemetry_update(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_transport_telemetry_update(),
-        }
+        self.adapter_mut().take_transport_telemetry_update()
     }
 
     fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        match self {
-            Self::Test(player) => player.take_cache_telemetry_update(),
-            Self::Mpv(player) => player.take_cache_telemetry_update(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_cache_telemetry_update(),
-        }
+        self.adapter_mut().take_cache_telemetry_update()
     }
 
     fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-        match self {
-            Self::Test(player) => player.take_command_progress(),
-            Self::Mpv(player) => player.take_command_progress(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_command_progress(),
-        }
+        self.adapter_mut().take_command_progress()
     }
 
     fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        match self {
-            Self::Test(player) => player.take_media_load_outcome(),
-            Self::Mpv(player) => player.take_media_load_outcome(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_media_load_outcome(),
-        }
+        self.adapter_mut().take_media_load_outcome()
     }
 
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
-        match self {
-            Self::Test(player) => player.take_player_event_batch(),
-            Self::Mpv(player) => player.take_player_event_batch(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_player_event_batch(),
-        }
+        self.adapter_mut().take_player_event_batch()
     }
 
     fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        match self {
-            Self::Test(player) => player.player_event_delivery_mode(),
-            Self::Mpv(player) => player.player_event_delivery_mode(),
-            #[cfg(test)]
-            Self::Custom(player) => player.player_event_delivery_mode(),
-        }
+        self.adapter().player_event_delivery_mode()
     }
 
     fn acknowledge_player_event_batch(
         &mut self,
         token: PlayerEventAcknowledgementToken,
     ) -> Result<(), PlayerError> {
-        match self {
-            Self::Test(player) => player.acknowledge_player_event_batch(token),
-            Self::Mpv(player) => player.acknowledge_player_event_batch(token),
-            #[cfg(test)]
-            Self::Custom(player) => player.acknowledge_player_event_batch(token),
-        }
+        self.adapter_mut().acknowledge_player_event_batch(token)
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
-        match self {
-            Self::Test(player) => player.take_pending_chat_request(),
-            Self::Mpv(player) => player.take_pending_chat_request(),
-            #[cfg(test)]
-            Self::Custom(player) => player.take_pending_chat_request(),
-        }
+        self.adapter_mut().take_pending_chat_request()
     }
 }
 

@@ -1,12 +1,41 @@
 use super::*;
 
 #[test]
+fn simulated_unload_delivers_terminal_lifecycle_after_load_acknowledgement() {
+    let mut adapter = MpvAdapter::simulated();
+    adapter.open_file("episode.mkv").unwrap();
+    while let Some(batch) = adapter.take_player_event_batch() {
+        adapter
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .unwrap();
+    }
+
+    adapter.unload().unwrap();
+
+    assert_eq!(adapter.current_path(), None);
+    let batch = adapter
+        .take_player_event_batch()
+        .expect("unload must retire the observed physical load for ordered consumers");
+    assert!(batch.events.iter().any(|event| matches!(
+        event.event,
+        sorotte_player_api::PlayerEvent::LoadAttemptTerminal {
+            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+            ..
+        }
+    )));
+    adapter
+        .acknowledge_player_event_batch(batch.acknowledgement_token)
+        .unwrap();
+    assert!(adapter.take_player_event_batch().is_none());
+}
+
+#[test]
 fn stores_opened_file_path() {
-    let mut adapter = SimulatedPlayer::new();
+    let mut adapter = MpvAdapter::simulated();
     adapter
         .execute(PlayerCommand::OpenFile("movie.mkv".to_owned()))
         .expect("mpv stub should accept file");
-    assert_eq!(adapter.test_adapter().current_path(), Some("movie.mkv"));
+    assert_eq!(adapter.current_path(), Some("movie.mkv"));
 
     let observation = adapter
         .take_local_file_observation()
@@ -23,7 +52,7 @@ fn stores_opened_file_path() {
 
 #[test]
 fn stores_runtime_state_updates() {
-    let mut adapter = SimulatedPlayer::new();
+    let mut adapter = MpvAdapter::simulated();
     for command in [
         PlayerCommand::SetPaused(true),
         PlayerCommand::SetPosition(24.5),
@@ -51,7 +80,7 @@ fn stores_runtime_state_updates() {
             .expect("simulated mpv should accept typed command");
     }
 
-    let state = adapter.test_adapter();
+    let state = &adapter;
     assert!(state.paused());
     assert_eq!(state.position_seconds(), 24.5);
     assert_eq!(state.playback_rate(), 0.95);

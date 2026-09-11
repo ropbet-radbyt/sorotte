@@ -10,14 +10,14 @@ use sorotte_player_api::{
     SnapshotField,
 };
 use sorotte_player_mpv::{
-    LifecycleVerificationPlaylistEntry, MpvLifecycleVerificationHarness, SimulatedPlayer,
+    LifecycleVerificationPlaylistEntry, MpvAdapter, MpvLifecycleVerificationHarness,
 };
 
 mod trace_delivery;
 mod trace_load_matrix;
 mod trace_resolution;
 
-type VerificationClientRuntime = ClientRuntime<SimulatedPlayer, QueuedRuntimeControl>;
+type VerificationClientRuntime = ClientRuntime<MpvAdapter, QueuedRuntimeControl>;
 
 fn verification_optional_field<T>(value: Option<T>) -> SnapshotField<T> {
     value.map_or(SnapshotField::KnownAbsent, SnapshotField::Known)
@@ -150,7 +150,7 @@ fn seed_gui_playlist_resolution_attempt(
 fn verification_client_runtime() -> VerificationClientRuntime {
     ClientRuntime::new(
         ClientSession::default(),
-        SimulatedPlayer::new(),
+        MpvAdapter::simulated(),
         QueuedRuntimeControl::default(),
     )
 }

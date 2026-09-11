@@ -1133,7 +1133,8 @@ impl MpvAdapter {
             .is_some_and(MpvJsonIpcClient::is_healthy)
     }
 
-    pub(crate) fn simulated() -> Self {
+    /// Uses the mpv lifecycle reducer without starting or connecting to a player process.
+    pub fn simulated() -> Self {
         Self {
             simulation_mode: true,
             ..Self::default()
@@ -1481,19 +1482,6 @@ impl MpvAdapter {
         self.observed_state.cache_eof = Some(false);
         self.observed_state.cache_underrun = Some(false);
         self.observed_state.cache_metrics_observed_at = Some(self.observation_timestamp());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn inject_test_cache_telemetry_update(&mut self) {
-        let generation = self
-            .observation_media_generation()
-            .or_else(|| Some(PlayerMediaGeneration::new(1)));
-        self.queue_cache_telemetry_update(PlayerCacheTelemetryUpdate {
-            media_generation: generation,
-            observed_at: Some(self.observation_timestamp()),
-            buffered_ahead_seconds: Some(5.0),
-            ..PlayerCacheTelemetryUpdate::default()
-        });
     }
 
     #[cfg(feature = "test-support")]

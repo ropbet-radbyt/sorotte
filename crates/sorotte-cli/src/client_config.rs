@@ -8,8 +8,6 @@ use sorotte_client_core::{
     UnpauseActionMode,
 };
 use sorotte_player_mpv::MpvAdapter;
-#[cfg(test)]
-use sorotte_player_mpv::SimulatedPlayer;
 use sorotte_secret::SecretValue;
 
 #[cfg(test)]

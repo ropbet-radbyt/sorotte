@@ -1,7 +1,6 @@
 use super::{
-    ConnectedMpvPlayer, MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter,
-    MpvNetworkMediaOptionsTransitionOutcome, SimulatedPlayer, SorotteBridgeFailureKind,
-    SorotteBridgeHealth, SyncplayOsdKind, SyncplayUiSettings,
+    MpvActiveNetworkMediaOptionsApplyOutcome, MpvAdapter, MpvNetworkMediaOptionsTransitionOutcome,
+    SorotteBridgeFailureKind, SorotteBridgeHealth, SyncplayOsdKind, SyncplayUiSettings,
 };
 #[cfg(feature = "test-support")]
 use super::{

@@ -195,7 +195,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     }
     assert!(state.commands.can_send_chat_message);
 
-    let mut runtime_degraded_player = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let mut runtime_degraded_player = sorotte_player_mpv::MpvAdapter::simulated();
     runtime_degraded_player.mark_sorotte_bridge_degraded(
         sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
         "another mpv bridge owner retained the input lease",

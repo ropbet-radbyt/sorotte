@@ -1873,6 +1873,9 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
         Duration::from_millis(20),
     );
 
+    assert!(adapter.is_connected());
+    assert_eq!(adapter.capabilities(), PlayerCapabilities::ALL);
+
     let error = adapter
         .set_paused(true)
         .expect_err("adapter command should surface IPC timeout");
@@ -1906,44 +1909,8 @@ fn mpv_adapter_surfaces_timeout_as_player_error() {
 }
 
 #[test]
-fn connected_mpv_player_capabilities_follow_ipc_health() {
-    let adapter = MpvAdapter::with_test_transport_and_ipc_timeout(
-        NeverRespondingTransport,
-        Duration::from_millis(20),
-    );
-    let mut player = ConnectedMpvPlayer::from_test_adapter(adapter);
-
-    assert!(player.is_connected());
-    assert_eq!(player.capabilities(), PlayerCapabilities::ALL);
-
-    let error = player
-        .execute(PlayerCommand::SetPaused(true))
-        .expect_err("connected wrapper should surface the IPC timeout");
-    assert!(
-        matches!(error, PlayerError::OperationFailed(ref message) if message.contains("mpv IPC command timed out")),
-        "unexpected connected-wrapper error: {error:?}"
-    );
-
-    assert!(!player.is_connected());
-    assert_eq!(player.capabilities(), PlayerCapabilities::NONE);
-    let events = player.take_ipc_connection_events();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, MpvIpcConnectionEvent::TimedOut { .. })),
-        "connected wrapper should surface its timeout event: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, MpvIpcConnectionEvent::Disconnected { .. })),
-        "connected wrapper should surface its disconnect event: {events:?}"
-    );
-}
-
-#[test]
 fn simulated_player_keeps_all_capabilities_without_ipc() {
-    let player = SimulatedPlayer::new();
+    let player = MpvAdapter::simulated();
 
     assert!(!player.is_connected());
     assert_eq!(player.capabilities(), PlayerCapabilities::ALL);
@@ -1980,7 +1947,7 @@ fn open_file_collects_filesystem_size_for_local_paths() {
     writeln!(temp_file, "12345").expect("temp file should be writable");
     drop(temp_file);
 
-    let mut adapter = SimulatedPlayer::new();
+    let mut adapter = MpvAdapter::simulated();
     adapter
         .execute(PlayerCommand::OpenFile(
             temp_path.to_string_lossy().into_owned(),

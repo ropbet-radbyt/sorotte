@@ -1126,7 +1126,7 @@ fn gui_runtime_owner_drop_restores_osd_before_terminal_bridge_release() {
 
 #[test]
 fn gui_player_pump_projects_runtime_bridge_degradation_and_recovery() {
-    let mut adapter = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let mut adapter = sorotte_player_mpv::MpvAdapter::simulated();
     assert!(matches!(
         adapter.mark_sorotte_bridge_degraded(
             sorotte_player_mpv::SorotteBridgeFailureKind::LeaseBusy,
@@ -1205,7 +1205,7 @@ fn gui_player_pump_projects_runtime_bridge_degradation_and_recovery() {
 
 #[test]
 fn gui_player_pump_does_not_promote_historical_ready_after_current_degradation() {
-    let mut adapter = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let mut adapter = sorotte_player_mpv::MpvAdapter::simulated();
     assert_eq!(
         adapter.configure_bundled_sorotte_bridge(),
         sorotte_player_mpv::SorotteBridgeHealth::Ready
@@ -1256,7 +1256,7 @@ fn gui_player_pump_does_not_promote_historical_ready_after_current_degradation()
 
 #[test]
 fn degraded_gui_notifications_still_reach_the_attached_mpv_osd() {
-    let mut adapter = sorotte_player_mpv::SimulatedPlayer::new().into_inner();
+    let mut adapter = sorotte_player_mpv::MpvAdapter::simulated();
     let health = adapter.mark_sorotte_bridge_degraded(
         sorotte_player_mpv::SorotteBridgeFailureKind::AcknowledgementTimeout,
         "test bridge acknowledgement timed out",
@@ -1368,7 +1368,7 @@ fn bridge_retry_runs_in_place_and_clears_degraded_health() {
     owner.record_fully_applied_player_launch_state(&initial_launch_state);
     owner
         .retain_mpv_after_optional_bridge_attempt(
-            sorotte_player_mpv::SimulatedPlayer::new().into_inner(),
+            sorotte_player_mpv::MpvAdapter::simulated(),
             None,
             acknowledgement_timeout_health(),
             false,

@@ -77,6 +77,12 @@ fn runtime_owner_reports_player_state_on_session_handoff_and_detach() {
     owner.install_session_runtime(session());
 
     owner.remove_session_runtime();
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
+        sorotte_player_api::DisconnectedPlayer,
+    )));
+    owner.install_session_runtime(session());
+
+    owner.remove_session_runtime();
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.install_session_runtime(session());
 
@@ -89,6 +95,7 @@ fn runtime_owner_reports_player_state_on_session_handoff_and_detach() {
             ExternalPlayerAvailability::Disconnected,
             ExternalPlayerAvailability::Unavailable,
             ExternalPlayerAvailability::TelemetryUnavailable,
+            ExternalPlayerAvailability::Connecting,
         ]
     );
 }

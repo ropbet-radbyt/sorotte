@@ -1010,6 +1010,12 @@ impl PlayerAdapter for MpvAdapter {
             self.stream_recovery.network_stream_recovery_evidence = None;
             self.stream_recovery.network_cache_stall = None;
             if self.simulation_mode {
+                if let Some(playlist_entry_id) = self.active_playlist_entry_id {
+                    self.handle_end_file_event(&json!({
+                        "reason": "stop",
+                        "playlist_entry_id": playlist_entry_id,
+                    }));
+                }
                 self.clear_physical_projection();
                 self.observed_state = MpvObservedState::default();
                 self.transport_phase = PlayerTransportPhase::Empty;

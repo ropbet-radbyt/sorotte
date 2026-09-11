@@ -179,13 +179,6 @@ match = "file"
 path = "crates/sorotte-player-mpv/src/bridge_resource.rs"
 
 [[critical_path]]
-id = "audit-0-5"
-category = "lifecycle"
-owner = "player-runtime"
-match = "file"
-path = "crates/sorotte-player-mpv/src/players.rs"
-
-[[critical_path]]
 id = "audit-1-0"
 category = "lifecycle"
 owner = "client-runtime"

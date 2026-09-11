@@ -17,16 +17,30 @@ fn local_load_recovers_disk_casing_from_a_case_folded_resolution() {
     let file = owner.player_local_file.as_ref().unwrap();
     assert_eq!(file.name, "MixedCaseEpisode.MKV");
     assert_eq!(file.path.as_deref(), Some(actual.to_str().unwrap()));
-    let opened = owner
+    let batch = owner
         .player
         .as_mut()
         .unwrap()
-        .take_local_file_update()
-        .unwrap();
+        .take_player_event_batch()
+        .expect("simulator should observe the opened file");
+    let opened = batch
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            sorotte_player_api::PlayerEvent::LocalFileChanged { update, .. } => Some(update),
+            _ => None,
+        })
+        .expect("load should include file identity");
     assert_eq!(
         opened.path, file.path,
         "mpv input must use the same filesystem spelling as the row and title"
     );
+    owner
+        .player
+        .as_mut()
+        .unwrap()
+        .acknowledge_player_event_batch(batch.acknowledgement_token)
+        .expect("file observation should acknowledge");
     std::fs::remove_dir_all(root).unwrap();
 }
 
