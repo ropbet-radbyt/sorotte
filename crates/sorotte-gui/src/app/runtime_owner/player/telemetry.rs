@@ -941,6 +941,7 @@ impl GuiPersistedConfigRuntimeOwner {
         outcome: PlayerCommandOutcome,
     ) {
         use sorotte_player_api::PlayerCommandFailureKind as FailureKind;
+        use sorotte_player_api::PlayerCommandFailureKind::{TimedOut, Unknown};
         use sorotte_player_api::PlayerCommandSemanticResult::{
             Completed, CompletionNotObserved, Failed, Superseded, TransportDisconnected,
         };
@@ -949,14 +950,15 @@ impl GuiPersistedConfigRuntimeOwner {
             .iter()
             .position(|ownership| ownership.adapter_player_command_id == Some(outcome.command_id))
         else {
-            if matches!(
-                outcome.result,
-                Failed(FailureKind::TimedOut | FailureKind::Unknown) | CompletionNotObserved
-            ) && let Some(guard) = self.attached_system_seek_fail_closed.as_mut()
-            {
-                guard.retire_after = guard
-                    .retire_after
-                    .max(Instant::now() + ATTACHED_SYSTEM_SEEK_TIMEOUT_EXTENSION);
+            match outcome.result {
+                Failed(TimedOut | Unknown) | CompletionNotObserved => {
+                    if let Some(guard) = self.attached_system_seek_fail_closed.as_mut() {
+                        guard.retire_after = guard
+                            .retire_after
+                            .max(Instant::now() + ATTACHED_SYSTEM_SEEK_TIMEOUT_EXTENSION);
+                    }
+                }
+                _ => {}
             }
             return;
         };
@@ -977,7 +979,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     ownership.state = GuiAttachedSystemSeekOwnershipState::SupersededMayArrive;
                 }
             }
-            Failed(FailureKind::TimedOut | FailureKind::Unknown) | CompletionNotObserved => {
+            Failed(TimedOut | Unknown) | CompletionNotObserved => {
                 if let Some(ownership) = self.attached_system_seek_ownership.get_mut(index) {
                     ownership.state = GuiAttachedSystemSeekOwnershipState::MayStillArrive;
                     ownership.retire_after = ownership
