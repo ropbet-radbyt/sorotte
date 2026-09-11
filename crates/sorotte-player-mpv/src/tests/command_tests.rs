@@ -519,6 +519,38 @@ fn tracked_resume_completes_without_playback_restart_after_fresh_advancement() {
     );
 }
 
+fn assert_observation_maintenance_queries(writes: &[String]) {
+    let commands = writes
+        .iter()
+        .map(|write| {
+            let message: Value = serde_json::from_str(write).expect("valid IPC command");
+            serde_json::from_value::<Vec<String>>(message["command"].clone())
+                .expect("maintenance query contains only string arguments")
+        })
+        .collect::<Vec<_>>();
+    let properties = commands
+        .iter()
+        .map(|command| {
+            assert_eq!(
+                command.len(),
+                2,
+                "unexpected maintenance command: {command:?}"
+            );
+            assert_eq!(command[0], "get_property");
+            command[1].as_str()
+        })
+        .collect::<Vec<_>>();
+    // The worker can harvest events before the owner schedules its fence, and
+    // public batch delivery can schedule one nonblocking transport readback.
+    assert!(
+        matches!(
+            properties.as_slice(),
+            [] | ["pause"] | ["time-pos"] | ["pause", "time-pos"]
+        ),
+        "unexpected maintenance queries: {commands:?}"
+    );
+}
+
 #[test]
 fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
     let (transport, state) = fake_transport_with_reads(&[
@@ -547,6 +579,8 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
         0,
         "the command response is not semantic completion"
     );
+
+    let writes_before_fence = state.writes().len();
 
     // mpv can emit these observations just after the set_property response. They therefore
     // enter the socket only after the synchronous command has stopped reading it.
@@ -580,29 +614,7 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
         "one accepted command must have exactly one semantic terminal"
     );
 
-    let writes = state.writes();
-    let property_queries = writes
-        .iter()
-        .filter_map(|write| serde_json::from_str::<Value>(write).ok())
-        .filter_map(|value| value.get("command").cloned())
-        .filter_map(|command| command.as_array().cloned())
-        .filter(|command| command.first().and_then(Value::as_str) == Some("get_property"))
-        .collect::<Vec<_>>();
-    let queried_properties = property_queries
-        .iter()
-        .filter_map(|command| command.get(1).and_then(Value::as_str))
-        .collect::<Vec<_>>();
-    // The IPC worker can harvest the queued observations before the owner
-    // schedules its event fence. A nonblocking readback can also remain deferred.
-    // Completion above must still happen exactly once, without another command;
-    // maintenance may issue at most one fence and one transport readback.
-    assert!(
-        matches!(
-            queried_properties.as_slice(),
-            [] | ["pause"] | ["time-pos"] | ["pause", "time-pos"]
-        ),
-        "unexpected maintenance queries while harvesting resume: {property_queries:?}"
-    );
+    assert_observation_maintenance_queries(&state.writes()[writes_before_fence..]);
 }
 
 #[test]
@@ -733,10 +745,17 @@ fn active_media_harvests_end_file_without_a_pending_command() {
     };
     assert_eq!(terminal.eof_reached, Some(true));
     assert_eq!(
-        state.writes().len(),
-        writes_before_fence + 1,
-        "one active-media maintenance fence should harvest the terminal event"
+        collect_player_delivery(&mut adapter)
+            .transport_deltas()
+            .filter(|delta| {
+                delta.media_generation == Some(generation)
+                    && delta.phase == Some(PlayerTransportPhase::Ended)
+            })
+            .count(),
+        0,
+        "the ended transport must not be delivered again after acknowledgement"
     );
+    assert_observation_maintenance_queries(&state.writes()[writes_before_fence..]);
 }
 
 #[test]
