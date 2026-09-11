@@ -215,7 +215,7 @@ fn real_mpv_bridge_lifecycle_over_json_ipc() {
     });
     let heartbeat_deadline = Instant::now() + Duration::from_secs(4);
     while !contender_task.is_finished() && Instant::now() < heartbeat_deadline {
-        let _ = owner.take_playback_telemetry_update();
+        let _ = collect_player_delivery(&mut owner);
         sleep(Duration::from_millis(100));
     }
     let (mut contender, contender_health) = contender_task
@@ -480,7 +480,8 @@ fn local_standalone_mpv_smoke_reports_file_metadata() {
     let mut last_telemetry = None;
     let metadata_started = Instant::now();
     while metadata_started.elapsed() < metadata_timeout {
-        if let Some(update) = adapter.take_local_file_update() {
+        let delivery = collect_player_delivery(&mut adapter);
+        for update in delivery.local_files().cloned() {
             last_update = Some(update.clone());
             let has_duration = update
                 .duration_seconds
@@ -491,7 +492,10 @@ fn local_standalone_mpv_smoke_reports_file_metadata() {
                 break;
             }
         }
-        while let Some(telemetry) = adapter.take_playback_telemetry_update() {
+        if observed_update.is_some() {
+            break;
+        }
+        for telemetry in delivery.transport_deltas().cloned() {
             last_telemetry = Some(telemetry);
         }
         sleep(poll_interval);

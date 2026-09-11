@@ -286,17 +286,23 @@ fn initial_explicit_mpv_streaming_rejection_retains_core_player_and_continues_op
     player
         .set_position(42.0)
         .expect("seek must remain available");
-    assert_eq!(
-        player.take_transport_telemetry_update(),
-        None,
-        "an accepted load without start-file must not fabricate a physical transport projection"
-    );
-    let _ = player.take_playback_telemetry_update();
+    while let Some(batch) = player.take_player_event_batch() {
+        assert!(
+            batch.events.iter().all(|event| !matches!(
+                event.event,
+                sorotte_player_api::PlayerEvent::TransportDelta(_)
+            )),
+            "an accepted load without start-file must not fabricate transport"
+        );
+        player
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .unwrap();
+    }
     let retained_player_address = match player {
         GuiOwnedPlayer::Mpv(player) => {
             assert!(
                 player.is_connected(),
-                "playback telemetry polling must preserve the healthy IPC attachment"
+                "player event polling must preserve the healthy IPC attachment"
             );
             &**player as *const sorotte_player_mpv::MpvAdapter
         }

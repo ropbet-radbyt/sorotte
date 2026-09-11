@@ -426,15 +426,17 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
     session.model.reconnect.state_restore_validation_pending = true;
 
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_paused(true)
-                .with_position_seconds(117.5),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(117.5)),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()
@@ -475,12 +477,12 @@ fn client_runtime_reconnect_state_restore_validation_disable_after_n_mismatches_
         .reconnect
         .state_restore_validation_pending = true;
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_paused(true)
-            .with_position_seconds(125.0),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_paused(true)
+                .with_position_seconds(125.0),
+        );
 
     runtime
         .run_reconnect_state_restore_validation_if_needed()

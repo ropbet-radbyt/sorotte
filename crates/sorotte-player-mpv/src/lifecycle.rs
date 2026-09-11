@@ -263,14 +263,6 @@ fn acknowledge_delivery_through(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcknowledgedPlayerDelivery {
-    pub attachment_epoch: PlayerAttachmentEpoch,
-    pub through_sequence: u64,
-    pub command_ids: Vec<PlayerCommandId>,
-    pub load_attempt_ids: Vec<LoadAttemptId>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 struct EpochDeliveryBuffer {
     attachment_epoch: PlayerAttachmentEpoch,
@@ -776,41 +768,18 @@ impl PlayerLifecycleState {
     }
 
     pub fn acknowledge_event_batch(&mut self, token: PlayerEventAcknowledgementToken) -> bool {
-        self.acknowledge_event_batch_with_summary(token).is_some()
-    }
-
-    pub fn acknowledge_event_batch_with_summary(
-        &mut self,
-        token: PlayerEventAcknowledgementToken,
-    ) -> Option<AcknowledgedPlayerDelivery> {
-        let cached = self.cached_batch.take()?;
+        let Some(cached) = self.cached_batch.take() else {
+            return false;
+        };
         if cached.batch.acknowledgement_token != token {
             self.cached_batch = Some(cached);
-            return None;
-        }
-        let mut command_ids = BTreeSet::new();
-        let mut load_attempt_ids = BTreeSet::new();
-        for outcome in &cached.batch.semantic_outcomes {
-            match &outcome.outcome {
-                PlayerSemanticOutcome::Command(command) => {
-                    command_ids.insert(command.command_id);
-                }
-                PlayerSemanticOutcome::LoadAttempt(attempt) => {
-                    load_attempt_ids.insert(attempt.attempt_id);
-                }
-            }
+            return false;
         }
         let acknowledged_boundary = cached.batch.sequence_boundary;
         let acknowledged_current_epoch =
             acknowledged_boundary.attachment_epoch == self.attachment_epoch;
         let acknowledged_through_sequence = acknowledged_boundary.through_sequence;
         let acknowledges_snapshot = cached.batch.authoritative_snapshot.is_some();
-        let acknowledgement = AcknowledgedPlayerDelivery {
-            attachment_epoch: cached.batch.attachment_epoch,
-            through_sequence: acknowledged_through_sequence,
-            command_ids: command_ids.into_iter().collect(),
-            load_attempt_ids: load_attempt_ids.into_iter().collect(),
-        };
         if self
             .retired_epoch_deliveries
             .front()
@@ -835,13 +804,13 @@ impl PlayerLifecycleState {
             );
         } else {
             self.cached_batch = Some(cached);
-            return None;
+            return false;
         }
         self.prune_snapshot_covered_events();
         if acknowledged_current_epoch {
             self.compact_acknowledged_lifecycle(acknowledged_through_sequence);
         }
-        Some(acknowledgement)
+        true
     }
 
     fn prune_snapshot_covered_events(&mut self) {

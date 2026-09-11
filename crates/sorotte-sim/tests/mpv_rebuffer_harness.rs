@@ -13,9 +13,10 @@ use sorotte_client_core::{
     SeekPreparationTerminalOutcome, SeekTargetAvailability,
 };
 use sorotte_player_api::{
-    PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgressState, PlayerCommandResult, PlayerPlayIntent, PlayerTransportPhase,
-    PlayerTransportTelemetryUpdate,
+    PlayerAdapter, PlayerAuthoritativeSnapshot, PlayerCacheTelemetryUpdate, PlayerCommand,
+    PlayerCommandId, PlayerCommandOutcome, PlayerCommandSemanticResult, PlayerEvent,
+    PlayerPlayIntent, PlayerSemanticOutcome, PlayerTransportDelta, PlayerTransportPhase,
+    PlayerTransportTelemetryUpdate, SnapshotField,
 };
 use sorotte_player_mpv::{MpvAdapter, MpvNetworkMediaPolicyApplicationState};
 use sorotte_sim::{BurstStall, FaultInjectingHttpServer, HttpMediaFixture, NetworkFaultProfile};
@@ -1246,33 +1247,21 @@ fn wait_for_completed_command(
     description: &str,
 ) {
     let deadline = Instant::now() + SEMANTICS_TIMEOUT;
-    let mut accepted = false;
     loop {
-        drain_transport_updates(player, observed);
-        while let Some(progress) = player.take_command_progress() {
-            if progress.command_id != command_id {
+        for outcome in drain_transport_updates(player, observed) {
+            if outcome.command_id != command_id {
                 continue;
             }
-            match progress.state {
-                PlayerCommandProgressState::Accepted => accepted = true,
-                PlayerCommandProgressState::Finished(PlayerCommandResult::Completed) => {
-                    drain_transport_updates(player, observed);
-                    return;
-                }
-                PlayerCommandProgressState::Finished(result) => {
-                    panic!(
-                        "{description}: tracked command {command_id:?} failed with {result:?}; \
-                         latest transport observation: {observed:?}; \
-                         player state after the terminal pump: {player:?}"
-                    );
-                }
+            match outcome.result {
+                PlayerCommandSemanticResult::Completed => return,
+                result => panic!(
+                    "{description}: tracked command {command_id:?} failed with {result:?}; latest transport: {observed:?}; player: {player:?}"
+                ),
             }
         }
         assert!(
             Instant::now() < deadline,
-            "{description}: tracked command {command_id:?} timed out (accepted={accepted}); \
-             latest transport observation: {observed:?}; \
-             latest player state: {player:?}"
+            "{description}: accepted tracked command {command_id:?} timed out; latest transport: {observed:?}; player: {player:?}"
         );
         sleep(POLL_INTERVAL);
     }
@@ -1301,20 +1290,19 @@ fn wait_for_observation(
 fn drain_transport_updates(
     player: &mut impl PlayerAdapter,
     observed: &mut PlayerTransportTelemetryUpdate,
-) {
-    // Production GUI/CLI polling also asks for local-file metadata. That IPC
-    // round trip pumps mpv's asynchronous event stream into the adapter.
-    let _ = player.take_local_file_update();
-    while let Some(update) = player.take_transport_telemetry_update() {
-        if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
-            eprintln!("mpv transport update: {update:?}");
+) -> Vec<PlayerCommandOutcome> {
+    let mut outcomes = Vec::new();
+    for ingress in collect_player_ingress(player) {
+        apply_transport_ingress(observed, &ingress);
+        if let MpvIngress::Outcome(PlayerSemanticOutcome::Command(outcome)) = ingress {
+            outcomes.push(outcome);
         }
-        merge_current_generation(observed, update);
     }
+    outcomes
 }
 
 fn drain_cache_updates(
-    player: &mut impl PlayerAdapter,
+    player: &mut MpvAdapter,
     observed: &mut PlayerCacheTelemetryUpdate,
 ) -> Vec<PlayerCacheTelemetryUpdate> {
     let mut updates = Vec::new();
@@ -1390,16 +1378,136 @@ fn drain_transport_history(
     observed: &mut PlayerTransportTelemetryUpdate,
     history: &mut Vec<TransportHistorySample>,
 ) {
-    let _ = player.take_local_file_update();
-    while let Some(update) = player.take_transport_telemetry_update() {
-        if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
-            eprintln!("mpv cache-cap transport update: {update:?}");
+    for ingress in collect_player_ingress(player) {
+        if let Some(update) = apply_transport_ingress(observed, &ingress) {
+            history.push(TransportHistorySample {
+                update,
+                state_after: observed.clone(),
+            });
         }
-        merge_current_generation(observed, update.clone());
-        history.push(TransportHistorySample {
-            update,
-            state_after: observed.clone(),
-        });
+    }
+}
+
+#[derive(Debug)]
+enum MpvIngress {
+    Snapshot(PlayerAuthoritativeSnapshot),
+    Event(PlayerEvent),
+    Outcome(PlayerSemanticOutcome),
+}
+
+fn collect_player_ingress(player: &mut impl PlayerAdapter) -> Vec<MpvIngress> {
+    let mut ingress = Vec::new();
+    while let Some(batch) = player.take_player_event_batch() {
+        let snapshot_boundary = batch
+            .authoritative_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.sequence_boundary.through_sequence);
+        if let Some(snapshot) = batch.authoritative_snapshot {
+            ingress.push(MpvIngress::Snapshot(snapshot));
+        }
+        let mut ordered = batch
+            .events
+            .into_iter()
+            .filter(|event| {
+                snapshot_boundary.is_none_or(|boundary| event.order.sequence > boundary)
+            })
+            .map(|event| (event.order.sequence, MpvIngress::Event(event.event)))
+            .chain(
+                batch
+                    .semantic_outcomes
+                    .into_iter()
+                    .map(|outcome| (outcome.order.sequence, MpvIngress::Outcome(outcome.outcome))),
+            )
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(sequence, _)| *sequence);
+        ingress.extend(ordered.into_iter().map(|(_, ingress)| ingress));
+        player
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .expect("real-mpv ingress should acknowledge the captured batch");
+    }
+    ingress
+}
+
+fn known<T>(field: SnapshotField<T>) -> Option<T> {
+    match field {
+        SnapshotField::Known(value) => Some(value),
+        SnapshotField::KnownAbsent | SnapshotField::Unavailable => None,
+    }
+}
+
+fn delta_update(delta: PlayerTransportDelta) -> PlayerTransportTelemetryUpdate {
+    PlayerTransportTelemetryUpdate {
+        media_generation: delta.media_generation,
+        observed_at: delta.observed_at,
+        phase: delta.phase,
+        position_seconds: delta.position_seconds,
+        playback_rate: delta.playback_rate,
+        logical_pause: delta.logical_pause,
+        paused_for_cache: delta.paused_for_cache,
+        cache_buffering_percent: delta.cache_percentage,
+        seeking: delta.seeking,
+        seekable: delta.seekable,
+        timeline_kind: delta.timeline_kind,
+        core_idle: delta.core_idle,
+        demuxer_cache_idle: delta.demuxer_cache_idle,
+        playback_restart_sequence: delta.playback_restart_sequence,
+        eof_reached: delta.eof_reached,
+        seekable_ranges: delta.seekable_ranges,
+        known_live_seekable_window: delta.known_live_seekable_window,
+        buffered_ahead_seconds: delta.buffered_duration_seconds,
+        buffered_ahead_bytes: delta.buffered_bytes,
+        input_rate_bytes_per_second: delta.input_rate_bytes_per_second,
+        error_kind: delta.error_kind,
+    }
+}
+
+fn apply_transport_ingress(
+    observed: &mut PlayerTransportTelemetryUpdate,
+    ingress: &MpvIngress,
+) -> Option<PlayerTransportTelemetryUpdate> {
+    match ingress {
+        MpvIngress::Snapshot(snapshot) => {
+            let transport = snapshot.transport.clone();
+            // Replace the projection as a whole: absent/unavailable fields clear
+            // retained values and are never treated as omitted sparse fields.
+            *observed = PlayerTransportTelemetryUpdate {
+                media_generation: known(transport.media_generation),
+                observed_at: known(transport.observed_at),
+                phase: known(transport.phase),
+                position_seconds: known(transport.position_seconds),
+                playback_rate: known(transport.playback_rate),
+                logical_pause: known(transport.logical_pause),
+                paused_for_cache: known(transport.paused_for_cache),
+                cache_buffering_percent: known(transport.cache_percentage),
+                seeking: known(transport.seeking),
+                seekable: known(transport.seekable),
+                timeline_kind: known(transport.timeline_kind),
+                core_idle: known(transport.core_idle),
+                demuxer_cache_idle: known(transport.demuxer_cache_idle),
+                playback_restart_sequence: known(transport.playback_restart_sequence),
+                eof_reached: known(transport.eof_reached),
+                seekable_ranges: known(transport.seekable_ranges),
+                known_live_seekable_window: known(transport.known_live_seekable_window),
+                buffered_ahead_seconds: known(transport.buffered_duration_seconds),
+                buffered_ahead_bytes: known(transport.buffered_bytes),
+                input_rate_bytes_per_second: known(transport.input_rate_bytes_per_second),
+                error_kind: known(transport.error_kind),
+            };
+            None
+        }
+        MpvIngress::Event(PlayerEvent::TransportDelta(delta)) => {
+            let update = delta_update(delta.clone());
+            if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
+                eprintln!("mpv transport delta: {update:?}");
+            }
+            merge_current_generation(observed, update.clone());
+            Some(update)
+        }
+        MpvIngress::Event(PlayerEvent::AttachmentReplaced { .. }) => {
+            *observed = PlayerTransportTelemetryUpdate::default();
+            None
+        }
+        _ => None,
     }
 }
 
@@ -1546,10 +1654,22 @@ impl RealMpvClient {
     }
 
     fn poll(&mut self) {
-        // Match the production polling loop so asynchronous mpv events are
-        // read while no tracked command is actively awaiting an IPC reply.
-        let _ = self.player.take_local_file_update();
-        while let Some(update) = self.player.take_transport_telemetry_update() {
+        for ingress in collect_player_ingress(&mut self.player) {
+            if let MpvIngress::Outcome(PlayerSemanticOutcome::Command(outcome)) = &ingress {
+                if let Some(coordinator_id) = self.player_commands.remove(&outcome.command_id)
+                    && !matches!(
+                        outcome.result,
+                        PlayerCommandSemanticResult::Completed
+                            | PlayerCommandSemanticResult::Superseded
+                    )
+                {
+                    self.coordinator
+                        .command_failed(coordinator_id, self.now_seconds());
+                }
+            }
+            let Some(update) = apply_transport_ingress(&mut self.latest_transport, &ingress) else {
+                continue;
+            };
             if std::env::var_os("SOROTTE_MPV_INTEGRATION_DEBUG").is_some() {
                 eprintln!("coordinator mpv transport update: {update:?}");
             }
@@ -1573,28 +1693,10 @@ impl RealMpvClient {
                 }
             }
             let observation = self.coordinator_observation(update.clone());
-            merge_current_generation(&mut self.latest_transport, update);
             self.transport_history.push(self.latest_transport.clone());
             if let Some(observation) = observation {
                 let actions = self.coordinator.observe(observation);
                 self.execute_actions(actions);
-            }
-        }
-
-        while let Some(progress) = self.player.take_command_progress() {
-            let Some(coordinator_id) = self.player_commands.get(&progress.command_id).copied()
-            else {
-                continue;
-            };
-            if let PlayerCommandProgressState::Finished(result) = progress.state {
-                self.player_commands.remove(&progress.command_id);
-                if !matches!(
-                    result,
-                    PlayerCommandResult::Completed | PlayerCommandResult::Superseded
-                ) {
-                    self.coordinator
-                        .command_failed(coordinator_id, self.now_seconds());
-                }
             }
         }
 

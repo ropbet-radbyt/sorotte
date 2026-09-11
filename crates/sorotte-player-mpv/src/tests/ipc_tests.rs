@@ -1,9 +1,11 @@
 use super::*;
+use crate::adapter::collect_pending_player_delivery;
 use crate::constants::SOROTTE_NETWORK_OPTIONS_CLIENT_MESSAGE_HEARTBEAT;
 use crate::ipc::{MPV_IPC_MAX_LINE_BYTES, MpvIpcConnectionEvent, MpvJsonIpcClient};
 use crate::{
     MpvNetworkMediaPolicyApplicationState, MpvNetworkOptionApplyResult, MpvNetworkOptionApplyStatus,
 };
+use sorotte_player_api::PlayerLoadAttemptResult;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -1922,7 +1924,10 @@ fn mpv_adapter_property_polling_emits_connection_failure_events() {
         Duration::from_millis(20),
     );
 
-    assert_eq!(adapter.take_local_file_update(), None);
+    assert_eq!(
+        collect_player_delivery(&mut adapter).local_files().count(),
+        0
+    );
 
     let events = adapter.take_ipc_connection_events();
     assert!(
@@ -1953,8 +1958,10 @@ fn open_file_collects_filesystem_size_for_local_paths() {
         ))
         .expect("mpv stub should accept local temp file");
 
-    let file_update = adapter
-        .take_local_file_update()
+    let delivery = collect_player_delivery(&mut adapter);
+    let file_update = delivery
+        .local_files()
+        .last()
         .expect("open file should queue local file metadata update");
     assert_eq!(
         file_update.path.as_deref(),
@@ -4486,10 +4493,10 @@ fn transport_telemetry_only_pump_keeps_core_hook_ownership_live_past_the_lease()
 
     let deadline = Instant::now() + Duration::from_millis(2_200);
     while Instant::now() < deadline {
-        let _ = adapter.take_transport_telemetry_update();
+        let _ = collect_player_delivery(&mut adapter);
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = adapter.take_transport_telemetry_update();
+    let _ = collect_player_delivery(&mut adapter);
 
     assert!(adapter.is_connected());
     assert_no_network_runtime_events(
@@ -4768,48 +4775,50 @@ fn sorotte_network_loadfile_path_echo_does_not_double_apply_embedded_options() {
 }
 
 #[test]
-fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_marker() {
+fn mismatched_policy_path_keeps_the_pending_load_and_its_embedded_options_marker() {
     let requested_target = "https://media.example.test/requested-a.m3u8";
-    let (transport, state) = fake_transport_with_reads(&[
-        r#"{"event":"start-file","playlist_entry_id":701}"#,
-        r#"{"event":"property-change","name":"path","data":"https://media.example.test/external-b.m3u8"}"#,
-        r#"{"request_id":1,"error":"success"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-        r#"{"request_id":3,"error":"success"}"#,
-        r#"{"request_id":4,"error":"success"}"#,
-        r#"{"request_id":5,"error":"success"}"#,
-        r#"{"request_id":6,"error":"success"}"#,
-        r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success"}"#,
-        r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success","data":"https://media.example.test/external-b.m3u8"}"#,
-        r#"{"request_id":11,"error":"success","data":10.0}"#,
-        r#"{"request_id":12,"error":"success","data":0}"#,
-        r#"{"request_id":13,"error":"success"}"#,
-        r#"{"request_id":14,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":15,"error":"success","data":20.0}"#,
-        r#"{"request_id":16,"error":"success","data":0}"#,
-    ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
+    let (transport, state) = fake_transport_with_reads(&[r#"{"request_id":1,"error":"success"}"#]);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
     adapter
         .open_file(requested_target)
-        .expect("Sorotte network loadfile should be accepted");
-
+        .expect("accepted A load");
+    state.queue_reads(&[
+        r#"{"request_id":2,"error":"success","data":"https://media.example.test/external-b.m3u8"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+    ]);
     assert_eq!(
-        adapter.take_local_file_update(),
-        None,
-        "the mismatched poll must not complete Sorotte's pending A load"
+        adapter
+            .apply_network_media_options_to_active_media_classified()
+            .expect("authoritative B path"),
+        MpvActiveNetworkMediaOptionsApplyOutcome::NetworkMediaUpdated
     );
+    let pending = collect_pending_player_delivery(&mut adapter);
+    assert_eq!(pending.local_files().count(), 0);
     assert_eq!(
-        adapter.current_path(),
-        None,
-        "an uncorrelated authoritative path must not be mixed into the pending attempt's physical projection"
+        pending.load_outcomes().count(),
+        0,
+        "a mismatched path cannot complete A"
     );
+    state.queue_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":701}"#,
+        r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":4,"error":"success"}"#,
+        r#"{"request_id":5,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":6,"error":"success","data":20.0}"#,
+        r#"{"request_id":7,"error":"success","data":0}"#,
+    ]);
+    adapter.set_playback_rate(1.0).expect("owned A lifecycle");
+    let loaded = collect_pending_player_delivery(&mut adapter);
     assert_eq!(
-        adapter.take_network_media_policy_outcome(),
-        Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated),
-        "fresh polling must apply policy to authoritative external B"
+        loaded
+            .local_files()
+            .last()
+            .expect("A metadata")
+            .path
+            .as_deref(),
+        Some(requested_target)
     );
     assert_eq!(
         state
@@ -4817,82 +4826,50 @@ fn pending_sorotte_load_poll_applies_mismatched_network_path_and_retains_target_
             .iter()
             .filter(|write| write.contains("file-local-options/cache-secs"))
             .count(),
-        1
-    );
-
-    let update = adapter
-        .take_local_file_update()
-        .expect("a later matching A poll should complete the pending Sorotte load");
-    assert_eq!(update.path.as_deref(), Some(requested_target));
-    assert_eq!(
-        adapter.take_network_media_policy_outcome(),
-        Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated),
-        "matching A should consume its retained embedded marker without another write"
-    );
-    assert_eq!(
-        state
-            .writes()
-            .iter()
-            .filter(|write| write.contains("file-local-options/cache-secs"))
-            .count(),
-        1
+        1,
+        "A must consume its embedded marker after B without duplicating the option write"
     );
 }
 
 #[test]
-fn pending_sorotte_load_drains_matching_start_and_path_events_before_poll_response() {
-    let requested_target = "https://media.example.test/requested-a.m3u8";
+fn owned_file_loaded_path_echo_does_not_duplicate_embedded_options() {
+    let target = "https://media.example.test/requested-a.m3u8";
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-        r#"{"request_id":3,"error":"success"}"#,
-        r#"{"request_id":4,"error":"success"}"#,
-        r#"{"request_id":5,"error":"success"}"#,
-        r#"{"request_id":6,"error":"success"}"#,
-        r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success"}"#,
-        r#"{"request_id":9,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":702}"#,
         r#"{"event":"property-change","name":"path","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":10,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
-        r#"{"request_id":11,"error":"success","data":20.0}"#,
-        r#"{"request_id":12,"error":"success","data":0}"#,
-        r#"{"request_id":13,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"https://media.example.test/requested-a.m3u8"}"#,
+        r#"{"request_id":3,"error":"success","data":20.0}"#,
+        r#"{"request_id":4,"error":"success","data":0}"#,
     ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
     adapter.configure_network_media_options([("cache-secs", "75")]);
-    adapter
-        .open_file(requested_target)
-        .expect("Sorotte network loadfile should be accepted");
-
-    let update = adapter
-        .take_local_file_update()
-        .expect("the matching poll should complete the pending Sorotte load");
-    assert_eq!(update.path.as_deref(), Some(requested_target));
+    adapter.open_file(target).expect("accepted owned load");
+    let delivery = collect_pending_player_delivery(&mut adapter);
+    assert_eq!(
+        delivery
+            .local_files()
+            .last()
+            .expect("loaded metadata")
+            .path
+            .as_deref(),
+        Some(target)
+    );
     assert_eq!(
         adapter.take_network_media_policy_outcome(),
-        Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated),
-        "the queued path echo should consume the embedded-options marker"
+        Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated)
     );
-    assert_no_network_runtime_events(
-        &mut adapter,
-        "the matching poll must not report a second application",
-    );
+    assert_no_network_runtime_events(&mut adapter, "path echo cannot duplicate embedded options");
     assert_eq!(
         state
             .writes()
             .iter()
             .filter(|write| write.contains("file-local-options/cache-secs"))
             .count(),
-        0,
-        "the queued path echo must not duplicate loadfile's embedded options after polling"
+        0
     );
-    let loadfile = state
-        .writes()
-        .iter()
-        .map(|write| serde_json::from_str::<Value>(write.trim_end()).expect("valid command json"))
-        .find(|command| command.pointer("/command/0").and_then(Value::as_str) == Some("loadfile"))
-        .expect("loadfile command should be present");
+    let loadfile: Value = serde_json::from_str(&state.writes()[0]).unwrap();
     assert_eq!(loadfile["command"][4]["cache-secs"], json!("75"));
 }
 
@@ -5007,8 +4984,8 @@ fn composite_poll_revalidates_path_after_newer_local_events_during_metadata_read
     adapter.configure_network_media_options([("cache-secs", "75")]);
 
     assert_eq!(
-        adapter.take_local_file_update(),
-        None,
+        collect_player_delivery(&mut adapter).local_files().count(),
+        0,
         "metadata from stale network A must not be published as local B metadata"
     );
     assert_eq!(adapter.current_path(), Some("C:/media/newer-b.mkv"));
@@ -5054,8 +5031,10 @@ fn nested_poll_from_final_query_events_outranks_captured_outer_path() {
         .open_file(requested_target)
         .expect("Sorotte network loadfile should be accepted");
 
-    let update = adapter
-        .take_local_file_update()
+    let delivery = collect_player_delivery(&mut adapter);
+    let update = delivery
+        .local_files()
+        .last()
         .expect("the nested newer poll should publish its local target");
     assert_eq!(update.path.as_deref(), Some("C:/media/newer-b.mkv"));
     assert_eq!(adapter.current_path(), Some("C:/media/newer-b.mkv"));
@@ -5066,9 +5045,14 @@ fn nested_poll_from_final_query_events_outranks_captured_outer_path() {
             .all(|write| !write.contains("file-local-options/")),
         "a nested newer poll must prevent the captured outer network path from being applied"
     );
+    assert_eq!(
+        adapter.take_network_media_policy_outcome(),
+        Some(MpvNetworkMediaPolicyOutcome::NetworkMediaUpdated),
+        "the earlier accepted A path acknowledges its embedded options before B replaces it"
+    );
     assert_no_network_runtime_events(
         &mut adapter,
-        "network runtime events should be fully consumed",
+        "B must not cause another network option application",
     );
 }
 
@@ -5312,22 +5296,28 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
         .open_file("movie.mkv")
         .expect("attached mpv transport should accept loadfile");
 
-    let observation = adapter
-        .take_media_load_observation()
-        .expect("file-loaded should emit a sequenced success outcome");
+    let delivery = collect_player_delivery(&mut adapter);
+    let observation = delivery
+        .load_outcomes()
+        .next()
+        .expect("file-loaded terminal");
     assert_eq!(
-        observation.outcome,
-        PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
+        (
+            &*observation.requested_target,
+            observation.loaded_target.as_deref(),
+            observation.result
+        ),
+        (
+            "movie.mkv",
+            Some("movie.mkv"),
+            PlayerLoadAttemptResult::Loaded
+        )
     );
-    assert_eq!(
-        observation
-            .media_generation
-            .map(sorotte_player_api::PlayerMediaGeneration::get),
-        Some(1)
-    );
-    assert!(observation.observed_at.is_some());
-    let update = adapter
-        .take_local_file_update()
+    assert_eq!(observation.media_generation.get(), 1);
+
+    let update = delivery
+        .local_files()
+        .last()
         .expect("file-loaded should emit a local file update");
     assert_eq!(update.path.as_deref(), Some("movie.mkv"));
     assert_eq!(update.duration_seconds, Some(24.5));
@@ -5335,134 +5325,126 @@ fn attached_open_file_waits_for_file_loaded_before_emitting_local_file_update() 
 }
 
 #[test]
-fn attached_open_file_completes_pending_load_from_polled_properties_without_file_loaded_event() {
-    let (transport, _state) = fake_transport_with_reads(&[
+fn attached_open_file_requires_owned_file_loaded_evidence_after_metadata() {
+    let target = "C:/media/movie.mkv";
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":51}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/movie.mkv"}"#,
+        r#"{"event":"property-change","name":"duration","data":24.5}"#,
+        r#"{"event":"property-change","name":"file-size","data":1000}"#,
         r#"{"request_id":1,"error":"success"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-        r#"{"request_id":3,"error":"success"}"#,
-        r#"{"request_id":4,"error":"success"}"#,
-        r#"{"request_id":5,"error":"success"}"#,
-        r#"{"request_id":6,"error":"success"}"#,
-        r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success"}"#,
-        r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":11,"error":"success","data":24.5}"#,
-        r#"{"request_id":12,"error":"success","data":1000}"#,
     ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-
-    adapter
-        .open_file("C:/media/movie.mkv")
-        .expect("attached mpv transport should accept loadfile");
-
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter.open_file(target).expect("accepted pending load");
+    let pending = collect_player_delivery(&mut adapter);
     assert_eq!(
-        adapter.take_media_load_outcome(),
-        None,
-        "no async file-loaded event has been observed yet"
+        pending.load_outcomes().count(),
+        0,
+        "metadata alone is not file-loaded evidence"
     );
-    let update = adapter
-        .take_local_file_update()
-        .expect("loaded file metadata should be recovered by polling mpv properties");
-    assert_eq!(update.path.as_deref(), Some("C:/media/movie.mkv"));
+    assert_eq!(pending.local_files().count(), 0);
+    state.queue_reads(&[
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":2,"error":"success"}"#,
+        r#"{"request_id":3,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":4,"error":"success","data":24.5}"#,
+        r#"{"request_id":5,"error":"success","data":1000}"#,
+    ]);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("owned file-loaded ingress");
+    let loaded = collect_player_delivery(&mut adapter);
+    assert_eq!(
+        loaded
+            .load_outcomes()
+            .filter(|outcome| outcome.result == PlayerLoadAttemptResult::Loaded)
+            .count(),
+        1
+    );
+    let update = loaded.local_files().last().expect("loaded file metadata");
+    assert_eq!(update.path.as_deref(), Some(target));
     assert_eq!(update.duration_seconds, Some(24.5));
     assert_eq!(update.size_bytes, Some(1000));
-
-    let outcome = adapter
-        .take_media_load_outcome()
-        .expect("poll completion should also finish the pending media load");
-    assert_eq!(
-        outcome,
-        PlayerMediaLoadOutcome::success(
-            "C:/media/movie.mkv",
-            Some("C:/media/movie.mkv".to_owned())
-        )
-    );
 }
 
 #[test]
-fn pending_open_file_poll_ignores_stale_previous_file_until_requested_target_loads() {
-    let (transport, _state) = fake_transport_with_reads(&[
+fn pending_open_file_ignores_unowned_previous_metadata_until_target_loads() {
+    let target = "C:/media/movie.mkv";
+    let (transport, state) = fake_transport_with_reads(&[
         r#"{"request_id":1,"error":"success"}"#,
+        r#"{"event":"property-change","name":"path","data":"C:/media/old.mkv"}"#,
+        r#"{"event":"property-change","name":"duration","data":10.0}"#,
+        r#"{"event":"property-change","name":"file-size","data":500}"#,
         r#"{"request_id":2,"error":"success"}"#,
-        r#"{"request_id":3,"error":"success"}"#,
-        r#"{"request_id":4,"error":"success"}"#,
-        r#"{"request_id":5,"error":"success"}"#,
-        r#"{"request_id":6,"error":"success"}"#,
-        r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success"}"#,
-        r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success","data":"C:/media/old.mkv"}"#,
-        r#"{"request_id":11,"error":"success","data":10.0}"#,
-        r#"{"request_id":12,"error":"success","data":500}"#,
-        r#"{"request_id":13,"error":"success","data":"C:/media/movie.mkv"}"#,
-        r#"{"request_id":14,"error":"success","data":24.5}"#,
-        r#"{"request_id":15,"error":"success","data":1000}"#,
     ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter.open_file(target).expect("accepted load");
     adapter
-        .open_file("C:/media/movie.mkv")
-        .expect("attached mpv transport should accept loadfile");
-
+        .set_playback_rate(1.0)
+        .expect("old unowned metadata ingress");
+    let stale = collect_pending_player_delivery(&mut adapter);
     assert_eq!(
-        adapter.take_local_file_update(),
-        None,
-        "a pending load should not publish metadata for the previous mpv file"
+        stale.local_files().count(),
+        0,
+        "old metadata cannot complete the pending target"
     );
-    let update = adapter
-        .take_local_file_update()
-        .expect("requested target should publish once mpv reports it");
-    assert_eq!(update.path.as_deref(), Some("C:/media/movie.mkv"));
+    assert_eq!(stale.load_outcomes().count(), 0);
+    state.queue_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":61}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":3,"error":"success"}"#,
+        r#"{"request_id":4,"error":"success","data":"C:/media/movie.mkv"}"#,
+        r#"{"request_id":5,"error":"success","data":24.5}"#,
+        r#"{"request_id":6,"error":"success","data":1000}"#,
+    ]);
+    adapter
+        .set_playback_rate(1.0)
+        .expect("owned target ingress");
+    let loaded = collect_pending_player_delivery(&mut adapter);
+    let update = loaded
+        .local_files()
+        .last()
+        .expect("requested target metadata");
+    assert_eq!(update.path.as_deref(), Some(target));
     assert_eq!(update.duration_seconds, Some(24.5));
     assert_eq!(update.size_bytes, Some(1000));
 }
 
 #[test]
 fn attached_open_file_defers_local_file_update_until_duration_is_available() {
-    let (transport, _state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success"}"#,
+    let (transport, state) = fake_transport_with_reads(&[
+        r#"{"event":"start-file","playlist_entry_id":52}"#,
         r#"{"event":"file-loaded"}"#,
-        r#"{"request_id":2,"error":"success"}"#,
-        r#"{"request_id":3,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":4,"error":"success","data":null}"#,
-        r#"{"request_id":5,"error":"success","data":1000}"#,
-        r#"{"request_id":6,"error":"success"}"#,
-        r#"{"request_id":7,"error":"success"}"#,
-        r#"{"request_id":8,"error":"success"}"#,
-        r#"{"request_id":9,"error":"success"}"#,
-        r#"{"request_id":10,"error":"success"}"#,
-        r#"{"request_id":11,"error":"success"}"#,
-        r#"{"request_id":12,"error":"success"}"#,
-        r#"{"request_id":13,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":14,"error":"success","data":null}"#,
-        r#"{"request_id":15,"error":"success","data":1000}"#,
-        r#"{"request_id":16,"error":"success","data":"movie.mkv"}"#,
-        r#"{"request_id":17,"error":"success","data":24.5}"#,
-        r#"{"request_id":18,"error":"success","data":1000}"#,
+        r#"{"request_id":1,"error":"success"}"#,
+        r#"{"request_id":2,"error":"success","data":"movie.mkv"}"#,
+        r#"{"request_id":3,"error":"success","data":null}"#,
+        r#"{"request_id":4,"error":"success","data":1000}"#,
     ]);
-    let mut adapter = MpvAdapter::with_test_transport(transport);
-
-    adapter
-        .open_file("movie.mkv")
-        .expect("attached mpv transport should accept loadfile");
-
-    let outcome = adapter
-        .take_media_load_outcome()
-        .expect("file-loaded should still emit a success outcome");
+    let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
+    adapter.open_file("movie.mkv").expect("loadfile acceptance");
+    let loaded = collect_pending_player_delivery(&mut adapter);
     assert_eq!(
-        outcome,
-        PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()))
+        loaded
+            .load_outcomes()
+            .filter(|outcome| outcome.result == PlayerLoadAttemptResult::Loaded)
+            .count(),
+        1
     );
     assert_eq!(
-        adapter.take_local_file_update(),
-        None,
-        "local file metadata should not publish a transient zero duration while mpv is still probing"
+        loaded.local_files().count(),
+        0,
+        "unknown duration must not become zero"
     );
-
-    let update = adapter
-        .take_local_file_update()
-        .expect("duration availability should release the local file update");
+    state.queue_reads(&[
+        r#"{"event":"property-change","name":"duration","data":24.5}"#,
+        r#"{"request_id":5,"error":"success"}"#,
+    ]);
+    adapter.set_playback_rate(1.0).expect("duration update");
+    let metadata = collect_pending_player_delivery(&mut adapter);
+    let update = metadata
+        .local_files()
+        .last()
+        .expect("fresh duration releases metadata");
     assert_eq!(update.path.as_deref(), Some("movie.mkv"));
     assert_eq!(update.duration_seconds, Some(24.5));
     assert_eq!(update.size_bytes, Some(1000));
@@ -5480,8 +5462,10 @@ fn attached_open_file_emits_failure_outcome_when_end_file_reports_error() {
         .open_file("https://www.youtube.com/watch?v=test")
         .expect("attached mpv transport should accept loadfile");
 
-    let outcome = adapter
-        .take_media_load_outcome()
+    let delivery = collect_player_delivery(&mut adapter);
+    let outcome = delivery
+        .load_outcomes()
+        .next()
         .expect("end-file error should emit a failure outcome");
     assert_eq!(
         outcome.requested_target,
@@ -5489,10 +5473,13 @@ fn attached_open_file_emits_failure_outcome_when_end_file_reports_error() {
     );
     assert_eq!(outcome.loaded_target, None);
     assert_eq!(
-        outcome.failure.as_ref().map(|failure| failure.kind),
-        Some(PlayerMediaLoadFailureKind::FormatUnsupported)
+        outcome.result,
+        PlayerLoadAttemptResult::Failed(PlayerMediaLoadFailureKind::FormatUnsupported)
     );
-    assert_eq!(adapter.take_local_file_update(), None);
+    assert_eq!(
+        collect_player_delivery(&mut adapter).local_files().count(),
+        0
+    );
 }
 
 #[test]

@@ -289,14 +289,16 @@ fn reconciled_self_origin_state_uses_the_runtime_clock_for_correction_grace() {
         )
         .expect("hello should apply");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(10.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(10.0)
+                .with_paused(false)),
+        );
 
     runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
         StatePayload::new().with_playstate(
@@ -411,15 +413,17 @@ fn runtime_actions_for_desync_correction_maps_slowdown_to_rate_change() {
 fn failed_desync_rate_command_rolls_back_correction_ownership() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(2.0)
-                .with_paused(false),
-        ),
         fail_set_playback_rate: true,
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)),
+        );
 
     assert!(
         runtime
@@ -435,14 +439,16 @@ fn failed_desync_rate_command_rolls_back_correction_ownership() {
 fn disabling_slow_on_desync_restores_speed_and_failed_restore_retains_ownership() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(2.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)),
+        );
 
     runtime
         .run_desync_correction_if_needed(0.0, true, false, true)
@@ -482,15 +488,17 @@ fn disabling_slow_on_desync_restores_speed_and_failed_restore_retains_ownership(
 fn reconnect_restores_desync_owned_rate_before_forgetting_ownership() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(2.0)
-                .with_paused(false)
-                .with_playback_rate(1.0),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)
+                .with_playback_rate(1.0)),
+        );
 
     runtime
         .run_desync_correction_if_needed(0.0, true, false, true)
@@ -517,14 +525,16 @@ fn reconnect_restores_desync_owned_rate_before_forgetting_ownership() {
 fn reconnect_retries_failed_desync_owned_rate_restore_before_resetting_session() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(2.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)),
+        );
 
     runtime
         .run_desync_correction_if_needed(0.0, true, false, true)
@@ -552,14 +562,16 @@ fn reconnect_retries_failed_desync_owned_rate_restore_before_resetting_session()
 fn failed_reconnect_rate_restore_never_overwrites_new_session_speed_ownership() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(2.0)
-                .with_paused(false),
-        ),
         ..RecordingPlayer::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(2.0)
+                .with_paused(false)),
+        );
 
     runtime
         .run_desync_correction_if_needed(0.0, true, false, true)
@@ -594,16 +606,18 @@ fn failed_reconnect_rate_restore_never_overwrites_new_session_speed_ownership() 
 fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_is_observed() {
     let session = desync_session_with_remote_state(0.0, false, false, "bob");
     let player = RecordingPlayer {
-        pending_playback_telemetry_update: Some(
-            PlayerPlaybackTelemetryUpdate::default()
-                .with_position_seconds(6.0)
-                .with_paused(false)
-                .with_paused_for_cache(true),
-        ),
         ..RecordingPlayer::default()
     };
     let control = QueuedRuntimeControl::default();
     let mut runtime = ClientRuntime::new(session, player, control);
+    runtime
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &(PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(6.0)
+                .with_paused(false)
+                .with_paused_for_cache(true)),
+        );
 
     runtime
         .run_desync_correction_if_needed(0.0, false, false, true)
@@ -621,13 +635,13 @@ fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(6.0)
-            .with_paused(false)
-            .with_paused_for_cache(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(6.0)
+                .with_paused(false)
+                .with_paused_for_cache(false),
+        );
     runtime
         .run_desync_correction_if_needed(1.0, false, false, true)
         .expect("first post-cache observation should not fail");
@@ -645,12 +659,12 @@ fn client_runtime_suppresses_desync_correction_until_cache_recovery_advancement_
     );
 
     runtime
-        .player_mut_for_test()
-        .pending_playback_telemetry_update = Some(
-        PlayerPlaybackTelemetryUpdate::default()
-            .with_position_seconds(6.25)
-            .with_paused(false),
-    );
+        .session_mut()
+        .apply_player_playback_telemetry_update(
+            &PlayerPlaybackTelemetryUpdate::default()
+                .with_position_seconds(6.25)
+                .with_paused(false),
+        );
     runtime
         .run_desync_correction_if_needed(2.0, false, false, true)
         .expect("advancing post-cache observation should not fail");

@@ -552,12 +552,12 @@ fn client_runtime_publish_pending_local_file_update_dispatches_sanitized_set_fil
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_local_file_update: Some(
+        events: Some(RecordingPlayerScript::with_loaded_file(
             LocalFileUpdate::new("https://example.invalid/media/Movie Name.mkv")
                 .with_duration_seconds(95.5)
                 .with_size_bytes(123_456_789)
                 .with_path("C:/media/movie.mkv"),
-        ),
+        )),
         ..Default::default()
     };
     let control = QueuedRuntimeControl::default();
@@ -611,7 +611,9 @@ fn pending_cli_file_publish_announces_source_before_start_barrier() {
         .expect("barrier-aware hello should apply");
     let private_url = "https://youtube.com/watch?v=dQw4w9WgXcQ&private=canary";
     let player = RecordingPlayer {
-        pending_local_file_update: Some(LocalFileUpdate::new(private_url).with_path(private_url)),
+        events: Some(RecordingPlayerScript::with_loaded_file(
+            LocalFileUpdate::new(private_url).with_path(private_url),
+        )),
         ..Default::default()
     };
     let mut runtime = ClientRuntime::new(session, player, QueuedRuntimeControl::default());
@@ -657,9 +659,9 @@ fn client_runtime_publish_pending_local_file_update_without_metadata_uses_legacy
         .expect("hello should apply");
 
     let player = RecordingPlayer {
-        pending_local_file_update: Some(
+        events: Some(RecordingPlayerScript::with_loaded_file(
             LocalFileUpdate::new("movie.mkv").with_path("C:/media/movie.mkv"),
-        ),
+        )),
         ..Default::default()
     };
     let control = QueuedRuntimeControl::default();

@@ -1,3 +1,6 @@
+#[cfg(feature = "test-support")]
+pub mod scripted_events;
+
 #[derive(PartialEq, Eq)]
 pub enum PlayerError {
     Unsupported(&'static str),
@@ -317,36 +320,6 @@ impl LocalFileUpdate {
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
-    }
-}
-
-/// One local-file identity observation tied to the adapter event stream.
-///
-/// [`LocalFileUpdate`] carries unsequenced file metadata. This observation
-/// adds the media generation and observation time so consumers can order the
-/// media boundary against transport and command observations.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlayerLocalFileObservation {
-    pub update: LocalFileUpdate,
-    pub media_generation: Option<PlayerMediaGeneration>,
-    pub observed_at: Option<PlayerObservationTimestamp>,
-}
-
-impl PlayerLocalFileObservation {
-    pub const fn new(
-        update: LocalFileUpdate,
-        media_generation: Option<PlayerMediaGeneration>,
-        observed_at: Option<PlayerObservationTimestamp>,
-    ) -> Self {
-        Self {
-            update,
-            media_generation,
-            observed_at,
-        }
-    }
-
-    pub const fn unsequenced(update: LocalFileUpdate) -> Self {
-        Self::new(update, None, None)
     }
 }
 
@@ -1101,83 +1074,6 @@ impl PlayerMediaLoadOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlayerMediaLoadObservation {
-    pub outcome: PlayerMediaLoadOutcome,
-    pub media_generation: Option<PlayerMediaGeneration>,
-    pub observed_at: Option<PlayerObservationTimestamp>,
-}
-
-impl PlayerMediaLoadObservation {
-    pub const fn new(
-        outcome: PlayerMediaLoadOutcome,
-        media_generation: Option<PlayerMediaGeneration>,
-        observed_at: Option<PlayerObservationTimestamp>,
-    ) -> Self {
-        Self {
-            outcome,
-            media_generation,
-            observed_at,
-        }
-    }
-
-    pub const fn unsequenced(outcome: PlayerMediaLoadOutcome) -> Self {
-        Self::new(outcome, None, None)
-    }
-}
-
-/// Monotonic adapter-local order assigned when a player event enters the adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PlayerEventSequence(u64);
-
-impl PlayerEventSequence {
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-/// One event from an adapter's causally ordered player stream.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PlayerOrderedEventKind {
-    CommandProgress(PlayerCommandProgress),
-    LocalFile(PlayerLocalFileObservation),
-    MediaLoad(PlayerMediaLoadObservation),
-    Transport(PlayerTransportTelemetryUpdate),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlayerOrderedEvent {
-    pub sequence: PlayerEventSequence,
-    pub kind: PlayerOrderedEventKind,
-}
-
-impl PlayerOrderedEvent {
-    pub const fn new(sequence: PlayerEventSequence, kind: PlayerOrderedEventKind) -> Self {
-        Self { sequence, kind }
-    }
-}
-
-/// Atomic adapter snapshot used by owners that consume the ordered event stream.
-///
-/// Unsequenced playback telemetry remains available in the same batch for field-level fallback, so
-/// taking the batch cannot trigger another adapter pump that would split a causal event sequence.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PlayerObservationBatch {
-    /// Highest sequence discarded before the authoritative snapshot in `ordered_events`.
-    ///
-    /// When present, consumers must discard causal inference derived from earlier events. Events
-    /// in this batch begin at the following sequence and re-establish the adapter's current file,
-    /// transport, and still-relevant command lifecycle state. This is an observation rebase, not
-    /// evidence that the media or player attachment changed.
-    pub dropped_events_through: Option<PlayerEventSequence>,
-    pub ordered_events: Vec<PlayerOrderedEvent>,
-    pub playback_telemetry: Option<PlayerPlaybackTelemetryUpdate>,
-}
-
 /// Terminal state of one physical player load attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerPhysicalLoadOutcome {
@@ -1472,12 +1368,6 @@ pub struct LifecycleVerificationProjection {
     pub player_local_file_placeholder: SnapshotField<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlayerEventDeliveryMode {
-    TypedQueues,
-    OrderedAcknowledgedBatches,
-}
-
 pub trait PlayerAdapter: Send + Sync {
     fn name(&self) -> &'static str;
     /// Cached transport attachment state, when the adapter can provide it
@@ -1618,76 +1508,15 @@ pub trait PlayerAdapter: Send + Sync {
     fn set_window_minimized(&mut self, _window_minimized: bool) -> Result<(), PlayerError> {
         Err(PlayerError::Unsupported("set_window_minimized"))
     }
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        None
-    }
-    /// Returns a generation-aware local-file identity observation when the
-    /// adapter can preserve its media boundary.
-    ///
-    /// The default consumes an unsequenced file update without inventing a
-    /// media generation or an observation timestamp.
-    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
-        self.take_local_file_update()
-            .map(PlayerLocalFileObservation::unsequenced)
-    }
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        None
-    }
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        None
-    }
-    /// Returns one complete cache observation.
-    ///
-    /// Adapters without complete cache observations return `None`.
-    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        None
-    }
-    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-        None
-    }
-    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        None
-    }
-    /// Returns a generation-aware media-load result when the adapter can
-    /// preserve its position in the player event stream.
-    ///
-    /// The default marks an outcome from the independent queue unsequenced.
-    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
-        self.take_media_load_outcome()
-            .map(PlayerMediaLoadObservation::unsequenced)
-    }
-    /// Takes one atomic, causally ordered player-event snapshot.
-    ///
-    /// Returning `None` advertises independent typed-queue semantics. Adapters that return a
-    /// batch must perform maintenance and event polling exactly once before draining the batch.
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
-        None
-    }
-    /// Requests a fresh authoritative ordered snapshot after the consumer detects an unannounced
-    /// sequence gap.
-    ///
-    /// Typed-queue adapters may ignore this request. Ordered adapters should make the next batch carry
-    /// `dropped_events_through` and current file/transport observations.
-    fn request_ordered_event_reacquisition(&mut self) {}
 
     /// Returns the next ordered batch without consuming it.
     ///
     /// Repeated calls before acknowledgement may return the same batch.
     /// Event identities, observation times and semantic outcomes remain stable;
     /// observation delivery references may advance to include redelivery delay.
-    /// Adapters with independent typed queues return `None`.
+    /// `None` means that no batch is currently available.
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         None
-    }
-    /// Selects the lifecycle event-delivery contract for this adapter
-    /// attachment.
-    ///
-    /// The returned mode must remain constant for the lifetime of an
-    /// attachment. Changing modes requires a new attachment epoch or an
-    /// equivalent explicit consumer reset. Within one attachment, an adapter
-    /// must not expose lifecycle ownership through both delivery modes.
-    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        PlayerEventDeliveryMode::TypedQueues
     }
     /// Acknowledges a batch only after the consumer has successfully applied
     /// it.
@@ -1724,9 +1553,8 @@ mod tests {
     use super::{
         DisconnectedPlayer, LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate,
         PlayerCommand, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
-        PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerEventSequence,
-        PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
-        PlayerObservationTimestamp, PlayerOrderedEvent, PlayerOrderedEventKind,
+        PlayerCommandProgressState, PlayerCommandResult, PlayerError, PlayerMediaGeneration,
+        PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome, PlayerObservationTimestamp,
         PlayerPlaybackTelemetryUpdate, PlayerSeekableRange, PlayerTimelineKind,
         PlayerTransportPhase, PlayerTransportTelemetryUpdate,
     };
@@ -1739,34 +1567,10 @@ mod tests {
         }
     }
 
-    struct UnsequencedLocalFilePlayer(Option<LocalFileUpdate>);
-
-    impl PlayerAdapter for UnsequencedLocalFilePlayer {
-        fn name(&self) -> &'static str {
-            "unsequenced-local-file"
-        }
-
-        fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-            self.0.take()
-        }
-    }
-
-    struct UnsequencedMediaLoadPlayer(Option<PlayerMediaLoadOutcome>);
-
-    impl PlayerAdapter for UnsequencedMediaLoadPlayer {
-        fn name(&self) -> &'static str {
-            "unsequenced-media-load"
-        }
-
-        fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-            self.0.take()
-        }
-    }
-
     #[test]
     fn unsupported_methods_error_by_default() {
         let mut player = DummyPlayer;
-        assert_eq!(player.take_ordered_event_batch(), None);
+        assert_eq!(player.take_player_event_batch(), None);
         assert_eq!(
             player.open_file("movie.mkv"),
             Err(PlayerError::Unsupported("open_file"))
@@ -1860,12 +1664,6 @@ mod tests {
             Err(PlayerError::Unsupported("set_window_minimized"))
         );
         assert_eq!(player.name(), "dummy");
-        assert_eq!(player.take_local_file_update(), None);
-        assert_eq!(player.take_local_file_observation(), None);
-        assert_eq!(player.take_playback_telemetry_update(), None);
-        assert_eq!(player.take_command_progress(), None);
-        assert_eq!(player.take_media_load_outcome(), None);
-        assert_eq!(player.take_media_load_observation(), None);
         assert_eq!(player.take_pending_chat_request(), None);
         assert!(!player.supports_transport_telemetry());
         assert_eq!(
@@ -1876,56 +1674,6 @@ mod tests {
             player.execute_tracked(PlayerCommand::SetPaused(true)),
             Err(PlayerError::Unsupported("execute_tracked"))
         );
-    }
-
-    #[test]
-    fn ordered_event_sequence_preserves_adapter_assigned_identity() {
-        let event = PlayerOrderedEvent::new(
-            PlayerEventSequence::new(42),
-            PlayerOrderedEventKind::CommandProgress(PlayerCommandProgress::accepted(
-                PlayerCommandId::new(9),
-                Some(PlayerMediaGeneration::new(3)),
-                None,
-            )),
-        );
-        assert_eq!(event.sequence.get(), 42);
-        assert!(matches!(
-            event.kind,
-            PlayerOrderedEventKind::CommandProgress(progress)
-                if progress.command_id == PlayerCommandId::new(9)
-        ));
-    }
-
-    #[test]
-    fn local_file_observation_marks_unsequenced_updates() {
-        let mut player = UnsequencedLocalFilePlayer(Some(
-            LocalFileUpdate::new("movie.mkv").with_size_bytes(123),
-        ));
-
-        let observation = player
-            .take_local_file_observation()
-            .expect("unsequenced local-file update");
-
-        assert_eq!(observation.update.name, "movie.mkv");
-        assert_eq!(observation.update.size_bytes, Some(123));
-        assert_eq!(observation.media_generation, None);
-        assert_eq!(observation.observed_at, None);
-        assert_eq!(player.take_local_file_observation(), None);
-    }
-
-    #[test]
-    fn media_load_observation_marks_unsequenced_results() {
-        let outcome = PlayerMediaLoadOutcome::success("movie.mkv", Some("movie.mkv".to_owned()));
-        let mut player = UnsequencedMediaLoadPlayer(Some(outcome.clone()));
-
-        let observation = player
-            .take_media_load_observation()
-            .expect("unsequenced media-load outcome");
-
-        assert_eq!(observation.outcome, outcome);
-        assert_eq!(observation.media_generation, None);
-        assert_eq!(observation.observed_at, None);
-        assert_eq!(player.take_media_load_observation(), None);
     }
 
     #[test]

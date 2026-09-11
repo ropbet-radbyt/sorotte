@@ -1,5 +1,6 @@
 use super::*;
 use crate::lifecycle::LoadLifecycleReconciliation;
+use sorotte_player_api::{PlayerCommandSemanticResult, PlayerTransportSnapshot};
 use std::{collections::VecDeque, io};
 
 #[test]
@@ -425,12 +426,15 @@ fn authoritative_reconciliation_normalizes_paused_internal_seek_like_event_ingre
         "name": MPV_PROPERTY_SEEKING,
         "data": true,
     }));
-    let mut consumer = PlayerTransportTelemetryUpdate::default();
-    for update in adapter.pending_transport_telemetry_updates.drain(..) {
-        consumer.merge_from(update);
+    let mut consumer = PlayerTransportSnapshot::default();
+    for update in collect_pending_player_delivery(&mut adapter).transport_deltas() {
+        consumer.apply_delta(update.clone());
     }
-    assert_eq!(consumer.phase, Some(PlayerTransportPhase::Seeking));
-    assert_eq!(consumer.seeking, Some(true));
+    assert_eq!(
+        consumer.phase,
+        SnapshotField::Known(PlayerTransportPhase::Seeking)
+    );
+    assert_eq!(consumer.seeking, SnapshotField::Known(true));
 
     adapter.reconcile_lifecycle_from_authority();
 
@@ -444,19 +448,22 @@ fn authoritative_reconciliation_normalizes_paused_internal_seek_like_event_ingre
         PlayerTransportPhase::ReadyPaused,
         "a reconciliation poll must not re-latch settled paused playback in Seeking"
     );
-    for update in adapter.pending_transport_telemetry_updates.drain(..) {
-        consumer.merge_from(update);
+    for update in collect_pending_player_delivery(&mut adapter).transport_deltas() {
+        consumer.apply_delta(update.clone());
     }
-    assert_eq!(consumer.phase, Some(PlayerTransportPhase::ReadyPaused));
+    assert_eq!(
+        consumer.phase,
+        SnapshotField::Known(PlayerTransportPhase::ReadyPaused)
+    );
     assert_eq!(
         consumer.seeking,
-        Some(false),
+        SnapshotField::Known(false),
         "reconciliation must close the seeking edge already observed by a sparse telemetry consumer"
     );
 }
 
 #[test]
-fn polled_load_completion_finishes_the_corresponding_tracked_load() {
+fn replayed_bound_file_loaded_finishes_the_tracked_load_once() {
     let target = "C:/media/polled-before-file-loaded.wav";
     let generation = PlayerMediaGeneration::new(1);
     let mut adapter = MpvAdapter::simulated();
@@ -490,28 +497,29 @@ fn polled_load_completion_finishes_the_corresponding_tracked_load() {
     adapter.observed_state.paused_for_cache = Some(false);
     adapter.logical_pause_explicit = true;
 
-    assert!(
-        adapter.complete_pending_load_request_from_polled_update_if_ready(
-            MpvAdapter::local_file_update_for_path(target)
-                .with_duration_seconds(8.0)
-                .with_size_bytes(768_044),
-        ),
-        "coherent local-file metadata should complete the pending load"
-    );
+    adapter.handle_start_file_observation(41);
+    adapter.observed_state.path = Some(target.to_owned());
+    adapter.observed_state.duration_seconds = Some(8.0);
+    adapter.observed_state.size_bytes = Some(768_044);
+    adapter.handle_file_loaded_observation(Some(target.to_owned()));
+    // Replayed file-loaded ingress must not leave the accepted command pending.
+    adapter.handle_file_loaded_observation(Some(target.to_owned()));
 
     assert!(
         adapter
             .pending_tracked_commands
             .iter()
             .all(|command| command.id != command_id),
-        "the same polled boundary that completes lifecycle ownership must also finish the tracked load"
+        "the same file-loaded boundary that completes lifecycle ownership must also finish the tracked load"
     );
-    assert!(
-        adapter
-            .pending_command_progress_updates
-            .iter()
-            .any(|progress| progress.command_id == command_id && progress.is_terminal()),
-        "tracked completion should remain available to typed progress consumers"
+    let delivery = collect_pending_player_delivery(&mut adapter);
+    assert_eq!(
+        delivery
+            .command_outcomes()
+            .filter(|outcome| outcome.command_id == command_id
+                && outcome.result == PlayerCommandSemanticResult::Completed)
+            .count(),
+        1
     );
 }
 

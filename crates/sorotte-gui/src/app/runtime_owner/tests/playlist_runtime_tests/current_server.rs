@@ -274,7 +274,8 @@ impl GuiSessionTransportDriver for CurrentServerDriver {
 
 struct ObservedFilePlayer {
     current: Arc<Mutex<Option<std::path::PathBuf>>>,
-    update: Option<LocalFileUpdate>,
+    events: ScriptedPlayerEvents,
+    generation: u64,
 }
 
 impl PlayerAdapter for ObservedFilePlayer {
@@ -285,7 +286,10 @@ impl PlayerAdapter for ObservedFilePlayer {
         // The player may receive the expanded spelling of a Windows 8.3 path.
         // Observe the actual fixture identity, not the caller's path spelling.
         *self.current.lock().unwrap() = Some(std::fs::canonicalize(path).unwrap());
-        self.update = Some(
+        self.generation += 1;
+        self.events.push_event(active_player_event(self.generation));
+        self.events.push_event(file_event(
+            self.generation,
             LocalFileUpdate::new(
                 std::path::Path::new(path)
                     .file_name()
@@ -295,7 +299,7 @@ impl PlayerAdapter for ObservedFilePlayer {
             )
             .with_path(path.to_owned())
             .with_duration_seconds(300.0),
-        );
+        ));
         Ok(())
     }
     fn set_position(&mut self, _position: f64) -> Result<(), PlayerError> {
@@ -307,8 +311,14 @@ impl PlayerAdapter for ObservedFilePlayer {
     fn set_playback_rate(&mut self, _rate: f64) -> Result<(), PlayerError> {
         Ok(())
     }
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.update.take()
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+        self.events.peek()
+    }
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.events.acknowledge(token)
     }
 }
 
@@ -336,7 +346,8 @@ fn current_server_local_file_append_select_then_edit_keeps_player_and_playlist_i
     let current = Arc::new(Mutex::new(None));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(ObservedFilePlayer {
         current: current.clone(),
-        update: None,
+        events: ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1)),
+        generation: 0,
     })));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {

@@ -232,9 +232,7 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
 fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_duration() {
     #[derive(Debug, Default)]
     struct TelemetryPlayerState {
-        local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
-        playback_updates:
-            std::collections::VecDeque<sorotte_player_api::PlayerPlaybackTelemetryUpdate>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct TelemetryPlayerAdapter {
@@ -246,22 +244,25 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
             "telemetry"
         }
 
-        fn take_playback_telemetry_update(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerPlaybackTelemetryUpdate> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .playback_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_file_updates
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
@@ -315,16 +316,24 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
+        events: Some(active_player_events(1)),
+        ..Default::default()
+    }));
     {
         let mut player_state = player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        player_state.local_file_updates.push_back(
-            sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-                .with_path("C:/Media/episode1.mkv".to_owned())
-                .with_duration_seconds(1510.0),
-        );
+        player_state
+            .events
+            .as_mut()
+            .expect("scripted physical observations")
+            .push_event(file_event(
+                1,
+                sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+                    .with_path("C:/Media/episode1.mkv".to_owned())
+                    .with_duration_seconds(1510.0),
+            ));
     }
 
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
@@ -344,12 +353,15 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .playback_updates
-        .push_back(
+        .events
+        .as_mut()
+        .expect("scripted physical observations")
+        .push_event(playback_event(
+            1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(false)
                 .with_position_seconds(1511.0),
-        );
+        ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 

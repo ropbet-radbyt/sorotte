@@ -2526,14 +2526,62 @@ mod tests {
         open_error: Option<String>,
         pause_error: Option<String>,
         position_error: Option<String>,
-        pending_local_file_update: Option<sorotte_player_api::LocalFileUpdate>,
+        events: Option<sorotte_player_api::scripted_events::ScriptedPlayerEvents>,
+        media_generation: u64,
         maintenance_calls: Arc<AtomicUsize>,
         blocking_maintenance_calls: Arc<AtomicUsize>,
+    }
+
+    impl TestPlayer {
+        fn events(&mut self) -> &mut sorotte_player_api::scripted_events::ScriptedPlayerEvents {
+            self.events.get_or_insert_with(|| {
+                sorotte_player_api::scripted_events::ScriptedPlayerEvents::new(
+                    sorotte_player_api::PlayerAttachmentEpoch::new(1),
+                )
+            })
+        }
+
+        fn observe_loaded_file(&mut self, update: sorotte_player_api::LocalFileUpdate) {
+            use sorotte_player_api::*;
+            self.media_generation += 1;
+            let media_generation = PlayerMediaGeneration::new(self.media_generation);
+            let attempt_id = LoadAttemptId::new(self.media_generation);
+            let playlist_entry_id = self.media_generation as i64;
+            self.events().push_event(PlayerEvent::LoadAttemptActive {
+                attempt_id,
+                media_generation,
+                command_id: None,
+                playlist_entry_id,
+            });
+            self.observe_local_file(update);
+        }
+
+        fn observe_local_file(&mut self, update: sorotte_player_api::LocalFileUpdate) {
+            use sorotte_player_api::*;
+            let media_generation = PlayerMediaGeneration::new(self.media_generation);
+            let attempt_id = LoadAttemptId::new(self.media_generation);
+            self.events().push_event(PlayerEvent::LocalFileChanged {
+                attempt_id,
+                media_generation,
+                update,
+            });
+        }
     }
 
     impl PlayerAdapter for TestPlayer {
         fn name(&self) -> &'static str {
             "client-application-test"
+        }
+
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.events.as_ref().and_then(|events| events.peek())
+        }
+
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), PlayerError> {
+            self.events().acknowledge(token)
         }
 
         fn transport_is_connected(&self) -> Option<bool> {
@@ -2560,7 +2608,7 @@ mod tests {
                         .and_then(|name| name.to_str())
                         .unwrap_or(path)
                         .to_owned();
-                    self.pending_local_file_update = Some(
+                    self.observe_loaded_file(
                         sorotte_player_api::LocalFileUpdate::new(name).with_path(path.to_owned()),
                     );
                     Ok(())
@@ -2570,7 +2618,22 @@ mod tests {
 
         fn unload(&mut self) -> Result<(), PlayerError> {
             self.unload_calls = self.unload_calls.saturating_add(1);
-            self.pending_local_file_update = None;
+            if self.media_generation > 0 {
+                use sorotte_player_api::*;
+                let media_generation = PlayerMediaGeneration::new(self.media_generation);
+                let attempt_id = LoadAttemptId::new(self.media_generation);
+                self.events().push_event(PlayerEvent::LoadAttemptTerminal {
+                    attempt_id,
+                    media_generation,
+                    outcome: PlayerPhysicalLoadOutcome::Ended,
+                });
+                self.events()
+                    .push_event(PlayerEvent::LogicalPlaybackTerminal {
+                        attempt_id,
+                        media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    });
+            }
             Ok(())
         }
 
@@ -2590,10 +2653,6 @@ mod tests {
                 Some(message) => Err(PlayerError::OperationFailed(message.clone())),
                 None => Ok(()),
             }
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.pending_local_file_update.take()
         }
     }
 
@@ -3606,17 +3665,17 @@ mod tests {
         assert_eq!(application.player().unload_calls, 1);
 
         application.with_player_io(|player| {
-            player.pending_local_file_update = Some(
+            player.observe_local_file(
                 sorotte_player_api::LocalFileUpdate::new("episode-a.mkv")
                     .with_path("episode-a.mkv"),
             );
         });
         assert!(
-            application
+            !application
                 .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw,)
-                .expect("a delayed retiring-file observation should be reproducible")
+                .expect("a late observation from the ended load should be rejected")
         );
-        assert!(application.runtime.last_local_file_update().is_some());
+        assert!(application.runtime.last_local_file_update().is_none());
 
         let pause_calls_after_unload = application.player().pause_calls;
         application.with_player_io(|player| {

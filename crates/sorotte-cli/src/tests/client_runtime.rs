@@ -177,7 +177,9 @@ fn cli_runtime_retains_connected_mpv_when_optional_bridge_is_degraded() {
             player.open_file("C:/media/degraded-bridge.mkv")?;
             player.set_paused(false)?;
             player.set_position(12.5)?;
-            let _ = player.take_playback_telemetry_update();
+            while let Some(batch) = player.take_player_event_batch() {
+                player.acknowledge_player_event_batch(batch.acknowledgement_token).expect("maintenance batch receipt");
+            }
             Ok::<(), PlayerError>(())
         })
         .expect(
@@ -335,7 +337,9 @@ fn cli_runtime_contains_healthy_active_network_option_rejection() {
             player.set_position(12.5)?;
             player.open_file("https://media.example.test/future.m3u8")?;
             player.apply_network_media_options_to_active_media()?;
-            let _ = player.take_playback_telemetry_update();
+            while let Some(batch) = player.take_player_event_batch() {
+                player.acknowledge_player_event_batch(batch.acknowledgement_token).expect("maintenance batch receipt");
+            }
             Ok::<(), PlayerError>(())
         })
         .expect(

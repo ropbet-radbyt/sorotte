@@ -40,12 +40,6 @@ where
     P: PlayerAdapter,
 {
     fn refresh_player_projection_before_state_sync(&mut self, now_seconds: f64) -> bool {
-        if self.player.player_event_delivery_mode()
-            != sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-        {
-            self.sync_player_playback_telemetry_into_session_and_buffer();
-            return true;
-        }
         if self.pending_state_sync_player_error.is_some() {
             return false;
         }
@@ -373,7 +367,6 @@ where
         }
         self.control.activate_protocol_connection_generation();
 
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         let now_seconds = unix_wall_clock_time_seconds();
 
         let client_latency_calculation = self.ping_metrics.client_latency_calculation_now();
@@ -422,7 +415,6 @@ where
         if !self.session.is_active() {
             return false;
         }
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         let Some(pending) = self
             .playback_coordination
             .pending_participant_status_report(&self.session, true, now_seconds)
@@ -544,7 +536,6 @@ where
     pub fn drain_player_playback_telemetry_updates(
         &mut self,
     ) -> Vec<PlayerPlaybackTelemetryUpdate> {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         self.pending_player_playback_telemetry_updates.drain()
     }
 
@@ -646,7 +637,6 @@ where
     where
         F: FnMut(&PlayerPlaybackTelemetryUpdate) -> Result<(), E>,
     {
-        self.sync_player_playback_telemetry_into_session_and_buffer();
         self.pending_player_playback_telemetry_updates
             .try_flush(notify)
     }

@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_player_api::{PlayerEvent, PlayerMediaGeneration};
 
 #[test]
 fn simulated_unload_delivers_terminal_lifecycle_after_load_acknowledgement() {
@@ -37,17 +38,27 @@ fn stores_opened_file_path() {
         .expect("mpv stub should accept file");
     assert_eq!(adapter.current_path(), Some("movie.mkv"));
 
-    let observation = adapter
-        .take_local_file_observation()
-        .expect("open file should produce a sequenced local file observation");
-    let file_update = observation.update;
-    assert_eq!(file_update.name, "movie.mkv");
-    assert_eq!(file_update.path.as_deref(), Some("movie.mkv"));
-    assert_eq!(
-        observation.media_generation,
-        Some(sorotte_player_api::PlayerMediaGeneration::new(1))
-    );
-    assert!(observation.observed_at.is_some());
+    let batch = adapter
+        .take_player_event_batch()
+        .expect("opened file batch");
+    let (attempt_id, generation, file) = batch
+        .events
+        .iter()
+        .find_map(|item| match &item.event {
+            PlayerEvent::LocalFileChanged {
+                attempt_id,
+                media_generation,
+                update,
+            } => Some((*attempt_id, *media_generation, update)),
+            _ => None,
+        })
+        .expect("owned local file");
+    assert_eq!(file.name, "movie.mkv");
+    assert_eq!(file.path.as_deref(), Some("movie.mkv"));
+    assert_eq!(generation, PlayerMediaGeneration::new(1));
+    assert!(batch.events.iter().any(|item| matches!(item.event,
+        PlayerEvent::LoadAttemptActive { attempt_id: active, .. } if active == attempt_id
+    )));
 }
 
 #[test]
@@ -105,23 +116,37 @@ fn stores_runtime_state_updates() {
 
 #[test]
 fn queue_local_file_update_is_drained_once() {
-    let mut adapter = MpvAdapter::default();
+    let mut adapter = MpvAdapter::simulated();
+    adapter.open_file("movie.mkv").expect("physical owner");
+    let _ = collect_player_delivery(&mut adapter);
     adapter.queue_local_file_update(
         LocalFileUpdate::new("movie.mkv")
             .with_duration_seconds(95.5)
             .with_size_bytes(123),
     );
-
-    let observation = adapter
-        .take_local_file_observation()
-        .expect("queued local file observation should be returned");
-    let first = observation.update;
-    assert_eq!(first.name, "movie.mkv");
-    assert_eq!(first.duration_seconds, Some(95.5));
-    assert_eq!(first.size_bytes, Some(123));
-    assert_eq!(observation.media_generation, None);
-    assert!(observation.observed_at.is_some());
-    assert_eq!(adapter.take_local_file_observation(), None);
+    let batch = adapter
+        .take_player_event_batch()
+        .expect("owned metadata batch");
+    let files = batch
+        .events
+        .iter()
+        .filter_map(|item| match &item.event {
+            PlayerEvent::LocalFileChanged {
+                media_generation,
+                update,
+                ..
+            } => Some((media_generation, update)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 1);
+    assert_eq!(*files[0].0, PlayerMediaGeneration::new(1));
+    assert_eq!(files[0].1.duration_seconds, Some(95.5));
+    assert_eq!(files[0].1.size_bytes, Some(123));
+    adapter
+        .acknowledge_player_event_batch(batch.acknowledgement_token)
+        .expect("metadata receipt");
+    assert!(adapter.take_player_event_batch().is_none());
 }
 
 #[test]
@@ -133,5 +158,8 @@ fn disconnected_adapter_does_not_simulate_success() {
         Err(PlayerError::NotConnected)
     );
     assert_eq!(adapter.current_path(), None);
-    assert_eq!(adapter.take_local_file_update(), None);
+    assert_eq!(
+        collect_player_delivery(&mut adapter).local_files().count(),
+        0
+    );
 }

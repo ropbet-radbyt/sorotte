@@ -1451,6 +1451,7 @@ impl GuiPersistedConfigRuntimeOwner {
 mod tests {
     use super::*;
     use crate::app::runtime_owner::player::media_resolution::GuiMediaResolutionPlan;
+    use crate::app::runtime_owner::player_event_test_support::*;
     use crate::app::{
         GuiTestPlayerAdapter, StoredClientSettings, runtime_owner::GuiPendingLogicalMediaOverride,
     };
@@ -1581,8 +1582,7 @@ mod tests {
     }
 
     struct TrackedFailureTelemetryPlayer {
-        command_progress: VecDeque<PlayerCommandProgress>,
-        media_load_outcomes: VecDeque<PlayerMediaLoadOutcome>,
+        events: ScriptedPlayerEvents,
     }
 
     impl PlayerAdapter for TrackedFailureTelemetryPlayer {
@@ -1590,12 +1590,14 @@ mod tests {
             "tracked-failure-telemetry"
         }
 
-        fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-            self.command_progress.pop_front()
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.events.peek()
         }
-
-        fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-            self.media_load_outcomes.pop_front()
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.events.acknowledge(token)
         }
     }
 
@@ -1629,26 +1631,21 @@ mod tests {
             GuiPlaylistSourcePolicy::Automatic,
         );
         owner.begin_playlist_resolution_candidate_load(candidate, &started(101));
+        let mut events =
+            ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(1));
+        // The classified load failure precedes its generic command terminal.
+        events.push_outcome(load_failed(1, Some(command_id), target, None, kind));
+        events.push_outcome(command_outcome(
+            command_id,
+            None,
+            sorotte_player_api::PlayerCommandSemanticResult::Failed(
+                PlayerCommandFailureKind::MediaEnded,
+            ),
+        ));
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
-            TrackedFailureTelemetryPlayer {
-                command_progress: VecDeque::from([PlayerCommandProgress::finished(
-                    command_id,
-                    None,
-                    None,
-                    None,
-                    PlayerCommandResult::Failed(PlayerCommandFailureKind::MediaEnded),
-                )]),
-                media_load_outcomes: VecDeque::from([PlayerMediaLoadOutcome::failure(
-                    target,
-                    None,
-                    kind,
-                    "classified rich failure",
-                )]),
-            },
+            TrackedFailureTelemetryPlayer { events },
         )));
 
-        // Production collection drains command progress first, but production
-        // application deliberately applies media outcomes first.
         owner.refresh_player_state_impl();
         owner
     }
@@ -2794,16 +2791,13 @@ mod tests {
             PlayerCommandResult::Completed,
         ));
         let boundary = owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                LocalFileUpdate::new("episode.mkv").with_path(target),
-                Some(generation),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            LocalFileUpdate::new("episode.mkv").with_path(target),
+            generation,
+            None,
             true,
         );
 
-        assert_eq!(boundary, None);
+        assert!(!boundary);
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
         assert!(!attempt.fallback_pending);
@@ -2845,16 +2839,13 @@ mod tests {
         owner.attached_media_observation_cursor.media_generation = Some(3);
 
         let boundary = owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                update,
-                Some(PlayerMediaGeneration::new(3)),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            update,
+            PlayerMediaGeneration::new(3),
+            None,
             true,
         );
 
-        assert_eq!(boundary, None);
+        assert!(!boundary);
         let attempt = owner.playlist_resolution_attempt.as_ref().unwrap();
         assert_eq!(attempt.state, PlaylistResolutionAttemptState::Active);
         assert!(!attempt.fallback_pending);
@@ -2888,34 +2879,28 @@ mod tests {
         owner.attached_media_observation_cursor.media_generation = Some(generation.get());
 
         let boundary = owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                LocalFileUpdate::new(stream_target).with_path(stream_target),
-                Some(generation),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            LocalFileUpdate::new(stream_target).with_path(stream_target),
+            generation,
+            None,
             true,
         );
 
-        assert_eq!(boundary, None);
+        assert!(!boundary);
         assert_eq!(owner.player_local_file, Some(logical_file.clone()));
         assert!(!owner.player_local_file_placeholder);
         assert!(owner.pending_logical_media_override.is_some());
 
         owner.player_position_seconds = Some(42.0);
         let redirected_boundary = owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                LocalFileUpdate::new(redirected_target)
-                    .with_path(redirected_target)
-                    .with_duration_seconds(90.0),
-                Some(generation),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(11)),
+            LocalFileUpdate::new(redirected_target)
+                .with_path(redirected_target)
+                .with_duration_seconds(90.0),
+            generation,
+            None,
             false,
         );
 
-        assert_eq!(redirected_boundary, None);
+        assert!(!redirected_boundary);
         assert_eq!(owner.player_local_file, Some(logical_file));
         assert_eq!(owner.player_position_seconds, Some(42.0));
         assert!(owner.pending_logical_media_override.is_some());
@@ -2923,16 +2908,13 @@ mod tests {
         let external_target = "https://media.example/new-video.mkv";
         let newer_generation = PlayerMediaGeneration::new(generation.get() + 1);
         let external_boundary = owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                LocalFileUpdate::new(external_target).with_path(external_target),
-                Some(newer_generation),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(12)),
+            LocalFileUpdate::new(external_target).with_path(external_target),
+            newer_generation,
+            None,
             false,
         );
 
-        assert!(external_boundary.is_some());
+        assert!(external_boundary);
         assert_eq!(
             owner.player_local_file,
             Some(LocalFileUpdate::new(external_target).with_path(external_target))
@@ -3197,12 +3179,9 @@ mod tests {
             Some(command_id),
         ));
         owner.process_attached_local_file_observation(
-            sorotte_player_api::PlayerLocalFileObservation::new(
-                LocalFileUpdate::new(stream_target).with_path(stream_target),
-                Some(media_generation),
-                None,
-            ),
-            Some(sorotte_player_api::PlayerEventSequence::new(10)),
+            LocalFileUpdate::new(stream_target).with_path(stream_target),
+            media_generation,
+            None,
             true,
         );
 
@@ -3379,7 +3358,7 @@ mod tests {
     #[test]
     fn authoritative_newer_transport_generation_clears_pending_logical_override() {
         struct GenerationPlayer {
-            update: Option<sorotte_player_api::PlayerTransportTelemetryUpdate>,
+            events: ScriptedPlayerEvents,
         }
 
         impl PlayerAdapter for GenerationPlayer {
@@ -3387,10 +3366,14 @@ mod tests {
                 "generation-player"
             }
 
-            fn take_transport_telemetry_update(
+            fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+                self.events.peek()
+            }
+            fn acknowledge_player_event_batch(
                 &mut self,
-            ) -> Option<sorotte_player_api::PlayerTransportTelemetryUpdate> {
-                self.update.take()
+                token: sorotte_player_api::PlayerEventAcknowledgementToken,
+            ) -> Result<(), sorotte_player_api::PlayerError> {
+                self.events.acknowledge(token)
             }
         }
 
@@ -3423,13 +3406,17 @@ mod tests {
             "a delayed older generation must not clear the current pending override"
         );
 
-        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(GenerationPlayer {
-            update: Some(sorotte_player_api::PlayerTransportTelemetryUpdate::new(
+        let mut events = active_player_events(8);
+        events.push_event(transport_event(
+            sorotte_player_api::PlayerTransportTelemetryUpdate::new(
                 PlayerMediaGeneration::new(8),
                 sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
                     Duration::from_millis(1),
                 ),
-            )),
+            ),
+        ));
+        owner.player = Some(GuiOwnedPlayer::Custom(Box::new(GenerationPlayer {
+            events,
         })));
         owner.refresh_player_state_impl();
 

@@ -2020,17 +2020,7 @@ fn gui_persisted_config_runtime_owner_automatic_session_open_loads_direct_web_ur
 fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_media_confirmation() {
     struct TrackedRecordingPlayer {
         opened_paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-        command_progress: std::sync::Arc<
-            std::sync::Mutex<std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>>,
-        >,
-        media_load_outcomes: std::sync::Arc<
-            std::sync::Mutex<
-                std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
-            >,
-        >,
-        local_file_updates: std::sync::Arc<
-            std::sync::Mutex<std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>>,
-        >,
+        events: std::sync::Arc<std::sync::Mutex<ScriptedPlayerEvents>>,
         next_command_id: u64,
     }
 
@@ -2057,47 +2047,29 @@ fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_med
             Ok(command_id)
         }
 
-        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
-            self.command_progress
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pop_front()
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+            self.events.lock().unwrap().peek()
         }
-
-        fn take_media_load_outcome(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
-            self.media_load_outcomes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pop_front()
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.local_file_updates
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pop_front()
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.events.lock().unwrap().acknowledge(token)
         }
     }
 
     let initial_url = "http://127.0.0.1:43210/generated-fault.wav";
     let replacement_url = "https://media.example.test/replacement.mp4";
     let opened_paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let command_progress =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let media_load_outcomes =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    let local_file_updates =
-        std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let events = std::sync::Arc::new(std::sync::Mutex::new(ScriptedPlayerEvents::new(
+        sorotte_player_api::PlayerAttachmentEpoch::new(1),
+    )));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_loopback_session_runtime("alice", "room1")
         .expect("client-core loopback runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TrackedRecordingPlayer {
         opened_paths: opened_paths.clone(),
-        command_progress: command_progress.clone(),
-        media_load_outcomes: media_load_outcomes.clone(),
-        local_file_updates: local_file_updates.clone(),
+        events: events.clone(),
         next_command_id: 1,
     })));
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -2137,23 +2109,15 @@ fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_med
         .expect("initial direct URL load should be tracked");
     assert!(owner.player_local_file_placeholder);
 
-    command_progress
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .extend([
-            sorotte_player_api::PlayerCommandProgress::accepted(
-                initial_command_id,
-                Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
-                None,
-            ),
-            sorotte_player_api::PlayerCommandProgress::finished(
-                initial_command_id,
-                Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
-                None,
-                None,
-                sorotte_player_api::PlayerCommandResult::Completed,
-            ),
-        ]);
+    {
+        let mut events = events.lock().unwrap();
+        events.push_event(bound_player_event(1, initial_command_id));
+        events.push_outcome(command_outcome(
+            initial_command_id,
+            Some(sorotte_player_api::PlayerMediaGeneration::new(1)),
+            sorotte_player_api::PlayerCommandSemanticResult::Completed,
+        ));
+    }
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let attempt = owner
         .playlist_resolution_attempt
@@ -2217,20 +2181,20 @@ fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_med
         "same-target row identity churn must adopt the physical in-flight load instead of resubmitting it"
     );
 
-    let successful_load = sorotte_player_api::PlayerMediaLoadOutcome::success(
-        initial_url,
-        Some(initial_url.to_owned()),
-    );
-    media_load_outcomes
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push_back(successful_load);
-    local_file_updates
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push_back(
+    {
+        let mut events = events.lock().unwrap();
+        events.push_event(starting_player_event(1, Some(initial_command_id)));
+        events.push_outcome(load_succeeded(
+            1,
+            Some(initial_command_id),
+            initial_url,
+            Some(initial_url.to_owned()),
+        ));
+        events.push_event(file_event(
+            1,
             sorotte_player_api::LocalFileUpdate::new("generated-fault.wav").with_path(initial_url),
-        );
+        ));
+    }
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(
         !owner.player_local_file_placeholder,
@@ -2250,16 +2214,13 @@ fn gui_persisted_config_runtime_owner_deduplicates_accepted_direct_url_until_med
         crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Active
     );
 
-    let terminal_failure = sorotte_player_api::PlayerMediaLoadOutcome::failure(
+    events.lock().unwrap().push_outcome(load_failed(
+        1,
+        Some(initial_command_id),
         initial_url,
         Some(initial_url.to_owned()),
         sorotte_player_api::PlayerMediaLoadFailureKind::Network,
-        "fixture connection ended",
-    );
-    media_load_outcomes
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push_back(terminal_failure);
+    ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state);
     assert_eq!(

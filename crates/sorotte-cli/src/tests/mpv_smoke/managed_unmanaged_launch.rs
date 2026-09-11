@@ -246,14 +246,28 @@ fn unmanaged_external_mpv_smoke_launch_spec_and_spawn_apply_file_and_player_args
     let mut last_telemetry = None;
 
     while started.elapsed() < timeout {
-        if let Some(update) = adapter.take_local_file_update() {
+        let mut files = Vec::new();
+        while let Some(batch) = adapter.take_player_event_batch() {
+            for event in &batch.events {
+                match &event.event {
+                    sorotte_player_api::PlayerEvent::LocalFileChanged { update, .. } => {
+                        files.push(update.clone())
+                    }
+                    sorotte_player_api::PlayerEvent::TransportDelta(delta) => {
+                        last_telemetry = Some(delta.clone())
+                    }
+                    _ => {}
+                }
+            }
+            adapter
+                .acknowledge_player_event_batch(batch.acknowledgement_token)
+                .expect("native metadata receipt");
+        }
+        for update in files {
             if update.name == expected_name {
                 saw_local_file = true;
             }
             last_update = Some(update);
-        }
-        while let Some(telemetry) = adapter.take_playback_telemetry_update() {
-            last_telemetry = Some(telemetry);
         }
 
         if adapter.paused() {

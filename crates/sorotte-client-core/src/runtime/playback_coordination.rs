@@ -20,11 +20,10 @@ use sorotte_player_api::{
     LoadAttemptId, PlayerActiveLoadSnapshot, PlayerAttachmentEpoch, PlayerCommand,
     PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgressState, PlayerCommandResult,
     PlayerCommandSemanticResult, PlayerEvent, PlayerEventAcknowledgementToken, PlayerEventBatch,
-    PlayerEventDeliveryMode, PlayerEventOrder, PlayerLoadAttemptResult, PlayerMediaGeneration,
-    PlayerObservationTimestamp, PlayerPlaybackTelemetryUpdate, PlayerSemanticOutcome,
-    PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportSnapshot,
-    PlayerTransportTelemetryUpdate, SequencedPlayerEvent, SequencedPlayerSemanticOutcome,
-    SnapshotField,
+    PlayerEventOrder, PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerObservationTimestamp,
+    PlayerPlaybackTelemetryUpdate, PlayerSemanticOutcome, PlayerSequenceBoundary,
+    PlayerTransportDelta, PlayerTransportSnapshot, PlayerTransportTelemetryUpdate,
+    SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 pub use sorotte_protocol::PlaybackBarrierTimeoutAction;
 use sorotte_protocol::{
@@ -3115,63 +3114,18 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        if self.player.player_event_delivery_mode()
-            == PlayerEventDeliveryMode::OrderedAcknowledgedBatches
+        let mut first_error = self.pending_state_sync_player_error.take();
+        if let Err(error) = self.drain_ordered_player_events(now_seconds)
+            && first_error.is_none()
         {
-            let mut first_error = self.pending_state_sync_player_error.take();
-            if let Err(error) = self.drain_ordered_player_events(now_seconds)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-            if first_error.is_none() {
-                self.reconcile_player_transport_from_session(now_seconds, &mut first_error);
-            }
-            if let Err(error) = self.emit_participant_status_transition(now_seconds)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-            return first_error.map_or(Ok(()), Err);
+            first_error = Some(error);
         }
-        let mut first_error = None;
-        while let Some(progress) = self.player.take_command_progress() {
-            if self
-                .playback_coordination
-                .apply_player_command_progress(progress, now_seconds)
-                && let Err(error) = self.report_player_command_failure_readiness(now_seconds)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
+        // A runtime with an event-free command sink has no physical player
+        // stream to coordinate here. GUI-owned transport is advanced through
+        // the external observation/dispatch entry points instead.
+        if first_error.is_none() && self.ordered_player_events.attachment_epoch.is_some() {
+            self.reconcile_player_transport_from_session(now_seconds, &mut first_error);
         }
-        while let Some(update) = self.player.take_transport_telemetry_update() {
-            let mut actions = self
-                .playback_coordination
-                .observe_transport(update, now_seconds);
-            if let Err(error) = self.handle_latest_player_readiness_observation()
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-            if let Err(error) =
-                self.promote_pending_native_play_before_pause_correction(&mut actions)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-            if let Err(error) = self.report_playback_barrier_observations(&actions)
-                && first_error.is_none()
-            {
-                first_error = Some(crate::control::client_effect_player_error(error));
-            }
-            if let Err(error) = self.execute_playback_coordinator_actions(actions, now_seconds)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-        self.reconcile_player_transport_from_session(now_seconds, &mut first_error);
         if let Err(error) = self.emit_participant_status_transition(now_seconds)
             && first_error.is_none()
         {

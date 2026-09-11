@@ -161,9 +161,7 @@ struct FailFirstOpenPlayerAdapter {
     mode: FirstOpenFailureMode,
     opened_paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     next_command_id: u64,
-    command_progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
-    media_load_outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
-    local_file_updates: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+    events: ScriptedPlayerEvents,
 }
 
 impl FailFirstOpenPlayerAdapter {
@@ -174,9 +172,9 @@ impl FailFirstOpenPlayerAdapter {
                 mode,
                 opened_paths: opened_paths.clone(),
                 next_command_id: 1,
-                command_progress: std::collections::VecDeque::new(),
-                media_load_outcomes: std::collections::VecDeque::new(),
-                local_file_updates: std::collections::VecDeque::new(),
+                events: ScriptedPlayerEvents::new(sorotte_player_api::PlayerAttachmentEpoch::new(
+                    1,
+                )),
             },
             opened_paths,
         )
@@ -213,38 +211,31 @@ impl PlayerAdapter for FailFirstOpenPlayerAdapter {
         let command_id = sorotte_player_api::PlayerCommandId::new(self.next_command_id);
         let generation = sorotte_player_api::PlayerMediaGeneration::new(self.next_command_id);
         self.next_command_id += 1;
-        self.command_progress
-            .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
-                command_id,
-                Some(generation),
-                None,
-            ));
+        self.events
+            .push_event(bound_player_event((generation).get(), command_id));
+        self.events
+            .push_event(starting_player_event(generation.get(), Some(command_id)));
         if open_number == 1 {
-            self.media_load_outcomes.push_back(
-                sorotte_player_api::PlayerMediaLoadOutcome::success(
-                    path.clone(),
-                    Some(path.clone()),
-                ),
-            );
-            self.local_file_updates.push_back(
+            self.events.push_outcome(load_succeeded(
+                generation.get(),
+                Some(command_id),
+                path.clone(),
+                Some(path.clone()),
+            ));
+            self.events.push_event(file_event(
+                generation.get(),
                 sorotte_player_api::LocalFileUpdate::new("episode.mkv").with_path(path.clone()),
-            );
+            ));
         }
         let result = if open_number == 1 {
-            sorotte_player_api::PlayerCommandResult::Failed(
+            sorotte_player_api::PlayerCommandSemanticResult::Failed(
                 sorotte_player_api::PlayerCommandFailureKind::Unknown,
             )
         } else {
-            sorotte_player_api::PlayerCommandResult::Completed
+            sorotte_player_api::PlayerCommandSemanticResult::Completed
         };
-        self.command_progress
-            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
-                command_id,
-                Some(generation),
-                None,
-                None,
-                result,
-            ));
+        self.events
+            .push_outcome(command_outcome(command_id, Some(generation), result));
         Ok(command_id)
     }
 
@@ -255,24 +246,25 @@ impl PlayerAdapter for FailFirstOpenPlayerAdapter {
                 "simulated first candidate failure".to_owned(),
             ));
         }
-        self.media_load_outcomes
-            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::success(
-                path,
-                Some(path.to_owned()),
-            ));
+        self.events
+            .push_event(active_player_event(open_number as u64));
+        self.events.push_outcome(load_succeeded(
+            open_number as u64,
+            None,
+            path,
+            Some(path.to_owned()),
+        ));
         Ok(())
     }
 
-    fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
-        self.command_progress.pop_front()
+    fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
+        self.events.peek()
     }
-
-    fn take_media_load_outcome(&mut self) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
-        self.media_load_outcomes.pop_front()
-    }
-
-    fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-        self.local_file_updates.pop_front()
+    fn acknowledge_player_event_batch(
+        &mut self,
+        token: sorotte_player_api::PlayerEventAcknowledgementToken,
+    ) -> Result<(), sorotte_player_api::PlayerError> {
+        self.events.acknowledge(token)
     }
 }
 

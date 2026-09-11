@@ -1,9 +1,10 @@
+use super::player_delivery::PlayerDelivery;
 use super::*;
+use crate::adapter::collect_pending_player_delivery;
 use crate::constants::MPV_PROPERTY_PAUSED_FOR_CACHE;
 use sorotte_player_api::{
-    PlayerCommandFailureKind, PlayerCommandProgress, PlayerCommandProgressState,
-    PlayerCommandResult, PlayerMediaLoadOutcome, PlayerOrderedEventKind, PlayerPlayIntent,
-    PlayerTransportPhase, PlayerTransportTelemetryUpdate,
+    PlayerCommandFailureKind, PlayerCommandSemanticResult, PlayerEvent, PlayerLoadAttemptResult,
+    PlayerPlayIntent, PlayerTransportPhase, PlayerTransportSnapshot, SnapshotField,
 };
 
 fn adapter_with_registered_observers(lines: &[&str]) -> MpvAdapter {
@@ -11,25 +12,15 @@ fn adapter_with_registered_observers(lines: &[&str]) -> MpvAdapter {
     MpvAdapter::with_test_transport_and_registered_observers(transport)
 }
 
-fn assert_accepted(
-    progress: PlayerCommandProgress,
-    command_id: sorotte_player_api::PlayerCommandId,
-) {
-    assert_eq!(progress.command_id, command_id);
-    assert_eq!(progress.state, PlayerCommandProgressState::Accepted);
-    assert!(progress.observed_at.is_some());
-}
-
-fn assert_completed(
-    progress: PlayerCommandProgress,
-    command_id: sorotte_player_api::PlayerCommandId,
-) {
-    assert_eq!(progress.command_id, command_id);
+fn assert_completed(delivery: &PlayerDelivery, command_id: sorotte_player_api::PlayerCommandId) {
+    let outcomes = delivery.command_outcomes().collect::<Vec<_>>();
     assert_eq!(
-        progress.state,
-        PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+        outcomes.len(),
+        1,
+        "one semantic terminal per command: {outcomes:?}"
     );
-    assert!(progress.observed_at.is_some());
+    assert_eq!(outcomes[0].command_id, command_id);
+    assert_eq!(outcomes[0].result, PlayerCommandSemanticResult::Completed);
 }
 
 fn assert_transcript_does_not_retain_canary(
@@ -64,7 +55,7 @@ fn actual_ipc_capture_redacts_json_encoded_client_message_payload() {
     adapter
         .set_playback_rate(1.0)
         .expect("scripted IPC command should pump the captured chat event");
-    let _ = adapter.take_playback_telemetry_update();
+    let _ = collect_pending_player_delivery(&mut adapter);
 
     let transcript = adapter
         .take_lifecycle_transcript()
@@ -95,7 +86,7 @@ fn actual_ipc_capture_redacts_header_credentials_inside_event_arrays() {
     adapter
         .set_playback_rate(1.0)
         .expect("scripted IPC command should pump the captured header event");
-    let _ = adapter.take_playback_telemetry_update();
+    let _ = collect_pending_player_delivery(&mut adapter);
 
     let transcript = adapter
         .take_lifecycle_transcript()
@@ -175,15 +166,12 @@ fn tracked_ipc_success_is_accepted_but_not_completed() {
         "tracked IPC acceptance must not overwrite the last observed pause state"
     );
 
-    assert_accepted(
-        adapter
-            .take_command_progress()
-            .expect("acceptance should be reported"),
-        command_id,
-    );
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .filter(|outcome| outcome.command_id == command_id)
+            .count(),
+        0,
         "the JSON IPC success response must not complete the command"
     );
 }
@@ -205,19 +193,19 @@ fn tracked_pause_completes_only_after_logical_pause_is_observed() {
     let command_id = adapter
         .execute_tracked(PlayerCommand::SetPaused(true))
         .expect("pause should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
+
+    assert_eq!(
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0
     );
-    assert_eq!(adapter.take_command_progress(), None);
 
     adapter
         .set_playback_rate(1.0)
         .expect("logical pause observation should be drained");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 }
 
 #[test]
@@ -240,26 +228,23 @@ fn cache_induced_pause_does_not_acknowledge_logical_pause_until_cache_releases()
     let command_id = adapter
         .execute_tracked(PlayerCommand::SetPaused(true))
         .expect("pause should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
+
     adapter
         .set_playback_rate(1.0)
         .expect("cache-induced pause should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "pause=true while paused-for-cache=true is not a logical-pause acknowledgement"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("cache release should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 }
 
 #[test]
@@ -281,28 +266,28 @@ fn tracked_seek_requires_both_seek_end_and_position_tolerance() {
     let command_id = adapter
         .execute_tracked(PlayerCommand::SetPosition(20.0))
         .expect("seek should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
 
     adapter
         .set_playback_rate(1.0)
         .expect("out-of-tolerance observations should be drained");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "seeking=false is insufficient while the position is outside tolerance"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("in-tolerance position should be drained");
-    let completed = adapter
-        .take_command_progress()
-        .expect("matching position should complete seek");
-    assert_completed(completed, command_id);
-    assert_eq!(completed.observed_position_seconds, Some(20.4));
+    let completed = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed, command_id);
+    assert!(
+        completed
+            .transport_deltas()
+            .any(|delta| delta.position_seconds == Some(20.4))
+    );
 }
 
 #[test]
@@ -331,27 +316,23 @@ fn tracked_start_after_load_waits_for_logical_play_cache_release_restart_and_adv
             baseline_restart_sequence: 0,
         }))
         .expect("play should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
 
     adapter
         .set_playback_rate(1.0)
         .expect("restart while cache-paused should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "restart must not complete play while cache pause remains active"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("cache release should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 }
 
 #[test]
@@ -382,23 +363,20 @@ fn tracked_start_after_load_reacquires_unchanged_cache_release_after_transient_n
             baseline_restart_sequence: 0,
         }))
         .expect("start after load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
+
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "authoritative cache release still requires restart and advancement"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("post-command playback evidence should be drained");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 
     let writes = state.writes();
     let cache_pause_reads = writes
@@ -441,30 +419,29 @@ fn tracked_start_after_seek_requires_restart_followed_by_forward_position_advanc
             baseline_restart_sequence: 0,
         }))
         .expect("play should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
+
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "logical unpause without a restart and later advancement must not complete play"
     );
     adapter
         .set_playback_rate(1.0)
         .expect("logical unpause should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "logical unpause alone must not complete play"
     );
     adapter
         .set_playback_rate(1.0)
         .expect("restart followed by forward movement should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 }
 
 #[test]
@@ -488,44 +465,52 @@ fn tracked_resume_completes_without_playback_restart_after_fresh_advancement() {
         .set_playback_rate(1.0)
         .expect("ready-paused setup observations should be drained");
 
-    let mut latest = PlayerTransportTelemetryUpdate::default();
-    while let Some(update) = adapter.take_transport_telemetry_update() {
-        latest.merge_from(update);
+    let mut latest = PlayerTransportSnapshot::default();
+    for update in collect_pending_player_delivery(&mut adapter)
+        .transport_deltas()
+        .cloned()
+    {
+        latest.apply_delta(update);
     }
-    assert_eq!(latest.phase, Some(PlayerTransportPhase::ReadyPaused));
-    assert_eq!(latest.logical_pause, Some(true));
-    assert_eq!(latest.paused_for_cache, Some(false));
-    assert_eq!(latest.core_idle, Some(true));
-    assert_eq!(latest.playback_restart_sequence, None);
+    assert_eq!(
+        latest.phase,
+        SnapshotField::Known(PlayerTransportPhase::ReadyPaused)
+    );
+    assert_eq!(latest.logical_pause, SnapshotField::Known(true));
+    assert_eq!(latest.paused_for_cache, SnapshotField::Known(false));
+    assert_eq!(latest.core_idle, SnapshotField::Known(true));
+    assert_eq!(latest.playback_restart_sequence, SnapshotField::Unavailable);
 
     let command_id = adapter
         .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::Resume))
         .expect("resume should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
+
+    assert_eq!(
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0
     );
-    assert_eq!(adapter.take_command_progress(), None);
 
     adapter
         .set_playback_rate(1.0)
         .expect("logical resume should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "logical resume without fresh advancement must remain pending"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("fresh position advancement should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 
     let mut restart_observed = false;
-    while let Some(update) = adapter.take_transport_telemetry_update() {
+    for update in completed_delivery.transport_deltas() {
         restart_observed |= update.playback_restart_sequence.is_some();
     }
     assert!(
@@ -554,13 +539,12 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
     let command_id = adapter
         .execute_tracked(PlayerCommand::Play(PlayerPlayIntent::Resume))
         .expect("resume should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
+
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "the command response is not semantic completion"
     );
 
@@ -576,8 +560,9 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let completed = loop {
-        if let Some(progress) = adapter.take_command_progress() {
-            break progress;
+        let delivery = collect_player_delivery(&mut adapter);
+        if delivery.command_outcomes().next().is_some() {
+            break delivery;
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -586,10 +571,12 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
         );
         std::thread::yield_now();
     };
-    assert_completed(completed, command_id);
+    assert_completed(&completed, command_id);
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "one accepted command must have exactly one semantic terminal"
     );
 
@@ -603,12 +590,15 @@ fn pending_play_harvests_post_response_events_without_an_unrelated_command() {
         .collect::<Vec<_>>();
     assert_eq!(
         property_queries.len(),
-        1,
-        "repeated progress getters must share one rate-limited event fence"
+        2,
+        "one event fence and one transport readback must share bounded maintenance"
     );
     assert_eq!(
-        property_queries[0].get(1).and_then(Value::as_str),
-        Some("pause")
+        property_queries
+            .iter()
+            .filter_map(|command| command.get(1).and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["pause", "time-pos"]
     );
 }
 
@@ -637,27 +627,23 @@ fn tracked_start_after_load_honors_restart_observed_before_later_play_command() 
             baseline_restart_sequence: 0,
         }))
         .expect("start after load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
 
     adapter
         .set_playback_rate(1.0)
         .expect("logical play should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "the pre-command restart still requires fresh post-command advancement"
     );
 
     adapter
         .set_playback_rate(1.0)
         .expect("post-command advancement should be observed");
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 }
 
 #[test]
@@ -678,23 +664,18 @@ fn tracked_load_completes_on_owning_file_loaded_before_ready_phase() {
             "https://media.invalid/video".to_owned(),
         ))
         .expect("load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
-    assert_completed(
-        adapter
-            .take_command_progress()
-            .expect("owning file-loaded should complete the semantic load"),
-        command_id,
-    );
+
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
 
     adapter
         .set_playback_rate(1.0)
         .expect("playback restart should be observed");
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0,
         "later readiness must not emit a duplicate load terminal"
     );
 }
@@ -714,20 +695,13 @@ fn active_media_harvests_end_file_without_a_pending_command() {
     let command_id = adapter
         .execute_tracked(PlayerCommand::OpenFile(target.to_owned()))
         .expect("load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
-    assert_completed(
-        adapter
-            .take_command_progress()
-            .expect("owning file-loaded should complete the command"),
-        command_id,
-    );
+
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
     let generation = adapter
         .media_generation()
         .expect("the loaded file should remain the active physical attempt");
-    while adapter.take_transport_telemetry_update().is_some() {}
+    let _ = collect_pending_player_delivery(&mut adapter);
     let writes_before_fence = state.writes().len();
 
     // With no tracked command left, an external end-file still has to leave the worker's socket
@@ -740,11 +714,12 @@ fn active_media_harvests_end_file_without_a_pending_command() {
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     let terminal = loop {
-        if let Some(update) = adapter.take_transport_telemetry_update()
-            && update.media_generation == Some(generation)
-            && update.phase == Some(PlayerTransportPhase::Ended)
-        {
-            break update;
+        let delivery = collect_player_delivery(&mut adapter);
+        if let Some(update) = delivery.transport_deltas().find(|delta| {
+            delta.media_generation == Some(generation)
+                && delta.phase == Some(PlayerTransportPhase::Ended)
+        }) {
+            break update.clone();
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -782,25 +757,30 @@ fn tracked_load_retains_buffered_ready_evidence_until_command_acceptance() {
         .expect("load should be accepted after buffered events are reduced");
 
     assert_eq!(adapter.transport_phase(), PlayerTransportPhase::Seeking);
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
-    );
-    assert_completed(
-        adapter.take_command_progress().expect("completed progress"),
-        command_id,
-    );
-    assert_eq!(adapter.take_command_progress(), None);
+
+    let completed_delivery = collect_pending_player_delivery(&mut adapter);
+    assert_completed(&completed_delivery, command_id);
     assert_eq!(
-        adapter
-            .take_media_load_outcome()
-            .expect("file-loaded should retain its successful load outcome"),
-        PlayerMediaLoadOutcome::success(target, Some(target.to_owned()))
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .count(),
+        0
+    );
+    assert_eq!(
+        completed_delivery
+            .load_outcomes()
+            .map(|outcome| (
+                &*outcome.requested_target,
+                outcome.loaded_target.as_deref(),
+                outcome.result
+            ))
+            .collect::<Vec<_>>(),
+        vec![(target, None, PlayerLoadAttemptResult::Loaded)]
     );
 }
 
 #[test]
-fn ordered_batch_includes_events_generated_by_final_local_file_poll() {
+fn acknowledged_batch_includes_events_generated_by_file_metadata_readback() {
     let target = "https://media.invalid/video";
     let mut adapter = adapter_with_registered_observers(&[
         r#"{"event":"start-file","playlist_entry_id":5}"#,
@@ -820,108 +800,47 @@ fn ordered_batch_includes_events_generated_by_final_local_file_poll() {
         .expect("tracked load should be accepted");
 
     let batch = adapter
-        .take_ordered_event_batch()
-        .expect("mpv supports atomic ordered batches");
-
+        .take_player_event_batch()
+        .expect("acknowledged batch");
     assert!(
         batch
-            .ordered_events
+            .events
             .windows(2)
-            .all(|events| events[0].sequence < events[1].sequence)
+            .all(|events| events[0].order < events[1].order)
     );
-    assert!(batch.ordered_events.iter().any(|event| matches!(
-        event.kind,
-        sorotte_player_api::PlayerOrderedEventKind::LocalFile(_)
-    )));
-    assert!(batch.ordered_events.iter().any(|event| matches!(
-        event.kind,
-        sorotte_player_api::PlayerOrderedEventKind::MediaLoad(_)
-    )));
-    assert!(batch.ordered_events.iter().any(|event| matches!(
-        event.kind,
-        sorotte_player_api::PlayerOrderedEventKind::Transport(_)
-    )));
-    let interleaved_transport = batch
-        .ordered_events
+    let transport = batch
+        .events
         .iter()
-        .position(|event| {
-            matches!(
-                event.kind,
-                sorotte_player_api::PlayerOrderedEventKind::Transport(
-                    PlayerTransportTelemetryUpdate {
-                        position_seconds: Some(41.5),
-                        ..
-                    }
-                )
+        .find(|item| {
+            matches!(&item.event,
+                PlayerEvent::TransportDelta(delta) if delta.position_seconds == Some(41.5)
             )
         })
-        .expect("interleaved time-pos transport event");
-    let local_file = batch
-        .ordered_events
-        .iter()
-        .position(|event| {
-            matches!(
-                event.kind,
-                sorotte_player_api::PlayerOrderedEventKind::LocalFile(_)
-            )
-        })
-        .expect("derived local file event");
-    let media_load = batch
-        .ordered_events
-        .iter()
-        .position(|event| {
-            matches!(
-                event.kind,
-                sorotte_player_api::PlayerOrderedEventKind::MediaLoad(_)
-            )
-        })
-        .expect("derived media-load event");
-    assert!(interleaved_transport < local_file);
-    assert!(interleaved_transport < media_load);
-    let observed_at = |kind: &sorotte_player_api::PlayerOrderedEventKind| match kind {
-        sorotte_player_api::PlayerOrderedEventKind::CommandProgress(progress) => {
-            progress.observed_at
-        }
-        sorotte_player_api::PlayerOrderedEventKind::LocalFile(observation) => {
-            observation.observed_at
-        }
-        sorotte_player_api::PlayerOrderedEventKind::MediaLoad(observation) => {
-            observation.observed_at
-        }
-        sorotte_player_api::PlayerOrderedEventKind::Transport(update) => update.observed_at,
-    };
-    let transport_observed_at = observed_at(&batch.ordered_events[interleaved_transport].kind)
-        .expect("interleaved transport timestamp");
-    for derived_index in [local_file, media_load] {
-        assert!(
-            transport_observed_at
-                > observed_at(&batch.ordered_events[derived_index].kind)
-                    .expect("derived media timestamp"),
-            "later-sequenced derived media may retain the outer file-loaded timestamp"
-        );
-    }
-    let command_progress: Vec<_> = batch
-        .ordered_events
-        .iter()
-        .filter_map(|event| match event.kind {
-            sorotte_player_api::PlayerOrderedEventKind::CommandProgress(progress)
-                if progress.command_id == command_id =>
-            {
-                Some(progress.state)
-            }
-            _ => None,
-        })
-        .collect();
-    assert!(command_progress.contains(&PlayerCommandProgressState::Accepted));
+        .expect("interleaved time-pos event");
+    let local_file = batch.events.iter().find(|item| matches!(&item.event,
+        PlayerEvent::LocalFileChanged { update, .. } if update.path.as_deref() == Some(target)
+    )).expect("derived local file");
     assert!(
-        command_progress
-            .iter()
-            .any(|state| matches!(state, PlayerCommandProgressState::Finished(_)))
+        transport.order < local_file.order,
+        "interleaved IPC ingress precedes the derived file publication"
     );
-    assert_eq!(adapter.take_command_progress(), None);
-    assert_eq!(adapter.take_transport_telemetry_update(), None);
-    assert_eq!(adapter.take_media_load_observation(), None);
-    assert_eq!(adapter.take_local_file_observation(), None);
+    let completed = batch.semantic_outcomes.iter().filter(|item| matches!(&item.outcome,
+        sorotte_player_api::PlayerSemanticOutcome::Command(outcome) if outcome.command_id == command_id
+            && outcome.result == PlayerCommandSemanticResult::Completed
+    )).collect::<Vec<_>>();
+    assert_eq!(completed.len(), 1);
+    assert!(batch.semantic_outcomes.iter().any(|item| matches!(&item.outcome,
+        sorotte_player_api::PlayerSemanticOutcome::LoadAttempt(outcome) if outcome.requested_target == target
+            && outcome.result == PlayerLoadAttemptResult::Loaded
+    )));
+    adapter
+        .acknowledge_player_event_batch(batch.acknowledgement_token)
+        .expect("matching receipt");
+    assert!(
+        collect_pending_player_delivery(&mut adapter)
+            .batches
+            .is_empty()
+    );
 }
 
 #[test]
@@ -933,46 +852,34 @@ fn replacement_load_supersedes_obsolete_tracked_load() {
     let first = adapter
         .execute_tracked(PlayerCommand::OpenFile("first.mkv".to_owned()))
         .expect("first load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("first acceptance"),
-        first,
-    );
 
     let second = adapter
         .execute_tracked(PlayerCommand::OpenFile("second.mkv".to_owned()))
         .expect("replacement load should be accepted");
     assert_ne!(first, second);
-    assert_accepted(
-        adapter.take_command_progress().expect("second acceptance"),
-        second,
-    );
-    let superseded = adapter
-        .take_command_progress()
-        .expect("obsolete load should terminate");
+
+    let delivery = collect_pending_player_delivery(&mut adapter);
+    let outcomes = delivery.command_outcomes().collect::<Vec<_>>();
+    assert_eq!(outcomes.len(), 1, "obsolete load should terminate");
+    let superseded = outcomes[0];
     assert_eq!(superseded.command_id, first);
-    assert_eq!(
-        superseded.state,
-        PlayerCommandProgressState::Finished(PlayerCommandResult::Superseded)
-    );
+    assert_eq!(superseded.result, PlayerCommandSemanticResult::Superseded);
 }
 
 fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
     let (transport, state) = fake_transport_with_reads(&[
-        r#"{"request_id":1,"error":"success"}"#,
         r#"{"event":"start-file","playlist_entry_id":10}"#,
+        r#"{"event":"file-loaded"}"#,
+        r#"{"request_id":1,"error":"success"}"#,
         r#"{"request_id":2,"error":"success","data":"a.mkv"}"#,
         r#"{"request_id":3,"error":"success","data":1200.0}"#,
         r#"{"request_id":4,"error":"success","data":4096}"#,
-        r#"{"request_id":5,"error":"success","data":"a.mkv"}"#,
     ]);
     let mut adapter = MpvAdapter::with_test_transport_and_registered_observers(transport);
     adapter
         .open_file("a.mkv")
         .expect("A should become active before replacements");
-    while adapter.take_transport_telemetry_update().is_some() {}
-    while adapter.take_media_load_observation().is_some() {}
-    while adapter.take_local_file_observation().is_some() {}
-    while adapter.take_media_load_observation().is_some() {}
+    let _ = collect_pending_player_delivery(&mut adapter);
 
     let next_request_id = |state: &FakeTransportStateHandle| {
         state
@@ -999,12 +906,7 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
                 state.writes()
             )
         });
-    assert_accepted(
-        adapter
-            .take_command_progress()
-            .expect("B acceptance should be reported"),
-        command_b,
-    );
+
     let generation_b = adapter
         .media_generation()
         .expect("B should retain its pending generation");
@@ -1036,27 +938,23 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
         .expect("C should remain the pending generation");
     assert_ne!(generation_b, generation_c);
 
-    let mut replacement_progress = Vec::new();
-    while let Some(progress) = adapter.take_command_progress() {
-        replacement_progress.push(progress);
-    }
+    let replacement_delivery = collect_pending_player_delivery(&mut adapter);
+    let replacement_progress = replacement_delivery.command_outcomes().collect::<Vec<_>>();
     assert!(replacement_progress.iter().any(|progress| {
         progress.command_id == command_b
-            && progress.state
-                == PlayerCommandProgressState::Finished(PlayerCommandResult::Superseded)
+            && progress.result == PlayerCommandSemanticResult::Superseded
     }));
     assert!(replacement_progress.iter().all(|progress| {
         progress.command_id != command_b
-            || !matches!(
-                progress.state,
-                PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(_))
-            )
+            || !matches!(progress.result, PlayerCommandSemanticResult::Failed(_))
     }));
-    assert!(replacement_progress.iter().any(|progress| {
-        progress.command_id == command_c && progress.state == PlayerCommandProgressState::Accepted
-    }));
-    let terminal_updates =
-        std::iter::from_fn(|| adapter.take_transport_telemetry_update()).collect::<Vec<_>>();
+    assert!(
+        replacement_progress
+            .iter()
+            .all(|outcome| outcome.command_id != command_c),
+        "C is accepted but has no completion evidence yet"
+    );
+    let terminal_updates = replacement_delivery.transport_deltas().collect::<Vec<_>>();
     assert!(terminal_updates.iter().all(|update| {
         update.media_generation != Some(generation_c)
             || !matches!(
@@ -1066,8 +964,11 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
     }));
     if reason == "error" {
         assert_eq!(
-            adapter.take_media_load_observation(),
-            None,
+            replacement_delivery
+                .load_outcomes()
+                .filter(|outcome| matches!(outcome.result, PlayerLoadAttemptResult::Failed(_)))
+                .count(),
+            0,
             "a superseded physical episode must not publish a logical-generation load failure"
         );
     }
@@ -1093,13 +994,12 @@ fn exercise_buffered_b_terminal_after_c_submission(reason: &str) {
     adapter
         .set_playback_rate(1.0)
         .expect("C lifecycle should be reduced");
-    let completion_progress =
-        std::iter::from_fn(|| adapter.take_command_progress()).collect::<Vec<_>>();
+    let completion_delivery = collect_pending_player_delivery(&mut adapter);
+    let completion_progress = completion_delivery.command_outcomes().collect::<Vec<_>>();
     assert!(
         completion_progress.iter().any(|progress| {
             progress.command_id == command_c
-                && progress.state
-                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+                && progress.result == PlayerCommandSemanticResult::Completed
         }),
         "C did not complete; adapter: {adapter:?}; progress: {completion_progress:?}; writes: {:?}",
         state.writes()
@@ -1129,12 +1029,7 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     let command_b = adapter
         .execute_tracked(PlayerCommand::OpenFile("b.mkv".to_owned()))
         .expect("B should be accepted");
-    assert_accepted(
-        adapter
-            .take_command_progress()
-            .expect("B acceptance should be reported"),
-        command_b,
-    );
+
     let generation_b = adapter
         .media_generation()
         .expect("B should own a pending generation");
@@ -1192,19 +1087,16 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     state.queue_playlist_query_error();
     let queries_before_failed_snapshot = playlist_query_count(&state);
     adapter.force_load_lifecycle_reacquisition_due_for_test();
-    let _ = adapter
-        .take_ordered_event_batch()
-        .expect("consumer batch should remain available during ownership ambiguity");
+    let _ = collect_player_delivery(&mut adapter);
     let queries_after_failed_snapshot = playlist_query_count(&state);
     assert_eq!(
         queries_after_failed_snapshot,
         queries_before_failed_snapshot + 1,
         "one maintenance cycle should issue at most one playlist query"
     );
-    let _ = adapter.take_transport_telemetry_update();
+    let _ = collect_player_delivery(&mut adapter);
     let _ = adapter.take_cache_telemetry_update();
-    let _ = adapter.take_local_file_update();
-    let _ = adapter.take_media_load_outcome();
+    let _ = collect_player_delivery(&mut adapter);
     assert_eq!(
         playlist_query_count(&state),
         queries_after_failed_snapshot,
@@ -1258,25 +1150,12 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
         "the authoritative current playlist entry should bind to C"
     );
 
-    let mut ordered_events = adapter
-        .take_ordered_event_batch()
-        .expect("C lifecycle should be observable after deferred file-loaded reconciliation")
-        .ordered_events;
-    if let Some(follow_up) = adapter.take_ordered_event_batch() {
-        ordered_events.extend(follow_up.ordered_events);
-    }
-    let progress = ordered_events
-        .into_iter()
-        .filter_map(|event| match event.kind {
-            PlayerOrderedEventKind::CommandProgress(progress) => Some(progress),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let completion_delivery = collect_player_delivery(&mut adapter);
+    let progress = completion_delivery.command_outcomes().collect::<Vec<_>>();
     assert!(
         progress.iter().any(|progress| {
             progress.command_id == command_c
-                && progress.state
-                    == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+                && progress.result == PlayerCommandSemanticResult::Completed
         }),
         "C should complete from its retained file-loaded lifecycle after exact binding: {progress:#?}; adapter: {adapter:?}; writes: {:#?}",
         state.writes()
@@ -1286,8 +1165,7 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
             .iter()
             .filter(|progress| {
                 progress.command_id == command_c
-                    && progress.state
-                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
+                    && progress.result == PlayerCommandSemanticResult::Completed
             })
             .count(),
         1,
@@ -1295,10 +1173,7 @@ fn ambiguous_load_lifecycle_reacquires_playlist_ownership_on_later_maintenance()
     );
     assert!(progress.iter().all(|progress| {
         progress.command_id != command_b
-            || !matches!(
-                progress.state,
-                PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(_))
-            )
+            || !matches!(progress.result, PlayerCommandSemanticResult::Failed(_))
     }));
 }
 
@@ -1311,10 +1186,7 @@ fn rejected_replacement_restores_the_previous_accepted_load_transition() {
     let first = adapter
         .execute_tracked(PlayerCommand::OpenFile("first.mkv".to_owned()))
         .expect("first load should be accepted");
-    assert_accepted(
-        adapter.take_command_progress().expect("first acceptance"),
-        first,
-    );
+
     let first_generation = adapter
         .media_generation()
         .expect("the first accepted load should remain pending");
@@ -1326,8 +1198,11 @@ fn rejected_replacement_restores_the_previous_accepted_load_transition() {
     assert!(matches!(error, PlayerError::OperationFailed { .. }));
     assert_eq!(adapter.media_generation(), Some(first_generation));
     assert_eq!(
-        adapter.take_command_progress(),
-        None,
+        collect_pending_player_delivery(&mut adapter)
+            .command_outcomes()
+            .filter(|outcome| outcome.command_id == first)
+            .count(),
+        0,
         "rejecting C must neither fail nor supersede accepted B"
     );
 }
@@ -1346,19 +1221,18 @@ fn observed_media_failure_finishes_an_accepted_tracked_load() {
         ))
         .expect("the loadfile IPC command itself should be accepted");
 
-    assert_accepted(
-        adapter.take_command_progress().expect("accepted progress"),
-        command_id,
+    let delivery = collect_pending_player_delivery(&mut adapter);
+    let outcomes = delivery.command_outcomes().collect::<Vec<_>>();
+    assert_eq!(
+        outcomes.len(),
+        1,
+        "observed media failure should terminate the load"
     );
-    let failed = adapter
-        .take_command_progress()
-        .expect("observed media failure should terminate the load");
+    let failed = outcomes[0];
     assert_eq!(failed.command_id, command_id);
     assert_eq!(
-        failed.state,
-        PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
-            PlayerCommandFailureKind::MediaEnded
-        ))
+        failed.result,
+        PlayerCommandSemanticResult::Failed(PlayerCommandFailureKind::MediaEnded)
     );
 }
 
@@ -1383,17 +1257,8 @@ fn simulated_player_reports_observed_completion_for_tracked_commands() {
         let command_id = player
             .execute_tracked(command)
             .unwrap_or_else(|error| panic!("{command_debug} should execute: {error}"));
-        assert_accepted(
-            player
-                .take_command_progress()
-                .unwrap_or_else(|| panic!("{command_debug} should be accepted")),
-            command_id,
-        );
-        assert_completed(
-            player
-                .take_command_progress()
-                .unwrap_or_else(|| panic!("{command_debug} should complete from observation")),
-            command_id,
-        );
+
+        let completed_delivery = collect_pending_player_delivery(&mut player);
+        assert_completed(&completed_delivery, command_id);
     }
 }

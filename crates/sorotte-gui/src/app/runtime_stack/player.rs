@@ -4,11 +4,8 @@ use crate::app::mpv_launch::ManagedMpvLaunchConfig;
 use sorotte_client_app::app_boundary::state::EffectiveMpvStreamingOption;
 use sorotte_client_core::ExternalPlayerAvailability;
 use sorotte_player_api::{
-    LocalFileUpdate, PlayerAdapter, PlayerCacheTelemetryUpdate, PlayerCommand, PlayerCommandId,
-    PlayerCommandProgress, PlayerError, PlayerEventAcknowledgementToken, PlayerEventBatch,
-    PlayerEventDeliveryMode, PlayerLocalFileObservation, PlayerMediaGeneration,
-    PlayerMediaLoadObservation, PlayerMediaLoadOutcome, PlayerObservationBatch,
-    PlayerPlaybackTelemetryUpdate, PlayerTransportTelemetryUpdate,
+    LocalFileUpdate, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerError,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerMediaGeneration,
 };
 use sorotte_player_mpv::{MpvAdapter, SyncplayUiSettings};
 
@@ -72,8 +69,7 @@ mod path_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use sorotte_player_api::{
-        PlayerAdapter, PlayerCommandSemanticResult, PlayerEvent, PlayerEventDeliveryMode,
-        PlayerSemanticOutcome,
+        PlayerAdapter, PlayerCommandSemanticResult, PlayerEvent, PlayerSemanticOutcome,
     };
 
     use super::{GuiOwnedPlayer, GuiTestPlayerAdapter, local_file_update_for_player_path};
@@ -157,10 +153,7 @@ mod path_tests {
     #[test]
     fn gui_test_player_delivers_scoped_load_completion_until_acknowledged() {
         let mut player = GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default());
-        assert_eq!(
-            player.player_event_delivery_mode(),
-            PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-        );
+
         while let Some(batch) = player.take_player_event_batch() {
             player
                 .acknowledge_player_event_batch(batch.acknowledgement_token)
@@ -309,10 +302,6 @@ impl PlayerAdapter for GuiTestPlayerAdapter {
 
     fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
         self.adapter.set_playback_rate(rate)
-    }
-
-    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        self.adapter.player_event_delivery_mode()
     }
 
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
@@ -477,52 +466,8 @@ impl PlayerAdapter for GuiOwnedPlayer {
         self.adapter_mut().set_playback_rate(rate)
     }
 
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.adapter_mut().take_local_file_update()
-    }
-
-    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
-        self.adapter_mut().take_local_file_observation()
-    }
-
-    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
-        self.adapter_mut().take_media_load_observation()
-    }
-
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
-        self.adapter_mut().take_ordered_event_batch()
-    }
-
-    fn request_ordered_event_reacquisition(&mut self) {
-        self.adapter_mut().request_ordered_event_reacquisition()
-    }
-
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.adapter_mut().take_playback_telemetry_update()
-    }
-
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        self.adapter_mut().take_transport_telemetry_update()
-    }
-
-    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        self.adapter_mut().take_cache_telemetry_update()
-    }
-
-    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-        self.adapter_mut().take_command_progress()
-    }
-
-    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        self.adapter_mut().take_media_load_outcome()
-    }
-
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
         self.adapter_mut().take_player_event_batch()
-    }
-
-    fn player_event_delivery_mode(&self) -> PlayerEventDeliveryMode {
-        self.adapter().player_event_delivery_mode()
     }
 
     fn acknowledge_player_event_batch(

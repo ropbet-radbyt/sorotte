@@ -462,9 +462,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
 fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tracked_candidate() {
     #[derive(Default)]
     struct ObservedThenRejectedState {
-        progress: std::collections::VecDeque<sorotte_player_api::PlayerCommandProgress>,
-        outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
-        local_files: std::collections::VecDeque<sorotte_player_api::LocalFileUpdate>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct ObservedThenRejectedPlayer {
@@ -488,44 +486,41 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
             self.state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .progress
-                .push_back(sorotte_player_api::PlayerCommandProgress::accepted(
-                    command_id,
-                    Some(generation),
-                    None,
-                ));
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .push_event(bound_player_event((generation).get(), command_id));
             Ok(command_id)
         }
 
-        fn take_command_progress(&mut self) -> Option<sorotte_player_api::PlayerCommandProgress> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .progress
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
         }
-
-        fn take_media_load_outcome(
+        fn acknowledge_player_event_batch(
             &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .outcomes
-                .pop_front()
-        }
-
-        fn take_local_file_update(&mut self) -> Option<sorotte_player_api::LocalFileUpdate> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .local_files
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
-    let player_state =
-        std::sync::Arc::new(std::sync::Mutex::new(ObservedThenRejectedState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(ObservedThenRejectedState {
+        events: Some(ScriptedPlayerEvents::new(
+            sorotte_player_api::PlayerAttachmentEpoch::new(1),
+        )),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -582,15 +577,32 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         queued
-            .outcomes
-            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::success(
+            .events
+            .as_mut()
+            .unwrap()
+            .push_event(starting_player_event(
+                9,
+                Some(sorotte_player_api::PlayerCommandId::new(41)),
+            ));
+        queued
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .push_outcome(load_succeeded(
+                9,
+                Some(sorotte_player_api::PlayerCommandId::new(41)),
                 requested_target.clone(),
                 Some(requested_target.clone()),
             ));
-        queued.local_files.push_back(
-            sorotte_player_api::LocalFileUpdate::new("observed-then-rejected.mkv")
-                .with_path(requested_target.clone()),
-        );
+        queued
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .push_event(file_event(
+                9,
+                sorotte_player_api::LocalFileUpdate::new("observed-then-rejected.mkv")
+                    .with_path(requested_target.clone()),
+            ));
     }
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -616,13 +628,13 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         queued
-            .progress
-            .push_back(sorotte_player_api::PlayerCommandProgress::finished(
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .push_outcome(command_outcome(
                 sorotte_player_api::PlayerCommandId::new(41),
                 Some(sorotte_player_api::PlayerMediaGeneration::new(9)),
-                None,
-                None,
-                sorotte_player_api::PlayerCommandResult::Failed(
+                sorotte_player_api::PlayerCommandSemanticResult::Failed(
                     sorotte_player_api::PlayerCommandFailureKind::Unknown,
                 ),
             ));
@@ -657,7 +669,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
 fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_local_media() {
     #[derive(Default)]
     struct RejectedLoadState {
-        outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+        events: Option<ScriptedPlayerEvents>,
     }
 
     struct AcceptedThenRejectedPlayer {
@@ -673,18 +685,34 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
             Ok(())
         }
 
-        fn take_media_load_outcome(
-            &mut self,
-        ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+        fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
             self.state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .outcomes
-                .pop_front()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_ref()
+                .and_then(ScriptedPlayerEvents::peek)
+        }
+        fn acknowledge_player_event_batch(
+            &mut self,
+            token: sorotte_player_api::PlayerEventAcknowledgementToken,
+        ) -> Result<(), sorotte_player_api::PlayerError> {
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .events
+                .as_mut()
+                .expect("scripted ingress")
+                .acknowledge(token)
         }
     }
 
-    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RejectedLoadState::default()));
+    let player_state = std::sync::Arc::new(std::sync::Mutex::new(RejectedLoadState {
+        events: Some(ScriptedPlayerEvents::new(
+            sorotte_player_api::PlayerAttachmentEpoch::new(1),
+        )),
+        ..Default::default()
+    }));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
         .with_client_core_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
@@ -763,12 +791,15 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
     player_state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .outcomes
-        .push_back(sorotte_player_api::PlayerMediaLoadOutcome::failure(
+        .events
+        .as_mut()
+        .expect("scripted ingress")
+        .push_outcome(load_failed(
+            1,
+            None,
             requested_target,
             None,
             sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
-            "player rejected the accepted load",
         ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 

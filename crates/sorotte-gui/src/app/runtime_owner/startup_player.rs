@@ -72,7 +72,6 @@ impl GuiPersistedConfigRuntimeOwner {
             attached_native_seek_tracker: GuiAttachedNativeSeekTracker::default(),
             attached_system_seek_ownership: VecDeque::new(),
             attached_system_seek_fail_closed: None,
-            attached_transport_telemetry_authority: Default::default(),
             player_position_seconds: None,
             player_paused: None,
             player_paused_for_cache: None,
@@ -226,7 +225,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
-        self.attached_transport_telemetry_authority = Default::default();
         self.stream_helper_runtime_snapshot = GuiStreamHelperRuntimeSnapshot::default();
         self.media_match_runtime_snapshot.current_decision = None;
         self.media_match_runtime_snapshot.nearest_match = None;
@@ -288,7 +286,6 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_native_seek_tracker = GuiAttachedNativeSeekTracker::default();
         self.attached_system_seek_ownership.clear();
         self.attached_system_seek_fail_closed = None;
-        self.attached_transport_telemetry_authority = Default::default();
     }
 
     pub(in crate::app) fn clear_session_causal_player_effect_state(&mut self) {

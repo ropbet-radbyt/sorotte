@@ -1,5 +1,5 @@
 use super::*;
-use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerCommandProgress};
+use sorotte_player_api::{PlayerAdapter, PlayerCommand, PlayerCommandId};
 
 const NETWORK_OPTIONS_HEARTBEAT_COMMAND_TOKEN: u64 = 1;
 const NETWORK_OPTIONS_EVENT_POLL_COMMAND_TOKEN: u64 = 2;
@@ -837,8 +837,10 @@ impl PlayerAdapter for MpvAdapter {
                         .values()
                         .any(|attempt| attempt.command_id == Some(command_id))
                         || self
-                            .unacknowledged_terminal_command_progress
-                            .contains_key(&command_id),
+                            .player_lifecycle
+                            .commands
+                            .get(&command_id)
+                            .is_some_and(|command| command.state.is_terminal()),
                     "an accepted tracked load must retain either its transition or terminal result"
                 );
                 self.supersede_tracked_commands(Some(command_id), |kind| {
@@ -973,10 +975,7 @@ impl PlayerAdapter for MpvAdapter {
             self.pending_load_request = None;
             self.active_generation_has_restarted = !self.paused;
             self.queue_local_file_update(Self::local_file_update_for_path(path));
-            self.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
-                path,
-                Some(path.to_owned()),
-            ));
+
             let phase = if self.paused {
                 PlayerTransportPhase::ReadyPaused
             } else {
@@ -996,9 +995,7 @@ impl PlayerAdapter for MpvAdapter {
             // end-file/path events still establish physical Empty state.
             self.pending_load_request = None;
             self.pending_load_generation = None;
-            self.pending_local_file_update = None;
-            self.pending_local_file_generation = None;
-            self.pending_local_file_observed_at = None;
+
             self.last_polled_local_file_update = None;
             self.stream_recovery.interrupted_network_stream_recovery = None;
             self.stream_recovery.network_stream_recovery_evidence = None;
@@ -1252,262 +1249,6 @@ impl PlayerAdapter for MpvAdapter {
         Ok(())
     }
 
-    fn take_local_file_update(&mut self) -> Option<LocalFileUpdate> {
-        self.take_local_file_observation()
-            .map(|observation| observation.update)
-    }
-
-    fn take_local_file_observation(&mut self) -> Option<PlayerLocalFileObservation> {
-        self.maintain_runtime_integrations();
-        self.poll_ipc_local_file_update_if_attached();
-        let update = self.pending_local_file_update.take()?;
-        let media_generation = self.pending_local_file_generation.take();
-        let observed_at = self
-            .pending_local_file_observed_at
-            .take()
-            .map(|observed_at| {
-                PlayerObservationTimestamp::from_adapter_observation(
-                    observed_at.elapsed_since_adapter_start(),
-                    self.observation_clock_origin.elapsed(),
-                )
-            });
-        Some(PlayerLocalFileObservation::new(
-            update,
-            media_generation,
-            observed_at,
-        ))
-    }
-
-    fn take_playback_telemetry_update(&mut self) -> Option<PlayerPlaybackTelemetryUpdate> {
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        if self.pending_playback_telemetry_update.is_none() {
-            self.poll_paused_position_telemetry_if_attached();
-        }
-        self.pending_playback_telemetry_update.take()
-    }
-
-    fn take_transport_telemetry_update(&mut self) -> Option<PlayerTransportTelemetryUpdate> {
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        self.observe_unhealthy_ipc_transport();
-        let mut update = self.pending_transport_telemetry_updates.pop_front()?;
-        if let Some(observed_at) = update.observed_at {
-            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
-                observed_at.elapsed_since_adapter_start(),
-                self.observation_clock_origin.elapsed(),
-            ));
-        }
-        Some(update)
-    }
-
-    fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        self.observe_unhealthy_ipc_transport();
-        let mut update = self.pending_cache_telemetry_updates.pop_front()?;
-        if let Some(observed_at) = update.observed_at {
-            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
-                observed_at.elapsed_since_adapter_start(),
-                self.observation_clock_origin.elapsed(),
-            ));
-        }
-        Some(update)
-    }
-
-    fn take_command_progress(&mut self) -> Option<PlayerCommandProgress> {
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        self.observe_unhealthy_ipc_transport();
-        if self
-            .ipc_client
-            .as_ref()
-            .is_some_and(|ipc_client| !ipc_client.is_healthy())
-        {
-            self.fail_all_accepted_tracked_commands(
-                sorotte_player_api::PlayerCommandFailureKind::TransportDisconnected,
-            );
-        }
-        self.expire_tracked_commands();
-        self.pending_command_progress_updates.pop_front()
-    }
-
-    fn take_media_load_outcome(&mut self) -> Option<PlayerMediaLoadOutcome> {
-        self.take_media_load_observation()
-            .map(|observation| observation.outcome)
-    }
-
-    fn take_media_load_observation(&mut self) -> Option<PlayerMediaLoadObservation> {
-        self.maintain_runtime_integrations();
-        self.ensure_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        let mut observation = self.pending_media_load_outcomes.pop_front()?;
-        observation.observed_at = observation.observed_at.map(|observed_at| {
-            PlayerObservationTimestamp::from_adapter_observation(
-                observed_at.elapsed_since_adapter_start(),
-                self.observation_clock_origin.elapsed(),
-            )
-        });
-        Some(observation)
-    }
-
-    fn take_ordered_event_batch(&mut self) -> Option<PlayerObservationBatch> {
-        // A later pump without a consumer reacquisition request acknowledges the previously
-        // returned semantic terminals. Keep them until this boundary so a rejected batch can be
-        // reconstructed exactly, independent of the smaller typed command-progress queue.
-        self.acknowledge_last_delivered_ordered_semantic_outcomes();
-        self.maintain_runtime_integrations();
-        self.ensure_transport_observers_registered_if_attached();
-        self.drain_ipc_events_if_attached();
-        self.observe_unhealthy_ipc_transport();
-        if self
-            .ipc_client
-            .as_ref()
-            .is_some_and(|ipc_client| !ipc_client.is_healthy())
-        {
-            self.fail_all_accepted_tracked_commands(
-                sorotte_player_api::PlayerCommandFailureKind::TransportDisconnected,
-            );
-        }
-        self.expire_tracked_commands();
-        if self.pending_playback_telemetry_update.is_none() {
-            self.poll_paused_position_telemetry_if_attached();
-        }
-        self.poll_ipc_local_file_update_if_attached();
-
-        let (dropped_events_through, authoritative_snapshot) = if self
-            .ordered_player_event_reacquisition_required
-        {
-            let dropped_events_through =
-                PlayerEventSequence::new(self.next_ordered_player_event_sequence - 1);
-            let interrupted_command_progress = self.authoritative_reacquisition_command_progress();
-            let interrupted_media_load_outcomes = self
-                .unacknowledged_media_load_outcomes
-                .iter()
-                .map(|retained| retained.observation.clone())
-                .collect::<Vec<_>>();
-            let authoritative_generation = self
-                .observation_media_generation()
-                .or_else(|| {
-                    interrupted_media_load_outcomes
-                        .iter()
-                        .rev()
-                        .find_map(|observation| observation.media_generation)
-                })
-                .or_else(|| {
-                    interrupted_command_progress
-                        .iter()
-                        .rev()
-                        .find_map(|progress| progress.media_generation)
-                });
-            let authoritative_local_file = self
-                .pending_local_file_update
-                .clone()
-                .or_else(|| self.last_polled_local_file_update.clone())
-                .filter(|update| {
-                    self.active_file_loaded
-                        && self.observed_state.path.as_deref().is_some_and(|path| {
-                            Self::local_file_update_matches_request(update, path)
-                        })
-                });
-            self.pending_ordered_player_events.clear();
-            self.pending_command_progress_updates.clear();
-            self.pending_transport_telemetry_updates.clear();
-            self.pending_media_load_outcomes.clear();
-            self.pending_local_file_update = None;
-            self.pending_local_file_generation = None;
-            self.pending_local_file_observed_at = None;
-            self.pending_playback_telemetry_update = None;
-            let authoritative_snapshot = self.authoritative_ordered_player_snapshot(
-                authoritative_local_file,
-                interrupted_command_progress,
-                interrupted_media_load_outcomes,
-                authoritative_generation,
-            );
-            (Some(dropped_events_through), Some(authoritative_snapshot))
-        } else {
-            (None, None)
-        };
-        self.ordered_player_event_reacquisition_required = false;
-        self.ordered_player_event_reacquisition_requested_by_consumer = false;
-        let delivery_reference = self.observation_clock_origin.elapsed();
-        let mut ordered_events: Vec<_> =
-            if let Some(authoritative_snapshot) = authoritative_snapshot {
-                authoritative_snapshot
-                    .into_iter()
-                    .map(|kind| {
-                        let sequence =
-                            PlayerEventSequence::new(self.next_ordered_player_event_sequence);
-                        self.next_ordered_player_event_sequence = self
-                            .next_ordered_player_event_sequence
-                            .checked_add(1)
-                            .expect("mpv ordered player event sequence exhausted");
-                        PlayerOrderedEvent::new(sequence, kind)
-                    })
-                    .collect()
-            } else {
-                self.pending_ordered_player_events.drain(..).collect()
-            };
-        for event in &mut ordered_events {
-            let retag = |observed_at: PlayerObservationTimestamp| {
-                PlayerObservationTimestamp::from_adapter_observation(
-                    observed_at.elapsed_since_adapter_start(),
-                    delivery_reference,
-                )
-            };
-            match &mut event.kind {
-                PlayerOrderedEventKind::CommandProgress(progress) => {
-                    progress.observed_at = progress.observed_at.map(retag);
-                }
-                PlayerOrderedEventKind::LocalFile(observation) => {
-                    observation.observed_at = observation.observed_at.map(retag);
-                }
-                PlayerOrderedEventKind::MediaLoad(observation) => {
-                    observation.observed_at = observation.observed_at.map(retag);
-                }
-                PlayerOrderedEventKind::Transport(update) => {
-                    update.observed_at = update.observed_at.map(retag);
-                }
-            }
-        }
-        self.last_delivered_ordered_command_progress = ordered_events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                PlayerOrderedEventKind::CommandProgress(progress) => Some(*progress),
-                _ => None,
-            })
-            .collect();
-        self.last_delivered_ordered_media_load_outcomes = ordered_events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                PlayerOrderedEventKind::MediaLoad(observation) => Some(observation.clone()),
-                _ => None,
-            })
-            .collect();
-
-        self.pending_command_progress_updates.clear();
-        self.pending_transport_telemetry_updates.clear();
-        self.pending_media_load_outcomes.clear();
-        self.pending_local_file_update = None;
-        self.pending_local_file_generation = None;
-        self.pending_local_file_observed_at = None;
-
-        Some(PlayerObservationBatch {
-            dropped_events_through,
-            ordered_events,
-            playback_telemetry: self.pending_playback_telemetry_update.take(),
-        })
-    }
-
-    fn request_ordered_event_reacquisition(&mut self) {
-        self.ordered_player_event_reacquisition_requested_by_consumer = true;
-        self.ordered_player_event_reacquisition_required = true;
-    }
-
     fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
         self.maintain_runtime_integrations();
         self.ensure_transport_observers_registered_if_attached();
@@ -1536,74 +1277,17 @@ impl PlayerAdapter for MpvAdapter {
         Some(batch)
     }
 
-    fn player_event_delivery_mode(&self) -> sorotte_player_api::PlayerEventDeliveryMode {
-        sorotte_player_api::PlayerEventDeliveryMode::OrderedAcknowledgedBatches
-    }
-
     fn acknowledge_player_event_batch(
         &mut self,
         token: sorotte_player_api::PlayerEventAcknowledgementToken,
     ) -> Result<(), PlayerError> {
-        let Some(acknowledged) = self
-            .player_lifecycle
-            .acknowledge_event_batch_with_summary(token)
-        else {
-            return Err(PlayerError::OperationFailed(
+        if self.player_lifecycle.acknowledge_event_batch(token) {
+            Ok(())
+        } else {
+            Err(PlayerError::OperationFailed(
                 "player event acknowledgement did not match the in-flight batch".to_owned(),
-            ));
-        };
-        for command_id in acknowledged.command_ids {
-            self.unacknowledged_terminal_command_progress
-                .remove(&command_id);
-            self.last_delivered_ordered_command_progress
-                .retain(|progress| progress.command_id != command_id);
-            self.pending_command_progress_updates
-                .retain(|progress| progress.command_id != command_id);
-            self.pending_ordered_player_events.retain(|event| {
-                !matches!(
-                    &event.kind,
-                    PlayerOrderedEventKind::CommandProgress(progress)
-                        if progress.command_id == command_id
-                )
-            });
+            ))
         }
-        for attempt_id in acknowledged.load_attempt_ids {
-            while let Some(index) = self
-                .unacknowledged_media_load_outcomes
-                .iter()
-                .position(|retained| retained.attempt_id == Some(attempt_id))
-            {
-                let retained = self
-                    .unacknowledged_media_load_outcomes
-                    .remove(index)
-                    .expect("matching retained media-load outcome was present");
-                if let Some(index) = self
-                    .last_delivered_ordered_media_load_outcomes
-                    .iter()
-                    .position(|observation| observation == &retained.observation)
-                {
-                    self.last_delivered_ordered_media_load_outcomes
-                        .remove(index);
-                }
-                if let Some(index) = self
-                    .pending_media_load_outcomes
-                    .iter()
-                    .position(|observation| observation == &retained.observation)
-                {
-                    self.pending_media_load_outcomes.remove(index);
-                }
-                if let Some(index) = self.pending_ordered_player_events.iter().position(|event| {
-                    matches!(
-                        &event.kind,
-                        PlayerOrderedEventKind::MediaLoad(observation)
-                            if observation == &retained.observation
-                    )
-                }) {
-                    self.pending_ordered_player_events.remove(index);
-                }
-            }
-        }
-        Ok(())
     }
 
     fn take_pending_chat_request(&mut self) -> Option<String> {
@@ -1623,11 +1307,12 @@ impl PlayerAdapter for MpvAdapter {
 
 #[cfg(test)]
 mod nonblocking_maintenance_tests {
+    use super::super::command_ack_tests::active_projection;
     use super::*;
-    use crate::lifecycle::{LoadAttemptState, SystemSeekOwnershipState};
+    use crate::lifecycle::{CommandSemanticState, LoadAttemptState, SystemSeekOwnershipState};
+    use crate::tests::player_delivery::collect_player_delivery;
     use sorotte_player_api::{
-        PlayerCommandProgressState, PlayerCommandSemanticResult, PlayerEvent,
-        PlayerEventAcknowledgementToken,
+        PlayerCommandSemanticResult, PlayerEvent, PlayerEventAcknowledgementToken,
     };
     use std::{
         collections::{BTreeSet, VecDeque},
@@ -1944,8 +1629,6 @@ mod nonblocking_maintenance_tests {
         )
         .expect("the first liveness batch should acknowledge");
 
-        adapter.pending_ordered_player_events.clear();
-        adapter.pending_transport_telemetry_updates.clear();
         assert!(
             <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter).is_none(),
             "a completed read must not trigger an unbounded tight polling loop"
@@ -1986,14 +1669,10 @@ mod nonblocking_maintenance_tests {
             elapsed < Duration::from_millis(750),
             "execute_tracked waited for the optional cache readback: {elapsed:?}"
         );
-        assert!(matches!(
-            adapter
-                .pending_command_progress_updates
-                .pop_front()
-                .expect("accepted progress")
-                .state,
-            PlayerCommandProgressState::Accepted
-        ));
+        assert_eq!(
+            adapter.player_lifecycle.commands[&command_id].state,
+            CommandSemanticState::Accepted
+        );
         assert_eq!(
             adapter
                 .pending_cache_pause_readback
@@ -2047,29 +1726,21 @@ mod nonblocking_maintenance_tests {
         if let Some(pending) = adapter.pending_cache_pause_readback.as_mut() {
             pending.ipc_command_id = Some(99);
         }
-        let accepted = adapter
-            .pending_command_progress_updates
-            .pop_front()
-            .expect("accepted progress");
-        assert_eq!(accepted.command_id, command_id);
-        assert_eq!(accepted.state, PlayerCommandProgressState::Accepted);
+        assert_eq!(
+            adapter.player_lifecycle.commands[&command_id].state,
+            CommandSemanticState::Accepted
+        );
 
         adapter.invalidate_nonblocking_runtime_commands_after_control_gap();
         assert_eq!(adapter.pending_cache_pause_readback, None);
         age_tracked_command_past_deadline(&mut adapter, command_id);
         adapter.expire_tracked_commands();
 
-        let finished = adapter
-            .pending_command_progress_updates
-            .pop_front()
-            .expect("timed-out progress");
-        assert_eq!(finished.command_id, command_id);
-        assert_eq!(
-            finished.state,
-            PlayerCommandProgressState::Finished(PlayerCommandResult::Failed(
-                PlayerCommandFailureKind::TimedOut
-            ))
-        );
+        let batch = adapter
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("timed-out batch");
+        assert_eq!(completion_not_observed_count(&batch, command_id), 1);
         assert!(adapter.pending_tracked_commands.is_empty());
     }
 
@@ -2122,11 +1793,7 @@ mod nonblocking_maintenance_tests {
             batch.acknowledgement_token,
         )
         .expect("timeout acknowledgement");
-        assert!(
-            !adapter
-                .unacknowledged_terminal_command_progress
-                .contains_key(&command_id)
-        );
+        assert_eq!(adapter.player_lifecycle.pending_semantic_outcome_count(), 0);
         assert_eq!(
             <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter),
             None
@@ -2142,13 +1809,13 @@ mod nonblocking_maintenance_tests {
             .expect("simulated load should succeed");
 
         let batch = adapter
-            .take_ordered_event_batch()
+            .take_player_event_batch()
             .expect("simulated load should publish an ordered batch");
         let transport = batch
-            .ordered_events
+            .events
             .iter()
-            .filter_map(|event| match &event.kind {
-                PlayerOrderedEventKind::Transport(update) => Some(update),
+            .filter_map(|event| match &event.event {
+                PlayerEvent::TransportDelta(update) => Some(update),
                 _ => None,
             })
             .next_back()
@@ -2171,9 +1838,7 @@ mod nonblocking_maintenance_tests {
         adapter
             .open_file("simulated-command-evidence.mkv")
             .expect("simulated load should succeed");
-        adapter
-            .take_ordered_event_batch()
-            .expect("simulated load batch");
+        let _ = collect_player_delivery(&mut adapter);
 
         let cases = [
             (
@@ -2201,35 +1866,30 @@ mod nonblocking_maintenance_tests {
                 .execute_tracked(command)
                 .expect("simulated tracked command should be accepted");
             let batch = adapter
-                .take_ordered_event_batch()
+                .take_player_event_batch()
                 .expect("simulated command should publish an ordered batch");
             let transport_event = batch
-                .ordered_events
+                .events
                 .iter()
-                .filter_map(|event| match &event.kind {
-                    PlayerOrderedEventKind::Transport(update) => Some((event.sequence, update)),
+                .filter_map(|event| match &event.event {
+                    PlayerEvent::TransportDelta(update) => Some((event.order, update)),
                     _ => None,
                 })
                 .next_back()
                 .expect("simulated command should publish transport evidence");
             let completion = batch
-                .ordered_events
+                .semantic_outcomes
                 .iter()
-                .find(|event| {
-                    matches!(
-                        &event.kind,
-                        PlayerOrderedEventKind::CommandProgress(progress)
-                            if progress.command_id == command_id
-                                && progress.state
-                                    == PlayerCommandProgressState::Finished(
-                                        PlayerCommandResult::Completed
-                                    )
+                .find(|item| {
+                    matches!(item.outcome,
+                        PlayerSemanticOutcome::Command(outcome) if outcome.command_id == command_id
+                            && outcome.result == PlayerCommandSemanticResult::Completed
                     )
                 })
-                .expect("simulated command should publish semantic completion");
+                .expect("simulated command terminal");
 
             assert!(
-                transport_event.0 < completion.sequence,
+                transport_event.0 < completion.order,
                 "authoritative transport evidence must causally precede command completion"
             );
             assert_eq!(transport_event.1.phase, Some(expected_phase));
@@ -2237,6 +1897,9 @@ mod nonblocking_maintenance_tests {
             assert_eq!(transport_event.1.logical_pause, Some(expected_pause));
             assert_eq!(transport_event.1.paused_for_cache, Some(false));
             assert_eq!(transport_event.1.seeking, Some(false));
+            adapter
+                .acknowledge_player_event_batch(batch.acknowledgement_token)
+                .expect("command receipt");
         }
     }
 
@@ -2299,12 +1962,7 @@ mod nonblocking_maintenance_tests {
                 batch.acknowledgement_token,
             )
             .unwrap_or_else(|error| panic!("{name} acknowledgement failed: {error}"));
-            assert!(
-                !adapter
-                    .unacknowledged_terminal_command_progress
-                    .contains_key(&command_id),
-                "{name}"
-            );
+            assert_eq!(adapter.player_lifecycle.pending_semantic_outcome_count(), 0);
             assert_eq!(
                 <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter),
                 None,
@@ -2359,14 +2017,10 @@ mod nonblocking_maintenance_tests {
             },
         );
         adapter.accept_tracked_command(command_id);
-        assert!(matches!(
-            adapter.pending_command_progress_updates.pop_front(),
-            Some(PlayerCommandProgress {
-                command_id: accepted_id,
-                state: PlayerCommandProgressState::Accepted,
-                ..
-            }) if accepted_id == command_id
-        ));
+        assert_eq!(
+            adapter.player_lifecycle.commands[&command_id].state,
+            CommandSemanticState::Accepted
+        );
 
         // These values represent a coherent post-command snapshot obtained after lifecycle
         // ownership was reacquired. Individual property events observed during the gap could not
@@ -2381,14 +2035,19 @@ mod nonblocking_maintenance_tests {
         adapter.publish_reconciled_transport_state(Some(10));
 
         assert!(adapter.pending_tracked_commands.is_empty());
-        assert!(matches!(
-            adapter.pending_command_progress_updates.pop_front(),
-            Some(PlayerCommandProgress {
-                command_id: completed_id,
-                state: PlayerCommandProgressState::Finished(PlayerCommandResult::Completed),
-                ..
-            }) if completed_id == command_id
-        ));
+        let batch = adapter
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("completed command batch");
+        assert!(
+            batch
+                .semantic_outcomes
+                .iter()
+                .any(|item| matches!(item.outcome,
+                    PlayerSemanticOutcome::Command(outcome) if outcome.command_id == command_id
+                        && outcome.result == PlayerCommandSemanticResult::Completed
+                ))
+        );
     }
 
     #[test]
@@ -2429,7 +2088,7 @@ mod nonblocking_maintenance_tests {
     }
 
     #[test]
-    fn player_batch_acknowledgement_compacts_only_matching_epoch_compatibility_state() {
+    fn player_batch_acknowledgement_compacts_only_the_matching_epoch() {
         let mut adapter = MpvAdapter::simulated();
         let generation = PlayerMediaGeneration::new(11);
         let command_id = adapter.register_tracked_command(
@@ -2464,13 +2123,7 @@ mod nonblocking_maintenance_tests {
             playlist_entry_id: Some(11),
             loaded_target: Some("retained-secret-url".to_owned()),
         });
-        adapter.queue_media_load_outcome_for_generation(
-            PlayerMediaLoadOutcome::success(
-                "retained-secret-url",
-                Some("retained-secret-url".to_owned()),
-            ),
-            Some(generation),
-        );
+
         adapter.finish_tracked_command(command_id, PlayerCommandResult::Completed);
         adapter.apply_lifecycle_input(PlayerLifecycleInput::EndFile {
             attachment_epoch: adapter.lifecycle_epoch(),
@@ -2490,57 +2143,46 @@ mod nonblocking_maintenance_tests {
             .is_err()
         );
         assert!(
-            adapter
-                .unacknowledged_terminal_command_progress
-                .contains_key(&command_id)
+            old_batch
+                .semantic_outcomes
+                .iter()
+                .any(|item| matches!(item.outcome,
+                    PlayerSemanticOutcome::Command(outcome) if outcome.command_id == command_id
+                ))
         );
         assert!(
-            adapter
-                .unacknowledged_media_load_outcomes
+            old_batch
+                .semantic_outcomes
                 .iter()
-                .any(|retained| retained.attempt_id == Some(attempt_id))
+                .any(|item| matches!(&item.outcome,
+                    PlayerSemanticOutcome::LoadAttempt(outcome) if outcome.attempt_id == attempt_id
+                ))
         );
-
+        assert_eq!(
+            adapter.player_lifecycle.peek_event_batch(),
+            Some(old_batch.clone())
+        );
         adapter.reset_player_state_for_new_attachment();
         adapter.apply_lifecycle_input(PlayerLifecycleInput::AttachmentReplaced);
         assert_eq!(
-            <MpvAdapter as PlayerAdapter>::take_player_event_batch(&mut adapter),
+            adapter.player_lifecycle.peek_event_batch(),
             Some(old_batch.clone())
         );
+        adapter
+            .acknowledge_player_event_batch(old_batch.acknowledgement_token)
+            .expect("old epoch receipt");
+        let remaining = collect_player_delivery(&mut adapter);
         assert!(
-            adapter
-                .unacknowledged_terminal_command_progress
-                .contains_key(&command_id)
+            remaining
+                .command_outcomes()
+                .all(|outcome| outcome.command_id != command_id)
         );
         assert!(
-            adapter
-                .unacknowledged_media_load_outcomes
-                .iter()
-                .any(|retained| retained.attempt_id == Some(attempt_id))
+            remaining
+                .load_outcomes()
+                .all(|outcome| outcome.attempt_id != attempt_id)
         );
-
-        <MpvAdapter as PlayerAdapter>::acknowledge_player_event_batch(
-            &mut adapter,
-            old_batch.acknowledgement_token,
-        )
-        .expect("old-epoch acknowledgement");
-        assert!(
-            !adapter
-                .unacknowledged_terminal_command_progress
-                .contains_key(&command_id)
-        );
-        assert!(
-            adapter
-                .unacknowledged_media_load_outcomes
-                .iter()
-                .all(|retained| retained.attempt_id != Some(attempt_id))
-        );
-        assert!(
-            adapter
-                .pending_media_load_outcomes
-                .iter()
-                .all(|observation| observation.outcome.requested_target != "retained-secret-url")
-        );
+        assert!(!format!("{adapter:?}").contains("retained-secret-url"));
     }
 
     #[test]
@@ -2592,10 +2234,7 @@ mod nonblocking_maintenance_tests {
                         playlist_entry_id: Some(playlist_entry_id),
                         loaded_target: Some(target.clone()),
                     });
-                    adapter.queue_media_load_outcome_for_generation(
-                        PlayerMediaLoadOutcome::success(&target, Some(target.clone())),
-                        Some(generation),
-                    );
+
                     adapter.finish_tracked_command(command_id, PlayerCommandResult::Completed);
                     adapter.apply_lifecycle_input(PlayerLifecycleInput::EndFile {
                         attachment_epoch: adapter.lifecycle_epoch(),
@@ -2653,8 +2292,7 @@ mod nonblocking_maintenance_tests {
 
             if operation % 1_024 == 0 {
                 assert!(adapter.pending_tracked_commands.is_empty());
-                assert!(adapter.unacknowledged_terminal_command_progress.is_empty());
-                assert!(adapter.unacknowledged_media_load_outcomes.is_empty());
+                assert_eq!(adapter.player_lifecycle.pending_semantic_outcome_count(), 0);
                 assert!(adapter.player_lifecycle.load_attempts.len() <= 1);
                 assert!(adapter.player_lifecycle.commands.len() <= 1);
                 assert!(adapter.player_lifecycle.seek_ownership.len() <= 1);
@@ -2662,228 +2300,177 @@ mod nonblocking_maintenance_tests {
         }
 
         assert!(adapter.pending_tracked_commands.is_empty());
-        assert!(adapter.unacknowledged_terminal_command_progress.is_empty());
-        assert!(adapter.unacknowledged_media_load_outcomes.is_empty());
-        assert!(adapter.pending_media_load_outcomes.is_empty());
-        assert!(
-            adapter
-                .last_delivered_ordered_media_load_outcomes
-                .is_empty()
-        );
+        assert_eq!(adapter.player_lifecycle.pending_semantic_outcome_count(), 0);
         assert!(adapter.player_lifecycle.load_attempts.is_empty());
         assert!(adapter.player_lifecycle.commands.is_empty());
         assert!(adapter.player_lifecycle.seek_ownership.is_empty());
         assert!(
             !format!("{adapter:?}").contains(RETIRED_PRIVATE_TARGET),
-            "acknowledged compatibility state retained a retired URL"
+            "acknowledged adapter state retained a retired URL"
         );
     }
 
     #[test]
     fn ordered_event_batch_is_atomic_and_preserves_adapter_ingress_order() {
         let mut adapter = MpvAdapter::simulated();
-        let generation = PlayerMediaGeneration::new(4);
-        adapter.active_media_generation = Some(generation);
-        adapter.queue_local_file_update(LocalFileUpdate::new("ordered.mkv"));
-        let transport = adapter
-            .transport_update_for(generation)
-            .with_position_seconds(12.0);
-        adapter.queue_transport_telemetry_update(transport);
-        adapter.queue_media_load_outcome(PlayerMediaLoadOutcome::success(
-            "ordered.mkv",
-            Some("ordered.mkv".to_owned()),
-        ));
-        let observed_at = Some(adapter.observation_timestamp());
-        adapter.queue_command_progress(PlayerCommandProgress::finished(
-            PlayerCommandId::new(11),
-            Some(generation),
-            observed_at,
-            Some(12.0),
-            PlayerCommandResult::Completed,
-        ));
-
+        adapter.open_file("ordered.mkv").expect("simulated load");
+        let _ = collect_player_delivery(&mut adapter);
+        let command_id = adapter
+            .execute_tracked(PlayerCommand::SetPosition(12.0))
+            .expect("tracked seek");
         let batch = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-        assert_eq!(batch.ordered_events.len(), 4);
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("atomic batch");
         assert!(
             batch
-                .ordered_events
+                .events
                 .windows(2)
-                .all(|events| events[0].sequence < events[1].sequence)
+                .all(|pair| pair[0].order < pair[1].order)
         );
-        assert!(matches!(
-            batch.ordered_events[0].kind,
-            PlayerOrderedEventKind::LocalFile(_)
-        ));
-        assert!(matches!(
-            batch.ordered_events[1].kind,
-            PlayerOrderedEventKind::Transport(_)
-        ));
-        assert!(matches!(
-            batch.ordered_events[2].kind,
-            PlayerOrderedEventKind::MediaLoad(_)
-        ));
-        assert!(matches!(
-            batch.ordered_events[3].kind,
-            PlayerOrderedEventKind::CommandProgress(_)
-        ));
-        assert!(adapter.pending_command_progress_updates.is_empty());
-        assert!(adapter.pending_transport_telemetry_updates.is_empty());
-        assert!(adapter.pending_media_load_outcomes.is_empty());
-        assert!(adapter.pending_local_file_update.is_none());
+        let position = batch
+            .events
+            .iter()
+            .find(|item| {
+                matches!(&item.event,
+                    PlayerEvent::TransportDelta(delta) if delta.position_seconds == Some(12.0)
+                )
+            })
+            .expect("position observation");
+        let completed = batch
+            .semantic_outcomes
+            .iter()
+            .find(|item| {
+                matches!(item.outcome,
+                    PlayerSemanticOutcome::Command(outcome) if outcome.command_id == command_id
+                        && outcome.result == PlayerCommandSemanticResult::Completed
+                )
+            })
+            .expect("command completion");
+        assert!(position.order < completed.order);
+        assert_eq!(
+            adapter.player_lifecycle.peek_event_batch(),
+            Some(batch.clone())
+        );
+        adapter
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .expect("matching receipt");
+        assert!(adapter.player_lifecycle.peek_event_batch().is_none());
     }
 
     #[test]
     fn ordered_event_overflow_rebases_file_command_and_terminal_transport_to_snapshot() {
         let mut adapter = MpvAdapter::simulated();
         let generation = PlayerMediaGeneration::new(4);
-        adapter.active_media_generation = Some(generation);
-        adapter.active_file_loaded = true;
-        adapter.transport_phase = PlayerTransportPhase::Playing;
-        adapter.observed_state.path = Some("current.mkv".to_owned());
+        active_projection(&mut adapter, generation, 4, "current.mkv");
         adapter.observed_state.position_seconds = Some(32.0);
-        adapter.observed_state.playback_rate = Some(1.0);
-        adapter.observed_state.logical_pause = Some(false);
-        adapter.observed_state.paused_for_cache = Some(false);
         adapter.observed_state.eof_reached = Some(false);
-        adapter.queue_local_file_update(LocalFileUpdate::new("current.mkv"));
-        adapter.queue_command_progress(PlayerCommandProgress::finished(
-            PlayerCommandId::new(11),
+        let id = adapter.register_tracked_command(
             Some(generation),
-            Some(adapter.observation_timestamp()),
-            Some(32.0),
-            PlayerCommandResult::Completed,
-        ));
+            TrackedCommandKind::Seek {
+                target_seconds: 32.0,
+                seeking_finished: false,
+                position_in_tolerance: false,
+            },
+        );
+        adapter.accept_tracked_command(id);
+        adapter.finish_tracked_command(id, PlayerCommandResult::Completed);
         let mut ended = adapter
             .transport_update_for(generation)
             .with_phase(PlayerTransportPhase::Ended);
         ended.eof_reached = Some(true);
         adapter.queue_transport_telemetry_update(ended);
-        for position in 0..MAX_PENDING_ORDERED_PLAYER_EVENTS {
-            let update = adapter
-                .transport_update_for(generation)
-                .with_position_seconds(position as f64);
-            adapter.queue_transport_telemetry_update(update);
+        for position in 0..128 {
+            adapter.queue_transport_telemetry_update(
+                adapter
+                    .transport_update_for(generation)
+                    .with_position_seconds(f64::from(position)),
+            );
         }
-
+        assert!(adapter.player_lifecycle.requires_authoritative_snapshot());
+        adapter.publish_authoritative_lifecycle_snapshot();
         let batch = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-        let dropped_events_through = batch
-            .dropped_events_through
-            .expect("overflow must be explicit");
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("recovery snapshot");
+        let snapshot = batch
+            .authoritative_snapshot
+            .as_ref()
+            .expect("overflow requires explicit recovery");
         assert_eq!(
-            batch
-                .ordered_events
-                .first()
-                .map(|event| event.sequence.get()),
-            Some(dropped_events_through.get() + 1)
+            snapshot.current_path,
+            SnapshotField::Known("current.mkv".to_owned())
         );
-        assert_eq!(batch.ordered_events.len(), 3);
-        assert!(batch.ordered_events.windows(2).all(|events| {
-            events[0]
-                .sequence
-                .get()
-                .checked_add(1)
-                .is_some_and(|expected| events[1].sequence.get() == expected)
-        }));
-        assert!(matches!(
-            &batch.ordered_events[0].kind,
-            PlayerOrderedEventKind::CommandProgress(progress)
-                if progress.command_id == PlayerCommandId::new(11)
-                    && progress.state
-                        == PlayerCommandProgressState::Finished(PlayerCommandResult::Completed)
-        ));
-        assert!(matches!(
-            &batch.ordered_events[1].kind,
-            PlayerOrderedEventKind::LocalFile(observation)
-                if observation.update.name == "current.mkv"
-        ));
-        assert!(matches!(
-            &batch.ordered_events[2].kind,
-            PlayerOrderedEventKind::Transport(update)
-                if update.media_generation == Some(generation)
-                    && update.phase == Some(PlayerTransportPhase::Playing)
-                    && update.position_seconds == Some(32.0)
-                    && update.eof_reached == Some(false)
-                    && update.seekable_ranges == Some(Vec::new())
-        ));
-        assert!(batch.ordered_events.iter().all(|event| {
-            !matches!(
-                &event.kind,
-                PlayerOrderedEventKind::Transport(PlayerTransportTelemetryUpdate {
-                    phase: Some(PlayerTransportPhase::Ended | PlayerTransportPhase::Failed),
-                    ..
-                })
-            )
-        }));
-        assert_eq!(batch.playback_telemetry, None);
+        assert_eq!(
+            snapshot.transport.media_generation,
+            SnapshotField::Known(generation)
+        );
+        assert_eq!(
+            snapshot.transport.phase,
+            SnapshotField::Known(PlayerTransportPhase::Playing)
+        );
+        assert_eq!(
+            snapshot.transport.position_seconds,
+            SnapshotField::Known(32.0)
+        );
+        assert_eq!(snapshot.transport.eof_reached, SnapshotField::Known(false));
+        assert!(
+            batch.events.is_empty(),
+            "the authoritative snapshot supersedes older deltas"
+        );
+        assert!(batch.semantic_outcomes.iter().any(|item| matches!(item.outcome,
+            PlayerSemanticOutcome::Command(outcome) if outcome.command_id == id && outcome.result == PlayerCommandSemanticResult::Completed
+        )));
     }
 
     #[test]
     fn authoritative_reacquisition_can_replay_more_events_than_the_ingress_queue_capacity() {
         let mut adapter = MpvAdapter::simulated();
         let generation = PlayerMediaGeneration::new(4);
-        adapter.active_media_generation = Some(generation);
-        adapter.active_file_loaded = true;
-        adapter.transport_phase = PlayerTransportPhase::Playing;
-        adapter.observed_state.position_seconds = Some(32.0);
-        adapter.observed_state.eof_reached = Some(false);
-
-        let terminal_count = MAX_PENDING_ORDERED_PLAYER_EVENTS + 44;
-        for id in 1..=terminal_count {
-            adapter.queue_command_progress(PlayerCommandProgress::finished(
-                PlayerCommandId::new(id as u64),
+        active_projection(&mut adapter, generation, 4, "current.mkv");
+        let mut command_ids = BTreeSet::new();
+        for _ in 0..160 {
+            let id = adapter.register_tracked_command(
                 Some(generation),
-                Some(adapter.observation_timestamp()),
-                Some(32.0),
-                PlayerCommandResult::Completed,
-            ));
+                TrackedCommandKind::Pause {
+                    logical_pause_observed: false,
+                },
+            );
+            adapter.accept_tracked_command(id);
+            adapter.finish_tracked_command(id, PlayerCommandResult::Completed);
+            command_ids.insert(id);
         }
-
+        for position in 0..128 {
+            adapter.queue_transport_telemetry_update(
+                adapter
+                    .transport_update_for(generation)
+                    .with_position_seconds(f64::from(position)),
+            );
+        }
+        assert!(adapter.player_lifecycle.requires_authoritative_snapshot());
+        adapter.publish_authoritative_lifecycle_snapshot();
         let batch = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-        let dropped_events_through = batch
-            .dropped_events_through
-            .expect("overflow must request authoritative reacquisition");
-        assert_eq!(batch.ordered_events.len(), terminal_count + 1);
-        assert_eq!(
-            batch
-                .ordered_events
-                .first()
-                .map(|event| event.sequence.get()),
-            Some(dropped_events_through.get() + 1)
-        );
-        assert!(batch.ordered_events.windows(2).all(|events| {
-            events[0]
-                .sequence
-                .get()
-                .checked_add(1)
-                .is_some_and(|expected| events[1].sequence.get() == expected)
-        }));
-        assert_eq!(
-            batch
-                .ordered_events
-                .iter()
-                .filter(|event| matches!(event.kind, PlayerOrderedEventKind::CommandProgress(_)))
-                .count(),
-            terminal_count
-        );
-        assert!(matches!(
-            batch.ordered_events.last().map(|event| &event.kind),
-            Some(PlayerOrderedEventKind::Transport(update))
-                if update.media_generation == Some(generation)
-                    && update.phase == Some(PlayerTransportPhase::Playing)
-        ));
-        assert!(!adapter.ordered_player_event_reacquisition_required);
-
-        let acknowledged = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-        assert_eq!(acknowledged.dropped_events_through, None);
-        assert!(adapter.unacknowledged_terminal_command_progress.is_empty());
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("recovery batch");
+        assert!(batch.authoritative_snapshot.is_some());
+        let delivered = batch
+            .semantic_outcomes
+            .iter()
+            .filter_map(|item| match item.outcome {
+                PlayerSemanticOutcome::Command(outcome)
+                    if outcome.result == PlayerCommandSemanticResult::Completed =>
+                {
+                    Some(outcome.command_id)
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(delivered, command_ids);
+        adapter
+            .acknowledge_player_event_batch(batch.acknowledgement_token)
+            .expect("recovery receipt");
+        assert_eq!(adapter.player_lifecycle.pending_semantic_outcome_count(), 0);
     }
 
     #[test]
@@ -2908,26 +2495,32 @@ mod nonblocking_maintenance_tests {
         adapter.cache_state_telemetry_update(&json!({
             "seekable-ranges": [],
         }));
-        for position in 0..=MAX_PENDING_ORDERED_PLAYER_EVENTS {
+        for position in 0..128 {
             adapter.queue_transport_telemetry_update(
                 adapter
                     .transport_update_for(generation)
-                    .with_position_seconds(position as f64),
+                    .with_position_seconds(f64::from(position)),
             );
         }
-
+        assert!(adapter.player_lifecycle.requires_authoritative_snapshot());
+        adapter.publish_authoritative_lifecycle_snapshot();
         let batch = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-
-        assert!(batch.dropped_events_through.is_some());
-        assert!(batch.ordered_events.iter().any(|event| matches!(
-            &event.kind,
-            PlayerOrderedEventKind::Transport(update)
-                if update.media_generation == Some(generation)
-                    && update.seekable_ranges == Some(Vec::new())
-                    && update.known_live_seekable_window.is_none()
-        )));
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("recovery batch");
+        let snapshot = batch.authoritative_snapshot.expect("snapshot");
+        assert_eq!(
+            snapshot.transport.media_generation,
+            SnapshotField::Known(generation)
+        );
+        assert_eq!(
+            snapshot.transport.known_live_seekable_window,
+            SnapshotField::KnownAbsent
+        );
+        assert_eq!(
+            snapshot.transport.seekable_ranges,
+            SnapshotField::Unavailable
+        );
     }
 
     #[test]
@@ -2945,27 +2538,31 @@ mod nonblocking_maintenance_tests {
             .active_media_generation
             .expect("start-file generation");
         assert_ne!(new_generation, old_generation);
-        for _ in 0..MAX_PENDING_ORDERED_PLAYER_EVENTS {
-            let update = adapter.transport_update_for(new_generation);
-            adapter.queue_transport_telemetry_update(update);
+        for _ in 0..128 {
+            adapter.queue_transport_telemetry_update(adapter.transport_update_for(new_generation));
         }
-
+        assert!(adapter.player_lifecycle.requires_authoritative_snapshot());
+        adapter.publish_authoritative_lifecycle_snapshot();
         let batch = adapter
-            .take_ordered_event_batch()
-            .expect("mpv supports ordered event batches");
-        assert!(batch.dropped_events_through.is_some());
+            .player_lifecycle
+            .peek_event_batch()
+            .expect("recovery batch");
+        let snapshot = batch.authoritative_snapshot.expect("snapshot");
+        assert_eq!(snapshot.current_path, SnapshotField::KnownAbsent);
+        assert_eq!(
+            snapshot.transport.media_generation,
+            SnapshotField::Known(new_generation)
+        );
+        assert_eq!(
+            snapshot.transport.phase,
+            SnapshotField::Known(PlayerTransportPhase::Loading)
+        );
         assert!(
             batch
-                .ordered_events
+                .events
                 .iter()
-                .all(|event| !matches!(event.kind, PlayerOrderedEventKind::LocalFile(_)))
+                .all(|item| !matches!(item.event, PlayerEvent::LocalFileChanged { .. }))
         );
-        assert!(batch.ordered_events.iter().any(|event| matches!(
-            &event.kind,
-            PlayerOrderedEventKind::Transport(update)
-                if update.media_generation == Some(new_generation)
-                    && update.phase == Some(PlayerTransportPhase::Loading)
-        )));
     }
 
     impl RuntimeLeaseControlLaneTransport {
@@ -3758,6 +3355,7 @@ mod nonblocking_maintenance_tests {
                 transport_phase: PlayerTransportPhase::Playing,
                 ..MpvAdapter::default()
             };
+            active_projection(&mut adapter, generation, 1, "test://clock");
             let mut position = PlayerTransportTelemetryUpdate::new(
                 generation,
                 PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(
@@ -3782,10 +3380,10 @@ mod nonblocking_maintenance_tests {
                 adapter.queue_transport_telemetry_update(position);
             }
 
-            assert_eq!(adapter.pending_transport_telemetry_updates.len(), 2);
-            let clocks = adapter
-                .pending_transport_telemetry_updates
-                .iter()
+            let delivery = collect_player_delivery(&mut adapter);
+            assert_eq!(delivery.transport_deltas().count(), 2);
+            let clocks = delivery
+                .transport_deltas()
                 .map(|update| {
                     (
                         update.position_seconds,
@@ -3825,6 +3423,7 @@ mod nonblocking_maintenance_tests {
             transport_phase: PlayerTransportPhase::Playing,
             ..MpvAdapter::default()
         };
+        active_projection(&mut adapter, generation, 1, "test://clock");
         adapter.queue_transport_telemetry_update(
             PlayerTransportTelemetryUpdate::new(
                 generation,
@@ -3839,9 +3438,13 @@ mod nonblocking_maintenance_tests {
         sparse.logical_pause = Some(false);
         adapter.queue_transport_telemetry_update(sparse);
 
-        assert_eq!(adapter.pending_transport_telemetry_updates.len(), 2);
+        let delivery = collect_player_delivery(&mut adapter);
+        assert_eq!(delivery.transport_deltas().count(), 2);
         assert_eq!(
-            adapter.pending_transport_telemetry_updates[0]
+            delivery
+                .transport_deltas()
+                .next()
+                .expect("position delta")
                 .observed_at
                 .expect("position should retain its own clock")
                 .elapsed_since_adapter_start(),
@@ -3861,6 +3464,7 @@ mod nonblocking_maintenance_tests {
         let received_at = origin + Duration::from_secs(1);
         adapter.observation_clock_origin = origin;
         let generation = PlayerMediaGeneration::new(1);
+        active_projection(&mut adapter, generation, 1, "test://clock");
         adapter.active_media_generation = Some(generation);
         adapter.active_file_loaded = true;
         adapter.transport_phase = PlayerTransportPhase::Playing;
@@ -3878,9 +3482,9 @@ mod nonblocking_maintenance_tests {
             );
 
         assert!(adapter.drain_ipc_events_without_network_options_flush());
-        let position = adapter
-            .pending_transport_telemetry_updates
-            .iter()
+        let delivery = collect_player_delivery(&mut adapter);
+        let position = delivery
+            .transport_deltas()
             .find(|update| update.position_seconds == Some(10.0))
             .expect("time-pos event should emit transport telemetry");
         assert_eq!(
@@ -3899,15 +3503,14 @@ mod nonblocking_maintenance_tests {
             ..MpvAdapter::default()
         };
         let generation = PlayerMediaGeneration::new(1);
-        adapter
-            .pending_transport_telemetry_updates
-            .push_back(PlayerTransportTelemetryUpdate::new(
-                generation,
-                PlayerObservationTimestamp::from_adapter_observation(
-                    Duration::from_secs(1),
-                    Duration::from_secs(2),
-                ),
-            ));
+        active_projection(&mut adapter, generation, 1, "test://clock");
+        adapter.queue_transport_telemetry_update(PlayerTransportTelemetryUpdate::new(
+            generation,
+            PlayerObservationTimestamp::from_adapter_observation(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+            ),
+        ));
         adapter
             .pending_cache_telemetry_updates
             .push_back(PlayerCacheTelemetryUpdate {
@@ -3919,9 +3522,10 @@ mod nonblocking_maintenance_tests {
                 ..PlayerCacheTelemetryUpdate::default()
             });
 
-        let transport_timestamp = adapter
-            .take_transport_telemetry_update()
-            .and_then(|update| update.observed_at)
+        let delivery = collect_player_delivery(&mut adapter);
+        let transport_timestamp = delivery
+            .transport_deltas()
+            .find_map(|update| update.observed_at)
             .expect("transport telemetry should retain a timestamp");
         let cache_timestamp = adapter
             .take_cache_telemetry_update()
@@ -4366,5 +3970,23 @@ mod nonblocking_maintenance_tests {
                 .is_none(),
             "the accepted transition must clear the replacement generation's expectation"
         );
+    }
+}
+
+impl MpvAdapter {
+    /// Returns a complete cache observation for diagnostics; omitted metrics clear prior values.
+    pub fn take_cache_telemetry_update(&mut self) -> Option<PlayerCacheTelemetryUpdate> {
+        self.maintain_runtime_integrations();
+        self.ensure_transport_observers_registered_if_attached();
+        self.drain_ipc_events_if_attached();
+        self.observe_unhealthy_ipc_transport();
+        let mut update = self.pending_cache_telemetry_updates.pop_front()?;
+        if let Some(observed_at) = update.observed_at {
+            update.observed_at = Some(PlayerObservationTimestamp::from_adapter_observation(
+                observed_at.elapsed_since_adapter_start(),
+                self.observation_clock_origin.elapsed(),
+            ));
+        }
+        Some(update)
     }
 }

@@ -1901,6 +1901,7 @@ fn open_system_url_command(url: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::runtime_owner::player_event_test_support::*;
     use crate::app::testing::support::test_temp_root;
     use crate::app::{GuiOwnedPlayer, SecretDraft};
 
@@ -1908,7 +1909,7 @@ mod tests {
     fn accepted_then_rejected_plex_load_never_enters_watch_sync() {
         #[derive(Default)]
         struct AcceptedPlexState {
-            outcomes: std::collections::VecDeque<sorotte_player_api::PlayerMediaLoadOutcome>,
+            events: Option<ScriptedPlayerEvents>,
         }
 
         struct AcceptedPlexPlayer {
@@ -1932,14 +1933,25 @@ mod tests {
                 Ok(sorotte_player_api::PlayerCommandId::new(17))
             }
 
-            fn take_media_load_outcome(
-                &mut self,
-            ) -> Option<sorotte_player_api::PlayerMediaLoadOutcome> {
+            fn take_player_event_batch(&mut self) -> Option<sorotte_player_api::PlayerEventBatch> {
                 self.state
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .outcomes
-                    .pop_front()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .events
+                    .as_ref()
+                    .and_then(ScriptedPlayerEvents::peek)
+            }
+            fn acknowledge_player_event_batch(
+                &mut self,
+                token: sorotte_player_api::PlayerEventAcknowledgementToken,
+            ) -> Result<(), sorotte_player_api::PlayerError> {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .events
+                    .as_mut()
+                    .expect("scripted ingress")
+                    .acknowledge(token)
             }
         }
 
@@ -1970,7 +1982,12 @@ mod tests {
             logical_file: logical_file.clone(),
             playback_url: sorotte_plex::SecretPlexPlaybackUrl::new(playback_url),
         };
-        let player_state = std::sync::Arc::new(std::sync::Mutex::new(AcceptedPlexState::default()));
+        let player_state = std::sync::Arc::new(std::sync::Mutex::new(AcceptedPlexState {
+            events: Some(ScriptedPlayerEvents::new(
+                sorotte_player_api::PlayerAttachmentEpoch::new(1),
+            )),
+            ..Default::default()
+        }));
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(AcceptedPlexPlayer {
             state: player_state.clone(),
@@ -1995,12 +2012,15 @@ mod tests {
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .outcomes
-            .push_back(sorotte_player_api::PlayerMediaLoadOutcome::failure(
+            .events
+            .as_mut()
+            .expect("scripted ingress")
+            .push_outcome(load_failed(
+                1,
+                Some(sorotte_player_api::PlayerCommandId::new(17)),
                 playback_url,
                 None,
                 sorotte_player_api::PlayerMediaLoadFailureKind::Unknown,
-                "player rejected the Plex stream",
             ));
         owner.refresh_player_state_impl();
 

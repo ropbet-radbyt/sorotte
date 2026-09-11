@@ -22,10 +22,10 @@ use sorotte_player_api::{
     LoadAttemptId, LocalFileUpdate, PlayerActiveLoadSnapshot, PlayerAdapter, PlayerAttachmentEpoch,
     PlayerAuthoritativeSnapshot, PlayerCommandFailureKind, PlayerCommandId, PlayerCommandProgress,
     PlayerCommandProgressState, PlayerCommandResult, PlayerCommandSemanticResult, PlayerEvent,
-    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventDeliveryMode, PlayerEventOrder,
-    PlayerLoadAttemptResult, PlayerMediaGeneration, PlayerMediaLoadFailureKind,
-    PlayerMediaLoadOutcome, PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta,
-    PlayerTransportSnapshot, SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
+    PlayerEventAcknowledgementToken, PlayerEventBatch, PlayerEventOrder, PlayerLoadAttemptResult,
+    PlayerMediaGeneration, PlayerMediaLoadFailureKind, PlayerMediaLoadOutcome,
+    PlayerSemanticOutcome, PlayerSequenceBoundary, PlayerTransportDelta, PlayerTransportSnapshot,
+    SequencedPlayerEvent, SequencedPlayerSemanticOutcome, SnapshotField,
 };
 use sorotte_player_mpv::SyncplayOsdKind;
 
