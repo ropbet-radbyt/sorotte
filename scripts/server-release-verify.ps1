@@ -151,7 +151,7 @@ function Test-LegacyOracleReady {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath (Join-Path $Path "syncplayServer.py") -PathType Leaf)) { return $false }
-    & python scripts/release_qualification.py verify---legacy-root $Path
+    & python scripts/release_qualification.py verify-legacy --legacy-root $Path
     if ($LASTEXITCODE -ne 0) { throw "Legacy oracle must be clean and pinned to $LegacySha" }
     return $true
 }
