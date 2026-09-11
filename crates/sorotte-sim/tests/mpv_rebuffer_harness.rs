@@ -1655,17 +1655,16 @@ impl RealMpvClient {
 
     fn poll(&mut self) {
         for ingress in collect_player_ingress(&mut self.player) {
-            if let MpvIngress::Outcome(PlayerSemanticOutcome::Command(outcome)) = &ingress {
-                if let Some(coordinator_id) = self.player_commands.remove(&outcome.command_id)
-                    && !matches!(
-                        outcome.result,
-                        PlayerCommandSemanticResult::Completed
-                            | PlayerCommandSemanticResult::Superseded
-                    )
-                {
-                    self.coordinator
-                        .command_failed(coordinator_id, self.now_seconds());
-                }
+            if let MpvIngress::Outcome(PlayerSemanticOutcome::Command(outcome)) = &ingress
+                && let Some(coordinator_id) = self.player_commands.remove(&outcome.command_id)
+                && !matches!(
+                    outcome.result,
+                    PlayerCommandSemanticResult::Completed
+                        | PlayerCommandSemanticResult::Superseded
+                )
+            {
+                self.coordinator
+                    .command_failed(coordinator_id, self.now_seconds());
             }
             let Some(update) = apply_transport_ingress(&mut self.latest_transport, &ingress) else {
                 continue;

@@ -1464,7 +1464,7 @@ fn gui_persisted_config_runtime_owner_prefers_exact_case_search_root_file_over_f
 
     assert_eq!(
         owner
-            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("case-sensitive quick resolution should complete"),
         GuiUserMediaTargetResolution::Resolved {
             path: expected_path.to_string_lossy().into_owned(),
@@ -1526,7 +1526,7 @@ fn gui_persisted_config_runtime_owner_prefers_exact_case_indexed_file_over_folde
 
     assert_eq!(
         owner
-            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("case-sensitive indexed resolution should complete"),
         GuiUserMediaTargetResolution::Resolved {
             path: expected_path.to_string_lossy().into_owned(),
@@ -1592,7 +1592,7 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
 
     assert_eq!(
         owner
-            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("folded current fallback resolution should complete"),
         GuiUserMediaTargetResolution::Resolved {
             path: current_path.to_string_lossy().into_owned(),
@@ -1645,7 +1645,7 @@ fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded
 
     assert_eq!(
         owner
-            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("folded inventory lookup should wait for the active exact index"),
         GuiUserMediaTargetResolution::Pending
     );
@@ -1690,7 +1690,7 @@ fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded
 
     assert_eq!(
         owner
-            .resolve_main_window_user_media_target(&state, "pilot.mkv")
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("completed exact index lookup should resolve"),
         GuiUserMediaTargetResolution::Resolved {
             path: exact_path.to_string_lossy().into_owned(),
@@ -2955,7 +2955,9 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
     state.apply_shared_playlist_entries(vec![target.to_owned()], Some(0), false);
 
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(&state)
+        ),
         SelectedPlaylistMediaSyncOutcome::NoChange
     );
     let trigger_key = owner
@@ -2980,7 +2982,7 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
         .expect("ready Plex fallback should be queued");
     owner.plex_stream_resolve_rx = Some(result_rx);
     owner.plex_stream_resolve_result = None;
-    assert!(owner.pump_plex_stream_resolution_worker(&state));
+    assert!(owner.pump_plex_stream_resolution_worker(&runtime_state_for_shell(&state)));
 
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("Pilot.mkv")
@@ -2989,7 +2991,9 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
     owner.last_attached_media_resolution_trigger = None;
 
     assert_eq!(
-        owner.sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(&state)
+        ),
         SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget,
         "a failed exact search must not turn a scheduled retry into a pending blocker"
     );
