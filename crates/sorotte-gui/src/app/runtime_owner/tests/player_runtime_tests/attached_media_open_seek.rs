@@ -213,6 +213,9 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
+        // Keep asynchronous startup service results out of this player-command fixture.
+        check_for_updates_automatically: Some(false),
+        public_servers: Some(Vec::new()),
         ..StoredClientSettings::default()
     });
     let media_root = test_temp_root("attached-media-open-seek");
