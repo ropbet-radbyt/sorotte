@@ -63,8 +63,8 @@ impl GuiRuntimeRequest {
             Self::ApplyStagedUpdate(_) => vec![GuiShellAction::BeginStagedUpdateApply],
             Self::OpenMediaFiles {
                 paths,
-                load_into_shared_playlist: _,
                 playlist_insert_slot,
+                ..
             } => GuiPreviewRuntimeBridge::preview_open_media_file_actions(
                 Some(state),
                 paths.clone(),

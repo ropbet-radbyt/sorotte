@@ -352,26 +352,21 @@ pub(super) fn shared_playlist_entries_after_media_open(
         normalize_shared_playlist_entries(opened_entries)
     };
     if opened_entries.is_empty() {
-        return (
-            current_entries.to_vec(),
-            insert_slot.and(current_index.filter(|index| *index < current_entries.len())),
-        );
+        let selection =
+            insert_slot.and(current_index.filter(|index| *index < current_entries.len()));
+        return (current_entries.to_vec(), selection);
     }
     if let Some(insert_slot) = insert_slot {
         let mut playlist_entries = current_entries.to_vec();
         let insert_slot = insert_slot.min(playlist_entries.len());
         playlist_entries.splice(insert_slot..insert_slot, opened_entries);
-        return (
-            playlist_entries.clone(),
-            Some(
-                shared_playlist_target_index_from_changed_entries(
-                    current_entries,
-                    current_index,
-                    &playlist_entries,
-                )
-                .min(playlist_entries.len().saturating_sub(1)),
-            ),
-        );
+        let selection = shared_playlist_target_index_from_changed_entries(
+            current_entries,
+            current_index,
+            &playlist_entries,
+        )
+        .min(playlist_entries.len().saturating_sub(1));
+        return (playlist_entries, Some(selection));
     }
     (opened_entries, Some(0))
 }

@@ -1,5 +1,6 @@
 use super::*;
 
+use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use sorotte_player_api::LoadAttemptId;
 use sorotte_player_mpv::LifecycleVerificationTrackedLoad;
 
@@ -1008,5 +1009,112 @@ fn trace_e_same_generation_recovery_survives_both_old_terminal_orderings() {
         OldTerminalOrdering::AfterSuccessorFileLoaded,
     ] {
         run_same_generation_terminal_ordering(ordering);
+    }
+}
+
+#[test]
+fn playlist_poll_during_same_generation_recovery_does_not_reload_known_media() {
+    struct RejectDuplicateLoad;
+
+    impl PlayerAdapter for RejectDuplicateLoad {
+        fn name(&self) -> &'static str {
+            "reject-duplicate-recovery-load"
+        }
+
+        fn execute_tracked(
+            &mut self,
+            command: sorotte_player_api::PlayerCommand,
+        ) -> Result<PlayerCommandId, sorotte_player_api::PlayerError> {
+            panic!("playlist matching dispatched a command during recovery: {command:?}")
+        }
+    }
+
+    for terminal_before_start in [true, false] {
+        let mut world = TraceWorld::new();
+        let predecessor = world.establish_active_predecessor("playlist recovery");
+        world.gui.player = Some(GuiOwnedPlayer::Custom(Box::new(RejectDuplicateLoad)));
+        world.gui.active_shared_playlist_index = Some(0);
+        let mut state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+            &StoredClientSettings {
+                shared_playlist_enabled: Some(true),
+                ..StoredClientSettings::default()
+            },
+        );
+        state.apply_shared_playlist_entries(vec![PREDECESSOR_TARGET.to_owned()], Some(0), false);
+        assert_eq!(
+            world
+                .gui
+                .sync_selected_shared_playlist_media_to_attached_player_impl(&state),
+            SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget
+        );
+        let known_file = world.gui.player_local_file.clone();
+        let successor = world.harness.accept_same_generation_recovery(
+            predecessor.media_generation,
+            PREDECESSOR_TARGET,
+            [PREDECESSOR_ENTRY_ID],
+        );
+        world.harness.apply_authoritative_snapshot(
+            [
+                LifecycleVerificationPlaylistEntry::new(
+                    PREDECESSOR_ENTRY_ID,
+                    Some(PREDECESSOR_TARGET.to_owned()),
+                    false,
+                ),
+                LifecycleVerificationPlaylistEntry::new(
+                    SUCCESSOR_ENTRY_ID,
+                    Some(PREDECESSOR_TARGET.to_owned()),
+                    false,
+                ),
+            ],
+            Some(PREDECESSOR_TARGET.to_owned()),
+        );
+        world.flush("recovery bound");
+        if terminal_before_start {
+            world.harness.ingest_decoded_mpv_json(json!({
+                "event": "end-file", "playlist_entry_id": PREDECESSOR_ENTRY_ID, "reason": "stop",
+            }));
+        }
+        world.harness.ingest_decoded_mpv_json(json!({
+            "event": "start-file", "playlist_entry_id": SUCCESSOR_ENTRY_ID,
+        }));
+        world.flush("recovery starting before file-loaded");
+        if !terminal_before_start {
+            world.harness.ingest_decoded_mpv_json(json!({
+                "event": "end-file", "playlist_entry_id": PREDECESSOR_ENTRY_ID, "reason": "stop",
+            }));
+            world.flush("old terminal after recovery started");
+        }
+
+        // The physical attempt has changed, but the logical media is still known.
+        // Poll the actual playlist resolver while file-loaded has not arrived.
+        let _ = world
+            .gui
+            .sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+        assert_eq!(world.gui.player_local_file, known_file);
+        assert!(
+            world
+                .gui
+                .current_player_matches_media_target(PREDECESSOR_TARGET)
+        );
+        assert_attempt_result("recovery still pending", &world, successor, None);
+        assert_eq!(world.gui.player_position_seconds, None);
+
+        world.harness.ingest_decoded_mpv_json(json!({
+            "event": "property-change", "name": "path", "data": PREDECESSOR_TARGET,
+        }));
+        world
+            .harness
+            .ingest_decoded_mpv_json(json!({ "event": "file-loaded" }));
+        world.flush("recovery file-loaded");
+        let _ = world
+            .gui
+            .sync_selected_shared_playlist_media_to_attached_player_impl(&state);
+        assert_attempt_result(
+            "recovery completed",
+            &world,
+            successor,
+            Some(PlayerLoadAttemptResult::Loaded),
+        );
+        assert_eq!(world.gui.player_local_file, known_file);
     }
 }

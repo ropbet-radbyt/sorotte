@@ -1,6 +1,22 @@
 //! Validated updates of feature models shared by UI and worker state.
 use super::shell_state::*;
 use super::support::normalized_editable_text;
+
+fn normalize_optional_value(
+    value: Option<String>,
+    error_message: &'static str,
+) -> Result<Option<String>, &'static str> {
+    match value {
+        Some(value) => {
+            let Some(value) = normalized_editable_text(&value) else {
+                return Err(error_message);
+            };
+            Ok(Some(value.to_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
 pub(super) fn apply_gui_media_index_runtime_snapshot(
     media_index_status: &mut GuiMediaIndexStatusState,
     snapshot: GuiMediaIndexRuntimeSnapshot,
@@ -113,19 +129,6 @@ pub(super) fn apply_gui_stream_helper_runtime_snapshot(
     stream_helper: &mut GuiStreamHelperState,
     snapshot: GuiStreamHelperRuntimeSnapshot,
 ) -> Result<(), &'static str> {
-    let normalize_optional_value = |value: Option<String>,
-                                    error_message: &'static str|
-     -> Result<Option<String>, &'static str> {
-        match value {
-            Some(value) => {
-                let Some(value) = normalized_editable_text(&value) else {
-                    return Err(error_message);
-                };
-                Ok(Some(value.to_owned()))
-            }
-            None => Ok(None),
-        }
-    };
     let message = match snapshot.message {
         Some(message) => {
             let Some(message) = normalized_editable_text(&message) else {
@@ -223,19 +226,6 @@ pub(super) fn apply_gui_media_match_runtime_snapshot(
     media_match: &mut GuiMediaMatchState,
     snapshot: GuiMediaMatchRuntimeSnapshot,
 ) -> Result<(), &'static str> {
-    let normalize_optional_value = |value: Option<String>,
-                                    error_message: &'static str|
-     -> Result<Option<String>, &'static str> {
-        match value {
-            Some(value) => {
-                let Some(value) = normalized_editable_text(&value) else {
-                    return Err(error_message);
-                };
-                Ok(Some(value.to_owned()))
-            }
-            None => Ok(None),
-        }
-    };
     let message = match snapshot.message {
         Some(message) => {
             let Some(message) = normalized_editable_text(&message) else {

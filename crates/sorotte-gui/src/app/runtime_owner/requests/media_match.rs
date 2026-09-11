@@ -332,26 +332,24 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|session| session.current_room_media_match_peer_file_states())
             .unwrap_or_default();
         let remote_signature_token = format!("{remote_peer_states:?}");
+        let plugin_enabled = projected_state
+            .settings
+            .plugin_enablement
+            .enabled_for(GuiPluginSelection::MediaMatching);
+        let fingerprinting_enabled = projected_state
+            .media_match
+            .model
+            .settings
+            .fingerprinting_enabled;
+        let wire_sharing_enabled = projected_state
+            .media_match
+            .model
+            .settings
+            .wire_sharing_enabled;
+        let autoplay_policy = projected_state.media_match.model.settings.autoplay_policy;
+        let health = self.media_match_runtime_snapshot.health;
         format!(
-            "{}|{}|{}|{}|{:?}|{:?}|{}",
-            current_path,
-            projected_state
-                .settings
-                .plugin_enablement
-                .enabled_for(GuiPluginSelection::MediaMatching),
-            projected_state
-                .media_match
-                .model
-                .settings
-                .fingerprinting_enabled,
-            projected_state
-                .media_match
-                .model
-                .settings
-                .wire_sharing_enabled,
-            projected_state.media_match.model.settings.autoplay_policy,
-            self.media_match_runtime_snapshot.health,
-            remote_signature_token
+            "{current_path}|{plugin_enabled}|{fingerprinting_enabled}|{wire_sharing_enabled}|{autoplay_policy:?}|{health:?}|{remote_signature_token}"
         )
     }
 

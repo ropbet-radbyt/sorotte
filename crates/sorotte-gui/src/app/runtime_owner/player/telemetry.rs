@@ -940,6 +940,10 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         outcome: PlayerCommandOutcome,
     ) {
+        use sorotte_player_api::PlayerCommandFailureKind as FailureKind;
+        use sorotte_player_api::PlayerCommandSemanticResult::{
+            Completed, CompletionNotObserved, Failed, Superseded, TransportDisconnected,
+        };
         let Some(index) = self
             .attached_system_seek_ownership
             .iter()
@@ -947,9 +951,7 @@ impl GuiPersistedConfigRuntimeOwner {
         else {
             if matches!(
                 outcome.result,
-                PlayerCommandSemanticResult::Failed(
-                    PlayerCommandFailureKind::TimedOut | PlayerCommandFailureKind::Unknown
-                ) | PlayerCommandSemanticResult::CompletionNotObserved
+                Failed(FailureKind::TimedOut | FailureKind::Unknown) | CompletionNotObserved
             ) && let Some(guard) = self.attached_system_seek_fail_closed.as_mut()
             {
                 guard.retire_after = guard
@@ -964,21 +966,18 @@ impl GuiPersistedConfigRuntimeOwner {
             ownership.media_generation = outcome.media_generation.map(PlayerMediaGeneration::get);
         }
         match outcome.result {
-            PlayerCommandSemanticResult::Completed => {
+            Completed => {
                 self.attached_system_seek_ownership[index].state =
                     GuiAttachedSystemSeekOwnershipState::CompletedAwaitingStablePosition;
                 self.attached_native_seek_tracker
                     .disarm_untrusted_position_evidence();
             }
-            PlayerCommandSemanticResult::Superseded => {
+            Superseded => {
                 if let Some(ownership) = self.attached_system_seek_ownership.get_mut(index) {
                     ownership.state = GuiAttachedSystemSeekOwnershipState::SupersededMayArrive;
                 }
             }
-            PlayerCommandSemanticResult::Failed(
-                PlayerCommandFailureKind::TimedOut | PlayerCommandFailureKind::Unknown,
-            )
-            | PlayerCommandSemanticResult::CompletionNotObserved => {
+            Failed(FailureKind::TimedOut | FailureKind::Unknown) | CompletionNotObserved => {
                 if let Some(ownership) = self.attached_system_seek_ownership.get_mut(index) {
                     ownership.state = GuiAttachedSystemSeekOwnershipState::MayStillArrive;
                     ownership.retire_after = ownership
@@ -986,11 +985,8 @@ impl GuiPersistedConfigRuntimeOwner {
                         .max(Instant::now() + ATTACHED_SYSTEM_SEEK_TIMEOUT_EXTENSION);
                 }
             }
-            PlayerCommandSemanticResult::Failed(
-                PlayerCommandFailureKind::MediaEnded
-                | PlayerCommandFailureKind::TransportDisconnected,
-            )
-            | PlayerCommandSemanticResult::TransportDisconnected => {
+            Failed(FailureKind::MediaEnded | FailureKind::TransportDisconnected)
+            | TransportDisconnected => {
                 self.attached_system_seek_ownership.remove(index);
             }
         }
@@ -1676,13 +1672,15 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
                 if owns_transport
                     && transport_owner_changed
-                    && self
-                        .accept_attached_media_observation(media_generation, None)
-                        .is_some()
+                    && let Some(generation_advanced) =
+                        self.accept_attached_media_observation(media_generation, None)
                 {
                     self.reset_attached_media_boundary_state();
                     self.ordered_player_events.transport = PlayerTransportSnapshot::default();
-                    if !self.player_local_file_placeholder {
+                    // A recovery attempt replaces the physical transport, while
+                    // its unchanged media generation retains the known identity.
+                    // Clearing it here makes playlist matching load the same item again.
+                    if generation_advanced && !self.player_local_file_placeholder {
                         self.player_local_file = None;
                     }
                     self.player_position_seconds = None;

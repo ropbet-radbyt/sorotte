@@ -129,10 +129,8 @@ impl GuiRuntimeState {
                 }
             }
             GuiShellAction::CancelPlaybackPauseState => {
-                let Some(
-                    kind @ (GuiPendingOperationKind::SetPlaybackPause(_)
-                    | GuiPendingOperationKind::TogglePlaybackPause),
-                ) = self
+                use GuiPendingOperationKind::{SetPlaybackPause, TogglePlaybackPause};
+                let Some(kind @ (SetPlaybackPause(_) | TogglePlaybackPause)) = self
                     .session
                     .pending_operation
                     .as_ref()
