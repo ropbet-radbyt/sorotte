@@ -726,11 +726,6 @@ impl ClientSession {
             .is_some_and(|capabilities| capabilities.chat)
     }
 
-    pub fn server_plex_playlist_uris_supported(&self) -> bool {
-        self.server_capabilities()
-            .is_some_and(|capabilities| capabilities.plex_playlist_uris)
-    }
-
     pub fn server_persistent_rooms_supported(&self) -> bool {
         self.server_capabilities()
             .is_some_and(|capabilities| capabilities.persistent_rooms)

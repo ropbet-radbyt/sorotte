@@ -57,20 +57,11 @@ pub mod semantic_smoke {
     }
 
     pub use super::app::semantic_smoke::{
-        GuiSemanticOutputFormat, GuiSemanticScenarioDescriptor, GuiSemanticScenarioReport,
-        GuiSemanticScenarioSource,
+        GuiSemanticOutputFormat, GuiSemanticScenarioReport, GuiSemanticScenarioSource,
     };
 
     pub fn scenario_names() -> &'static [&'static str] {
         super::app::semantic_smoke::gui_semantic_scenario_names()
-    }
-
-    pub fn scenario_script(name: &str) -> Option<&'static str> {
-        super::app::semantic_smoke::gui_semantic_scenario_script(name)
-    }
-
-    pub fn scenario_descriptors() -> Vec<GuiSemanticScenarioDescriptor> {
-        super::app::semantic_smoke::gui_semantic_scenario_descriptors()
     }
 
     pub fn run_sorotte_gui_semantic_report_from_env()

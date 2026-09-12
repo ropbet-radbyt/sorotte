@@ -356,25 +356,6 @@ def resolve_base(args: argparse.Namespace) -> int:
     return 0
 
 
-def duplicate_rejecting_json_object(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise CoverageCiGuardError(
-                f"JSON evidence duplicates object key {key!r}"
-            )
-        value[key] = item
-    return value
-
-
-def reject_json_numeric_constant(value: str) -> None:
-    raise CoverageCiGuardError(
-        f"JSON evidence contains unsupported numeric constant {value}"
-    )
-
-
 def read_json(
     path: pathlib.Path,
     *,

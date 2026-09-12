@@ -246,15 +246,6 @@ def bounded_bytes(path: pathlib.Path, *, maximum: int, label: str) -> bytes:
         raise MutationCiError(str(error)) from error
 
 
-def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise MutationCiError(f"JSON object contains duplicate key {key!r}")
-        value[key] = item
-    return value
-
-
 def parse_json_bytes(data: bytes, *, label: str) -> Any:
     try:
         return artifact_input.strict_json_loads(data, max_bytes=MAX_JSON_BYTES, label=label)

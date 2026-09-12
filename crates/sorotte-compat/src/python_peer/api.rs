@@ -1,15 +1,6 @@
 use super::*;
 
 impl SyncplayServerPythonPeerHarness {
-    pub fn spawn_connected(peer_username: &str, room: &str) -> Result<Self, InteropError> {
-        let mut harness = Self::spawn(peer_username, room)?;
-        if let Err(error) = harness.start_peer_connected() {
-            let _ = harness.shutdown();
-            return Err(error);
-        }
-        Ok(harness)
-    }
-
     pub fn spawn(peer_username: &str, room: &str) -> Result<Self, InteropError> {
         Self::spawn_server(peer_username, room)
     }

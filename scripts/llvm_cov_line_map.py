@@ -175,19 +175,6 @@ def normalized_lines(text: str, *, description: str) -> list[str]:
     return lines
 
 
-def duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise LlvmCovLineMapError(f"LLVM JSON duplicates object key {key!r}")
-        value[key] = item
-    return value
-
-
-def reject_json_constant(value: str) -> None:
-    raise LlvmCovLineMapError(f"LLVM JSON contains unsupported numeric constant {value}")
-
-
 def parse_json(value: bytes) -> dict[str, Any]:
     try:
         parsed = artifact_input.strict_json_loads(value, max_bytes=MAX_LLVM_JSON_BYTES, label="LLVM JSON")

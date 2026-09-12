@@ -962,15 +962,6 @@ def execute_schedule_suite(
     }
 
 
-def strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise OracleError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
 def load_ledger(path: pathlib.Path) -> list[dict[str, Any]]:
     try:
         events = artifact_input.strict_jsonl_load(path, max_bytes=MAX_LEDGER_BYTES, label="lifecycle ledger", allow_blank_lines=False)

@@ -62,8 +62,6 @@ enum ServerCommand {
 #[derive(Debug, Clone)]
 pub struct ServerActorHandle {
     commands: Sender<ServerCommand>,
-    persistence_events: broadcast::Sender<ServerPersistenceEvent>,
-    persistence_degraded_worker_count: Arc<AtomicUsize>,
     outbound_backpressure_metrics: ServerOutboundBackpressureMetrics,
     pub(crate) network_resources: Arc<resources::NetworkResources>,
     join_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -73,8 +71,6 @@ pub struct ServerActorHandle {
 impl ServerActorHandle {
     pub fn spawn(mut runtime: ServerRuntime) -> Self {
         let (commands, receiver) = channel(SERVER_COMMAND_QUEUE_CAPACITY);
-        let persistence_events = runtime.persistence_events.clone();
-        let persistence_degraded_worker_count = runtime.persistence_degraded_worker_count.clone();
         let network_resources = resources::NetworkResources::new(runtime.resource_limits);
         let persistence_controls = runtime
             .room_persistence
@@ -93,23 +89,11 @@ impl ServerActorHandle {
         });
         Self {
             commands,
-            persistence_events,
-            persistence_degraded_worker_count,
             outbound_backpressure_metrics: ServerOutboundBackpressureMetrics::default(),
             network_resources,
             join_handle: Arc::new(Mutex::new(Some(join_handle))),
             persistence_controls,
         }
-    }
-
-    pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {
-        self.persistence_events.subscribe()
-    }
-
-    pub fn persistence_is_degraded(&self) -> bool {
-        self.persistence_degraded_worker_count
-            .load(Ordering::Acquire)
-            > 0
     }
 
     pub fn outbound_backpressure_snapshot(&self) -> ServerOutboundBackpressureSnapshot {

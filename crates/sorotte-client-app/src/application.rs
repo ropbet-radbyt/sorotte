@@ -498,10 +498,6 @@ where
             .set_external_player_availability(availability, now_seconds)
     }
 
-    pub fn into_runtime(self) -> ClientRuntime<P, QueuedRuntimeControl> {
-        self.runtime
-    }
-
     pub fn connection_phase(&self) -> &ConnectionPhase {
         self.runtime.session().connection_phase()
     }
@@ -1420,10 +1416,6 @@ where
 
     pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
         self.runtime.pending_protocol_line()
-    }
-
-    pub fn pending_protocol_line_count(&self) -> usize {
-        self.runtime.control().outbound_messages().len()
     }
 
     /// Decodes a transport line and applies its domain messages in wire order.

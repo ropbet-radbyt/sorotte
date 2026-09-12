@@ -208,23 +208,6 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise CoverageProfileLaneError(
-                f"JSON object contains duplicate key {key!r}"
-            )
-        value[key] = item
-    return value
-
-
-def reject_json_constant(value: str) -> None:
-    raise CoverageProfileLaneError(
-        f"JSON contains non-standard numeric constant {value!r}"
-    )
-
-
 def parse_json(data: bytes, *, label: str) -> Any:
     try:
         return artifact_input.strict_json_loads(data, max_bytes=MAX_REPORT_BYTES, label=label)

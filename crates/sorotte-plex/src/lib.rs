@@ -663,21 +663,6 @@ impl PlexMatchCache {
             temporary_file: cleanup,
         })
     }
-
-    pub fn get_for_file(&self, file: &LocalFileUpdate) -> Option<PlexMatchedItem> {
-        let key = cache_key_for_file(file)?;
-        self.entries.get(&key).cloned().map(Into::into)
-    }
-
-    pub fn put_for_file(
-        &mut self,
-        file: &LocalFileUpdate,
-        item: PlexMatchedItem,
-    ) -> Option<String> {
-        let key = cache_key_for_file(file)?;
-        self.entries.insert(key.clone(), item.into());
-        Some(key)
-    }
 }
 
 #[derive(Debug)]
@@ -1596,51 +1581,6 @@ where
         (self.config, self.transport, self.cache)
     }
 
-    pub fn resolve_match_for_local_file(
-        &mut self,
-        file: &LocalFileUpdate,
-        now: SystemTime,
-    ) -> PlexResult<Option<PlexMatchedItem>> {
-        let (server_url, token) = configured_server_url_and_token(&self.config)?;
-        let Some(file_key) = server_scoped_cache_key_for_file(&self.config, file) else {
-            return Ok(None);
-        };
-        resolve_media_match_for_file(
-            &self.transport,
-            &mut self.cache,
-            &mut self.unmatched_keys,
-            PlexMatchServerRef {
-                url: &server_url,
-                token: &token,
-            },
-            file,
-            &file_key,
-            now,
-        )
-    }
-
-    pub fn resolve_match_for_playlist_uri(
-        &self,
-        uri: &PlexPlaylistUri,
-    ) -> PlexResult<PlexMatchedItem> {
-        let (server_url, token) = self.server_url_and_token_for_playlist_uri(uri)?;
-        let metadata =
-            self.transport
-                .metadata_by_rating_key(&server_url, &token, &uri.rating_key)?;
-        if !metadata.media_type.is_video_watch_type() {
-            return Err(PlexError::InvalidResponse(format!(
-                "Plex metadata {} is not playable video media",
-                metadata.rating_key
-            )));
-        }
-        Ok(PlexMatchedItem {
-            rating_key: metadata.rating_key,
-            title: metadata.title,
-            media_type: metadata.media_type,
-            duration_millis: metadata.duration_millis.or(uri.duration_millis),
-        })
-    }
-
     pub fn resolve_stream_target(
         &mut self,
         target: &str,
@@ -1888,7 +1828,6 @@ pub struct PlexSyncEngine<T> {
     current_file_key: Option<String>,
     last_report_signature: Option<ReportSignature>,
     unmatched_keys: BTreeMap<String, SystemTime>,
-    timeline_interval: Duration,
 }
 
 impl<T> PlexSyncEngine<T>
@@ -1909,7 +1848,6 @@ where
             current_file_key: None,
             last_report_signature: None,
             unmatched_keys: BTreeMap::new(),
-            timeline_interval: DEFAULT_TIMELINE_INTERVAL,
         }
     }
 
@@ -1941,10 +1879,6 @@ where
 
     pub fn status(&self) -> PlexSyncStatus {
         self.status.clone()
-    }
-
-    pub fn set_timeline_interval(&mut self, interval: Duration) {
-        self.timeline_interval = interval;
     }
 
     pub fn tick(&mut self, event: Option<PlexWatchEvent>, now: SystemTime) -> PlexSyncStatus {
@@ -2061,7 +1995,7 @@ where
         signature
             .reported_at
             .duration_since(previous.reported_at)
-            .map(|elapsed| elapsed >= self.timeline_interval)
+            .map(|elapsed| elapsed >= DEFAULT_TIMELINE_INTERVAL)
             .unwrap_or(true)
     }
 

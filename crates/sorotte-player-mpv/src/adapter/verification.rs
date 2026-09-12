@@ -44,21 +44,12 @@ impl MpvLifecycleVerificationHarness {
         Self { adapter, now_tick }
     }
 
-    pub fn from_adapter(adapter: MpvAdapter) -> Self {
-        let now_tick = adapter.player_lifecycle.now_tick;
-        Self { adapter, now_tick }
-    }
-
     pub fn adapter(&self) -> &MpvAdapter {
         &self.adapter
     }
 
     pub fn adapter_mut(&mut self) -> &mut MpvAdapter {
         &mut self.adapter
-    }
-
-    pub fn into_adapter(self) -> MpvAdapter {
-        self.adapter
     }
 
     pub fn projection(&self) -> LifecycleVerificationProjection {

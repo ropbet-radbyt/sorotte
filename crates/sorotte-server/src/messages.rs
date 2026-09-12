@@ -183,22 +183,6 @@ pub(crate) fn new_controlled_room_message(room_name: &str, password: &str) -> Pr
     ProtocolMessage::set(SetPayload::new().with_new_controlled_room(payload))
 }
 
-#[allow(dead_code)]
-pub(crate) fn playlist_snapshot_change_message(
-    files: Vec<String>,
-    set_by: Option<&str>,
-    epoch: u64,
-) -> ProtocolMessage {
-    let mut playlist_change =
-        playlist_change_with_plex_sidecar(files, false).with_playlist_epoch(epoch);
-    playlist_change = if let Some(set_by) = set_by {
-        playlist_change.with_user(set_by)
-    } else {
-        playlist_change.with_null_user()
-    };
-    ProtocolMessage::set(SetPayload::new().with_playlist_change(playlist_change))
-}
-
 pub(crate) fn playlist_snapshot_index_message(
     index: Option<i64>,
     set_by: Option<&str>,

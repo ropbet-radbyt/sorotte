@@ -16,16 +16,6 @@ impl<'a> PlexLibraryService<'a> {
         Self { http }
     }
 
-    pub fn search_file_name(
-        &self,
-        server_url: &str,
-        token: &str,
-        file_name: &str,
-    ) -> PlexResult<Vec<PlexMediaSearchResult>> {
-        self.http
-            .search_media_by_file_name(server_url, token, file_name)
-    }
-
     pub fn search_selected(
         &self,
         config: &PlexClientConfig,

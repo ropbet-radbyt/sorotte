@@ -343,30 +343,6 @@ impl MediaMatchCache {
             .then_some(record)
     }
 
-    pub fn remove_stale(
-        &mut self,
-        path: impl AsRef<Path>,
-        modified_unix_millis: u64,
-        size_bytes: u64,
-        algorithm_version: u32,
-        extraction_settings: &MediaExtractionSettings,
-    ) -> bool {
-        let normalized_path = normalize_media_path(path);
-        let stale = self.records.get(&normalized_path).is_some_and(|record| {
-            !record.valid_for(
-                &normalized_path,
-                modified_unix_millis,
-                size_bytes,
-                algorithm_version,
-                extraction_settings,
-            )
-        });
-        if stale {
-            self.records.remove(&normalized_path);
-        }
-        stale
-    }
-
     pub fn clear(&mut self) {
         self.records.clear();
     }
