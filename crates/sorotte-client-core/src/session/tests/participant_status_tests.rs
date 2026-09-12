@@ -1378,6 +1378,10 @@ fn non_object_participant_status_extension_does_not_reject_valid_playstate() {
         .expect("malformed advisory status must not reject its containing State");
 
     assert!(session.user_participant_status_at("bob", 1.0).is_none());
+    let playstate = session.current_room_playstate().unwrap();
+    assert_eq!(playstate.position, Some(18.0));
+    assert_eq!(playstate.paused, Some(false));
+    assert!(!format!("{session:?}").contains("attacker-controlled-shape"));
 }
 
 #[test]
