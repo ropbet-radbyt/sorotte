@@ -239,6 +239,28 @@ fn media_tool_imports_publish_readiness_after_both_validated_workers_finish() {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        let actions = handle.drain_actions();
+        assert!(
+            !actions.iter().any(|action| matches!(
+                action,
+                GuiShellAction::PushTransientNotification {
+                    level: GuiTransientNotificationLevel::Error,
+                    ..
+                }
+            )),
+            "{tool:?} import actions: {actions:#?}"
+        );
+        let status = match tool {
+            MediaMatchTool::Ffmpeg => &owner.media_match_runtime_snapshot.ffmpeg_status,
+            MediaMatchTool::Ffprobe => &owner.media_match_runtime_snapshot.ffprobe_status,
+        };
+        assert!(
+            status
+                .as_deref()
+                .is_some_and(|status| status.contains(&format!("{mode} version 8.0"))),
+            "{tool:?} import snapshot: {:#?}",
+            owner.media_match_runtime_snapshot
+        );
     }
     assert!(
         owner
@@ -246,7 +268,9 @@ fn media_tool_imports_publish_readiness_after_both_validated_workers_finish() {
             .ffmpeg_status
             .as_deref()
             .unwrap()
-            .contains("ffmpeg version 8.0")
+            .contains("ffmpeg version 8.0"),
+        "{:#?}",
+        owner.media_match_runtime_snapshot
     );
     assert!(
         owner
@@ -254,7 +278,9 @@ fn media_tool_imports_publish_readiness_after_both_validated_workers_finish() {
             .ffprobe_status
             .as_deref()
             .unwrap()
-            .contains("ffprobe version 8.0")
+            .contains("ffprobe version 8.0"),
+        "{:#?}",
+        owner.media_match_runtime_snapshot
     );
     assert!(!owner.media_match_remediation_runtime_snapshot.active);
 }
