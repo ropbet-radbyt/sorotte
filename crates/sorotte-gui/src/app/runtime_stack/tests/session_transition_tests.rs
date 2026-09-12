@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
@@ -420,7 +421,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
         .expect("runtime settings should sync into the session");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -430,7 +431,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_ready_at_start_after_
         )
         .expect("inbound server hello should apply");
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("ready-at-start lines should encode");
     assert_eq!(outbound_lines.len(), 1);
     assert!(outbound_lines[0].contains(r#""Set":{"ready":{"isReady":true"#));
@@ -511,7 +512,7 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -527,7 +528,7 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
         .expect("first inbound state should apply");
 
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("first-state follow-up lines should encode");
     assert!(
         outbound_lines.iter().any(|line| line.contains(r#""List""#)),
@@ -540,7 +541,7 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
         )
         .expect("second inbound state should apply");
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("second-state follow-up lines should encode");
     assert!(
         !outbound_lines.iter().any(|line| line.contains(r#""List""#)),
@@ -555,7 +556,7 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -576,7 +577,7 @@ fn gui_client_core_chat_session_runtime_adapter_requests_user_list_on_first_stat
         .expect("first inbound state should apply");
 
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("first-state follow-up lines should encode");
     assert!(
         outbound_lines.iter().any(|line| line.contains(r#""List""#)),
@@ -596,7 +597,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_remote_user_after_playl
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -658,7 +659,7 @@ fn gui_client_core_chat_session_runtime_adapter_persists_reconnect_transitions_t
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -720,7 +721,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_reconnect_playlist_re
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -754,7 +755,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_reconnect_playlist_re
     let _ =
         GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect playlist restore lines should encode");
     assert!(
         outbound_lines.iter().any(|line| {
@@ -804,7 +805,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_remote_ready_changes_
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -820,7 +821,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_remote_ready_changes_
     );
 
     let outbound_protocol_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("remote readiness lines should encode");
     assert_eq!(outbound_protocol_lines.len(), 1);
     assert!(outbound_protocol_lines[0].contains("\"ready\""));
@@ -834,7 +835,7 @@ fn gui_client_core_chat_session_runtime_adapter_rejects_remote_ready_changes_whe
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -859,7 +860,7 @@ fn gui_client_core_chat_session_runtime_adapter_rejects_controller_auth_when_man
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -899,7 +900,7 @@ fn gui_client_core_chat_session_runtime_adapter_restores_readiness_controls_afte
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -953,7 +954,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_remote_readiness_withou
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -986,7 +987,7 @@ fn gui_client_core_chat_session_runtime_adapter_echoes_first_remote_authority() 
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -1005,7 +1006,7 @@ fn gui_client_core_chat_session_runtime_adapter_echoes_first_remote_authority() 
         .expect("inbound state should reconcile through client runtime");
 
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconciled state response should encode");
     assert_eq!(outbound_lines.len(), 2);
     let state_line = outbound_lines

@@ -33,7 +33,7 @@ fn gui_persisted_config_runtime_owner_initially_syncs_live_room_position_to_atta
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -132,7 +132,7 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -293,7 +293,7 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -413,7 +413,7 @@ fn gui_persisted_config_runtime_owner_applies_desync_seek_when_room_playstate_is
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -524,7 +524,7 @@ fn gui_persisted_config_runtime_owner_retries_attached_player_seek_after_transie
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),

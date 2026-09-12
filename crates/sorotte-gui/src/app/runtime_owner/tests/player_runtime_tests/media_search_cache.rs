@@ -909,7 +909,7 @@ fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_ch
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -939,7 +939,7 @@ fn gui_persisted_config_runtime_owner_retries_media_match_when_peer_signature_ch
 
     owner.sync_player_runtime_state(&handle, &runtime_state_for_shell(&state));
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#
@@ -4674,7 +4674,7 @@ fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_fro
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -4691,7 +4691,7 @@ fn gui_persisted_config_runtime_owner_warm_starts_shared_playlist_resolution_fro
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -4776,7 +4776,7 @@ fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_withou
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -4793,7 +4793,7 @@ fn gui_persisted_config_runtime_owner_resolves_from_stale_persisted_cache_withou
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -4898,7 +4898,7 @@ fn gui_persisted_config_runtime_owner_prefers_current_player_locality_for_duplic
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -4922,7 +4922,7 @@ fn gui_persisted_config_runtime_owner_prefers_current_player_locality_for_duplic
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -5358,7 +5358,7 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -5378,7 +5378,7 @@ fn gui_persisted_config_runtime_owner_keeps_cached_roots_when_one_refresh_result
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
         roots: vec![good_key.clone(), bad_key.clone()],
         root_indexes_by_key: std::collections::HashMap::from([

@@ -89,10 +89,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         GuiClientCoreChatSessionRuntimeAdapter::fail_outbound_protocol_delivery(self, token)
     }
 
-    fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
-        GuiClientCoreChatSessionRuntimeAdapter::flush_outbound_protocol_lines(self)
-    }
-
     fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
         GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
     }

@@ -767,24 +767,6 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        #[cfg(test)]
-        if self.session_transport_driver.is_none() {
-            // Legacy owner tests use the shared handle itself as an infallible
-            // capture sink. Keep their batch-observation surface while all
-            // fallible production drivers use staged, receipt-based delivery.
-            match session.flush_outbound_protocol_lines() {
-                Ok(lines) => session_transport.push_outbound_protocol_lines(lines),
-                Err(error) => Self::push_actions_and_project(
-                    handle,
-                    projected_state,
-                    vec![GuiShellAction::PushTransientNotification {
-                        level: GuiTransientNotificationLevel::Error,
-                        message: format!("Outbound session transport flush failed: {error}"),
-                    }],
-                ),
-            }
-            return;
-        }
         match session.begin_outbound_protocol_delivery() {
             Ok(Some(delivery)) => {
                 if let Err(delivery) =

@@ -3,6 +3,7 @@ use crate::app::runtime_owner::{
     GuiPendingPlaylistSourceResolution,
     player::{PlaylistResolutionAttemptState, SelectedPlaylistMediaSyncOutcome},
 };
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::{
     GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
@@ -48,7 +49,7 @@ fn active_client_core_playlist_adapter() -> GuiClientCoreChatSessionRuntimeAdapt
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core playlist adapter should bootstrap");
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup hello should encode");
     assert_eq!(startup_lines.len(), 1);
     adapter
@@ -293,7 +294,7 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         .session
         .as_mut()
         .expect("active session should remain attached")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("first replacement should encode");
     assert!(
         first_lines
@@ -338,7 +339,7 @@ fn active_session_same_label_full_replacement_rebinds_without_a_wire_change() {
         .session
         .as_mut()
         .expect("active session should remain attached")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("no-op replacement delivery should remain healthy");
     assert!(
         second_lines.iter().all(|line| {

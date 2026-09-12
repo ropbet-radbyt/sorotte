@@ -1587,7 +1587,7 @@ fn gui_persisted_config_runtime_owner_auto_attaches_configured_player_for_active
                 _ => None,
             },
         )
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {

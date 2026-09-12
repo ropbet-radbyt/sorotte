@@ -408,8 +408,8 @@ where
         )
     }
 
-    /// Publishes only the additive participant-status heartbeat. Legacy
-    /// canonical State synchronization remains independently gated until the
+    /// Publishes only the additive participant-status heartbeat. Syncplay
+    /// State synchronization remains independently gated until the
     /// server has established its ordinary State cadence.
     pub fn run_participant_status_heartbeat(&mut self, now_seconds: f64) -> bool {
         if !self.session.is_active() {
@@ -450,20 +450,6 @@ where
             );
         }
         queued
-    }
-
-    /// Transfers ownership of every queued protocol message to the caller.
-    /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
-    /// or the pending-line acknowledgement API instead.
-    pub fn flush_queued_protocol_messages(&mut self) -> Vec<ProtocolMessage> {
-        self.control.drain_outbound_messages()
-    }
-
-    /// Transfers an encoded batch to an infallible in-memory owner.
-    /// Fallible transports must use [`Self::flush_queued_protocol_lines_to_transport`]
-    /// or [`Self::pending_protocol_line`] plus [`Self::acknowledge_protocol_line`].
-    pub fn flush_queued_protocol_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        self.control.drain_outbound_message_lines()
     }
 
     pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {

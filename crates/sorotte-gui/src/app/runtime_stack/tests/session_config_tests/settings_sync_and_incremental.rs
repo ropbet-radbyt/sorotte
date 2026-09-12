@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_session_and_reconnects_with_them()
@@ -222,7 +223,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runt
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the startup hello");
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 

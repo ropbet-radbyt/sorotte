@@ -168,7 +168,7 @@ fn first_remote_room_revision_waits_for_physical_convergence_before_echo() {
         "outbound ping should include client RTT"
     );
 
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_player_playback_telemetry_update(
@@ -426,7 +426,7 @@ fn physical_pause_lag_without_explicit_intent_cannot_echo_over_room_authority() 
         0.0,
         false,
     ));
-    let _ = runtime.flush_queued_protocol_messages();
+    let _ = runtime.deliver_queued_protocol_messages();
 
     // The room baseline has arrived, but the external player has not applied
     // its correction yet. This physical lag is observation, not user intent.

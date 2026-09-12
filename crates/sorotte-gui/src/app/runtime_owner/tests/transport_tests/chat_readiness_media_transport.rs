@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -69,7 +69,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     }
     assert!(!state.commands.can_send_chat_message);
 
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
     session_transport.push_inbound_protocol_line(
@@ -142,7 +142,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     }
 
     let outbound_protocol_lines =
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines());
+        without_default_ready_publish_lines(session_transport.take_written_lines());
     assert!(outbound_protocol_lines.is_empty());
     assert!(state.commands.can_send_chat_message);
 
@@ -162,7 +162,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         assert!(state.apply(action));
     }
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert_eq!(outbound_protocol_lines.len(), 1);
     assert!(outbound_protocol_lines[0].contains("\"Chat\""));
     assert!(outbound_protocol_lines[0].contains("hello room"));
@@ -182,7 +182,7 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
     for action in inbound_actions {
         assert!(state.apply(action));
     }
-    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert!(session_transport.take_written_lines().is_empty());
     assert_eq!(state.main_window.chat.len(), 2);
 }
 

@@ -582,28 +582,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         };
     }
 
-    pub(in crate::app) fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
-        if let Some(staged) = self.staged_outbound_protocol_delivery.as_ref() {
-            return Err(format!(
-                "Cannot drain outbound protocol lines while delivery receipt {} is staged.",
-                staged.token
-            ));
-        }
-        if !self.pending_startup_protocol_lines.is_empty() && !self.runtime.session().is_active() {
-            let _ = Self::dispatch_command_to_application(
-                &mut self.runtime,
-                ClientCommand::TransportConnected,
-            )?;
-        }
-        let mut lines: Vec<_> = self.pending_startup_protocol_lines.drain(..).collect();
-        lines.extend(
-            self.runtime
-                .flush_queued_protocol_lines()
-                .map_err(|error| format!("Queued protocol line encoding failed: {error}"))?,
-        );
-        Ok(lines)
-    }
-
     pub(in crate::app) fn begin_outbound_protocol_delivery(
         &mut self,
     ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {

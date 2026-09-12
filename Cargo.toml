@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.14"
+version = "0.2.15"
 edition = "2024"
 license = "Apache-2.0"
 rust-version = "1.98.1"
@@ -27,14 +27,14 @@ rust-version = "1.98.1"
 [workspace.dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
-eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
-egui = "0.36.1"
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
+egui = "0.36.2"
 getrandom = "0.4.3"
 md-5 = "0.11.0"
 mlua = { version = "0.12.1", features = ["lua54", "serde", "vendored"] }
 proptest = "1.11.0"
 regex = "1.13.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "query", "rustls-no-provider"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "query", "rustls-no-provider"] }
 rfd = "0.17.2"
 rustls = "0.23.44"
 rustls-pki-types = { version = "1.15.1", features = ["std"] }

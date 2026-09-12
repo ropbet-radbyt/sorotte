@@ -28,7 +28,7 @@ fn delayed_remote_pause_observation_preserves_participant_readiness() {
             0.05,
         )
         .unwrap();
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     for now in [3.0, 3.2] {
         runtime.observe_external_player_transport(
             paused_transport(1, now, PlayerTransportPhase::ReadyPaused, 1.0),

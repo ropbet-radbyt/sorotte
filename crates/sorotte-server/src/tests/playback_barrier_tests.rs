@@ -16,6 +16,20 @@ use sorotte_protocol::{
     TransportBufferingReportPayload, encode_message_line,
 };
 
+fn deliver_client_protocol_messages(
+    client: &mut ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl>,
+) -> Vec<ProtocolMessage> {
+    let mut delivered = Vec::new();
+    while let Some(pending) = client.pending_protocol_line().expect("frame should encode") {
+        delivered.push(
+            client
+                .acknowledge_protocol_line(pending.lease())
+                .expect("written frame should acknowledge"),
+        );
+    }
+    delivered
+}
+
 const CAPABILITY: &str = r#""sorottePlaybackBarrierV1":true"#;
 
 fn hello(username: &str, room: &str, capability: bool) -> String {
@@ -316,7 +330,7 @@ fn coalesced_client_ready_and_initial_transport_report_both_reach_server() {
         ))
         .expect("initial transport report should queue");
 
-    let coalesced = client_outbox.drain_outbound_messages();
+    let coalesced = client_outbox.outbound_messages();
     assert_eq!(coalesced.len(), 1, "the pending States should coalesce");
     let line = encode_message_line(&coalesced[0]).expect("coalesced State should encode");
     runtime
@@ -411,7 +425,7 @@ fn reconnect_rebuilds_undelivered_start_before_server_acceptance() {
         .run_controller_auth_notifications_if_needed()
         .expect("current intent should rebuild after replacement Hello");
 
-    let recovery_query = client.flush_queued_protocol_messages();
+    let recovery_query = deliver_client_protocol_messages(&mut client);
     assert_eq!(recovery_query.len(), 1);
     let ProtocolMessage::Set(recovery_set) = &recovery_query[0] else {
         panic!("recovery query should use a Set envelope");
@@ -442,7 +456,7 @@ fn reconnect_rebuilds_undelivered_start_before_server_acceptance() {
         .run_controller_auth_notifications_if_needed()
         .expect("Absent should rearm exactly one fresh start");
 
-    let rebuilt = client.flush_queued_protocol_messages();
+    let rebuilt = deliver_client_protocol_messages(&mut client);
     assert_eq!(rebuilt.len(), 1);
     let ProtocolMessage::Set(rebuilt_set) = &rebuilt[0] else {
         panic!("rebuilt request should use a Set envelope");
@@ -548,7 +562,7 @@ fn client_runtime_recovers_server_processed_start_after_response_loss() {
         .run_controller_auth_notifications_if_needed()
         .expect("replacement connection should emit recovery");
 
-    let recovery_query = client.flush_queued_protocol_messages();
+    let recovery_query = deliver_client_protocol_messages(&mut client);
     assert_eq!(recovery_query.len(), 1);
     let ProtocolMessage::Set(recovery_set) = &recovery_query[0] else {
         panic!("recovery query should use a Set envelope");
@@ -605,7 +619,7 @@ fn client_runtime_recovers_server_processed_start_after_response_loss() {
         canonical_prepare.request_id.as_deref(),
         Some(initial_request_id.as_str())
     );
-    let post_recovery = client.flush_queued_protocol_messages();
+    let post_recovery = deliver_client_protocol_messages(&mut client);
     assert!(
         post_recovery.iter().all(|message| {
             barrier_extension(message).is_none_or(|extension| extension.prepare.is_none())

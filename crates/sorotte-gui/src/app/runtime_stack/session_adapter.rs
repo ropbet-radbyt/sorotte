@@ -86,12 +86,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    /// Legacy infallible ownership transfer retained for focused adapter tests.
-    /// Production transports use the staged delivery API above.
-    fn flush_outbound_protocol_lines(&mut self) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-
     fn apply_message_json(&mut self, _json_line: &str) -> Result<(), String> {
         Err(
             "Attached session runtime does not accept inbound protocol transport messages."

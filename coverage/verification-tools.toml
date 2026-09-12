@@ -83,6 +83,6 @@ Twisted = "26.4.0"
 [python-resolution]
 constraints = "requirements/verification-constraints.txt"
 # Canonical UTF-8 text with LF newlines; physical source bytes remain in identity.
-constraints-lf-sha256 = "4cecc081c2bfe4c6d0854db257ea67e49291ea355193800a9c7cfd115dc228cd"
+constraints-lf-sha256 = "55bbd6c4eade1ae928e5fda8e01c506fe5bf4c66e3f8691f8d003a9b259dd572"
 reviewed-platforms = ["linux-x86_64", "windows-x86_64"]
 reviewed-python = ["3.11", "3.12", "3.13"]

@@ -310,7 +310,7 @@ fn client_runtime_replay_uses_fresh_server_episode_with_readiness_v2() {
         MediaTransportKind::LocalFile,
         10.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert!(
         runtime
             .run_advance_playlist_index()

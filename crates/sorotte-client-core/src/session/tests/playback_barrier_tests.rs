@@ -447,13 +447,13 @@ fn runtime_reports_only_valid_barrier_observations_as_state_extensions() {
             .report_playback_barrier_media_ready(23, true, Some(true), true)
             .expect("stale readiness should be rejected without a sink failure")
     );
-    assert!(runtime.flush_queued_protocol_messages().is_empty());
+    assert!(runtime.deliver_queued_protocol_messages().is_empty());
     assert!(
         runtime
             .report_playback_barrier_media_ready(24, true, Some(true), true)
             .expect("active readiness should queue")
     );
-    let ready_messages = runtime.flush_queued_protocol_messages();
+    let ready_messages = runtime.deliver_queued_protocol_messages();
     assert_eq!(ready_messages.len(), 1);
     let ProtocolMessage::State(ready_message) = &ready_messages[0] else {
         panic!("MediaReady should use the State extension");
@@ -488,13 +488,13 @@ fn runtime_reports_only_valid_barrier_observations_as_state_extensions() {
             .report_playback_barrier_started(24, 6, 12.7, true, Some(102.0))
             .expect("stale revision should be rejected")
     );
-    assert!(runtime.flush_queued_protocol_messages().is_empty());
+    assert!(runtime.deliver_queued_protocol_messages().is_empty());
     assert!(
         runtime
             .report_playback_barrier_started(24, 7, 12.7, true, Some(102.0))
             .expect("matching actual start should queue")
     );
-    let started_messages = runtime.flush_queued_protocol_messages();
+    let started_messages = runtime.deliver_queued_protocol_messages();
     assert_eq!(started_messages.len(), 1);
     let ProtocolMessage::State(started_message) = &started_messages[0] else {
         panic!("StartedAck should use the State extension");

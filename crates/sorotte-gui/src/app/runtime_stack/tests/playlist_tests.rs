@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
@@ -7,7 +8,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
     assert!(
@@ -28,7 +29,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     GuiSessionRuntimeAdapter::queue_playlist_entry(&mut adapter, "episode1.mkv".to_owned(), true)
         .expect("queueing the first playlist entry should dispatch");
     let first_queue_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("first queue lines should encode");
     assert_eq!(first_queue_lines.len(), 3);
     assert!(first_queue_lines[0].contains("\"playlistChange\""));
@@ -53,7 +54,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     GuiSessionRuntimeAdapter::queue_playlist_entry(&mut adapter, "episode2.mkv".to_owned(), true)
         .expect("queueing the second playlist entry should dispatch");
     let second_queue_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("second queue lines should encode");
     assert_eq!(second_queue_lines.len(), 3);
     assert!(second_queue_lines[0].contains("episode1.mkv"));
@@ -77,7 +78,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     GuiSessionRuntimeAdapter::set_playlist_index(&mut adapter, 0)
         .expect("playlist selection should dispatch");
     let selection_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("selection lines should encode");
     assert_eq!(selection_lines.len(), 2);
     assert!(selection_lines[0].contains("\"playlistIndex\""));
@@ -99,7 +100,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     GuiSessionRuntimeAdapter::advance_playlist_index(&mut adapter)
         .expect("playlist advancement should dispatch");
     let advance_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("advance lines should encode");
     assert!(
         advance_lines
@@ -124,7 +125,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     GuiSessionRuntimeAdapter::delete_playlist_index(&mut adapter, 0)
         .expect("playlist removal should dispatch");
     let delete_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("delete lines should encode");
     assert!(
         delete_lines
@@ -157,7 +158,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
     )
     .expect("playlist reorder should dispatch");
     let replace_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("replace lines should encode");
     assert!(
         replace_lines.iter().any(|line| {
@@ -201,7 +202,7 @@ fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -240,7 +241,7 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -277,7 +278,7 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
     );
 
     let replace_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("replace lines should encode");
     assert!(
         replace_lines.iter().any(|line| {
@@ -310,7 +311,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -392,7 +393,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -468,7 +469,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -522,7 +523,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -595,7 +596,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -658,7 +659,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
         .expect("client-core chat adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 

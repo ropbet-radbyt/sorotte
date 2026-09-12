@@ -56,7 +56,7 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -77,7 +77,7 @@ fn gui_persisted_config_runtime_owner_resets_same_file_playlist_index_switches()
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -261,7 +261,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -294,7 +294,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
+        outbound_protocol_lines.extend(session_transport.complete_outbound_protocol_write());
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         let reset_physically_applied = owner
             .session
@@ -414,7 +414,7 @@ fn gui_persisted_config_runtime_owner_does_not_rewind_again_for_omitted_user_loc
         "an index echo alone cannot release the successor transport fence"
     );
 
-    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
+    outbound_protocol_lines.extend(session_transport.complete_outbound_protocol_write());
     let successor_state = outbound_protocol_lines
         .iter()
         .find(|line| line.contains("\"State\""))
@@ -497,7 +497,7 @@ fn gui_persisted_config_runtime_owner_reuses_media_search_index_for_later_playli
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -514,7 +514,7 @@ fn gui_persisted_config_runtime_owner_reuses_media_search_index_for_later_playli
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#

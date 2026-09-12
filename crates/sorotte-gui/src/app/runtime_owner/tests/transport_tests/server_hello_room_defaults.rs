@@ -179,7 +179,7 @@ fn gui_persisted_config_runtime_owner_disconnects_on_non_protocol_tcp_lines_befo
 fn gui_persisted_config_runtime_owner_rejects_room_changes_before_server_hello_without_optimistic_room_updates()
  {
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -205,7 +205,7 @@ fn gui_persisted_config_runtime_owner_rejects_room_changes_before_server_hello_w
 #[test]
 fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server_error() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -215,7 +215,7 @@ fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"readiness":true}}}"#,
@@ -235,7 +235,7 @@ fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server
         owner.pending_room_change_request.is_some(),
         "queued room changes should latch until the runtime confirms the room transition"
     );
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines
             .iter()
@@ -278,7 +278,7 @@ fn gui_persisted_config_runtime_owner_disconnects_immediately_on_terminal_server
 #[test]
 fn gui_persisted_config_runtime_owner_ignores_unsaved_default_room_edit() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.session_projects_to_shell = false;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -292,7 +292,7 @@ fn gui_persisted_config_runtime_owner_ignores_unsaved_default_room_edit() {
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -301,10 +301,7 @@ fn gui_persisted_config_runtime_owner_ignores_unsaved_default_room_edit() {
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    assert!(
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
-            .is_empty()
-    );
+    assert!(without_default_ready_publish_lines(session_transport.take_written_lines()).is_empty());
 
     assert!(state.apply(GuiShellAction::EditConfigurationText {
         id: SettingId::ConnectionRoom,
@@ -314,11 +311,11 @@ fn gui_persisted_config_runtime_owner_ignores_unsaved_default_room_edit() {
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    assert!(session_transport.drain_outbound_protocol_lines().is_empty());
+    assert!(session_transport.take_written_lines().is_empty());
 
     handle.push_request(GuiRuntimeRequest::ReturnToDefaultRoom);
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert_eq!(outbound_protocol_lines.len(), 2);
     assert!(
         outbound_protocol_lines[0].contains(r#""room":{"name":"room1"}"#),

@@ -685,7 +685,7 @@ fn participant_status_heartbeat_is_silent_without_negotiated_capability() {
 
     assert!(!runtime.run_participant_status_heartbeat(1.0));
     assert!(
-        runtime.flush_queued_protocol_messages().is_empty(),
+        runtime.deliver_queued_protocol_messages().is_empty(),
         "a legacy peer must not receive an empty advisory State"
     );
 }
@@ -699,7 +699,7 @@ fn participant_status_heartbeat_queues_only_the_negotiated_extension() {
     );
 
     assert!(runtime.run_participant_status_heartbeat(1.0));
-    let messages = runtime.flush_queued_protocol_messages();
+    let messages = runtime.deliver_queued_protocol_messages();
     assert_eq!(messages.len(), 1);
     let ProtocolMessage::State(state) = &messages[0] else {
         panic!("status heartbeat should use State");
@@ -740,7 +740,7 @@ fn participant_status_heartbeat_backlog_stays_bounded_when_chat_interleaves() {
         );
     }
 
-    let messages = runtime.flush_queued_protocol_messages();
+    let messages = runtime.deliver_queued_protocol_messages();
     assert_eq!(
         messages
             .iter()
@@ -858,7 +858,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
     runtime
         .drain_player_transport_coordination(base_now)
         .expect("playing observation should drain");
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     let report = &reports[0];
     assert_eq!(report.report_sequence, 1);
@@ -883,7 +883,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
         .last_participant_status_sent_at_seconds =
         Some(base_now - PARTICIPANT_STATUS_HEARTBEAT_SECONDS);
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].report_sequence, 2);
     assert_eq!(reports[0].position_seconds, Some(42.5));
@@ -895,7 +895,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
         .drain_player_transport_coordination(base_now + 1.0)
         .expect("same coarse phase should drain");
     assert!(
-        reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+        reports_in(runtime.deliver_queued_protocol_messages()).is_empty(),
         "ordinary position movement waits for the periodic cadence"
     );
 
@@ -905,7 +905,7 @@ fn participant_status_runtime_reports_transport_transitions_and_periodic_heartbe
     runtime
         .drain_player_transport_coordination(base_now + 2.0)
         .expect("rebuffering transition should drain");
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].report_sequence, 3);
     assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Rebuffering);
@@ -1181,13 +1181,13 @@ fn public_external_epoch_observation_emits_participant_status_transition_immedia
     runtime
         .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
         .expect("external lifecycle status should queue");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert!(
         !runtime
             .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.1,)
             .expect("repeated lifecycle status should be a no-op")
     );
-    assert!(runtime.flush_queued_protocol_messages().is_empty());
+    assert!(runtime.deliver_queued_protocol_messages().is_empty());
 
     let epoch = runtime.playback_transport_adapter_epoch();
     runtime.observe_external_player_transport_at_epoch(
@@ -1196,7 +1196,7 @@ fn public_external_epoch_observation_emits_participant_status_transition_immedia
         epoch,
     );
 
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(
         reports[0].player_connection,
@@ -1209,14 +1209,14 @@ fn public_external_epoch_observation_emits_participant_status_transition_immedia
         transport(1, 2.0, PlayerTransportPhase::Rebuffering, 13.0),
         2.0,
     );
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Rebuffering);
 
     runtime
         .observe_external_player_end_of_file(2.1)
         .expect("external EOF should be reported");
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Ended);
     assert_eq!(
@@ -1241,7 +1241,7 @@ fn participant_status_public_external_epoch_rebase_emits_transition_immediately(
     runtime
         .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
         .expect("external lifecycle status should queue");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     let epoch = runtime.playback_transport_adapter_epoch();
     runtime.rebase_external_player_transport_at_epoch(
@@ -1250,7 +1250,7 @@ fn participant_status_public_external_epoch_rebase_emits_transition_immediately(
         epoch,
     );
 
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(
         reports[0].player_connection,
@@ -1810,7 +1810,7 @@ fn participant_status_room_switch_cancels_leased_status_and_suppresses_old_room_
         "the old room must remain suppressed until authoritative membership changes"
     );
     assert!(runtime.release_protocol_line(leased.lease()));
-    let queued = runtime.flush_queued_protocol_messages();
+    let queued = runtime.deliver_queued_protocol_messages();
     assert!(reports_in(queued.clone()).is_empty());
     assert!(queued.iter().any(|message| {
         matches!(message, ProtocolMessage::Set(set) if set.set.room.as_ref().is_some_and(|room| room.name == "room2"))
@@ -1823,7 +1823,7 @@ fn participant_status_room_switch_cancels_leased_status_and_suppresses_old_room_
             3.0,
         )
         .unwrap();
-    let new_room_reports = reports_in(runtime.flush_queued_protocol_messages());
+    let new_room_reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(new_room_reports.len(), 1);
     assert_eq!(
         new_room_reports[0].player_connection,
@@ -1863,7 +1863,7 @@ fn participant_status_room_switch_requires_the_requested_authoritative_membershi
         )
         .unwrap();
     assert!(
-        reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+        reports_in(runtime.deliver_queued_protocol_messages()).is_empty(),
         "a delayed List for the old room must not release the destination fence"
     );
     assert!(
@@ -1881,7 +1881,7 @@ fn participant_status_room_switch_requires_the_requested_authoritative_membershi
         )
         .unwrap();
     assert_eq!(
-        reports_in(runtime.flush_queued_protocol_messages()).len(),
+        reports_in(runtime.deliver_queued_protocol_messages()).len(),
         1,
         "only the authoritative destination membership may release the fence"
     );
@@ -1914,7 +1914,7 @@ fn participant_status_reconnect_preserves_a_durable_room_switch_fence() {
         Some("room2"),
     );
     assert!(
-        reports_in(runtime.flush_queued_protocol_messages()).is_empty(),
+        reports_in(runtime.deliver_queued_protocol_messages()).is_empty(),
         "replacement Hello in the old room must not publish behind the retained SetRoom",
     );
     assert!(
@@ -1932,7 +1932,7 @@ fn participant_status_reconnect_preserves_a_durable_room_switch_fence() {
         )
         .unwrap();
     assert_eq!(
-        reports_in(runtime.flush_queued_protocol_messages()).len(),
+        reports_in(runtime.deliver_queued_protocol_messages()).len(),
         1
     );
 }
@@ -1948,7 +1948,7 @@ fn participant_status_inactive_phases_cancel_unleased_and_leased_reports() {
         .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
         .unwrap();
     runtime.session_mut().mark_disconnected();
-    assert!(reports_in(runtime.flush_queued_protocol_messages()).is_empty());
+    assert!(reports_in(runtime.deliver_queued_protocol_messages()).is_empty());
 
     runtime
         .session_mut()
@@ -1966,7 +1966,7 @@ fn participant_status_inactive_phases_cancel_unleased_and_leased_reports() {
         .expect("replacement status should be leased");
     runtime.session_mut().mark_closing();
     assert!(runtime.release_protocol_line(leased.lease()));
-    assert!(reports_in(runtime.flush_queued_protocol_messages()).is_empty());
+    assert!(reports_in(runtime.deliver_queued_protocol_messages()).is_empty());
 }
 
 #[test]
@@ -2054,7 +2054,7 @@ fn participant_status_reconnect_reset_cancels_unleased_and_leased_reports() {
         .set_external_player_availability(ExternalPlayerAvailability::Unavailable, 0.0)
         .unwrap();
     unleased.session_mut().reset_sync_state_for_reconnect();
-    assert!(reports_in(unleased.flush_queued_protocol_messages()).is_empty());
+    assert!(reports_in(unleased.deliver_queued_protocol_messages()).is_empty());
 
     let mut leased = ClientRuntime::new(
         participant_status_session(),
@@ -2071,7 +2071,7 @@ fn participant_status_reconnect_reset_cancels_unleased_and_leased_reports() {
     leased.session_mut().reset_sync_state_for_reconnect();
     assert!(leased.release_protocol_line(staged.lease()));
     assert!(
-        reports_in(leased.flush_queued_protocol_messages()).is_empty(),
+        reports_in(leased.deliver_queued_protocol_messages()).is_empty(),
         "a failed leased write must not retry status after reconnect reset"
     );
 }
@@ -2130,10 +2130,10 @@ fn runtime_never_reports_when_server_did_not_negotiate_participant_status() {
         .player
         .queue_from_started_media(transport(1, 1.0, PlayerTransportPhase::Playing, 5.0));
     runtime.drain_player_transport_coordination(1.0).unwrap();
-    assert!(runtime.flush_queued_protocol_messages().is_empty());
+    assert!(runtime.deliver_queued_protocol_messages().is_empty());
 
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
-    let messages = runtime.flush_queued_protocol_messages();
+    let messages = runtime.deliver_queued_protocol_messages();
     assert!(reports_in(messages).is_empty());
 }
 
@@ -2173,7 +2173,7 @@ fn participant_status_capability_withdrawal_cancels_an_unsent_report() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorotteParticipantStatusV1":false}}}"#,
         )
         .unwrap();
-    let remaining = runtime.flush_queued_protocol_messages();
+    let remaining = runtime.deliver_queued_protocol_messages();
     assert!(
         reports_in(remaining.clone()).is_empty(),
         "withdrawn status must not survive in a coalesced State"
@@ -2518,7 +2518,7 @@ fn runtime_connection_generation_discards_old_status_and_restarts_sequence() {
             0.1,
         )
         .expect("the replacement connection Hello should apply");
-    let replacement_reports = reports_in(runtime.flush_queued_protocol_messages());
+    let replacement_reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(
         replacement_reports.len(),
         1,
@@ -2993,7 +2993,7 @@ fn ordered_player_batch_emits_participant_status_without_waiting_for_heartbeat()
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("ordered snapshot should drain");
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].report_sequence, 1);
     assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Playing);
@@ -3104,7 +3104,7 @@ fn ordered_state_sync_drains_physical_seek_before_publishing_response() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("the pre-seek snapshot should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -3116,7 +3116,7 @@ fn ordered_state_sync_drains_physical_seek_before_publishing_response() {
     runtime
         .drain_player_transport_coordination(1.1)
         .expect("the canonical seek should reach the player");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime.player.ordered_batches.push_back(ordered_batch(
         epoch,
@@ -3150,7 +3150,7 @@ fn ordered_state_sync_drains_physical_seek_before_publishing_response() {
         )
     );
     let response_position = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .filter_map(|message| match message {
             ProtocolMessage::State(state) => state
@@ -3212,7 +3212,7 @@ fn adjacent_pause_then_seek_rejects_a_late_pre_pause_play_projection() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("initial paused snapshot should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     assert!(runtime.run_set_paused(false).expect("Play should dispatch"));
     runtime
@@ -3265,7 +3265,7 @@ fn adjacent_pause_then_seek_rejects_a_late_pre_pause_play_projection() {
         "the regression must actually drain the late Play projection before building Seek"
     );
     let seek_playstate = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .filter_map(|message| match message {
             ProtocolMessage::State(state) => state.state.playstate,
@@ -3323,7 +3323,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("the pre-seek player sample should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_message_json_at(
@@ -3346,7 +3346,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
             1.1,
         )
     );
-    let first = runtime.flush_queued_protocol_messages();
+    let first = runtime.deliver_queued_protocol_messages();
     assert!(first.iter().any(|message| matches!(
         message,
         ProtocolMessage::State(state)
@@ -3367,7 +3367,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
             1.15,
         )
     );
-    let still_waiting = runtime.flush_queued_protocol_messages();
+    let still_waiting = runtime.deliver_queued_protocol_messages();
     assert!(
         still_waiting.iter().any(|message| matches!(
             message,
@@ -3410,7 +3410,7 @@ fn ordered_state_sync_never_pairs_new_revision_with_pre_effect_player_sample() {
         )
     );
     let fresh_position = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .find_map(|message| match message {
             ProtocolMessage::State(state) => state
@@ -3476,7 +3476,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
             1.0,
         )
     );
-    let first = runtime.flush_queued_protocol_messages();
+    let first = runtime.deliver_queued_protocol_messages();
     assert!(first.iter().any(|message| matches!(
         message,
         ProtocolMessage::State(state)
@@ -3497,7 +3497,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
             1.1,
         )
     );
-    let still_waiting = runtime.flush_queued_protocol_messages();
+    let still_waiting = runtime.deliver_queued_protocol_messages();
     assert!(still_waiting.iter().any(|message| matches!(
         message,
         ProtocolMessage::State(state)
@@ -3544,7 +3544,7 @@ fn ordered_state_sync_fences_the_first_tagged_revision_until_player_evidence() {
         )
     );
     let fresh_revision = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .find_map(|message| match message {
             ProtocolMessage::State(state) => state.state.playstate,
@@ -3670,7 +3670,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("the initial paused snapshot should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_message_json_at(
@@ -3693,7 +3693,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
             1.1,
         )
     );
-    let play_edge = runtime.flush_queued_protocol_messages();
+    let play_edge = runtime.deliver_queued_protocol_messages();
     assert!(play_edge.iter().any(|message| matches!(
         message,
         ProtocolMessage::State(state)
@@ -3723,7 +3723,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
     runtime
         .drain_player_transport_coordination(1.2)
         .expect("the physical Play should drain independently of State reconciliation");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert_eq!(runtime.session().local_paused(), Some(false));
 
     runtime.stage_external_player_pause_intent(true, 1.25);
@@ -3761,7 +3761,7 @@ fn ordered_local_pause_supersedes_unconsumed_play_revision_evidence() {
         )
     );
     let pause = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .filter_map(|message| match message {
             ProtocolMessage::State(state) => state.state.playstate,
@@ -3811,7 +3811,7 @@ fn ordered_local_seek_preserves_an_adjacent_physical_pause() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("the initial playing snapshot should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     // This acknowledged snapshot is available from the adapter, but the
     // ordinary runtime tick has not consumed it when the next user
@@ -3837,7 +3837,7 @@ fn ordered_local_seek_preserves_an_adjacent_physical_pause() {
 
     assert!(runtime.run_seek_to_position(7.0).unwrap());
     let seek = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .filter_map(|message| match message {
             ProtocolMessage::State(state) => state.state.playstate,
@@ -3896,7 +3896,7 @@ fn ordered_state_sync_defers_refresh_error_and_omits_stale_playstate() {
         )
     );
     let response = runtime
-        .flush_queued_protocol_messages()
+        .deliver_queued_protocol_messages()
         .into_iter()
         .find_map(|message| match message {
             ProtocolMessage::State(state) => Some(state.state),
@@ -3981,7 +3981,7 @@ fn ordered_player_batch_reports_status_before_returning_application_error() {
         "the ordered batch should be acknowledged before its application error is returned"
     );
 
-    let reports = reports_in(runtime.flush_queued_protocol_messages());
+    let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(
         reports.len(),
         1,
@@ -4036,7 +4036,7 @@ fn participant_status_ordered_terminal_records_precise_pause_evidence() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("initial ordered snapshot should drain");
-    let initial_reports = reports_in(runtime.flush_queued_protocol_messages());
+    let initial_reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(initial_reports.len(), 1);
     assert_eq!(initial_reports[0].logical_paused, None);
 
@@ -4069,7 +4069,7 @@ fn participant_status_ordered_terminal_records_precise_pause_evidence() {
         .drain_player_transport_coordination(2.0)
         .expect("terminal ordered event should drain");
 
-    let terminal_reports = reports_in(runtime.flush_queued_protocol_messages());
+    let terminal_reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(terminal_reports.len(), 1);
     assert_eq!(terminal_reports[0].phase, ParticipantPlaybackPhase::Ended);
     assert_eq!(terminal_reports[0].logical_paused, Some(true));
@@ -4129,7 +4129,7 @@ fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("the initial active-media snapshot should drain");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -4862,7 +4862,7 @@ fn ordered_attachment_replacement_reports_starting_until_new_epoch_snapshot_has_
     runtime
         .drain_player_transport_coordination(1.0)
         .expect("initial ordered snapshot should drain");
-    let connected = reports_in(runtime.flush_queued_protocol_messages());
+    let connected = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(
         connected.last().unwrap().player_connection,
         ParticipantPlayerConnection::Connected
@@ -4884,7 +4884,7 @@ fn ordered_attachment_replacement_reports_starting_until_new_epoch_snapshot_has_
     runtime
         .drain_player_transport_coordination(2.0)
         .expect("attachment replacement should drain");
-    let starting = reports_in(runtime.flush_queued_protocol_messages());
+    let starting = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(starting.len(), 1);
     assert_eq!(
         starting[0].player_connection,
@@ -6932,7 +6932,7 @@ fn transport_write_does_not_acknowledge_start_and_reconnect_queries_server() {
     let request_id = initial_prepare
         .request_id
         .expect("new clients attach a stable operation id");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert!(
         runtime
             .playback_coordination
@@ -7026,7 +7026,7 @@ fn absent_recovery_result_rebuilds_exactly_one_current_media_start() {
         .and_then(|extension| extension.recovery)
         .expect("recovery query should be present");
     let recovery_nonce = recovery.recovery_nonce;
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -7099,7 +7099,7 @@ fn matching_canonical_response_is_the_application_ack_boundary() {
         .playback_barrier_v1()
         .expect("request extension should decode")
         .expect("request extension should exist");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert!(
         runtime
             .playback_coordination
@@ -7365,7 +7365,7 @@ fn terminal_accepted_reconnect_recovers_before_emitting_any_fresh_request() {
         .clone()
         .expect("request id should be present");
     let request_nonce = canonical_prepare.request_nonce;
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_protocol_message(ProtocolMessage::set(
@@ -7402,7 +7402,7 @@ fn terminal_accepted_reconnect_recovers_before_emitting_any_fresh_request() {
     let recovery = recovery.recovery.expect("recovery query should be present");
     assert_eq!(recovery.request_id, request_id);
     assert_eq!(recovery.original_request_nonce, request_nonce);
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -7486,7 +7486,7 @@ fn absent_terminal_recovery_emits_only_one_fresh_policy_refresh() {
         .clone()
         .expect("request id should be present");
     let request_nonce = canonical_prepare.request_nonce;
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_protocol_message(ProtocolMessage::set(
@@ -7518,7 +7518,7 @@ fn absent_terminal_recovery_emits_only_one_fresh_policy_refresh() {
         .expect("recovery extension should decode")
         .and_then(|extension| extension.recovery)
         .expect("recovery query should be present");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -7589,7 +7589,7 @@ fn mismatched_operation_id_cannot_acknowledge_same_nonce() {
         .expect("prepare should exist");
     prepare.media_generation = 9;
     prepare.request_id = Some("another-controller-operation".to_owned());
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_protocol_message(ProtocolMessage::set(
@@ -7633,7 +7633,7 @@ fn matching_identity_on_rejected_zero_generation_echo_is_not_an_application_ack(
     let ProtocolMessage::Set(request) = runtime.control().outbound_messages()[0].clone() else {
         panic!("request should use Set");
     };
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_protocol_message(ProtocolMessage::Set(request))
@@ -8017,15 +8017,14 @@ fn ongoing_buffering_reports_only_transport_state_transitions() {
         MediaTransportKind::NetworkVod,
         100.0,
     );
-    runtime.control.drain_outbound_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime.observe_external_player_transport(
         transport(1, 1.0, PlayerTransportPhase::Rebuffering, 4.0),
         101.0,
     );
     let first = runtime
-        .control
-        .drain_outbound_message_lines()
+        .deliver_queued_protocol_lines()
         .expect("buffering report should encode");
     assert!(
         first
@@ -8058,8 +8057,7 @@ fn ongoing_buffering_reports_only_transport_state_transitions() {
         .expect("authoritative same-policy snapshot should apply");
     runtime.reconcile_external_player_playback(102.1);
     let rearmed = runtime
-        .control
-        .drain_outbound_message_lines()
+        .deliver_queued_protocol_lines()
         .expect("the snapshot should rearm one current-state report");
     assert!(
         rearmed
@@ -8077,8 +8075,7 @@ fn ongoing_buffering_reports_only_transport_state_transitions() {
         103.0,
     );
     let recovered = runtime
-        .control
-        .drain_outbound_message_lines()
+        .deliver_queued_protocol_lines()
         .expect("recovery report should encode");
     assert!(
         recovered
@@ -9348,7 +9345,7 @@ fn authorized_play_intent_survives_cache_blocked_position_projection() {
         "cache-paused telemetry must remain blocked from ordinary State publication"
     );
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
-    let ordinary = runtime.flush_queued_protocol_messages();
+    let ordinary = runtime.deliver_queued_protocol_messages();
     let ProtocolMessage::State(ordinary) = ordinary
         .last()
         .expect("ordinary cache-paused heartbeat should be queued")
@@ -9362,7 +9359,7 @@ fn authorized_play_intent_survives_cache_blocked_position_projection() {
 
     runtime.stage_external_player_pause_intent(false, now_seconds);
     assert!(runtime.run_state_sync_heartbeat_with_ping(false));
-    let mutation = runtime.flush_queued_protocol_messages();
+    let mutation = runtime.deliver_queued_protocol_messages();
     let ProtocolMessage::State(mutation) = mutation
         .last()
         .expect("authorized Play heartbeat should be queued")
@@ -12152,7 +12149,7 @@ fn v2_system_owned_pause_and_play_observations_emit_no_readiness_intent() {
             MediaTransportKind::NetworkVod,
             0.0,
         );
-        runtime.flush_queued_protocol_messages();
+        runtime.deliver_queued_protocol_messages();
 
         let baseline = if initially_paused {
             paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0)
@@ -12160,7 +12157,7 @@ fn v2_system_owned_pause_and_play_observations_emit_no_readiness_intent() {
             transport(1, 0.0, PlayerTransportPhase::Playing, 1.0)
         };
         runtime.observe_external_player_transport(baseline, 0.0);
-        runtime.flush_queued_protocol_messages();
+        runtime.deliver_queued_protocol_messages();
 
         runtime
             .record_external_system_player_pause_command_result(commanded_paused, cause, true, 0.05)
@@ -12234,12 +12231,12 @@ fn v2_local_play_correction_is_gate_owned_while_ready_remains_pending() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.observe_external_player_transport(
         transport(1, 0.0, PlayerTransportPhase::Playing, 1.0),
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     assert!(
         runtime
@@ -12309,12 +12306,12 @@ fn v2_pending_native_play_can_be_confirmed_once_and_emits_ready() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.observe_external_player_transport(
         paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0),
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.observe_external_player_transport(
         transport(1, 0.1, PlayerTransportPhase::Playing, 1.0),
         0.1,
@@ -12329,7 +12326,7 @@ fn v2_pending_native_play_can_be_confirmed_once_and_emits_ready() {
         })
     ));
     assert!(runtime.session().pending_readiness_intent().is_none());
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     assert!(
         runtime
@@ -12422,7 +12419,7 @@ fn managed_player_single_native_play_edge_emits_one_ready_before_gate_hold_pause
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .player_mut_for_test()
@@ -12435,7 +12432,7 @@ fn managed_player_single_native_play_edge_emits_one_ready_before_gate_hold_pause
     runtime
         .drain_player_transport_coordination(0.0)
         .expect("paused baseline should reconcile");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.player_mut_for_test().commands.clear();
 
     runtime
@@ -12564,7 +12561,7 @@ fn assert_managed_native_play_survives_manual_v2_phase(
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .player_mut_for_test()
         .queue_from_started_media(paused_transport(
@@ -12576,7 +12573,7 @@ fn assert_managed_native_play_survives_manual_v2_phase(
     runtime
         .drain_player_transport_coordination(0.0)
         .expect("paused baseline should reconcile");
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.player_mut_for_test().commands.clear();
 
     runtime
@@ -12708,7 +12705,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
         MediaTransportKind::LocalFile,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .player_mut_for_test()
@@ -12724,7 +12721,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
     assert!(runtime.player().commands.iter().any(
         |command| matches!(command, PlayerCommand::SetPosition(position) if (*position - 11.0).abs() <= f64::EPSILON)
     ));
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.player_mut_for_test().commands.clear();
 
     runtime
@@ -12752,7 +12749,7 @@ fn native_play_after_seek_position_convergence_beats_stale_pause_correction() {
             .values()
             .all(|binding| binding.desired_paused.is_none())
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.player_mut_for_test().commands.clear();
 
     runtime
@@ -12814,7 +12811,7 @@ fn pre_authority_native_play_cannot_suppress_later_remote_pause() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     assert!(
         runtime
@@ -12825,7 +12822,7 @@ fn pre_authority_native_play_cannot_suppress_later_remote_pause() {
             .is_empty(),
         "the paused player baseline needs no correction before room authority arrives"
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     assert!(
         runtime
             .observe_external_player_transport(
@@ -12845,7 +12842,7 @@ fn pre_authority_native_play_cannot_suppress_later_remote_pause() {
         })
     ));
     assert!(runtime.session().pending_readiness_intent().is_none());
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .session_mut()
@@ -12904,7 +12901,7 @@ fn pre_authority_native_play_cannot_suppress_later_remote_pause() {
         paused_transport(1, 0.25, PlayerTransportPhase::ReadyPaused, 1.0),
         0.25,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     let fresh_play_actions = runtime.observe_external_player_transport(
         transport(1, 0.3, PlayerTransportPhase::Playing, 1.0),
@@ -12956,7 +12953,7 @@ fn new_scope_initial_observation_cannot_be_confirmed_as_native_play() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.observe_external_player_transport(
         paused_transport(1, 0.0, PlayerTransportPhase::ReadyPaused, 1.0),
         0.0,
@@ -12977,7 +12974,7 @@ fn new_scope_initial_observation_cannot_be_confirmed_as_native_play() {
         MediaTransportKind::NetworkVod,
         0.2,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime.observe_external_player_transport(
         transport(2, 0.2, PlayerTransportPhase::Playing, 1.0),
         0.2,
@@ -12991,7 +12988,7 @@ fn new_scope_initial_observation_cannot_be_confirmed_as_native_play() {
             ..
         })
     ));
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     assert!(
         !runtime
@@ -13268,7 +13265,7 @@ fn asynchronous_pause_failure_reports_a_technical_block() {
         MediaTransportKind::NetworkVod,
         0.0,
     );
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
 
     runtime
         .execute_causal_pause_command(true, PlayerCommandCause::LocalUserPlaybackControl, 0.05)

@@ -178,7 +178,7 @@ fn ping_only_first_tagged_revision_retains_player_evidence_fence() {
     };
     assert!(initial_response.state.playstate.is_none());
 
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_player_playback_telemetry_update(
@@ -201,7 +201,7 @@ fn ping_only_first_tagged_revision_retains_player_evidence_fence() {
         "the first revision must remain fenced after a stale startup sample appears"
     );
 
-    runtime.flush_queued_protocol_messages();
+    runtime.deliver_queued_protocol_messages();
     runtime
         .session_mut()
         .apply_player_playback_telemetry_update(

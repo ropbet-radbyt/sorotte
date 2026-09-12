@@ -102,7 +102,7 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -123,7 +123,7 @@ fn gui_persisted_config_runtime_owner_resets_inbound_shared_playlist_switches_be
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -367,7 +367,7 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
             .to_owned(),
@@ -403,12 +403,12 @@ fn gui_persisted_config_runtime_owner_opens_local_queue_and_select_target_before
             .is_empty(),
         "queue-and-select must remain fenced before its terminal write receipt"
     );
-    let mut outbound_lines = session_transport.drain_outbound_protocol_lines();
+    let mut outbound_lines = session_transport.complete_outbound_protocol_write();
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        outbound_lines.extend(session_transport.drain_outbound_protocol_lines());
+        outbound_lines.extend(session_transport.complete_outbound_protocol_write());
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         let recorded = player_state
             .lock()
@@ -538,7 +538,7 @@ fn gui_persisted_config_runtime_owner_applies_user_offset_only_at_player_sync_bo
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -558,7 +558,7 @@ fn gui_persisted_config_runtime_owner_applies_user_offset_only_at_player_sync_bo
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -631,7 +631,7 @@ fn gui_persisted_config_runtime_owner_seeks_before_pausing_attached_player_for_r
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -652,7 +652,7 @@ fn gui_persisted_config_runtime_owner_seeks_before_pausing_attached_player_for_r
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#

@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
@@ -91,7 +92,7 @@ fn drain_barrier_state_extensions(
     adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
 ) -> Vec<PlaybackBarrierStateExtension> {
     adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("GUI adapter outbox should encode")
         .into_iter()
         .flat_map(|line| {
@@ -112,7 +113,7 @@ fn drain_barrier_state_extensions(
 
 fn barrier_request(adapter: &mut GuiClientCoreChatSessionRuntimeAdapter) -> PrepareMediaPayload {
     adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("GUI adapter outbox should encode")
         .into_iter()
         .flat_map(|line| {
@@ -138,7 +139,7 @@ fn barrier_aware_controller(
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
     let startup = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
     assert_eq!(startup.len(), 1);
     adapter
@@ -386,7 +387,7 @@ fn real_gui_adapter_keeps_retry_later_nonfatal_and_retries_the_same_attempt_once
         .expect("an early GUI retry pump should be harmless");
     assert!(
         adapter
-            .flush_outbound_protocol_lines()
+            .deliver_outbound_protocol_lines()
             .expect("early GUI outbox should encode")
             .is_empty(),
         "retryLater must not be retried before its delay"
@@ -407,7 +408,7 @@ fn real_gui_adapter_keeps_retry_later_nonfatal_and_retries_the_same_attempt_once
         .expect("a repeated GUI retry pump should be harmless");
     assert!(
         adapter
-            .flush_outbound_protocol_lines()
+            .deliver_outbound_protocol_lines()
             .expect("repeated GUI retry outbox should encode")
             .is_empty(),
         "the GUI retry pump must emit exactly one attempt"
@@ -419,7 +420,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
     adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
     adapter
         .apply_message_json(
@@ -635,7 +636,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
 fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
-    let _ = adapter.flush_outbound_protocol_lines().unwrap();
+    let _ = adapter.deliver_outbound_protocol_lines().unwrap();
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sorottePlaybackBarrierV1":true}}}"#,

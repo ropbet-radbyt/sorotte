@@ -548,21 +548,6 @@ impl QueuedRuntimeControl {
             .push_connection_scoped_causal_state(ProtocolMessage::state(state))
     }
 
-    pub fn drain_outbound_messages(&mut self) -> Vec<ProtocolMessage> {
-        self.outbound_messages.drain()
-    }
-
-    pub fn drain_outbound_message_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        let lines = self
-            .outbound_messages
-            .pending()
-            .iter()
-            .map(encode_message_line)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.outbound_messages.clear();
-        Ok(lines)
-    }
-
     pub(crate) fn front_outbound_message_line(
         &self,
     ) -> Result<Option<PendingProtocolLine>, ProtocolError> {
