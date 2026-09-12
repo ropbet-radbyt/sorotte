@@ -157,10 +157,12 @@ remaining = "For a future release, bind a committed fixing candidate and hosted 
 [[boundary]]
 id = "Media extraction cancellation"
 tasks = ["A07"]
-contract = "Cancellation precedes filesystem/probe work, spans every tool and pipe drain, and reaps the owned process tree under one deadline."
-owners = ["crates/sorotte-media-match/src/extraction.rs", "crates/sorotte-media-match/src/extraction/process.rs"]
+contract = "Cancellation precedes filesystem/probe work, spans every tool and pipe drain, and reaps the owned process tree under one deadline. GUI helper checks share this runner, validate tool-specific banners, and run outside the GUI owner. Private staged installations validate before replacement and restore binaries and metadata on reported failure. Stream completions check root, player, session and playlist scope before resuming the existing selected row through its delivery fence."
+owners = ["crates/sorotte-gui/src/app/helper_tools/mod.rs", "crates/sorotte-gui/src/app/helper_tools/install.rs", "crates/sorotte-media-match/src/extraction.rs", "crates/sorotte-media-match/src/extraction/process.rs"]
 normative = ["crates/sorotte-media-match/src/extraction.rs", "crates/sorotte-media-match/src/extraction/process.rs"]
 proof = [
+  { source = "crates/sorotte-gui/src/app/helper_tools/tests.rs", symbol = "failed_second_component_restores_binary_and_metadata", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib helper_tools" },
+  { source = "crates/sorotte-gui/src/app/runtime_owner/requests/stream_helper.rs", symbol = "successful_probe_resumes_resolution_without_reissuing_open_media", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib successful_probe_resumes_resolution_without_reissuing_open_media" },
   { source = "crates/sorotte-media-match/src/extraction/process/tests.rs", symbol = "cancellation_reaps_descendant_that_holds_an_exited_childs_pipes", kind = "rust-test", command = "cargo test --locked -p sorotte-media-match --lib cancellation_reaps_descendant_that_holds_an_exited_childs_pipes" },
 ]
 catalog = [
@@ -168,7 +170,7 @@ catalog = [
 environment = ["Windows and Linux disposable tool/process fixtures"]
 capability = "implemented"
 local_evidence = "Windows adversarial process fixtures and final Linux cancellation/descendant/pipe fixtures passed. The final Linux generated-media integration passed with real ffmpeg/ffprobe."
-remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+remaining = "PR #70 exact-source hosted and native qualification is pending; helper replacement rollback covers reported errors and cancellation, not crash recovery."
 
 [[boundary]]
 id = "Credentialed HTTP origins and budgets"
@@ -191,10 +193,11 @@ remaining = "For a future release, bind a committed fixing candidate and hosted 
 [[boundary]]
 id = "Private update staging"
 tasks = ["A15"]
-contract = "Update metadata, archives, and downloads have separate quotas; a protected stage remains owned until validated updater handoff."
-owners = ["crates/sorotte-gui/src/update_limits.rs", "crates/sorotte-gui/src/app/remote_services/download.rs"]
+contract = "Update metadata, archives, and downloads have separate quotas. Shared OS file leases protect a stage from creation through retained GUI results and detached updater ownership; startup cleanup serializes with creation and only reclaims unowned stages. A two-minute durable reservation covers process startup during handoff, and the GUI waits on its update worker for the detached updater acknowledgement. Live leases take precedence over reservation expiry; replacement journals remain under the existing installation transaction lock."
+owners = ["crates/sorotte-gui/src/update_stage.rs", "crates/sorotte-gui/src/bin/sorotte-gui-updater.rs", "crates/sorotte-gui/src/update_limits.rs", "crates/sorotte-gui/src/app/remote_services/download.rs"]
 normative = ["docs/HTTP_INGRESS_LIMITS.md"]
 proof = [
+  { source = "crates/sorotte-gui/src/app/remote_services.rs", symbol = "another_gui_startup_preserves_download_handoff_and_updater_ownership", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib another_gui_startup_preserves_download_handoff_and_updater_ownership" },
   { source = "crates/sorotte-gui/src/app/remote_services/ingress_tests.rs", symbol = "quota_failure_cleans_only_its_stage_and_retains_install_and_rollback", kind = "rust-test", command = "cargo test --locked -p sorotte-gui --lib --features gui-semantic-smoke quota_failure_cleans_only_its_stage_and_retains_install_and_rollback" },
 ]
 catalog = [
@@ -202,7 +205,7 @@ catalog = [
 environment = ["Windows updater replacement integration", "Cross-platform ZIP and loopback unit fixtures"]
 capability = "implemented"
 local_evidence = "Quota/staging and recovery tests passed. The actual local development GUI archive passed independent inventory, launch, updater success, and rollback verification."
-remaining = "For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted."
+remaining = "PR #70 exact-source hosted and native qualification is pending; a later release needs its own source-bound qualification."
 
 [[boundary]]
 id = "Trusted executable Lua leases"

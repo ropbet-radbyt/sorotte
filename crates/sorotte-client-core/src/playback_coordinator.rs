@@ -1280,30 +1280,6 @@ impl PlaybackCoordinator {
         self.observe_with_seek_preparation_evidence(observation, true, true)
     }
 
-    #[cfg(test)]
-    pub(crate) fn observed_transport_for_test(&self) -> Option<PlayerTransportObservation> {
-        let observed = self.observed?;
-        Some(PlayerTransportObservation {
-            media_generation: self.current_media_generation()?,
-            observed_at_seconds: observed.observed_at_seconds,
-            phase: Some(observed.phase),
-            position_seconds: observed.position_seconds,
-            playback_rate: observed.playback_rate,
-            logical_pause: observed.logical_pause,
-            paused_for_cache: Some(observed.paused_for_cache),
-            seeking: Some(observed.seeking),
-            seekable: observed.seekable,
-            timeline_kind: observed.timeline_kind,
-            seekable_ranges: self.cached_seekable_ranges.clone(),
-            known_live_seekable_window: observed.known_live_seekable_window,
-            core_idle: observed.core_idle,
-            playback_restart_sequence: Some(observed.playback_restart_sequence),
-            cache_buffering_percent: observed.cache_buffering_percent,
-            buffered_ahead_seconds: observed.buffered_ahead_seconds,
-            input_rate_bytes_per_second: None,
-        })
-    }
-
     pub(crate) fn replay_observation(
         &mut self,
         observation: PlayerTransportObservation,

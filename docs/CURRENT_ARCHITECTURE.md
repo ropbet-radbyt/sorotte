@@ -110,14 +110,16 @@ A blocked player worker cannot outlive independent owned-process cleanup; extern
 
 ### Media extraction cancellation (A07)
 
-Cancellation precedes filesystem/probe work, spans every tool and pipe drain, and reaps the owned process tree under one deadline.
+Cancellation precedes filesystem/probe work, spans every tool and pipe drain, and reaps the owned process tree under one deadline. GUI helper checks share this runner, validate tool-specific banners, and run outside the GUI owner. Private staged installations validate before replacement and restore binaries and metadata on reported failure. Stream completions check root, player, session and playlist scope before resuming the existing selected row through its delivery fence.
 
-- Owners: [crates/sorotte-media-match/src/extraction.rs](../crates/sorotte-media-match/src/extraction.rs), [crates/sorotte-media-match/src/extraction/process.rs](../crates/sorotte-media-match/src/extraction/process.rs).
+- Owners: [crates/sorotte-gui/src/app/helper_tools/mod.rs](../crates/sorotte-gui/src/app/helper_tools/mod.rs), [crates/sorotte-gui/src/app/helper_tools/install.rs](../crates/sorotte-gui/src/app/helper_tools/install.rs), [crates/sorotte-media-match/src/extraction.rs](../crates/sorotte-media-match/src/extraction.rs), [crates/sorotte-media-match/src/extraction/process.rs](../crates/sorotte-media-match/src/extraction/process.rs).
 - Normative: [crates/sorotte-media-match/src/extraction.rs](../crates/sorotte-media-match/src/extraction.rs), [crates/sorotte-media-match/src/extraction/process.rs](../crates/sorotte-media-match/src/extraction/process.rs).
+- Proof: [failed_second_component_restores_binary_and_metadata](../crates/sorotte-gui/src/app/helper_tools/tests.rs); `cargo test --locked -p sorotte-gui --lib helper_tools`.
+- Proof: [successful_probe_resumes_resolution_without_reissuing_open_media](../crates/sorotte-gui/src/app/runtime_owner/requests/stream_helper.rs); `cargo test --locked -p sorotte-gui --lib successful_probe_resumes_resolution_without_reissuing_open_media`.
 - Proof: [cancellation_reaps_descendant_that_holds_an_exited_childs_pipes](../crates/sorotte-media-match/src/extraction/process/tests.rs); `cargo test --locked -p sorotte-media-match --lib cancellation_reaps_descendant_that_holds_an_exited_childs_pipes`.
 - Environment: Windows and Linux disposable tool/process fixtures.
 - Capability: **implemented**. Local evidence: Windows adversarial process fixtures and final Linux cancellation/descendant/pipe fixtures passed. The final Linux generated-media integration passed with real ffmpeg/ffprobe.
-- Remaining proof: For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted.
+- Remaining proof: PR #70 exact-source hosted and native qualification is pending; helper replacement rollback covers reported errors and cancellation, not crash recovery.
 
 ### Credentialed HTTP origins and budgets (A01, A15)
 
@@ -134,24 +136,15 @@ Plex retains credentials only within the canonical origin and bounds metadata by
 
 ### Private update staging (A15)
 
-Update metadata, archives, and downloads have separate quotas; a protected stage remains owned until validated updater handoff.
+Update metadata, archives, and downloads have separate quotas. Shared OS file leases protect a stage from creation through retained GUI results and detached updater ownership; startup cleanup serializes with creation and only reclaims unowned stages. A two-minute durable reservation covers process startup during handoff, and the GUI waits on its update worker for the detached updater acknowledgement. Live leases take precedence over reservation expiry; replacement journals remain under the existing installation transaction lock.
 
-`update_stage::StageLease` holds a shared operating-system file lock from private-stage creation through every retained staged-result clone. Startup cleanup serializes with creation and lease acquisition, and only removes stages with no live owner. A durable, two-minute handoff reservation covers a GUI exit before the updater starts. The installed bootstrap and detached updater acquire their own leases; only the detached updater acknowledges ownership, and the GUI waits for that acknowledgement on its update worker. Live leases take precedence over reservation expiry. Replacement journals and rollback files remain under the installation's existing transaction ownership.
-
-- Owners: [crates/sorotte-gui/src/update_limits.rs](../crates/sorotte-gui/src/update_limits.rs), [crates/sorotte-gui/src/app/remote_services/download.rs](../crates/sorotte-gui/src/app/remote_services/download.rs).
+- Owners: [crates/sorotte-gui/src/update_stage.rs](../crates/sorotte-gui/src/update_stage.rs), [crates/sorotte-gui/src/bin/sorotte-gui-updater.rs](../crates/sorotte-gui/src/bin/sorotte-gui-updater.rs), [crates/sorotte-gui/src/update_limits.rs](../crates/sorotte-gui/src/update_limits.rs), [crates/sorotte-gui/src/app/remote_services/download.rs](../crates/sorotte-gui/src/app/remote_services/download.rs).
 - Normative: [docs/HTTP_INGRESS_LIMITS.md](../docs/HTTP_INGRESS_LIMITS.md).
+- Proof: [another_gui_startup_preserves_download_handoff_and_updater_ownership](../crates/sorotte-gui/src/app/remote_services.rs); `cargo test --locked -p sorotte-gui --lib another_gui_startup_preserves_download_handoff_and_updater_ownership`.
 - Proof: [quota_failure_cleans_only_its_stage_and_retains_install_and_rollback](../crates/sorotte-gui/src/app/remote_services/ingress_tests.rs); `cargo test --locked -p sorotte-gui --lib --features gui-semantic-smoke quota_failure_cleans_only_its_stage_and_retains_install_and_rollback`.
 - Environment: Windows updater replacement integration; Cross-platform ZIP and loopback unit fixtures.
 - Capability: **implemented**. Local evidence: Quota/staging and recovery tests passed. The actual local development GUI archive passed independent inventory, launch, updater success, and rollback verification.
-- Remaining proof: For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted.
-
-### Managed helper execution and installation
-
-The GUI's `helper_tools` module shares the media extraction process runner's deadline, output limits, owned process group/job, and bounded pipe cleanup. yt-dlp, Deno, ffmpeg and ffprobe must emit their own version banners and exit successfully. Downloads stream into a private stage with a 512 MiB cap; extracted/imported executables have a 256 MiB cap. A per-installation lock serializes mutations. All selected executables are validated before replacement, and ordinary replacement failures restore binaries and metadata together. This rollback covers reported errors and cancellation; it is not a crash-recovery journal.
-
-Helper workers retain the requested storage root and cancellation flag. Stream probe completions also check player, session and playlist generations before resuming the selected entry through existing delivery fences. Media Matching tool status preserves current matching decisions and background status. Test fixtures use controlled executables for the four tool identities, failed exits, timeout and output flooding.
-
-Plex cached matches retain known file size and duration as identity evidence. Conflicting metadata invalidates a same-path match, while metadata arriving gradually enriches it. Identity-less caches rebuild. Timeline shutdown uses the latest observed progress, including observations suppressed by the periodic reporting interval or retained after a failed send.
+- Remaining proof: PR #70 exact-source hosted and native qualification is pending; a later release needs its own source-bound qualification.
 
 ### Trusted executable Lua leases (A13)
 
