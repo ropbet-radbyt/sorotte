@@ -506,16 +506,6 @@ impl ServerRuntime {
         self.playback_barrier_new_identity_rate_by_room.clear();
     }
 
-    pub fn subscribe_persistence_events(&self) -> broadcast::Receiver<ServerPersistenceEvent> {
-        self.persistence_events.subscribe()
-    }
-
-    pub fn persistence_is_degraded(&self) -> bool {
-        self.persistence_degraded_worker_count
-            .load(Ordering::Acquire)
-            > 0
-    }
-
     /// Explicit durability barrier for shutdown coordination and tests. Model
     /// transitions enqueue persistence effects without waiting on this boundary.
     pub fn flush_persistence(&self) -> Result<(), ServerRuntimeError> {

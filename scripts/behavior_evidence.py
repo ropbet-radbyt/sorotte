@@ -75,15 +75,6 @@ def utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise EvidenceError(f"duplicate JSON key {key!r}")
-        result[key] = value
-    return result
-
-
 def load_json_text(text: str) -> Any:
     try:
         return artifact_input.strict_json_loads(text, max_bytes=MAX_EVIDENCE_BYTES, label="behavior evidence")

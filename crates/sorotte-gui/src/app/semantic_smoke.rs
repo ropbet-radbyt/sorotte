@@ -87,10 +87,6 @@ pub(crate) fn gui_semantic_scenario_script(name: &str) -> Option<&'static str> {
     catalog::gui_semantic_scenario_script(name)
 }
 
-pub(crate) fn gui_semantic_scenario_descriptors() -> Vec<GuiSemanticScenarioDescriptor> {
-    catalog::gui_semantic_scenario_descriptors()
-}
-
 pub fn run_sorotte_gui_semantic_scenario_catalog(format: GuiSemanticOutputFormat) -> String {
     catalog::run_sorotte_gui_semantic_scenario_catalog(format)
 }

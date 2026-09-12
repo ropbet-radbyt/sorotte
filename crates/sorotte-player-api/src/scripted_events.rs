@@ -53,11 +53,6 @@ impl ScriptedPlayerEvents {
         self.pending.push_back(batch);
     }
 
-    /// Raw batches permit malformed boundaries, gaps and stale epochs in adversarial tests.
-    pub fn push_batch(&mut self, batch: PlayerEventBatch) {
-        self.pending.push_back(batch);
-    }
-
     pub fn peek(&self) -> Option<PlayerEventBatch> {
         self.pending.front().cloned()
     }

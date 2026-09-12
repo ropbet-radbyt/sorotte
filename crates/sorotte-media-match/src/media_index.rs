@@ -15,15 +15,14 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     MEDIA_MATCH_ANCHOR_VERSION, MediaExtractionSettings, MediaFingerprintRecord, MediaMatchCache,
-    MediaMatchV3RetrievalStats, MediaMatchV3SaveStats, MediaMatchV3SqliteSizeReport,
-    media_extraction_settings_hash,
+    MediaMatchV3RetrievalStats, MediaMatchV3SqliteSizeReport, media_extraction_settings_hash,
     v3_index::{
         anchor_stats_v3_dirty, delete_media_match_v3_file_and_fingerprints,
         delete_media_match_v3_fingerprints_and_anchors, load_media_match_v3_cache_for_settings,
         load_media_match_v3_record_for_path, media_match_v3_anchor_candidate_paths_with_stats,
         media_match_v3_index_path, media_match_v3_sqlite_size_report,
         open_existing_media_match_v3_index, open_media_match_v3_index, refresh_all_anchor_stats_v3,
-        refresh_anchor_stats_v3, save_media_match_v3_record, save_media_match_v3_record_with_stats,
+        refresh_anchor_stats_v3, save_media_match_v3_record,
     },
 };
 
@@ -470,14 +469,6 @@ impl MediaIndexSession {
         save_media_match_v3_record(&self.connection, record, error)
     }
 
-    pub fn save_record_with_stats(
-        &self,
-        record: &MediaFingerprintRecord,
-        now_unix_millis: i64,
-    ) -> Result<MediaMatchV3SaveStats, String> {
-        save_media_match_v3_record_with_stats(&self.connection, record, now_unix_millis)
-    }
-
     pub fn anchor_candidate_paths(
         &self,
         normalized_current_path: &str,
@@ -727,10 +718,6 @@ impl MediaIndexSession {
 
     pub fn sqlite_size_report(&self) -> Result<MediaMatchV3SqliteSizeReport, String> {
         media_match_v3_sqlite_size_report(&self.root, &self.connection)
-    }
-
-    pub fn delete_fingerprints(&self, normalized_path: &str) -> Result<(), String> {
-        delete_media_match_v3_fingerprints_and_anchors(&self.connection, normalized_path)
     }
 
     pub fn delete_file(&self, normalized_path: &str) -> Result<(), String> {

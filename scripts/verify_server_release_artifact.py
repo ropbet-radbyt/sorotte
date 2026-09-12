@@ -379,15 +379,6 @@ def safe_extract_archive(
         raise VerificationError(f"unsupported release archive type: {archive_path.name}")
 
 
-def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise VerificationError(f"manifest contains duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
 def _load_manifest(path: Path) -> dict[str, object]:
     _require_regular_file(path, "package manifest")
     try:

@@ -49,6 +49,50 @@ fn fixture_timeout_preserves_primary_failure_and_next_case_runs_after_cleanup() 
     client.hello("independent-case", "fixture-cleanup");
 }
 
+#[cfg(any(windows, target_os = "linux"))]
+#[tokio::test]
+async fn fixture_rejects_self_connected_tcp_stream() {
+    use std::io::{Read, Write};
+
+    let socket = tokio::net::TcpSocket::new_v4().expect("loopback socket should create");
+    socket
+        .bind("127.0.0.1:0".parse().unwrap())
+        .expect("local endpoint should bind without a listener");
+    let address = socket.local_addr().unwrap();
+    let stream = tokio::time::timeout(Duration::from_secs(2), socket.connect(address))
+        .await
+        .expect("self-connect should complete within the fixture budget")
+        .expect("the OS permits a TCP connection to its own local endpoint");
+    let mut stream = stream.into_std().unwrap();
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    assert_eq!(stream.local_addr().unwrap(), stream.peer_addr().unwrap());
+
+    // This is the misleading evidence in the failed nightly: the client's own
+    // bare Hello comes back even though no server accepted the connection.
+    let hello = b"{\"Hello\":{\"username\":\"alice\",\"room\":{\"name\":\"room-a\"},\"version\":\"1.7.5\"}}\r\n";
+    stream.write_all(hello).unwrap();
+    let mut echoed = vec![0; hello.len()];
+    stream.read_exact(&mut echoed).unwrap();
+    assert_eq!(echoed, hello);
+
+    let error = ProtocolClient::from_stream(stream)
+        .err()
+        .expect("a self-connected socket must not be accepted as a ready server connection");
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+    assert!(error.to_string().contains("self-connection"));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (_accepted, _) = listener.accept().unwrap();
+    assert!(
+        ProtocolClient::from_stream(stream).is_ok(),
+        "a real listener must remain usable after rejecting the self-connection"
+    );
+}
+
 fn with_persistence_database(test: impl FnOnce(&Path)) {
     struct OwnedDirectory(std::path::PathBuf);
     impl Drop for OwnedDirectory {

@@ -1680,23 +1680,6 @@ def require_json_nonnegative_integer(value: Any, *, context: str) -> int:
     return value
 
 
-def duplicate_rejecting_json_object(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise DiffCoverageError(f"coverage map duplicates object key {key!r}")
-        value[key] = item
-    return value
-
-
-def reject_json_numeric_constant(value: str) -> None:
-    raise DiffCoverageError(
-        f"coverage map contains unsupported numeric constant {value}"
-    )
-
-
 def coverage_percent_text(covered: int, count: int) -> str | None:
     if count == 0:
         return None

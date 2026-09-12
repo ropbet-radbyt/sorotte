@@ -52,10 +52,6 @@ impl ClientConfigErrors {
     pub fn issues(&self) -> &[ClientConfigIssue] {
         &self.issues
     }
-
-    pub fn into_issues(self) -> Vec<ClientConfigIssue> {
-        self.issues
-    }
 }
 
 impl fmt::Display for ClientConfigErrors {

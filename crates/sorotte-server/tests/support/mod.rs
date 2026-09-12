@@ -1,3 +1,5 @@
+mod tcp;
+
 use rustls_pki_types::pem::PemObject;
 use std::{
     collections::VecDeque,
@@ -409,8 +411,9 @@ impl ServerProcess {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             self.assert_running();
-            if let Ok(stream) = TcpStream::connect(address) {
-                let mut client = ProtocolClient::from_stream(stream);
+            if let Ok(mut client) =
+                TcpStream::connect(address).and_then(ProtocolClient::from_stream)
+            {
                 client.diagnostics = Some(self.diagnostics.clone());
                 return client;
             }
@@ -512,23 +515,22 @@ pub struct ProtocolClient {
 
 impl ProtocolClient {
     pub fn connect_ipv4(port: u16) -> Self {
-        let stream =
-            TcpStream::connect(("127.0.0.1", port)).expect("client should connect over IPv4");
-        Self::from_stream(stream)
+        TcpStream::connect(("127.0.0.1", port))
+            .and_then(Self::from_stream)
+            .expect("client should connect to a server over IPv4")
     }
 
-    pub fn from_stream(stream: TcpStream) -> Self {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .expect("read timeout should be configurable");
-        stream
-            .set_write_timeout(Some(Duration::from_secs(3)))
-            .expect("write timeout should be configurable");
-        Self {
+    pub fn from_stream(stream: TcpStream) -> io::Result<Self> {
+        // An ephemeral client port can equal the released reservation while
+        // the child is still starting. TCP then echoes the client's own Hello.
+        tcp::require_server_peer(&stream)?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        Ok(Self {
             reader: BufReader::new(stream),
             recent: VecDeque::new(),
             diagnostics: None,
-        }
+        })
     }
 
     pub fn write_raw_line(&mut self, line: &[u8]) {
@@ -572,8 +574,9 @@ impl ProtocolClient {
     #[track_caller]
     fn fail(&self, stage: &str, expectation: &str, detail: &str) -> ! {
         let detail = format!(
-            "expected={expectation:?} caller={} peer={:?} recent={:?} detail={detail}",
+            "expected={expectation:?} caller={} local={:?} peer={:?} recent={:?} detail={detail}",
             std::panic::Location::caller(),
+            self.reader.get_ref().local_addr(),
             self.reader.get_ref().peer_addr(),
             self.recent
         );

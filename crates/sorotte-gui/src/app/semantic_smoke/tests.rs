@@ -5,8 +5,8 @@ use crate::app::{
 };
 
 use super::{
-    GuiSemanticOutputFormat, GuiSemanticScenarioSource, gui_semantic_output_format_from_lookup,
-    gui_semantic_scenario_descriptors, gui_semantic_scenario_name_from_lookup,
+    GuiSemanticOutputFormat, GuiSemanticScenarioSource, catalog::gui_semantic_scenario_descriptors,
+    gui_semantic_output_format_from_lookup, gui_semantic_scenario_name_from_lookup,
     gui_semantic_scenario_named, gui_semantic_scenario_names, gui_semantic_scenario_script,
     normalize_script_line_endings, run_gui_semantic_scenario_from_lookup,
     run_gui_semantic_scenario_named, run_sorotte_gui_semantic_cli_from_args,

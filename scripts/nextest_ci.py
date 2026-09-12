@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import re
 import subprocess
@@ -241,14 +240,6 @@ def _write_line(message: str, log_file: TextIO) -> None:
     log_file.flush()
 
 
-def _target_root(repo_root: pathlib.Path) -> pathlib.Path:
-    configured = os.environ.get("CARGO_TARGET_DIR")
-    if not configured:
-        return repo_root / "target"
-    target = pathlib.Path(configured)
-    return target if target.is_absolute() else repo_root / target
-
-
 def _write_policy_report(
     path: pathlib.Path,
     *,
@@ -315,7 +306,9 @@ def _check_version(log_file: TextIO) -> tuple[str | None, list[str]]:
 
 def run_required_suite(repo_root: pathlib.Path) -> int:
     repo_root = repo_root.resolve()
-    artifact_dir = _target_root(repo_root) / "nextest" / CI_PROFILE
+    # The validated config uses nextest's workspace-relative default store.
+    # CARGO_TARGET_DIR redirects build artifacts, not this JUnit location.
+    artifact_dir = repo_root / "target" / "nextest" / CI_PROFILE
     junit_path = artifact_dir / EXPECTED_JUNIT["path"]
     log_path = artifact_dir / "console.log"
     policy_path = artifact_dir / "policy.json"

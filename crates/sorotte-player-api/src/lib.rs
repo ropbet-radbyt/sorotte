@@ -842,18 +842,6 @@ impl<T> SnapshotField<T> {
         Self::Known(value)
     }
 
-    pub const fn is_known(&self) -> bool {
-        matches!(self, Self::Known(_))
-    }
-
-    pub const fn is_known_absent(&self) -> bool {
-        matches!(self, Self::KnownAbsent)
-    }
-
-    pub const fn is_unavailable(&self) -> bool {
-        matches!(self, Self::Unavailable)
-    }
-
     pub const fn as_ref(&self) -> SnapshotField<&T> {
         match self {
             Self::Known(value) => SnapshotField::Known(value),

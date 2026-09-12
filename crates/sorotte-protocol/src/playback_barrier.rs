@@ -464,11 +464,6 @@ impl PrepareMediaPayload {
         self
     }
 
-    pub fn with_quorum(mut self, quorum: u32) -> Self {
-        self.quorum = Some(quorum);
-        self
-    }
-
     pub fn with_quorum_percent(mut self, quorum_percent: u32) -> Self {
         self.quorum_percent = Some(quorum_percent);
         self
@@ -551,11 +546,6 @@ impl CommitStartPayload {
             start_at: None,
             started_deadline,
         }
-    }
-
-    pub fn with_start_at(mut self, start_at: f64) -> Self {
-        self.start_at = Some(start_at);
-        self
     }
 
     pub fn with_readiness_revision(mut self, readiness_revision: u64) -> Self {
