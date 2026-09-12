@@ -70,15 +70,9 @@ impl GuiSessionTransportDriver for GuiLoopbackSessionTransportDriver {
             );
         }
 
-        let outbound_protocol_lines = transport.drain_outbound_protocol_lines();
-        if outbound_protocol_lines.is_empty() {
-            return Ok(());
+        if let Some(line) = transport.take_outbound_liveness_protocol_line_for_driver() {
+            transport.push_inbound_protocol_line(self.translated_inbound_line(&line));
         }
-        transport.push_inbound_protocol_lines(
-            outbound_protocol_lines
-                .into_iter()
-                .map(|line| self.translated_inbound_line(&line)),
-        );
         Ok(())
     }
 }

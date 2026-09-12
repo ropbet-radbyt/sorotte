@@ -663,16 +663,6 @@ impl GuiTcpSessionTransportDriver {
                     offset: 0,
                 });
         }
-        for line in transport.drain_untracked_outbound_protocol_lines_for_driver() {
-            let mut encoded_line = line.into_bytes();
-            encoded_line.extend_from_slice(b"\r\n");
-            self.pending_outbound_lines
-                .push_back(GuiTcpPendingOutboundFrame {
-                    token: None,
-                    bytes: encoded_line,
-                    offset: 0,
-                });
-        }
         Self::queue_outbound_liveness_line(&mut self.pending_outbound_liveness_lines, transport);
     }
 

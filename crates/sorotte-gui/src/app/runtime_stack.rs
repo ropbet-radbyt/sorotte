@@ -1,4 +1,6 @@
 #[cfg(test)]
+pub(in crate::app) mod test_support;
+#[cfg(test)]
 mod tests;
 
 mod client_core_adapter;

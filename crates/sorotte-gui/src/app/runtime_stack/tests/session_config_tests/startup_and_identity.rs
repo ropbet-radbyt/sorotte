@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 #[test]
 fn staged_startup_hello_keeps_current_connection_ownership_across_settings_changes() {
@@ -268,7 +269,7 @@ fn gui_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
             .expect("runtime settings should sync into the startup Hello");
 
         let startup_lines = adapter
-            .flush_outbound_protocol_lines()
+            .deliver_outbound_protocol_lines()
             .expect("startup protocol lines should encode");
         let ProtocolMessage::Hello(hello) =
             decode_message_line(&startup_lines[0]).expect("startup Hello should decode")
@@ -305,7 +306,7 @@ fn gui_client_core_chat_session_runtime_adapter_startup_hello_includes_hashed_pa
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the startup hello");
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -411,7 +412,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_run
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
 
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
@@ -420,7 +421,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_updated_run
         .reset_session_for_reconnect()
         .expect("runtime settings should apply during reconnect reset");
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 
@@ -444,7 +445,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_server_assi
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -456,7 +457,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_uses_server_assi
         .expect("runtime settings sync should preserve the server-assigned username");
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 
@@ -474,7 +475,7 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(&format!(
@@ -484,7 +485,7 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     let hello = reconnect_lines
         .iter()
@@ -506,7 +507,7 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
     let mut switched = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("room-switch adapter should bootstrap");
     let _ = switched
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("room-switch startup hello should encode");
     switched
         .apply_message_json(&format!(
@@ -516,11 +517,11 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
     GuiSessionRuntimeAdapter::set_room(&mut switched, "room2".to_owned())
         .expect("room change should queue");
     let _ = switched
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("room change should encode");
     switched.prepare_transport_reconnect();
     let switched_lines = switched
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("room-switch reconnect protocol lines should encode");
     let switched_hello = switched_lines
         .iter()
@@ -546,7 +547,7 @@ fn gui_reconnect_reset_carries_same_room_token_into_replacement_runtime_hello() 
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(&format!(
@@ -558,7 +559,7 @@ fn gui_reconnect_reset_carries_same_room_token_into_replacement_runtime_hello() 
         .reset_session_for_reconnect()
         .expect("replacement runtime should prepare");
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("replacement runtime hello should encode");
     let hello = reconnect_lines
         .iter()
@@ -585,7 +586,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_curren
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -602,7 +603,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_curren
         .reset_session_for_reconnect()
         .expect("runtime settings should apply during reconnect reset");
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 
@@ -620,7 +621,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -631,7 +632,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
     GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
         .expect("room change should queue");
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("queued room change should encode");
     let set_message = outbound_lines
         .iter()
@@ -651,7 +652,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_pendin
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     let hello = reconnect_lines
         .iter()
@@ -672,7 +673,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_follows_server_a
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -683,7 +684,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_follows_server_a
     GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
         .expect("room change should queue");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("queued room change should encode");
 
     adapter
@@ -692,7 +693,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_follows_server_a
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     let hello = reconnect_lines
         .iter()

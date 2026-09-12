@@ -289,6 +289,9 @@ mod runtime;
 mod session;
 mod views;
 
+#[cfg(test)]
+mod test_support;
+
 pub use self::config::{
     ChatConfig, DesyncCorrectionAction, DesyncCorrectionConfig, PrivacyMode,
     ReadinessAutoplayConfig, ReconnectPolicyConfig, ReconnectRetryDecision,

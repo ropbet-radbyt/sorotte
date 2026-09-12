@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 #[test]
 fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_before_first_hello()
@@ -15,12 +16,12 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 
@@ -30,7 +31,7 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
         )
         .expect("reconnect hello should apply");
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("ready-at-start lines should encode after reconnect hello");
     assert!(
         outbound_lines
@@ -55,7 +56,7 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
     GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
 
     adapter
@@ -64,7 +65,7 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
         )
         .expect("server hello should apply");
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("ready-at-start lines should encode after the first hello");
     assert!(
         outbound_lines
@@ -75,7 +76,7 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 
@@ -85,7 +86,7 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
         )
         .expect("reconnect hello should apply");
     let reconnect_outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("ready-at-start lines should encode after reconnect hello");
     assert!(
         reconnect_outbound_lines
@@ -101,7 +102,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whites
         .expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -111,7 +112,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whites
 
     adapter.prepare_transport_reconnect();
     let reconnect_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("reconnect protocol lines should encode");
     assert_eq!(reconnect_lines.len(), 1);
 

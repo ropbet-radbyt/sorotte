@@ -1,11 +1,14 @@
-# Outbound delivery cleanup and queued dependency updates
+# Outbound delivery cleanup and v0.2.15 release
 
-Status: scoped; implementation and PR qualification have not started.
+The cleanup and queued dependency updates are implemented. Final PR and release
+qualification results are recorded in the implementation PR.
 
-Use one branch, `codex/cleanup-dependency-bundle`, based on main
+The work uses `codex/cleanup-dependency-bundle`, based on main
 `d36982f8b3cda8e5181494f56b3037b1bcc2fb4c` after settings cleanup PR #67.
-The intended implementation is one PR containing the cleanup and both Dependabot
-groups below, with focused commits for review.
+The combined PR contains the cleanup, both Dependabot groups below and the
+version bump to 0.2.15. Publication must use the retained artifacts from the
+qualified PR head after its unchanged merge, as required by
+[release qualification](../RELEASE_QUALIFICATION.md).
 
 ## Cleanup finding
 
@@ -36,43 +39,33 @@ uses the repository's test-path and inline `cfg(test)` module detection in
 `QueuedRuntimeControl::drain_outbound_messages` and
 `drain_outbound_message_lines` are also tests or the forwarding APIs above.
 
-## Implementation scope
+## Implemented changes
 
-1. Replace fixture batch capture with explicit queue inspection or staged
-   delivery. Tests observing pending or coalescible work must inspect it without
-   acknowledging it. Tests modelling a completed write must stage the frame and
-   acknowledge the exact receipt. Provide shared fixture support where it
-   removes repetition, with clear names for inspection, successful delivery and
-   failed delivery.
-2. Remove the alternate owner path from
-   `crates/sorotte-gui/src/app/runtime_owner/session_transport.rs`. Migrate owner
-   fixtures to deterministic transport drivers using the same delivery path as
-   production, including delayed and failed writes.
-3. Remove `flush_outbound_protocol_lines` from the GUI adapter trait, concrete
-   client-core adapter and forwarding implementation in
-   `crates/sorotte-gui/src/app/runtime_stack/`. Retain the staged delivery,
-   acknowledgement and failure methods.
-4. Remove the untracked reliable queue and its push/drain operations from
-   `runtime_stack/transport/handle.rs`, and the TCP worker branch that consumes
-   it in `runtime_stack/transport/tcp.rs`. Update `transport/loopback.rs` to
-   handle liveness explicitly: its current batch drain also carries legitimate
-   liveness messages, so deleting that call alone would lose behavior.
-5. Remove the obsolete batch-flush forwarding methods in
-   `crates/sorotte-client-app/src/application.rs` and
-   `crates/sorotte-client-core/src/runtime/queued_control.rs`, then the unused
-   batch drains in client-core `control.rs`. Remove lower-level helpers only
-   after checking their remaining callers. Keep real notification drains and
-   reconnect operations, which have different responsibilities.
-6. Update contributor documentation to describe queue inspection, pending frame,
-   completed write and delivery receipt precisely. Remove the obsolete
-   compatibility comments together with their code.
+- Removed the infallible batch APIs in client-core, client-app and the GUI
+  adapter, including the unused `ProtocolOutbox` batch clear/drain operations.
+  Core fixtures now distinguish pending queue inspection from successful writes
+  with exact lease acknowledgement.
+- Removed the owner control-flow fork for tests without a driver. Recording
+  fixtures install a deterministic writer and inspect its completed writes;
+  delayed, failed and externally driven fixtures retain explicit receipt control.
+  GUI adapter tests share a delivery helper through the production adapter trait.
+- Removed the untracked reliable queue from the GUI transport handle and its TCP
+  consumer. Loopback now consumes liveness explicitly, alongside the reliable
+  frame and receipt. A regression covers chat translation, liveness coalescing,
+  one matching reliable receipt and an idle second pump.
+- Updated TLS transport fixtures to stage a reliable Hello with a receipt instead
+  of injecting an untracked line. Existing partial-write, old-worker, reconnect,
+  playlist-fence and selected-media tests retain their assertions.
+- Documented pending messages, completed writes and delivery receipts in the
+  contributor guide. The obsolete compatibility comments were removed with the
+  code; the meaningful State heartbeat is described as Syncplay synchronization.
 
-The GUI adapter trait itself, partial-write representation, TLS transport and
-reconnect architecture do not need a redesign for this cleanup.
+The GUI adapter trait, partial-write representation, TLS transport and reconnect
+architecture retain their responsibilities.
 
 ## Dependabot scope
 
-The open queue was checked on 2026-09-12. Include both bot PRs:
+The open queue was checked on 2026-09-12. The bundle incorporates both bot PRs:
 
 | Source | Dependency | Current | Target |
 | --- | --- | --- | --- |
@@ -84,31 +77,31 @@ The open queue was checked on 2026-09-12. Include both bot PRs:
 | PR #65 | `platformdirs` | 4.11.7 | 4.11.8 |
 
 Reviewed heads: #66 `f5065c472d9e7ee1537cbd6b66c6dff5a602d4c7` and
-#65 `5fbceaebead3407a754f50c1edcf2421e4ada9f1`. Both patches apply cleanly to
-the scoped base. Recheck the queue before implementation because bot branches
-can rebase. The unrelated human PR #25 is outside this bundle.
+#65 `5fbceaebead3407a754f50c1edcf2421e4ada9f1`. The reviewed updates were applied to
+the scoped base; unrelated lockfile resolution changes were excluded. The
+unrelated human PR #25 is outside this bundle.
 
 The bot patches cover only the root `Cargo.lock` and
-`requirements/verification-constraints.txt`. Complete the associated maintenance:
+`requirements/verification-constraints.txt`. The associated maintenance also includes:
 
-- Update the three workspace dependency declarations in `Cargo.toml` and the
-  matching egui family in `Cargo.lock`. Update `reqwest` in the separate
-  `fuzz/Cargo.lock`; avoid unrelated dependency resolution churn.
-- Update the three Python constraints and their normalized LF SHA-256 in
-  `coverage/verification-tools.toml` under `[python-resolution]`. Run
-  `python scripts/verify.py pins --check` and the static preflight so the central
-  manifest and its consumers agree.
-- Validate the CI policy, dependency-audit and Python Syncplay requirement sets
+- Updated the three workspace dependency declarations in `Cargo.toml` and the
+  matching egui family in `Cargo.lock`. Updated `reqwest` in the separate
+  `fuzz/Cargo.lock`; unrelated dependency versions remain unchanged.
+- Updated the three Python constraints and their normalized LF SHA-256 in
+  `coverage/verification-tools.toml` under `[python-resolution]`. Static preflight validates the central manifest and its consumers.
+- Validation covers the CI policy, dependency-audit and Python Syncplay requirement sets
   against the revised constraints, including the reviewed Linux/Windows and
   Python 3.11/3.12/3.13 resolution matrix.
-- Refresh and seal native verification dependency inputs for the changed Cargo
-  and Python inputs before native qualification. Evidence from the previous
+- Refreshed and sealed native verification dependency inputs for the changed Cargo
+  and Python inputs for native qualification. Evidence from the previous
   dependency bundle does not qualify these updates.
 
-Keep the existing Rust 1.98.1 toolchain and unrelated action, player and container
-pins. Any necessary dependency-driven source fixes belong in this same branch.
-The combined implementation PR should reference both bot PRs; their updates are
-only superseded once the combined change lands.
+The Rust 1.98.1 toolchain and unrelated action, player and container pins remain
+unchanged. Workspace package versions in both lockfiles and the release section
+of `coverage/current-architecture.toml` now identify 0.2.15, using the v0.2.14
+release source `267291490915452f3b87d5a5a59d257f98c8836a` as its historical base.
+The combined implementation PR references both bot PRs; their updates are only
+superseded once the combined change lands.
 
 ## Preserved contracts and acceptance
 
@@ -131,7 +124,7 @@ meaning of a delivery acknowledgement.
   exposes a missing behavioral case; do not replace pending-queue assertions
   with unconditional successful acknowledgements.
 
-Qualification for the eventual combined PR includes formatting, strict Clippy,
+Qualification for the combined release PR includes formatting, strict Clippy,
 the default workspace suite, all-feature nextest and doctests, GUI semantic and
 live Python interoperability coverage, HTTP/Plex credential and origin checks,
 and the required coverage, mutation, fuzz, dependency, packaging and Windows

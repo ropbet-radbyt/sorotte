@@ -491,7 +491,7 @@ fn gui_persisted_config_runtime_owner_opens_inbound_selected_shared_playlist_med
         .expect("inbound shared-playlist media fixture should be written");
 
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
@@ -506,7 +506,7 @@ fn gui_persisted_config_runtime_owner_opens_inbound_selected_shared_playlist_med
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -574,7 +574,7 @@ fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_a
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -614,7 +614,7 @@ fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_a
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while std::time::Instant::now() < deadline {
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-        let _ = session_transport.drain_outbound_protocol_lines();
+        let _ = session_transport.complete_outbound_protocol_write();
         pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         if state.selection.selected_main_window_playlist == Some(1)
             && owner

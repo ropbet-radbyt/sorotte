@@ -2443,10 +2443,6 @@ where
             .run_state_sync_heartbeat_with_ping(dont_slow_down_with_me)
     }
 
-    pub fn flush_queued_protocol_lines(&mut self) -> Result<Vec<String>, ProtocolError> {
-        self.runtime.flush_queued_protocol_lines()
-    }
-
     pub fn emit_effect(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError> {
         self.runtime.emit_effect(effect)
     }

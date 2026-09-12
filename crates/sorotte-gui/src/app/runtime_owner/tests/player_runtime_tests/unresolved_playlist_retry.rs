@@ -57,7 +57,7 @@ fn gui_persisted_config_runtime_owner_does_not_apply_room_playstate_while_select
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -78,7 +78,7 @@ fn gui_persisted_config_runtime_owner_does_not_apply_room_playstate_while_select
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -149,7 +149,7 @@ fn gui_persisted_config_runtime_owner_retries_unresolved_shared_playlist_media_a
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -168,7 +168,7 @@ fn gui_persisted_config_runtime_owner_retries_unresolved_shared_playlist_media_a
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     let _ = handle.drain_actions();
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
 
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#

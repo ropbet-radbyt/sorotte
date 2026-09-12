@@ -236,7 +236,7 @@ fn queued_runtime_control_set_file_emits_protocol_set_file_message() {
 }
 
 #[test]
-fn queued_runtime_control_can_drain_encoded_protocol_lines() {
+fn queued_runtime_control_retains_encoded_protocol_line_until_acknowledged() {
     let mut control = QueuedRuntimeControl::default();
     control
         .emit(ClientEffect::SetReady {
@@ -245,21 +245,27 @@ fn queued_runtime_control_can_drain_encoded_protocol_lines() {
         })
         .expect("ready effect should be supported");
 
-    let lines = control
-        .drain_outbound_message_lines()
-        .expect("queued messages should encode");
-    assert_eq!(lines.len(), 1);
+    let pending = control
+        .front_outbound_message_line()
+        .expect("queued message should encode")
+        .expect("ready message should be pending");
+    assert_eq!(control.outbound_messages().len(), 1);
     assert!(
-        lines[0].contains("\"Set\""),
+        pending.line().contains("\"Set\""),
         "encoded line should contain Set envelope"
     );
     assert!(
-        lines[0].contains("\"isReady\":true"),
+        pending.line().contains("\"isReady\":true"),
         "encoded line should contain ready=true"
     );
     assert!(
-        lines[0].contains("\"manuallyInitiated\":false"),
+        pending.line().contains("\"manuallyInitiated\":false"),
         "encoded line should preserve manuallyInitiated"
+    );
+    assert!(
+        control
+            .acknowledge_outbound_message(pending.lease())
+            .is_some()
     );
     assert!(control.outbound_messages().is_empty());
 }

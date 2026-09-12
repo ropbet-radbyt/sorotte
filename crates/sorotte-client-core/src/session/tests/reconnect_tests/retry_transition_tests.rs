@@ -397,7 +397,7 @@ fn client_runtime_flush_helpers_expose_protocol_and_reconnect_intents() {
         .run_set_ready_for_user("", true, true)
         .expect("explicit readiness command should dispatch");
     let outbound_lines = runtime
-        .flush_queued_protocol_lines()
+        .deliver_queued_protocol_lines()
         .expect("queued outbound lines should encode");
     assert_eq!(outbound_lines.len(), 1);
     assert!(outbound_lines[0].contains("\"isReady\":true"));

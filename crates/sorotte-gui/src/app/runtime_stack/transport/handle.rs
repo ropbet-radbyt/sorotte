@@ -108,7 +108,6 @@ struct GuiTrackedOutboundProtocolDelivery {
 pub(in crate::app) struct GuiQueuedSessionTransportHandle {
     queued_inbound_protocol_lines: Arc<Mutex<VecDeque<GuiInboundProtocolLine>>>,
     queued_transport_warnings: Arc<Mutex<VecDeque<String>>>,
-    queued_outbound_protocol_lines: Arc<Mutex<VecDeque<String>>>,
     queued_outbound_liveness_protocol_line: Arc<Mutex<Option<String>>>,
     tracked_outbound_protocol_delivery: Arc<Mutex<GuiTrackedOutboundProtocolDeliveryState>>,
     queued_outbound_protocol_activity_revision: Arc<AtomicU64>,
@@ -342,32 +341,6 @@ impl GuiQueuedSessionTransportHandle {
         });
     }
 
-    #[allow(
-        dead_code,
-        reason = "Untracked protocol injection is retained for transport compatibility tests."
-    )]
-    pub(in crate::app) fn push_outbound_protocol_lines<I>(&self, lines: I)
-    where
-        I: IntoIterator<Item = String>,
-    {
-        if !self.worker_generation_is_current() {
-            return;
-        }
-        let mut queue = self
-            .queued_outbound_protocol_lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut pushed = false;
-        for line in lines {
-            queue.push_back(line);
-            pushed = true;
-        }
-        if pushed {
-            self.queued_outbound_protocol_activity_revision
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
     pub(in crate::app) fn push_outbound_liveness_protocol_line(&self, line: impl Into<String>) {
         if !self.worker_generation_is_current() {
             return;
@@ -398,46 +371,13 @@ impl GuiQueuedSessionTransportHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
-    pub(in crate::app) fn drain_untracked_outbound_protocol_lines_for_driver(&self) -> Vec<String> {
-        if !self.worker_generation_is_current() {
-            return Vec::new();
-        }
-        self.queued_outbound_protocol_lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain(..)
-            .collect()
-    }
-
     pub(in crate::app) fn outbound_protocol_activity_revision(&self) -> u64 {
         self.queued_outbound_protocol_activity_revision
             .load(Ordering::Relaxed)
     }
 
-    pub(in crate::app) fn drain_outbound_protocol_lines(&self) -> Vec<String> {
-        let tracked_delivery = self.take_outbound_protocol_delivery_for_driver();
-        let mut lines = Vec::new();
-        if let Some(delivery) = tracked_delivery {
-            lines.push(delivery.line);
-            self.publish_outbound_protocol_delivery_result(
-                GuiOutboundProtocolDeliveryResult::FrameWritten {
-                    token: delivery.token,
-                },
-            );
-        }
-        lines.extend(self.drain_untracked_outbound_protocol_lines_for_driver());
-        if let Some(liveness_line) = self.take_outbound_liveness_protocol_line_for_driver() {
-            lines.push(liveness_line);
-        }
-        lines
-    }
-
     pub(in crate::app) fn clear_protocol_lines(&self) {
         self.clear_inbound_protocol_lines();
-        self.queued_outbound_protocol_lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
         self.clear_outbound_liveness_protocol_line();
         self.fail_pending_outbound_protocol_delivery(
             0,

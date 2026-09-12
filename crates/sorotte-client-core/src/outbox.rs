@@ -740,18 +740,6 @@ impl ProtocolOutbox {
         }
         true
     }
-
-    pub(crate) fn clear(&mut self) {
-        self.pending.clear();
-        self.delivery.clear();
-        self.leased_front.set(None);
-    }
-
-    pub(crate) fn drain(&mut self) -> Vec<ProtocolMessage> {
-        self.delivery.clear();
-        self.leased_front.set(None);
-        self.pending.drain(..).collect()
-    }
 }
 
 #[cfg(test)]
@@ -1115,7 +1103,7 @@ mod tests {
             SetPayload::new().with_playlist_index(PlaylistIndexPayload::new(1)),
         ));
 
-        let messages = outbox.drain();
+        let messages: Vec<_> = outbox.pending().iter().cloned().collect();
         assert!(
             matches!(
                 messages.as_slice(),
@@ -1141,7 +1129,7 @@ mod tests {
             StatePayload::new().with_playstate(PlaystatePayload::new().with_position(30.0)),
         )));
 
-        let messages = outbox.drain();
+        let messages: Vec<_> = outbox.pending().iter().cloned().collect();
         assert!(matches!(
             messages.as_slice(),
             [
@@ -1384,7 +1372,10 @@ mod tests {
         assert!(state.state.ping.is_some());
         assert!(state.state.participant_status_v1().unwrap().is_none());
 
-        outbox.clear();
+        let (lease, _) = outbox.front_for_delivery().expect("heartbeat should stage");
+        outbox
+            .acknowledge_front(lease)
+            .expect("heartbeat should deliver");
         assert!(outbox.push_connection_scoped_state(ProtocolMessage::state(
             StatePayload::new().with_participant_status_v1(
                 ParticipantStatusStateExtension::new().with_report(ParticipantStatusReport::new(

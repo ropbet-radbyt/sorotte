@@ -373,7 +373,7 @@ fn blocked_update_job_leaves_session_transport_pumping_live() {
     service.check_gate = Some(gate.clone());
     let runtime = runtime_with_service(service);
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core session runtime should bootstrap");
     owner.update_runtime = runtime;
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -407,7 +407,7 @@ fn blocked_update_job_leaves_session_transport_pumping_live() {
     gate.wait_until_entered();
     assert!(
         session_transport
-            .drain_outbound_protocol_lines()
+            .take_written_lines()
             .iter()
             .any(|line| line.contains("\"Hello\"")),
         "the owner must flush the startup Hello after scheduling update work"

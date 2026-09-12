@@ -570,7 +570,7 @@ fn client_runtime_flush_queued_protocol_lines_to_transport_uses_sender_callback(
     assert_eq!(sent_lines.len(), 1);
     assert!(sent_lines[0].contains("\"Set\""));
     assert!(sent_lines[0].contains("\"isReady\":true"));
-    assert!(runtime.flush_queued_protocol_messages().is_empty());
+    assert!(runtime.deliver_queued_protocol_messages().is_empty());
 }
 
 #[test]

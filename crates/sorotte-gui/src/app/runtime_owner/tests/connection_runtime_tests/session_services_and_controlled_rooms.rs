@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn gui_persisted_config_runtime_owner_routes_public_server_refresh_through_client_core_session() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -20,7 +20,7 @@ fn gui_persisted_config_runtime_owner_routes_public_server_refresh_through_clien
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+    assert_eq!(session_transport.take_written_lines().len(), 1);
 
     assert!(state.apply(GuiShellAction::BeginPublicServerRefresh));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
@@ -61,7 +61,7 @@ fn gui_persisted_config_runtime_owner_routes_public_server_refresh_through_clien
 #[test]
 fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_reports_support() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -122,7 +122,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     for action in startup_actions {
         assert!(state.apply(action));
     }
-    assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+    assert_eq!(session_transport.take_written_lines().len(), 1);
     assert!(!state.commands.can_send_chat_message);
 
     session_transport.push_inbound_protocol_line(
@@ -201,7 +201,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
         "another mpv bridge owner retained the input lease",
     );
     owner.player = Some(GuiOwnedPlayer::Mpv(Box::new(runtime_degraded_player)));
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     handle.push_request(GuiRuntimeRequest::SendChatMessage(
         "chat survives bridge degradation".to_owned(),
     ));
@@ -220,7 +220,7 @@ fn gui_persisted_config_runtime_owner_keeps_chat_disabled_until_server_hello_rep
     }));
     assert!(
         session_transport
-            .drain_outbound_protocol_lines()
+            .take_written_lines()
             .iter()
             .any(|line| line.contains("chat survives bridge degradation")),
         "GUI chat must continue through the client-core session while the player bridge is degraded"
@@ -283,7 +283,7 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
 
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -300,7 +300,7 @@ fn gui_persisted_config_runtime_owner_routes_missing_media_search_through_client
     for action in handle.drain_actions() {
         assert!(state.apply(action));
     }
-    assert_eq!(session_transport.drain_outbound_protocol_lines().len(), 1);
+    assert_eq!(session_transport.take_written_lines().len(), 1);
 
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#
@@ -383,7 +383,7 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     let room_input = "+room1:CB39A19549E8:ab-123-456";
     let canonical_room = "+room1:CB39A19549E8";
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", room_input)
+        .with_recording_chat_session_runtime("alice", room_input)
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -395,7 +395,7 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
     assert!(startup_protocol_lines[0].contains(canonical_room));
@@ -411,7 +411,7 @@ fn gui_persisted_config_runtime_owner_normalizes_controlled_room_input_and_remem
     handle.drain_actions();
 
     let outbound_protocol_lines =
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines());
+        without_default_ready_publish_lines(session_transport.take_written_lines());
     assert_eq!(outbound_protocol_lines.len(), 1);
     assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
     assert!(outbound_protocol_lines[0].contains(canonical_room));
@@ -548,7 +548,7 @@ fn gui_persisted_config_runtime_owner_normalizes_bare_controlled_room_input_on_s
     let room_input = "Test:77F8DA30FB3E";
     let canonical_room = "+Test:77F8DA30FB3E";
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", room_input)
+        .with_recording_chat_session_runtime("alice", room_input)
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
@@ -560,7 +560,7 @@ fn gui_persisted_config_runtime_owner_normalizes_bare_controlled_room_input_on_s
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
     assert!(startup_protocol_lines[0].contains(canonical_room));

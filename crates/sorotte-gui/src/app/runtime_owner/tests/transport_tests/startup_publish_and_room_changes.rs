@@ -19,7 +19,7 @@ fn deliver_detached_session_protocol_lines(
     let mut protocol_lines = Vec::new();
     let mut actions = Vec::new();
     for _ in 0..16 {
-        let delivered = session_transport.drain_outbound_protocol_lines();
+        let delivered = session_transport.complete_outbound_protocol_write();
         if delivered.is_empty() {
             break;
         }
@@ -164,7 +164,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
     for action in startup_actions {
         assert!(state.apply(action));
     }
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.complete_outbound_protocol_write();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
 
@@ -177,7 +177,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         assert!(state.apply(action));
     }
     assert!(
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
+        without_default_ready_publish_lines(session_transport.complete_outbound_protocol_write())
             .is_empty()
     );
     let media_root = test_temp_root("transport-shared-playlist-local-publish");
@@ -219,7 +219,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
         Some("episode1.mkv")
     );
 
-    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
+    outbound_protocol_lines.extend(session_transport.complete_outbound_protocol_write());
     assert!(
         outbound_protocol_lines
             .iter()
@@ -254,7 +254,7 @@ fn gui_persisted_config_runtime_owner_shared_playlist_open_publishes_local_file_
 fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_local_file_over_transport()
  {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
@@ -271,7 +271,7 @@ fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_l
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
     assert!(
@@ -287,7 +287,7 @@ fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_l
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -307,7 +307,7 @@ fn gui_persisted_config_runtime_owner_waits_for_server_hello_before_publishing_l
 #[test]
 fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_over_transport() {
     let (mut owner, session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -318,7 +318,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(startup_protocol_lines[0].contains("\"Hello\""));
 
@@ -326,10 +326,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    assert!(
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
-            .is_empty()
-    );
+    assert!(without_default_ready_publish_lines(session_transport.take_written_lines()).is_empty());
 
     owner.player_local_file = Some(
         GuiPersistedConfigRuntimeOwner::placeholder_local_file_for_path("C:/Media/episode1.mkv"),
@@ -337,7 +334,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
     owner.player_local_file_placeholder = true;
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let placeholder_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let placeholder_protocol_lines = session_transport.take_written_lines();
     assert!(
         placeholder_protocol_lines.iter().all(|line| {
             serde_json::from_str::<serde_json::Value>(line)
@@ -358,7 +355,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_placeholder_local_file_ov
     owner.player_local_file_placeholder = false;
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -406,7 +403,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(
         session_transport
-            .drain_outbound_protocol_lines()
+            .complete_outbound_protocol_write()
             .iter()
             .any(|line| line.contains("\"Hello\""))
     );
@@ -414,7 +411,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
     let media_root = test_temp_root("transport-open-path-before-metadata");
     let media_path = media_root.join("episode1.mkv");
     std::fs::write(&media_path, b"test").expect("media fixture should be written");
@@ -444,7 +441,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_opened_local_path_before_
         Some(crate::app::runtime_owner::player::PlaylistResolutionAttemptState::Loading),
         "publishing the known local path must not promote the resolution attempt to Active",
     );
-    outbound_protocol_lines.extend(session_transport.drain_outbound_protocol_lines());
+    outbound_protocol_lines.extend(session_transport.complete_outbound_protocol_write());
     assert!(
         outbound_protocol_lines.iter().all(|line| {
             serde_json::from_str::<serde_json::Value>(line)
@@ -538,12 +535,12 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
 
     let media_root = test_temp_root("transport-observed-then-rejected-tracked-media");
     let media_path = media_root.join("observed-then-rejected.mkv");
@@ -605,7 +602,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
     }
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let observed_lines = session_transport.drain_outbound_protocol_lines();
+    let observed_lines = session_transport.complete_outbound_protocol_write();
     assert!(
         observed_lines
             .iter()
@@ -640,7 +637,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_observed_then_rejected_tr
     }
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let rejected_lines = session_transport.drain_outbound_protocol_lines();
+    let rejected_lines = session_transport.complete_outbound_protocol_write();
     assert!(
         rejected_lines
             .iter()
@@ -728,19 +725,19 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.complete_outbound_protocol_write();
 
     let previously_active_file = sorotte_player_api::LocalFileUpdate::new("previously-active.mkv")
         .with_path("C:/Media/previously-active.mkv");
     owner.player_local_file = Some(previously_active_file.clone());
     owner.player_local_file_placeholder = false;
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let previously_active_lines = session_transport.drain_outbound_protocol_lines();
+    let previously_active_lines = session_transport.complete_outbound_protocol_write();
     assert!(
         previously_active_lines
             .iter()
@@ -770,7 +767,7 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
         &mut state,
         &session_transport,
     );
-    accepted_lines.extend(session_transport.drain_outbound_protocol_lines());
+    accepted_lines.extend(session_transport.complete_outbound_protocol_write());
     assert!(
         accepted_lines
             .iter()
@@ -801,7 +798,7 @@ fn gui_persisted_config_runtime_owner_never_publishes_accepted_then_rejected_loc
         ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let rejected_lines = session_transport.drain_outbound_protocol_lines();
+    let rejected_lines = session_transport.complete_outbound_protocol_write();
     assert!(
         rejected_lines
             .iter()
@@ -871,7 +868,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_media_match_without_healt
 
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
@@ -891,13 +888,13 @@ fn gui_persisted_config_runtime_owner_publishes_cached_media_match_without_healt
     owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -954,7 +951,7 @@ fn gui_persisted_config_runtime_owner_suppresses_cached_media_match_for_remote_e
 
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
@@ -975,7 +972,7 @@ fn gui_persisted_config_runtime_owner_suppresses_cached_media_match_for_remote_e
     owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     session_transport.push_inbound_protocol_lines([
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#
             .to_owned(),
@@ -984,7 +981,7 @@ fn gui_persisted_config_runtime_owner_suppresses_cached_media_match_for_remote_e
     ]);
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1053,7 +1050,7 @@ fn gui_persisted_config_runtime_owner_suppresses_media_match_without_server_capa
 
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
@@ -1073,13 +1070,13 @@ fn gui_persisted_config_runtime_owner_suppresses_media_match_without_server_capa
     owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let outbound_protocol_lines = session_transport.take_written_lines();
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1122,7 +1119,7 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
 
     let (mut owner, session_transport) =
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_client_core_chat_session_runtime("alice", "room1")
+            .with_recording_chat_session_runtime("alice", "room1")
             .expect("client-core chat runtime owner should bootstrap");
     owner.player_local_file = Some(
         sorotte_player_api::LocalFileUpdate::new("episode2.mkv")
@@ -1142,13 +1139,13 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
     owner.media_match_runtime_snapshot.settings = state.media_match.settings.clone();
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = session_transport.drain_outbound_protocol_lines();
+    let _ = session_transport.take_written_lines();
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#,
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let first_publish_lines = session_transport.drain_outbound_protocol_lines();
+    let first_publish_lines = session_transport.take_written_lines();
     assert!(
         first_publish_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1205,7 +1202,7 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
     );
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let republish_lines = session_transport.drain_outbound_protocol_lines();
+    let republish_lines = session_transport.take_written_lines();
     assert!(
         republish_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {

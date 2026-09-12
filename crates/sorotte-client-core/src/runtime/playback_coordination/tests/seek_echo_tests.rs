@@ -319,7 +319,7 @@ fn an_older_pause_frame_cannot_replace_the_predecessor_of_a_newer_command() {
 fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
-    fixture.runtime.flush_queued_protocol_messages();
+    fixture.runtime.deliver_queued_protocol_messages();
     assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     let first = fixture
         .runtime
@@ -334,7 +334,7 @@ fn an_explicit_pause_mutation_cannot_be_coalesced_away_by_heartbeats() {
     for _ in 0..8 {
         assert!(fixture.runtime.run_state_sync_heartbeat_with_ping(false));
     }
-    let messages = fixture.runtime.flush_queued_protocol_messages();
+    let messages = fixture.runtime.deliver_queued_protocol_messages();
     assert_eq!(
         messages.len(),
         2,
@@ -360,7 +360,7 @@ fn a_causal_pause_keeps_participant_reports_cancellable() {
 pub(super) fn assert_causal_pause_keeps_participant_reports_cancellable() {
     let mut fixture = SeekFixture::new();
     assert!(fixture.runtime.run_set_paused(false).unwrap());
-    fixture.runtime.flush_queued_protocol_messages();
+    fixture.runtime.deliver_queued_protocol_messages();
     fixture
         .runtime
         .playback_coordination
@@ -383,7 +383,7 @@ pub(super) fn assert_causal_pause_keeps_participant_reports_cancellable() {
         .runtime
         .control
         .cancel_protocol_participant_status_reports();
-    let remaining = fixture.runtime.flush_queued_protocol_messages();
+    let remaining = fixture.runtime.deliver_queued_protocol_messages();
     assert!(reports_in(remaining.clone()).is_empty());
     assert_eq!(
         remaining,
@@ -401,7 +401,7 @@ pub(super) fn assert_pause_queue_keeps_only_current_command_frames_in_order() {
     for mismatch in ["none", "pause", "revision", "missing-playstate"] {
         let mut fixture = SeekFixture::new();
         assert!(fixture.runtime.run_set_paused(false).unwrap());
-        fixture.runtime.flush_queued_protocol_messages();
+        fixture.runtime.deliver_queued_protocol_messages();
         let mut frame = StatePayload::new()
             .with_playstate(
                 PlaystatePayload::new()
@@ -441,7 +441,7 @@ pub(super) fn assert_pause_queue_keeps_only_current_command_frames_in_order() {
             .runtime
             .control
             .cancel_protocol_participant_status_reports();
-        let messages = fixture.runtime.flush_queued_protocol_messages();
+        let messages = fixture.runtime.deliver_queued_protocol_messages();
         if mismatch == "none" {
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[0], ProtocolMessage::state(frame));
@@ -501,7 +501,7 @@ impl SeekFixture {
                 1.0,
             )
             .unwrap();
-        fixture.runtime.flush_queued_protocol_messages();
+        fixture.runtime.deliver_queued_protocol_messages();
         fixture
     }
 
@@ -558,7 +558,7 @@ impl SeekFixture {
         assert!(self.runtime.run_seek_to_position(11.0).unwrap());
         let state = self
             .runtime
-            .flush_queued_protocol_messages()
+            .deliver_queued_protocol_messages()
             .into_iter()
             .find_map(|message| match message {
                 ProtocolMessage::State(state)
@@ -628,7 +628,7 @@ impl SeekFixture {
 
     fn take_response(&mut self) -> StatePayload {
         self.runtime
-            .flush_queued_protocol_messages()
+            .deliver_queued_protocol_messages()
             .into_iter()
             .find_map(|message| match message {
                 ProtocolMessage::State(state) if state.state.ping.is_some() => Some(state.state),

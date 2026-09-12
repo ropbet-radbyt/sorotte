@@ -81,7 +81,7 @@ fn gui_persisted_config_runtime_owner_manual_disconnect_applies_pause_on_leave()
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
@@ -182,12 +182,12 @@ fn gui_persisted_config_runtime_owner_discards_attached_player_chat_without_a_se
     );
 
     let (next_owner, session_transport) = owner
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap after player-chat rejection");
     let mut owner = next_owner;
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let startup_protocol_lines = session_transport.drain_outbound_protocol_lines();
+    let startup_protocol_lines = session_transport.take_written_lines();
     assert_eq!(startup_protocol_lines.len(), 1);
     assert!(
         startup_protocol_lines
@@ -201,8 +201,7 @@ fn gui_persisted_config_runtime_owner_discards_attached_player_chat_without_a_se
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
     assert!(
-        without_default_ready_publish_lines(session_transport.drain_outbound_protocol_lines())
-            .is_empty(),
+        without_default_ready_publish_lines(session_transport.take_written_lines()).is_empty(),
         "rejected player chat must not be sent after the later session handshake"
     );
 }

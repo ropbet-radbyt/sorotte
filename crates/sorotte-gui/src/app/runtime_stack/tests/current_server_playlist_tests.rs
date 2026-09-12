@@ -1,11 +1,12 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 fn exchange(
     adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
     server: &mut sorotte_server::ServerRuntime,
 ) {
     for _ in 0..64 {
-        let lines = adapter.flush_outbound_protocol_lines().unwrap();
+        let lines = adapter.deliver_outbound_protocol_lines().unwrap();
         if lines.is_empty() {
             return;
         }

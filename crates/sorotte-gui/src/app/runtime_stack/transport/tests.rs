@@ -22,6 +22,73 @@ const TEST_TLS_CHAIN_PEM: &str = include_str!("../../../../../../fixtures/tls/te
 const TEST_TLS_PRIVATE_KEY_PEM: &str =
     include_str!("../../../../../../fixtures/tls/test_privkey.pem");
 
+impl GuiQueuedSessionTransportHandle {
+    /// Act as a writer for the one staged frame and independent liveness lane.
+    /// The owner must consume this receipt before another reliable frame stages.
+    pub(in crate::app) fn complete_outbound_protocol_write(&self) -> Vec<String> {
+        let mut written = Vec::new();
+        if let Some(frame) = self.take_outbound_protocol_delivery_for_driver() {
+            written.push(frame.line);
+            self.publish_outbound_protocol_delivery_result(
+                GuiOutboundProtocolDeliveryResult::FrameWritten { token: frame.token },
+            );
+        }
+        if let Some(line) = self.take_outbound_liveness_protocol_line_for_driver() {
+            written.push(line);
+        }
+        written
+    }
+}
+
+#[test]
+fn loopback_delivers_reliable_chat_and_coalesced_liveness_independently() {
+    let transport = GuiQueuedSessionTransportHandle::default();
+    let mut driver = GuiLoopbackSessionTransportDriver::new("alice");
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            41,
+            r#"{"Chat":"hello"}"#,
+        ))
+        .expect("chat should stage");
+    transport.push_outbound_liveness_protocol_line(r#"{"State":{"ping":{"clientRtt":0.1}}}"#);
+    let latest_liveness = r#"{"State":{"ping":{"clientRtt":0.2}}}"#;
+    transport.push_outbound_liveness_protocol_line(latest_liveness);
+    assert!(
+        transport
+            .drain_outbound_protocol_delivery_results()
+            .is_empty()
+    );
+
+    driver
+        .pump(&transport)
+        .expect("loopback should deliver both lanes");
+    let inbound: Vec<_> = transport
+        .drain_inbound_protocol_lines()
+        .into_iter()
+        .map(|frame| frame.line)
+        .collect();
+    assert_eq!(
+        inbound,
+        [
+            r#"{"Chat":{"username":"alice","message":"hello"}}"#,
+            latest_liveness
+        ],
+    );
+    assert_eq!(
+        transport.drain_outbound_protocol_delivery_results(),
+        [GuiOutboundProtocolDeliveryResult::FrameWritten { token: 41 }],
+    );
+    driver
+        .pump(&transport)
+        .expect("an idle loopback should pump");
+    assert!(transport.drain_inbound_protocol_lines().is_empty());
+    assert!(
+        transport
+            .drain_outbound_protocol_delivery_results()
+            .is_empty()
+    );
+}
+
 fn test_tls_client_config() -> Arc<ClientConfig> {
     GuiTcpSessionTransportDriver::ensure_rustls_crypto_provider();
     let mut cert_reader = io::BufReader::new(TEST_TLS_CERT_PEM.as_bytes());
@@ -451,7 +518,12 @@ fn tcp_session_transport_driver_falls_back_to_plaintext_when_server_declines_sta
     )
     .expect("plaintext TLS-fallback client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            1,
+            credential_hello_line(),
+        ))
+        .expect("Hello should stage");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let hello = loop {
@@ -521,7 +593,12 @@ fn tcp_session_transport_require_tls_rejects_refusal_without_sending_hello() {
     )
     .expect("required TLS client should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            1,
+            credential_hello_line(),
+        ))
+        .expect("Hello should stage");
     let deadline = Instant::now() + Duration::from_secs(2);
     let error = loop {
         if let Err(error) = driver.pump(&transport) {
@@ -641,7 +718,12 @@ fn tcp_session_transport_require_tls_rejects_substituted_message() {
     )
     .expect("required TLS client should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            1,
+            credential_hello_line(),
+        ))
+        .expect("Hello should stage");
     let deadline = Instant::now() + Duration::from_secs(2);
     let error = loop {
         if let Err(error) = driver.pump(&transport) {
@@ -701,7 +783,12 @@ fn tcp_session_transport_require_tls_rejects_truncated_response_without_sending_
     )
     .expect("required TLS client should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            1,
+            credential_hello_line(),
+        ))
+        .expect("Hello should stage");
     let deadline = Instant::now() + Duration::from_secs(2);
     let error = loop {
         if let Err(error) = driver.pump(&transport) {
@@ -768,7 +855,12 @@ fn tcp_session_transport_require_tls_rejects_invalid_certificate_without_sending
     )
     .expect("required TLS client should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([credential_hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(
+            1,
+            credential_hello_line(),
+        ))
+        .expect("Hello should stage");
     let deadline = Instant::now() + Duration::from_secs(3);
     let error = loop {
         if let Err(error) = driver.pump(&transport) {
@@ -865,7 +957,9 @@ fn tcp_session_transport_enforces_starttls_and_initial_hello_deadlines() {
         Duration::from_millis(25),
     );
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(1, hello_line()))
+        .expect("Hello should stage");
     let deadline = Instant::now() + Duration::from_secs(1);
     let error = loop {
         if let Err(error) = driver.pump(&transport) {
@@ -932,7 +1026,9 @@ fn tcp_session_transport_driver_upgrades_to_tls_before_sending_hello() {
     .expect("TLS upgrade client driver should connect")
     .with_tls_client_config(test_tls_client_config());
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(1, hello_line()))
+        .expect("Hello should stage");
 
     let deadline = Instant::now() + Duration::from_secs(2);
     let hello = loop {
@@ -1006,7 +1102,9 @@ fn threaded_tcp_session_transport_does_not_send_liveness_before_enabled() {
     )
     .expect("threaded TCP liveness gating client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(1, hello_line()))
+        .expect("Hello should stage");
     driver
         .pump(&transport)
         .expect("threaded TCP liveness gating driver should start");
@@ -1073,7 +1171,9 @@ fn threaded_tcp_session_transport_sends_liveness_without_gui_pump() {
     )
     .expect("threaded TCP liveness client driver should connect");
     let transport = GuiQueuedSessionTransportHandle::default();
-    transport.push_outbound_protocol_lines([hello_line()]);
+    transport
+        .try_push_outbound_protocol_delivery(GuiOutboundProtocolDelivery::new(1, hello_line()))
+        .expect("Hello should stage");
     driver
         .pump(&transport)
         .expect("threaded TCP liveness driver should start");

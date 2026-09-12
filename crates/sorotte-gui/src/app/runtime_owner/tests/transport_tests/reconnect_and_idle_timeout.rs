@@ -243,7 +243,7 @@ fn gui_runtime_owner_applies_queued_lines_before_transport_failure_advances_gene
     assert!(session_transport.drain_inbound_protocol_lines().is_empty());
     assert!(
         session_transport
-            .drain_outbound_protocol_lines()
+            .complete_outbound_protocol_write()
             .iter()
             .all(|line| !line.contains("\"State\"")),
         "State derived from the failed connection must not survive its generation reset"
@@ -411,7 +411,7 @@ impl GuiSessionTransportDriver for RecordingLivenessTransportDriver {
 #[test]
 fn gui_persisted_config_runtime_owner_clears_pending_disconnect_on_transport_cleanup() {
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state =

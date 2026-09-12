@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::ExternalPlayerAvailability;
@@ -243,13 +244,13 @@ fn session_causal_player_effect_cleanup_cancels_a_pending_playlist_fence() {
 #[test]
 fn client_core_session_bootstrap_preserves_username_and_room_in_the_hello() {
     let (mut owner, _) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core session runtime should bootstrap");
     let lines = owner
         .session
         .as_deref_mut()
         .expect("client-core runtime should be installed")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
     let hello = lines
         .iter()
@@ -1421,7 +1422,7 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
-            outbound.extend(self.transport.drain_outbound_protocol_lines());
+            outbound.extend(self.transport.complete_outbound_protocol_write());
             self.observed_outbound
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1456,12 +1457,12 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
     });
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let _ = transport.drain_outbound_protocol_lines();
+    let _ = transport.complete_outbound_protocol_write();
     let _ = owner
         .session
         .as_mut()
         .expect("loopback session should remain installed")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup participant status should be acknowledged before the ordering fixture");
     owner = owner.with_session_transport_driver(Box::new(RecordingTransportDriver {
         writes: preopen_writes.clone(),

@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::GuiUpdateRuntime;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
 use sorotte_player_api::{
@@ -121,7 +122,7 @@ fn offset_test_owner(
         ..Default::default()
     }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("real client-core GUI session should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(OffsetTimelinePlayer {
         state: player_state.clone(),
@@ -228,7 +229,7 @@ fn real_gui_positive_offset_normalizes_barrier_readiness_on_the_room_timeline() 
         .session
         .as_mut()
         .expect("GUI session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("GUI outbox should encode");
     let ready = outbound
         .into_iter()
@@ -697,7 +698,7 @@ fn gui_persisted_config_runtime_owner_preserves_deliberate_seek_after_recent_rew
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),

@@ -3,6 +3,7 @@ use crate::app::GuiMediaSourceProviderId;
 use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use sorotte_plex::{
@@ -820,7 +821,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
     let player_state =
         std::sync::Arc::new(std::sync::Mutex::new(DeferredMetadataPlayerState::default()));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         DeferredMetadataPlayerAdapter {
@@ -844,7 +845,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("initial outbound lines should flush");
 
     owner
@@ -883,7 +884,7 @@ fn gui_persisted_config_runtime_owner_does_not_publish_plex_logical_file_before_
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("outbound lines should flush");
     assert!(
         outbound_lines
@@ -1005,7 +1006,7 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
     };
     let state = SorotteGuiShellAppState::from_stored_settings(&stored_settings);
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PlexStreamTelemetryAdapter {
@@ -1024,7 +1025,7 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("initial outbound lines should flush");
 
     owner
@@ -1056,7 +1057,7 @@ fn gui_persisted_config_runtime_owner_retains_plex_identity_for_metadata_updates
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("outbound lines should flush");
     assert!(
         outbound_lines
@@ -1270,7 +1271,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         ..Default::default()
     }));
     let (mut owner, _session_transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
-        .with_client_core_chat_session_runtime("alice", "room1")
+        .with_recording_chat_session_runtime("alice", "room1")
         .expect("client-core chat runtime owner should bootstrap");
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TrackedPlexPlayer {
         state: player_state.clone(),
@@ -1288,7 +1289,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("initial outbound lines should flush");
 
     owner.playlist_resolution.generation = 1;
@@ -1326,7 +1327,7 @@ fn tracked_plex_load_publishes_logical_identity_and_remains_room_controllable() 
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("Plex publication should encode");
     assert!(
         published.iter().any(|line| line.contains("Episode 1.mkv")),

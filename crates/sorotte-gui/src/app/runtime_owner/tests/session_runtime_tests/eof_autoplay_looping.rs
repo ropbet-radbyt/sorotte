@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
@@ -332,7 +333,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
     let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let _ = session
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     session
         .apply_message_json(
@@ -386,7 +387,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         .session
         .as_mut()
         .expect("session should exist")
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("open protocol lines should encode");
     assert!(
         open_lines
@@ -623,7 +624,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let startup_lines = session
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
     session
@@ -784,7 +785,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
     let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let startup_lines = session
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
     session

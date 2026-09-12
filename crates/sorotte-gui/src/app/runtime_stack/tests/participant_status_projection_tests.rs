@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
@@ -10,7 +11,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core GUI adapter should bootstrap");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should flush");
     adapter
         .apply_message_json(
@@ -18,7 +19,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
         )
         .expect("participant-status-capable server Hello should apply");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("Hello transition should flush");
     let now_seconds = system_time_seconds();
 
@@ -31,7 +32,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
         .expect("attached player should become connecting")
     );
     let connecting = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("connecting report should flush");
     assert!(
         connecting
@@ -49,7 +50,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
         .expect("detached player should become unavailable")
     );
     let unavailable = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("unavailable report should flush");
     assert!(
         unavailable
@@ -71,7 +72,7 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
     assert_eq!(startup_lines.len(), 1);
     assert!(
@@ -195,7 +196,7 @@ fn compact_and_stale_exact_statuses_do_not_invent_scope_mismatches() {
         .expect("client-core GUI adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should flush");
     adapter
         .apply_message_json(
@@ -253,7 +254,7 @@ fn legacy_uncorrelated_wire_rows_never_project_precise_room_offsets() {
         .expect("client-core GUI adapter should bootstrap");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup Hello should flush");
     adapter
         .apply_message_json(

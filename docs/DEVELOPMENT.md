@@ -71,6 +71,15 @@ for hypothetical downstream Rust consumers. Syncplay protocol interoperability
 and settings import remain supported compatibility contracts and retain their
 behavioral tests.
 
+Outbound protocol messages remain session-owned until their exact completed-write
+receipt is acknowledged. Inspect `control().outbound_messages()` to observe
+pending, still-coalescible work. Use the pending-line lease and acknowledgement
+API, or `flush_queued_protocol_lines_to_transport`, to deliver it. GUI owner tests
+install deterministic transport drivers and capture completed writes; adapter
+tests use the staging and receipt API. A partial or failed write must retain the
+appropriate frame for retry, and selected-media effects wait for their causal
+playlist write receipts. Coalesced liveness is an independent transport lane.
+
 Sorotte INI field names and codecs are declared together in
 `sorotte-client-app/src/sorotte_ini/fields.rs`; parsing, updating and three-way
 merging use those bindings. Keep stored overrides, validated `ClientConfig`

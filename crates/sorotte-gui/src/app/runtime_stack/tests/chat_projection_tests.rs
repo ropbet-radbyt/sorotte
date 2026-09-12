@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
@@ -13,7 +14,7 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
     assert!(startup_lines[0].contains("\"Hello\""));
@@ -40,7 +41,7 @@ fn gui_client_core_chat_session_runtime_adapter_bridges_chat_protocol_and_notifi
         "chat-capable client-core adapter should queue outbound chat"
     );
     let outbound_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("queued outbound protocol lines should encode");
     assert_eq!(outbound_lines.len(), 1);
     assert!(outbound_lines[0].contains("\"Chat\""));
@@ -72,7 +73,7 @@ fn gui_session_treats_chat_disabled_as_active_after_hello() {
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let _ = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     adapter
         .apply_message_json(
@@ -113,7 +114,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_session_state_into_main
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -261,7 +262,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_user_changes_as_system_
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -320,7 +321,7 @@ fn gui_client_core_chat_session_runtime_adapter_searches_missing_media_from_sess
     let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
         .expect("client-core chat adapter should bootstrap");
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 

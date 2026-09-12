@@ -2520,7 +2520,7 @@ mod tests {
 
         let (mut owner, _session_transport) =
             GuiPersistedConfigRuntimeOwner::with_config_path(None)
-                .with_client_core_chat_session_runtime("alice", "room1")
+                .with_recording_chat_session_runtime("alice", "room1")
                 .expect("client-core chat runtime should bootstrap");
         owner.active_session_settings = Some(
             sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(

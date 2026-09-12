@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
@@ -14,7 +15,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -110,7 +111,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -228,7 +229,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
     .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -250,7 +251,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
     );
 
     let outbound_protocol_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("controller auth lines should encode");
     assert_eq!(outbound_protocol_lines.len(), 1);
     assert!(outbound_protocol_lines[0].contains("\"controllerAuth\""));
@@ -264,7 +265,7 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -330,7 +331,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
@@ -432,7 +433,7 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
-        .flush_outbound_protocol_lines()
+        .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
 
