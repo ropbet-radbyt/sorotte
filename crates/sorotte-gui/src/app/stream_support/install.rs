@@ -87,18 +87,16 @@ fn install_managed_stream_helper_from_sources(
         None,
         0.75,
     ));
+    let downloader_version = ManagedStreamHelperComponent::Downloader
+        .helper_tool()
+        .probe(&downloader, cancel)?;
+    let js_runtime_version = ManagedStreamHelperComponent::JsRuntime
+        .helper_tool()
+        .probe(&runtime, cancel)?;
     let metadata = ManagedStreamHelperMetadata {
         installed_at_unix_seconds: Some(current_unix_seconds()),
-        downloader_version: Some(
-            ManagedStreamHelperComponent::Downloader
-                .helper_tool()
-                .probe(&downloader, cancel)?,
-        ),
-        js_runtime_version: Some(
-            ManagedStreamHelperComponent::JsRuntime
-                .helper_tool()
-                .probe(&runtime, cancel)?,
-        ),
+        downloader_version: Some(downloader_version),
+        js_runtime_version: Some(js_runtime_version),
     };
     install.write_metadata(&metadata)?;
     install.commit(

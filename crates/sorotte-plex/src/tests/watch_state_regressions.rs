@@ -129,6 +129,37 @@ fn old_cache_without_file_identity_is_rejected_for_reconstruction() {
 }
 
 #[test]
+fn disabling_and_reenabling_sync_discards_the_previous_pending_progress() {
+    let file = movie_file();
+    let transport = FakeTransport::default();
+    select_fixture_movie(&transport, &file, "movie");
+    let mut engine = configured_engine(transport.clone());
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    engine.tick(Some(watch(file.clone(), 100.0)), now);
+    engine.tick(
+        Some(watch(file.clone(), 109.0)),
+        now + Duration::from_secs(9),
+    );
+    assert_eq!(transport.reports.borrow().len(), 1);
+
+    let enabled = engine.config().clone();
+    let mut disabled = enabled.clone();
+    disabled.enabled = false;
+    engine.set_config(disabled);
+    engine.tick(None, now + Duration::from_secs(10));
+    engine.set_config(enabled);
+    engine.tick(None, now + Duration::from_secs(11));
+    assert_eq!(transport.reports.borrow().len(), 1);
+    assert!(engine.status.current_item.is_none());
+
+    engine.tick(Some(watch(file, 3.0)), now + Duration::from_secs(12));
+    let reports = transport.reports.borrow();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[1].state, PlexTimelineState::Playing);
+    assert_eq!(reports[1].time_millis, 3_000);
+}
+
+#[test]
 fn stream_resolution_rechecks_replaced_local_file_even_when_old_metadata_still_exists() {
     struct Fixture(PathBuf);
     impl Drop for Fixture {

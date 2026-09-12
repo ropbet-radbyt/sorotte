@@ -2463,7 +2463,7 @@ def lexical_non_coverable_lines(
         if TYPE_BLOCK_START.match(stripped):
             # Item headers introduce compile-time structure. Runtime expressions
             # sharing the same line are intentionally not exempt.
-            if "{" not in stripped or not stripped.split("{", 1)[1].strip():
+            if "{" not in stripped or stripped.split("{", 1)[1].strip() in {"", "}"}:
                 result.add(number)
             if "{" not in stripped and ";" not in stripped:
                 in_signature = True

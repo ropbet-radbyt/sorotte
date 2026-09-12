@@ -539,6 +539,63 @@ fn executable_arguments_preserve_quotes_unicode_spaces_and_trailing_backslashes(
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn executable_environment_overrides_removals_and_working_directory_are_preserved() {
+    let root = FixtureRoot::new();
+    let executable = root.wrapper("environment probe", "environment");
+    let mut command = command(&executable, []);
+    command
+        .env_remove("pAtH")
+        .env("Sorotte_Fixture_Case", "first")
+        .env("SOROTTE_FIXTURE_CASE", "replacement")
+        .current_dir(&root.0);
+    let (output, _) = run_output(
+        "ffprobe",
+        command,
+        None,
+        Deadline::after(Duration::from_secs(5)),
+        PROBE_STDOUT_LIMIT,
+    )
+    .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("absent\0replacement\0{}\0", root.0.display())
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn invalid_launch_values_are_rejected_before_any_child_is_created() {
+    let root = FixtureRoot::new();
+    let executable = root.wrapper("must-not-start", "arguments");
+    for field in ["argument", "environment", "directory"] {
+        let mut command = command(&executable, []);
+        match field {
+            "argument" => {
+                command.arg("before\0after");
+            }
+            "environment" => {
+                command.env("SOROTTE_FIXTURE_INVALID", "before\0after");
+            }
+            "directory" => {
+                command.current_dir("before\0after");
+            }
+            _ => unreachable!(),
+        }
+        let mut created = false;
+        let result =
+            windows::OwnedTool::spawn_observed("ffprobe", &command, || Ok(()), |_| created = true);
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("invalid {field} launched a child"),
+        };
+        assert!(error.to_string().contains("NUL"), "{error}");
+        assert!(!created);
+    }
+}
+
 #[test]
 fn cancellation_after_probe_launch_prevents_audio_and_returns_no_fingerprint() {
     let root = FixtureRoot::new();

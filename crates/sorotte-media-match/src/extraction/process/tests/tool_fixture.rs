@@ -19,6 +19,13 @@ fn main() {
         for arg in std::env::args().skip(1) { print!("{arg}\0"); }
         return;
     }
+    if values[1] == "environment" {
+        for name in ["PATH", "SOROTTE_FIXTURE_CASE"] {
+            print!("{}\0", std::env::var(name).unwrap_or_else(|_| "absent".to_owned()));
+        }
+        print!("{}\0", std::env::current_dir().unwrap().display());
+        return;
+    }
     let status = Command::new(values[0])
         .args(["--exact", "extraction::process::tests::media_tool_process_fixture",
             "--ignored", "--nocapture", "--test-threads=1"])

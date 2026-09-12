@@ -233,11 +233,10 @@ pub fn stage_is_live(stage: &Path) -> Result<bool, String> {
         .map_err(|error| error.to_string())?
     {
         regular(&reservation, false)?;
-        if fs::metadata(&reservation)
+        let reservation_size = fs::metadata(&reservation)
             .map_err(|error| error.to_string())?
-            .len()
-            > 512
-        {
+            .len();
+        if reservation_size > 512 {
             return Err("Update handoff reservation is too large".to_owned());
         }
         let handoff: Handoff =
