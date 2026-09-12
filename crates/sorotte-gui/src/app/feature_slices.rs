@@ -666,6 +666,7 @@ mod tests {
             source: UpdateCandidateSource::ReleaseAsset,
         };
         let staged = StagedUpdate {
+            stage_lease: None,
             candidate: candidate.clone(),
             package_path: "package".to_owned(),
             source_dir: "source".to_owned(),
@@ -738,6 +739,7 @@ mod tests {
             source: UpdateCandidateSource::ReleaseAsset,
         };
         let staged = StagedUpdate {
+            stage_lease: None,
             candidate: candidate.clone(),
             package_path: format!("C:/updates/{marker}"),
             source_dir: format!("C:/source/{marker}"),

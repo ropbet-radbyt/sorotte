@@ -1,5 +1,8 @@
 mod app;
 
+#[doc(hidden)]
+pub mod update_stage;
+
 use sorotte_lifecycle_evidence::{
     Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
 };

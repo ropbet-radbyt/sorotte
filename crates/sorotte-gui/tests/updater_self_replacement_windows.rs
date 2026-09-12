@@ -114,7 +114,11 @@ fn running_installed_updater_can_replace_its_own_installed_path() {
         .expect("replacement GUI fixture should be readable");
     let new_updater = fs::read(PathBuf::from(system_root).join("System32/where.exe"))
         .expect("replacement updater fixture should be readable");
-    let package = root.join("update.zip");
+    let stage = root.join("updates").join("candidate");
+    fs::create_dir_all(&stage).unwrap();
+    let lease = sorotte_gui::update_stage::StageLease::create(&stage).unwrap();
+    let handoff = lease.begin_handoff().unwrap();
+    let package = stage.join("update.zip");
     write_package(&package, &new_gui, &new_updater);
     let package_sha256 = sha256(&fs::read(&package).expect("package should be readable"));
     let log = root.join("update.log");
@@ -123,9 +127,11 @@ fn running_installed_updater_can_replace_its_own_installed_path() {
     let target_arg = target.display().to_string();
     let log_arg = log.display().to_string();
 
-    let status = Command::new(target.join(UPDATER_EXE))
+    let mut bootstrap = Command::new(target.join(UPDATER_EXE))
         .env(ALLOW_ELEVATED_TEST_ENV, "1")
         .args([
+            "--stage-handoff",
+            &handoff,
             "--pid",
             &impossible_pid,
             "--package",
@@ -139,8 +145,15 @@ fn running_installed_updater_can_replace_its_own_installed_path() {
             "--log",
             &log_arg,
         ])
-        .status()
+        .spawn()
         .expect("the exact installed updater copy should launch");
+    lease
+        .wait_for_handoff(&handoff, &mut bootstrap)
+        .expect("detached helper must accept stage ownership before GUI exit");
+    let status = bootstrap
+        .wait()
+        .expect("bootstrap should finish its ownership handoff");
+    drop(lease);
     assert!(
         status.success(),
         "installed updater bootstrap should succeed"

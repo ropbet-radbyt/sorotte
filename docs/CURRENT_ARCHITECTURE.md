@@ -136,12 +136,22 @@ Plex retains credentials only within the canonical origin and bounds metadata by
 
 Update metadata, archives, and downloads have separate quotas; a protected stage remains owned until validated updater handoff.
 
+`update_stage::StageLease` holds a shared operating-system file lock from private-stage creation through every retained staged-result clone. Startup cleanup serializes with creation and lease acquisition, and only removes stages with no live owner. A durable, two-minute handoff reservation covers a GUI exit before the updater starts. The installed bootstrap and detached updater acquire their own leases; only the detached updater acknowledges ownership, and the GUI waits for that acknowledgement on its update worker. Live leases take precedence over reservation expiry. Replacement journals and rollback files remain under the installation's existing transaction ownership.
+
 - Owners: [crates/sorotte-gui/src/update_limits.rs](../crates/sorotte-gui/src/update_limits.rs), [crates/sorotte-gui/src/app/remote_services/download.rs](../crates/sorotte-gui/src/app/remote_services/download.rs).
 - Normative: [docs/HTTP_INGRESS_LIMITS.md](../docs/HTTP_INGRESS_LIMITS.md).
 - Proof: [quota_failure_cleans_only_its_stage_and_retains_install_and_rollback](../crates/sorotte-gui/src/app/remote_services/ingress_tests.rs); `cargo test --locked -p sorotte-gui --lib --features gui-semantic-smoke quota_failure_cleans_only_its_stage_and_retains_install_and_rollback`.
 - Environment: Windows updater replacement integration; Cross-platform ZIP and loopback unit fixtures.
 - Capability: **implemented**. Local evidence: Quota/staging and recovery tests passed. The actual local development GUI archive passed independent inventory, launch, updater success, and rollback verification.
 - Remaining proof: For a future release, bind a committed fixing candidate and hosted evidence. This continuation is local and uncommitted.
+
+### Managed helper execution and installation
+
+The GUI's `helper_tools` module shares the media extraction process runner's deadline, output limits, owned process group/job, and bounded pipe cleanup. yt-dlp, Deno, ffmpeg and ffprobe must emit their own version banners and exit successfully. Downloads stream into a private stage with a 512 MiB cap; extracted/imported executables have a 256 MiB cap. A per-installation lock serializes mutations. All selected executables are validated before replacement, and ordinary replacement failures restore binaries and metadata together. This rollback covers reported errors and cancellation; it is not a crash-recovery journal.
+
+Helper workers retain the requested storage root and cancellation flag. Stream probe completions also check player, session and playlist generations before resuming the selected entry through existing delivery fences. Media Matching tool status preserves current matching decisions and background status. Test fixtures use controlled executables for the four tool identities, failed exits, timeout and output flooding.
+
+Plex cached matches retain known file size and duration as identity evidence. Conflicting metadata invalidates a same-path match, while metadata arriving gradually enriches it. Identity-less caches rebuild. Timeline shutdown uses the latest observed progress, including observations suppressed by the periodic reporting interval or retained after a failed send.
 
 ### Trusted executable Lua leases (A13)
 
