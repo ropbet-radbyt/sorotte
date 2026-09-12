@@ -9,9 +9,12 @@ use super::{
 use crate::app::helper_tools::{ToolInstall, download_to_path, extract_executable};
 use std::{env, path::Path, sync::atomic::AtomicBool};
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[path = "install/tests.rs"]
 mod tests;
+#[cfg(all(test, not(windows)))]
+#[path = "install/unsupported_tests.rs"]
+mod unsupported_tests;
 
 pub(in crate::app) fn install_or_update_managed_stream_helper_with_progress(
     root: &Path,
