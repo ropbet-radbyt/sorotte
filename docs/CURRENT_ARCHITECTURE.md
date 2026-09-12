@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.14; landed base `70ae9d0079a791d96629d02e3ab783b7dcc3310e`; fixing commit **pending**; hosted evidence **pending**. The v0.2.14 candidate removes duplicate GUI playlist ownership and fixes fresh Loading reports during observed playback. Both failures have current-server and real-mpv regression coverage. Investigation of the reported direct Plex resume delay remains open. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
+Release 0.2.15; landed base `267291490915452f3b87d5a5a59d257f98c8836a`; fixing commit **pending**; hosted evidence **pending**. The v0.2.15 candidate removes stale compatibility APIs and duplicate player, GUI, settings and outbound delivery plumbing, and updates queued Rust and Python dependencies. Syncplay interoperability and settings import remain supported. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
 
 ## Authority flow
 

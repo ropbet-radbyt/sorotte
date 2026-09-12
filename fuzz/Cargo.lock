@@ -789,11 +789,11 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "reqwest"
-version = "0.13.4"
+version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-core",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-cli"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "rustls",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-app"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-client-core"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "getrandom 0.4.3",
  "md-5",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-core"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "thiserror",
 ]
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-lifecycle-evidence"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "serde",
  "serde_json",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-media-match"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "base64 0.23.1",
  "libc",
@@ -1235,14 +1235,14 @@ dependencies = [
 
 [[package]]
 name = "sorotte-player-api"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "sorotte-secret",
 ]
 
 [[package]]
 name = "sorotte-player-mpv"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-plex"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "reqwest",
  "rustls",
@@ -1273,7 +1273,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-protocol"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "serde",
  "serde_json",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "sorotte-secret"
-version = "0.2.14"
+version = "0.2.15"
 
 [[package]]
 name = "sqlite-wasm-rs"
