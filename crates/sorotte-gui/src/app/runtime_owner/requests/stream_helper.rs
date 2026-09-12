@@ -10,6 +10,10 @@ use crate::app::{
 };
 use std::sync::mpsc;
 
+#[cfg(test)]
+#[path = "stream_helper/flow_tests.rs"]
+mod flow_tests;
+
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::app::runtime_owner) struct StreamHelperProbeScope {
     root: Option<PathBuf>,
@@ -260,10 +264,25 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.clear_stream_helper_remediation_progress(handle, state);
-                    Self::push_runtime_error_notification(
+                    let error =
+                        "Stream helper worker stopped before reporting a result.".to_owned();
+                    self.stream_helper_probe_scope = None;
+                    self.stream_helper_runtime_snapshot.health = GuiStreamHelperHealth::Broken;
+                    self.stream_helper_runtime_snapshot.message = Some(error.clone());
+                    self.stream_helper_runtime_snapshot.retry_available =
+                        self.stream_helper_runtime_snapshot.target.is_some();
+                    Self::push_actions_and_project(
                         handle,
                         state,
-                        "Stream helper worker stopped before reporting a result.".to_owned(),
+                        vec![
+                            GuiShellAction::ApplyGuiStreamHelperRuntimeSnapshot(
+                                self.stream_helper_runtime_snapshot.clone(),
+                            ),
+                            GuiShellAction::PushTransientNotification {
+                                level: GuiTransientNotificationLevel::Error,
+                                message: error,
+                            },
+                        ],
                     );
                     return false;
                 }

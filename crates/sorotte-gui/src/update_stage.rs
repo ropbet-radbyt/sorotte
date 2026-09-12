@@ -259,6 +259,7 @@ mod tests {
         fs::create_dir(&stage).unwrap();
         let lease = StageLease::create(&stage).unwrap();
         let clone = lease.clone();
+        assert_eq!(lease, clone);
         lease.begin_handoff().unwrap();
         fs::write(stage.join(HANDOFF), br#"{"nonce":"1","expires":0}"#).unwrap();
         assert!(stage_is_live(&stage).unwrap());
@@ -266,6 +267,18 @@ mod tests {
         assert!(stage_is_live(&stage).unwrap());
         drop(clone);
         assert!(!stage_is_live(&stage).unwrap());
+    }
+
+    #[test]
+    fn malformed_and_oversized_reservations_fail_without_reclaiming_the_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        for bytes in [vec![b'x'; 513], b"not json".to_vec()] {
+            fs::write(stage.join(HANDOFF), bytes).unwrap();
+            assert!(stage_is_live(&stage).is_err());
+            assert!(stage.is_dir());
+        }
     }
 
     #[test]

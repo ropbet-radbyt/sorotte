@@ -1229,6 +1229,16 @@ fn download_and_stage_update_inner(
     let gui_config_root = gui_config_root.ok_or_else(|| {
         "Cannot stage update because the Sorotte GUI config root is unavailable.".to_owned()
     })?;
+    stage_update_in_root(candidate, gui_config_root, |stage_dir| {
+        stage_update_payload(candidate, stage_dir, cancelled)
+    })
+}
+
+fn stage_update_in_root(
+    candidate: &UpdateCandidate,
+    gui_config_root: &Path,
+    payload: impl FnOnce(&Path) -> Result<StagedUpdate, String>,
+) -> Result<StagedUpdate, String> {
     let updates_root = gui_config_root.join("updates");
     let catalog = crate::update_stage::catalog_lock(&updates_root)?;
     fs::create_dir_all(&updates_root)
@@ -1253,7 +1263,7 @@ fn download_and_stage_update_inner(
     let lease = crate::update_stage::StageLease::create(&stage_dir)?;
     drop(catalog);
     // Keep ownership from the first download byte through all staged-result clones and handoff.
-    match stage_update_payload(candidate, &stage_dir, cancelled) {
+    match payload(&stage_dir) {
         Ok(mut staged) => {
             staged.stage_lease = Some(lease);
             Ok(staged)
@@ -2273,10 +2283,9 @@ mod tests {
         assert!(error.contains("mismatch"));
     }
 
-    #[test]
-    fn update_helper_receives_original_package_and_authenticated_digest() {
+    fn staged_update_fixture() -> StagedUpdate {
         let digest = "a".repeat(64);
-        let staged = StagedUpdate {
+        StagedUpdate {
             stage_lease: None,
             candidate: UpdateCandidate {
                 channel: UpdateChannel::Stable,
@@ -2297,7 +2306,13 @@ mod tests {
             backup_dir: "C:/updates/mutable-backup".to_owned(),
             log_path: "C:/updates/update.log".to_owned(),
             restart: true,
-        };
+        }
+    }
+
+    #[test]
+    fn update_helper_receives_original_package_and_authenticated_digest() {
+        let staged = staged_update_fixture();
+        let digest = staged.candidate.sha256.clone();
 
         let args = staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123", None);
 
@@ -2311,6 +2326,56 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg == "--source-dir"));
         assert!(!args.iter().any(|arg| arg == "--backup-dir"));
+        let handoff_args =
+            staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123", Some("owned-nonce"));
+        assert!(
+            handoff_args
+                .windows(2)
+                .any(|pair| pair == ["--stage-handoff", "owned-nonce"])
+        );
+    }
+
+    #[test]
+    fn update_stage_is_owned_during_payload_and_all_retained_results_then_reclaimed() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = staged_update_fixture();
+        let staged = super::stage_update_in_root(&fixture.candidate, root.path(), |stage| {
+            assert!(crate::update_stage::stage_is_live(stage).unwrap());
+            cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+            assert!(stage.is_dir());
+            let mut result = fixture.clone();
+            result.source_dir = stage.display().to_string();
+            Ok(result)
+        })
+        .unwrap();
+        let clone = staged.clone();
+        assert_eq!(staged.stage_lease, clone.stage_lease);
+        let stage = PathBuf::from(&staged.source_dir);
+        drop(staged);
+        cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+        assert!(stage.is_dir());
+        drop(clone);
+        cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn failed_payload_drops_ownership_and_removes_only_its_partial_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = staged_update_fixture();
+        let unrelated = root.path().join("keep");
+        fs::write(&unrelated, b"retained").unwrap();
+        let mut partial = PathBuf::new();
+        let error = super::stage_update_in_root(&fixture.candidate, root.path(), |stage| {
+            partial = stage.to_path_buf();
+            assert!(crate::update_stage::stage_is_live(stage).unwrap());
+            fs::write(stage.join("partial.zip"), b"partial").unwrap();
+            Err("download failed".to_owned())
+        })
+        .unwrap_err();
+        assert!(error.contains("download failed"));
+        assert!(!partial.exists());
+        assert_eq!(fs::read(unrelated).unwrap(), b"retained");
     }
 
     #[cfg(windows)]

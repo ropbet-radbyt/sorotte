@@ -17,9 +17,11 @@ pub(in crate::app::stream_support) fn probe_stream_helper_component(
     environment: Option<PathBuf>,
     cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> StreamHelperComponentProbe {
-    let describe_effective_path = |path: PathBuf,
-                                   source: StreamHelperSource,
-                                   source_label: &'static str| {
+    let describe_effective_path = |path: PathBuf, source: StreamHelperSource| {
+        let source_label = match source {
+            StreamHelperSource::Managed => "Managed install",
+            StreamHelperSource::Environment => "PATH",
+        };
         match component.helper_tool().probe(&path, cancel) {
             Ok(version) => StreamHelperComponentProbe {
                 effective_path: Some(path.clone()),
@@ -44,11 +46,11 @@ pub(in crate::app::stream_support) fn probe_stream_helper_component(
     match attach_mode {
         StreamHelperAttachMode::ManagedPlayer => managed
             .map(|path| {
-                describe_effective_path(path, StreamHelperSource::Managed, "Managed install")
+                describe_effective_path(path, StreamHelperSource::Managed)
             })
             .or_else(|| {
                 environment.map(|path| {
-                    describe_effective_path(path, StreamHelperSource::Environment, "PATH")
+                    describe_effective_path(path, StreamHelperSource::Environment)
                 })
             })
             .unwrap_or_else(|| StreamHelperComponentProbe {
@@ -62,7 +64,7 @@ pub(in crate::app::stream_support) fn probe_stream_helper_component(
                 ),
             }),
         StreamHelperAttachMode::ExternalPlayer => environment
-            .map(|path| describe_effective_path(path, StreamHelperSource::Environment, "PATH"))
+            .map(|path| describe_effective_path(path, StreamHelperSource::Environment))
             .unwrap_or_else(|| {
                 if let Some(path) = managed {
                     return StreamHelperComponentProbe {

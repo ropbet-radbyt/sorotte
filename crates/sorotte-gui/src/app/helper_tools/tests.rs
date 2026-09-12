@@ -12,7 +12,7 @@ pub(in crate::app) fn tool_fixture(root: &Path, mode: &str) -> PathBuf {
     let compiled = COMPILED.get_or_init(|| {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("fixture.rs");
-        fs::write(&source, include_str!("tool_fixture.rs")).unwrap();
+        fs::write(&source, include_str!("tests/tool_fixture.rs")).unwrap();
         let mut command = std::process::Command::new("rustc");
         command
             .arg("--edition=2024")

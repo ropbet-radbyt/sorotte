@@ -9,10 +9,14 @@ use super::{
 use crate::app::helper_tools::{ToolInstall, download_to_path, extract_executable};
 use std::{env, path::Path, sync::atomic::AtomicBool};
 
+#[cfg(test)]
+#[path = "install/tests.rs"]
+mod tests;
+
 pub(in crate::app) fn install_or_update_managed_stream_helper_with_progress(
     root: &Path,
     cancel: Option<&AtomicBool>,
-    mut progress: impl FnMut(StreamHelperRemediationProgress),
+    progress: impl FnMut(StreamHelperRemediationProgress),
 ) -> Result<String, String> {
     if !cfg!(windows) {
         return Err(
@@ -20,6 +24,22 @@ pub(in crate::app) fn install_or_update_managed_stream_helper_with_progress(
                 .to_owned(),
         );
     }
+    install_managed_stream_helper_from_sources(
+        root,
+        YTDLP_WINDOWS_LATEST_URL,
+        &windows_deno_latest_url()?,
+        cancel,
+        progress,
+    )
+}
+
+fn install_managed_stream_helper_from_sources(
+    root: &Path,
+    downloader_url: &str,
+    runtime_url: &str,
+    cancel: Option<&AtomicBool>,
+    mut progress: impl FnMut(StreamHelperRemediationProgress),
+) -> Result<String, String> {
     let bin = managed_stream_helper_bin_dir(root);
     let install = ToolInstall::begin(&bin, cancel)?;
     let downloader = install.path(managed_downloader_file_name());
@@ -30,7 +50,7 @@ pub(in crate::app) fn install_or_update_managed_stream_helper_with_progress(
         0.1,
     ));
     download_to_path(
-        YTDLP_WINDOWS_LATEST_URL,
+        downloader_url,
         &downloader,
         STREAM_HELPER_DOWNLOAD_TIMEOUT,
         cancel,
@@ -49,7 +69,7 @@ pub(in crate::app) fn install_or_update_managed_stream_helper_with_progress(
         0.4,
     ));
     download_to_path(
-        &windows_deno_latest_url()?,
+        runtime_url,
         &archive,
         STREAM_HELPER_DOWNLOAD_TIMEOUT,
         cancel,

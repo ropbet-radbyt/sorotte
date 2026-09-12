@@ -82,7 +82,7 @@ impl FixtureRoot {
                 let build = FixtureRoot::new();
                 let source = build.marker("tool_fixture.rs");
                 let output = build.marker("tool_fixture.exe");
-                fs::write(&source, include_str!("tool_fixture.rs")).unwrap();
+                fs::write(&source, include_str!("tests/tool_fixture.rs")).unwrap();
                 let result = Command::new("rustc")
                     .arg("--edition=2024")
                     .arg(&source)
@@ -478,6 +478,31 @@ fn abrupt_owner_exit_after_creation_cannot_orphan_a_suspended_helper() {
         exited,
         "helper survived owner exit between creation and resume"
     );
+    assert!(!root.marker("never-resumed").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn cancellation_after_creation_cleans_the_job_before_resuming_the_helper() {
+    let root = FixtureRoot::new();
+    let cancelled = AtomicBool::new(false);
+    let mut identity = None;
+    // The observation hook runs before resume; cancel at that exact boundary.
+    let result = windows::OwnedTool::spawn_observed(
+        "ffprobe",
+        &root.command("silent", "never-resumed"),
+        || check_cancelled("ffprobe", Some(&cancelled)),
+        |pid| {
+            identity = Some((pid, process_birth(pid).unwrap()));
+            cancelled.store(true, Ordering::Release);
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(MediaFingerprintError::Cancelled { .. })
+    ));
+    let (pid, birth) = identity.unwrap();
+    assert!(!process_is_running(pid, birth));
     assert!(!root.marker("never-resumed").exists());
 }
 
