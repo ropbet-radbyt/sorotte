@@ -180,8 +180,8 @@ pub(crate) fn apply_stored_client_settings(
 }
 
 #[cfg(test)]
-mod configuration_composition_properties;
+mod configuration_composition_tests;
 #[cfg(test)]
-mod controlled_room_configuration_properties;
+mod controlled_room_configuration_tests;
 #[cfg(test)]
 mod tests;

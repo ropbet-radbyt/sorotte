@@ -19,7 +19,7 @@ use sorotte_client_app::app_boundary::{
     },
 };
 
-use super::configuration_composition_properties::config_values;
+use super::configuration_composition_tests::config_values;
 use super::tests::configured;
 
 const DEFAULT_CASES: u32 = 512;
