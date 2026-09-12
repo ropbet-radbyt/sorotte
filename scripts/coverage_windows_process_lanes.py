@@ -386,11 +386,8 @@ REQUIRED_TESTS = {
         "tests::ipc_process_fault_tests::external_mpv_partial_response_and_early_exit_fail_terminally_and_boundedly",
     ),
     "media-tool-process": (
-        "app::media_match_support::process_fault_tests::media_match_large_stdout_process_fixture",
-        "app::media_match_support::process_fault_tests::media_match_parked_process_fixture",
-        "app::media_match_support::process_fault_tests::process_fixture_requires_copied_image_and_exact_target",
-        "app::media_match_support::process_fault_tests::timed_out_version_probe_reaps_process_and_releases_executable",
-        "app::media_match_support::process_fault_tests::version_probe_drains_finite_output_larger_than_pipe_capacity",
+        "app::helper_tools::process_fault_tests::bounded_probe_rejects_flood_and_reaps_cancelled_tool",
+        "app::helper_tools::process_fault_tests::probes_validate_each_tool_and_preserve_exit_failure",
         "app::media_match_support::process_fault_tests::version_probe_preserves_nonzero_exit_status",
         "app::media_match_support::process_fault_tests::version_probe_rejects_unusable_success_output",
         "app::media_match_support::process_fault_tests::version_probe_selects_first_nonempty_line_and_accepts_unterminated_final_line",

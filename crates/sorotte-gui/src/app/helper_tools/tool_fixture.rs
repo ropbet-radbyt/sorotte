@@ -14,6 +14,10 @@ fn main() {
     tail.push_str(&String::from_utf8_lossy(&bytes));
     let mode = tail.rsplit("SOROTTE_FIXTURE:").next().unwrap().trim();
     match mode {
+        "probe-full" => println!("\nffprobe version 8.0\nconfiguration details"),
+        "probe-unterminated" => print!("ffprobe version 8.0-no-newline"),
+        "probe-fail" => { eprintln!("probe failure"); std::process::exit(23); }
+        "empty" => {},
         "yt-dlp" => println!("2026.09.01"),
         "deno" => println!("deno 2.5.0\nv8 14.0"),
         "ffmpeg" => println!("ffmpeg version 8.0"),

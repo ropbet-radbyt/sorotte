@@ -13,6 +13,8 @@ pub(super) use install::{ToolInstall, extract_executable};
 pub(super) use worker::HelperWorker;
 
 #[cfg(test)]
+mod process_fault_tests;
+#[cfg(test)]
 pub(in crate::app) mod tests;
 
 pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);

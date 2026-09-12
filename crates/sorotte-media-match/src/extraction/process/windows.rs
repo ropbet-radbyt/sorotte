@@ -2,32 +2,29 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
-use std::os::windows::process::CommandExt;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::os::windows::process::ExitStatusExt;
+use std::process::{Command, ExitStatus};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
-};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicAccountingInformation, JobObjectBasicProcessIdList,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    TerminateJobObject,
+    CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW, CREATE_SUSPENDED, GetProcessIoCounters,
-    IO_COUNTERS, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE, ResumeThread, THREAD_SUSPEND_RESUME,
-    WaitForSingleObject,
+    GetExitCodeProcess, GetProcessIoCounters, IO_COUNTERS, OpenProcess, PROCESS_SYNCHRONIZE,
+    ResumeThread, WaitForSingleObject,
 };
 
 use super::{MediaFingerprintError, MediaToolProcessIoMetrics, tool_error};
+
+mod launch;
 
 pub(super) struct Pipe {
     file: File,
@@ -78,7 +75,7 @@ impl Read for Pipe {
 }
 
 pub(super) struct OwnedTool {
-    child: Child,
+    process: OwnedHandle,
     job: OwnedHandle,
     finished: bool,
 }
@@ -89,72 +86,80 @@ impl OwnedTool {
         command: &mut Command,
         checkpoint: impl Fn() -> Result<(), MediaFingerprintError>,
     ) -> Result<(Self, Pipe, Pipe), MediaFingerprintError> {
+        Self::spawn_observed(tool, command, checkpoint, |_| {})
+    }
+
+    pub(super) fn spawn_observed(
+        tool: &'static str,
+        command: &Command,
+        checkpoint: impl Fn() -> Result<(), MediaFingerprintError>,
+        created: impl FnOnce(u32),
+    ) -> Result<(Self, Pipe, Pipe), MediaFingerprintError> {
         let job = create_job().map_err(|error| tool_error(tool, error))?;
-        command
-            .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | CREATE_SUSPENDED)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        checkpoint()?;
-        let child = command.spawn().map_err(|error| tool_error(tool, error))?;
+        let launch::Launched {
+            process,
+            thread,
+            id,
+            stdout,
+            stderr,
+        } = launch::spawn(command, &job, || checkpoint().map_err(io::Error::other)).map_err(
+            |error| {
+                checkpoint()
+                    .err()
+                    .unwrap_or_else(|| tool_error(tool, error))
+            },
+        )?;
+        // The kernel has attached the private job before returning the suspended
+        // process. Even abrupt owner exit here closes the job and kills the child.
+        created(id);
         let mut owned = Self {
-            child,
+            process,
             job,
             finished: false,
         };
         let setup = (|| {
-            // The initial thread is suspended: no descendant can escape the job
-            // between CreateProcess and AssignProcessToJobObject.
-            // SAFETY: both handles are live and held throughout this call.
-            if unsafe {
-                AssignProcessToJobObject(owned.job.as_raw_handle(), owned.child.as_raw_handle())
-            } == 0
-            {
-                return Err(tool_error(tool, io::Error::last_os_error()));
-            }
-            let initial_thread = suspended_initial_thread(owned.child.id())
-                .map_err(|error| tool_error(tool, error))?;
             checkpoint()?;
-            // SAFETY: the handle belongs to the suspended initial thread of our
-            // child; the job has already been attached before execution resumes.
-            if unsafe { ResumeThread(initial_thread.as_raw_handle()) } == u32::MAX {
+            // SAFETY: CreateProcessW returned the suspended primary thread;
+            // process creation already placed it in the private kill-on-close job.
+            if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
                 return Err(tool_error(tool, io::Error::last_os_error()));
             }
-            let stdout = owned
-                .child
-                .stdout
-                .take()
-                .ok_or_else(|| tool_error(tool, "missing stdout pipe"))?;
-            let stderr = owned
-                .child
-                .stderr
-                .take()
-                .ok_or_else(|| tool_error(tool, "missing stderr pipe"))?;
-            Ok((Pipe::new(stdout), Pipe::new(stderr)))
+            Ok(())
         })();
-        match setup {
-            Ok((stdout, stderr)) => Ok((owned, stdout, stderr)),
-            Err(error) => {
-                if let Err(cleanup) = owned.finish(super::CLEANUP_TIMEOUT) {
-                    return Err(tool_error(
-                        tool,
-                        format!("{error}; owned-process cleanup incomplete: {cleanup}"),
-                    ));
-                }
-                Err(error)
+        if let Err(error) = setup {
+            if let Err(cleanup) = owned.finish(super::CLEANUP_TIMEOUT) {
+                return Err(tool_error(
+                    tool,
+                    format!("{error}; owned-process cleanup incomplete: {cleanup}"),
+                ));
             }
+            return Err(error);
         }
+        Ok((owned, stdout, stderr))
     }
 
     pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        // SAFETY: the owned process handle has SYNCHRONIZE access and is live.
+        match unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } {
+            WAIT_TIMEOUT => Ok(None),
+            WAIT_OBJECT_0 => {
+                let mut code = 0;
+                // SAFETY: the process has exited and the output buffer is writable.
+                if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) } == 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(Some(ExitStatus::from_raw(code)))
+                }
+            }
+            _ => Err(io::Error::last_os_error()),
+        }
     }
 
     pub(super) fn io_counters(&self) -> MediaToolProcessIoMetrics {
         // SAFETY: IO_COUNTERS is a C POD structure whose all-zero state is valid.
         let mut counters: IO_COUNTERS = unsafe { zeroed() };
         // SAFETY: our process handle is live, and counters is a writable IO_COUNTERS.
-        if unsafe { GetProcessIoCounters(self.child.as_raw_handle(), &mut counters) } == 0 {
+        if unsafe { GetProcessIoCounters(self.process.as_raw_handle(), &mut counters) } == 0 {
             return MediaToolProcessIoMetrics::default();
         }
         MediaToolProcessIoMetrics {
@@ -170,15 +175,13 @@ impl OwnedTool {
         // then observe those exit signals as well as the empty job.
         let before = self.accounting();
         let process_handles = self.process_handles();
-        // Also kill the direct child if assignment failed during startup.
         // SAFETY: our job handle is live, private, and configured without breakaway.
         let job_result = unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) };
         let job_error = (job_result == 0).then(io::Error::last_os_error);
-        let _ = self.child.kill();
         let before = before?;
         let process_handles = process_handles?;
         loop {
-            let reaped = self.child.try_wait()?.is_some();
+            let reaped = self.try_wait()?.is_some();
             let accounting = self.accounting()?;
             let mut all_exited = true;
             for process in &process_handles {
@@ -291,8 +294,7 @@ impl Drop for OwnedTool {
             unsafe {
                 TerminateJobObject(self.job.as_raw_handle(), 1);
             }
-            let _ = self.child.kill();
-            let _ = self.child.try_wait();
+            let _ = self.try_wait();
         }
         // Closing the job is an additional kernel-owned kill-on-close guarantee.
     }
@@ -323,38 +325,4 @@ fn create_job() -> io::Result<OwnedHandle> {
     } else {
         Ok(job)
     }
-}
-
-fn suspended_initial_thread(process_id: u32) -> io::Result<OwnedHandle> {
-    // Stable std does not expose the child's primary thread handle. Enumerating
-    // while CREATE_SUSPENDED holds it gives exactly one thread for this process.
-    // SAFETY: snapshot creation has no pointer arguments.
-    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: CreateToolhelp32Snapshot returned a new owned snapshot handle.
-    let snapshot = unsafe { OwnedHandle::from_raw_handle(handle) };
-    // SAFETY: THREADENTRY32 is POD and its size field is initialized below.
-    let mut entry: THREADENTRY32 = unsafe { zeroed() };
-    entry.dwSize = size_of::<THREADENTRY32>() as u32;
-    // SAFETY: the snapshot is live and entry has the required size field.
-    let mut present = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } != 0;
-    while present {
-        if entry.th32OwnerProcessID == process_id {
-            // SAFETY: the snapshot identifies a thread in our suspended child.
-            let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-            if handle.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: OpenThread returned a new owned thread handle.
-            return Ok(unsafe { OwnedHandle::from_raw_handle(handle) });
-        }
-        // SAFETY: snapshot and writable entry remain valid for iteration.
-        present = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != 0;
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "suspended media tool thread not found",
-    ))
 }

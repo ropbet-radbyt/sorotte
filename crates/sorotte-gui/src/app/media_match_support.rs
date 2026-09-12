@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
@@ -8,7 +10,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
