@@ -33,9 +33,9 @@ fn sorotte_cli_package_consumes_app_boundary_state_and_persistence_surface() {
         host: Some("example.com".to_string()),
         ..state::StoredClientSettings::default()
     };
-    let config_plan = state::stored_client_settings_config_plan(
-        &settings,
-        &state::StoredClientSettingsEnvPresence::default(),
+    let snapshot = state::stored_client_settings_runtime_snapshot(&settings);
+    assert_eq!(
+        snapshot.config.connection.host.as_deref(),
+        Some("example.com")
     );
-    assert_eq!(config_plan.host.as_deref(), Some("example.com"));
 }

@@ -151,8 +151,7 @@ use self::session_runner::{
 #[cfg(test)]
 use self::startup_playlist::protocol_lines_for_startup_playlist_load_from_file;
 use self::stored_settings::{
-    apply_stored_client_settings_if_env_absent,
-    apply_stored_media_search_startup_file_fallback_if_missing,
+    apply_stored_client_settings, apply_stored_media_search_startup_file_fallback_if_missing,
     apply_stored_startup_player_defaults_if_arg_absent, clear_sorotte_cli_gui_state,
     clear_sorotte_cli_stored_settings, load_sorotte_cli_stored_settings,
     persist_sorotte_cli_language_setting, persist_sorotte_cli_per_player_arguments_setting,
@@ -270,7 +269,11 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
     if should_connect {
         let mut config = build_client_loop_config_from_env();
         if let Some(stored_settings) = stored_settings.as_ref() {
-            apply_stored_client_settings_if_env_absent(&mut config, stored_settings);
+            apply_stored_client_settings(
+                &mut config,
+                stored_settings,
+                crate::env_support::env_trimmed,
+            );
             apply_stored_startup_player_defaults_if_arg_absent(
                 &mut client_arg_overrides,
                 stored_settings,

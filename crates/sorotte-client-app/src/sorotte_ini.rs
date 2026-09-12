@@ -1,3 +1,4 @@
+mod fields;
 mod helpers;
 mod merge;
 mod parser;

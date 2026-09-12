@@ -27,6 +27,7 @@ sorotte-secret = { path = "../sorotte-secret" }
 webpki-roots.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 sorotte-player-api = { path = "../sorotte-player-api", features = ["test-support"] }
 sorotte-player-mpv = { path = "../sorotte-player-mpv", features = ["test-support"] }
 sorotte-server = { path = "../sorotte-server" }

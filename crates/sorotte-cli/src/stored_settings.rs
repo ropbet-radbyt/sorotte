@@ -16,10 +16,7 @@ use sorotte_client_app::app_boundary::{
         update_sorotte_ini_stored_client_settings_at_path as shared_update_sorotte_ini_stored_client_settings_at_path,
         upsert_sorotte_ini_stored_client_settings_at_path as shared_upsert_sorotte_ini_stored_client_settings_at_path,
     },
-    state::{
-        ClientConfig, StoredClientSettings, StoredClientSettingsEnvPresence,
-        stored_client_settings_config_plan,
-    },
+    state::{ClientConfig, StoredClientSettings},
 };
 use sorotte_player_mpv::{
     MpvAdapter, SorotteBridgeFailureKind, SorotteBridgeHealth, SyncplayUiSettings,
@@ -31,7 +28,6 @@ use crate::config_paths::{
     resolve_sorotte_cli_config_path, resolve_sorotte_cli_storage_root,
     sorotte_cli_gui_state_root_override,
 };
-use crate::env_support::{env_port, env_trimmed};
 
 mod config_apply;
 mod media_search;
@@ -41,7 +37,7 @@ mod ui_settings;
 
 use self::player_defaults::normalize_player_path_for_stored_per_player_arguments_lookup;
 
-pub(super) use self::config_apply::apply_stored_client_settings_if_env_absent;
+pub(super) use self::config_apply::apply_stored_client_settings;
 pub(super) use self::media_search::apply_stored_media_search_startup_file_fallback_if_missing;
 #[cfg(test)]
 pub(super) use self::media_search::resolve_startup_file_with_media_search_fallback;
