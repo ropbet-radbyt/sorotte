@@ -120,6 +120,7 @@ fn seed_cached_plex_versions(root: &std::path::Path, media_paths: &[std::path::P
                 title: "Same episode".to_owned(),
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(90_000),
+                file_identity: Default::default(),
             },
         );
     }

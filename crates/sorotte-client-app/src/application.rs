@@ -679,7 +679,7 @@ where
         if file.size_bytes.is_none() {
             file.size_bytes = session_file.size_bytes;
         }
-        let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
+        let mut event = PlexWatchEvent::new(file);
         if let Some(position_seconds) = session.local_position_seconds() {
             event = event.with_position_seconds(position_seconds);
         }

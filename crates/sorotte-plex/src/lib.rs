@@ -261,7 +261,6 @@ pub struct PlexWatchEvent {
     pub position_seconds: Option<f64>,
     pub duration_seconds: Option<f64>,
     pub paused: Option<bool>,
-    pub changed_at: SystemTime,
 }
 
 impl PlexWatchEvent {
@@ -272,7 +271,6 @@ impl PlexWatchEvent {
             position_seconds: None,
             duration_seconds,
             paused: None,
-            changed_at: SystemTime::now(),
         }
     }
 
@@ -288,11 +286,6 @@ impl PlexWatchEvent {
 
     pub fn with_paused(mut self, paused: bool) -> Self {
         self.paused = Some(paused);
-        self
-    }
-
-    pub fn with_changed_at(mut self, changed_at: SystemTime) -> Self {
-        self.changed_at = changed_at;
         self
     }
 }
@@ -577,15 +570,49 @@ pub struct PlexCachedMatch {
     pub title: String,
     pub media_type: PlexMediaType,
     pub duration_millis: Option<u64>,
+    // Required on disk: a cache without observed identity must be rebuilt.
+    pub file_identity: PlexFileIdentity,
 }
 
-impl From<PlexMatchedItem> for PlexCachedMatch {
-    fn from(value: PlexMatchedItem) -> Self {
+/// Known file metadata corroborates a locator; missing metadata is not a change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlexFileIdentity {
+    size_bytes: Option<u64>,
+    duration_millis: Option<u64>,
+}
+
+impl PlexFileIdentity {
+    fn from_file(file: &LocalFileUpdate) -> Self {
+        Self {
+            size_bytes: file.size_bytes,
+            duration_millis: file.duration_seconds.and_then(seconds_to_millis),
+        }
+    }
+
+    fn conflicts_with(&self, newer: &Self) -> bool {
+        self.size_bytes
+            .zip(newer.size_bytes)
+            .is_some_and(|(a, b)| a != b)
+            || self
+                .duration_millis
+                .zip(newer.duration_millis)
+                .is_some_and(|(a, b)| a != b)
+    }
+
+    fn enrich(&mut self, newer: &Self) {
+        self.size_bytes = newer.size_bytes.or(self.size_bytes);
+        self.duration_millis = newer.duration_millis.or(self.duration_millis);
+    }
+}
+
+impl PlexCachedMatch {
+    fn for_file(value: PlexMatchedItem, file: &LocalFileUpdate) -> Self {
         Self {
             rating_key: value.rating_key,
             title: value.title,
             media_type: value.media_type,
             duration_millis: value.duration_millis,
+            file_identity: PlexFileIdentity::from_file(file),
         }
     }
 }
@@ -607,6 +634,17 @@ pub struct PlexMatchCache {
 }
 
 impl PlexMatchCache {
+    fn match_for_file(&mut self, key: &str, file: &LocalFileUpdate) -> Option<PlexMatchedItem> {
+        let identity = PlexFileIdentity::from_file(file);
+        let cached = self.entries.get_mut(key)?;
+        if cached.file_identity.conflicts_with(&identity) {
+            self.entries.remove(key);
+            return None;
+        }
+        cached.file_identity.enrich(&identity);
+        Some(cached.clone().into())
+    }
+
     pub fn load_from_path(path: &Path) -> PlexResult<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -1603,11 +1641,16 @@ where
             || Path::new(target).is_absolute()
         {
             file = file.with_path(target.to_owned());
+            if let Ok(metadata) = fs::metadata(target)
+                && metadata.is_file()
+            {
+                file.size_bytes = Some(metadata.len());
+            }
         }
         let Some(file_key) = server_scoped_cache_key_for_file(&self.config, &file) else {
             return Ok(None);
         };
-        let cached_match = self.cache.entries.get(&file_key).cloned().map(Into::into);
+        let cached_match = self.cache.match_for_file(&file_key, &file);
         let matched_was_cached = cached_match.is_some();
         let mut matched_item = match cached_match {
             Some(item) => item,
@@ -1702,7 +1745,7 @@ where
         if cache_match_on_success {
             self.cache.entries.insert(
                 file_key,
-                PlexCachedMatch::from(stream_target.matched_item.clone()),
+                PlexCachedMatch::for_file(stream_target.matched_item.clone(), &file),
             );
         }
         Ok(Some(stream_target))
@@ -1826,6 +1869,8 @@ pub struct PlexSyncEngine<T> {
     cache: PlexMatchCache,
     status: PlexSyncStatus,
     current_file_key: Option<String>,
+    current_file_identity: PlexFileIdentity,
+    latest_report: Option<PlexTimelineReport>,
     last_report_signature: Option<ReportSignature>,
     unmatched_keys: BTreeMap<String, SystemTime>,
 }
@@ -1846,6 +1891,8 @@ where
             cache,
             status,
             current_file_key: None,
+            current_file_identity: PlexFileIdentity::default(),
+            latest_report: None,
             last_report_signature: None,
             unmatched_keys: BTreeMap::new(),
         }
@@ -1858,6 +1905,8 @@ where
     pub fn set_config(&mut self, config: PlexClientConfig) {
         if self.config != config {
             self.current_file_key = None;
+            self.current_file_identity = PlexFileIdentity::default();
+            self.latest_report = None;
             self.last_report_signature = None;
             self.unmatched_keys.clear();
             self.status = if config.enabled {
@@ -1917,12 +1966,18 @@ where
             return Ok(());
         };
 
-        if self.current_file_key.as_deref() != Some(file_key.as_str()) {
+        let identity = PlexFileIdentity::from_file(&event.file);
+        if self.current_file_key.as_deref() != Some(file_key.as_str())
+            || self.current_file_identity.conflicts_with(&identity)
+        {
             self.report_stop_if_needed(&server_url, &token, now)?;
             self.current_file_key = Some(file_key.clone());
+            self.current_file_identity = identity.clone();
+            self.unmatched_keys.remove(&file_key);
             self.last_report_signature = None;
             self.status.current_item = None;
         }
+        self.current_file_identity.enrich(&identity);
 
         let Some(item) = self.resolve_match(&server_url, &token, &event, &file_key, now)? else {
             self.status = PlexSyncStatus {
@@ -1935,6 +1990,7 @@ where
         };
 
         let report = timeline_report_for_event(&event, &item);
+        self.latest_report = Some(report.clone());
         let signature = ReportSignature::from_report(&report, now);
         if self.should_report(&signature) {
             self.transport
@@ -2005,23 +2061,19 @@ where
         token: &str,
         now: SystemTime,
     ) -> PlexResult<()> {
-        let Some(previous) = self.last_report_signature.as_ref() else {
+        let Some(previous) = self.latest_report.as_ref() else {
             self.current_file_key = None;
             self.status.current_item = None;
             return Ok(());
         };
-        if previous.state == PlexTimelineState::Stopped {
-            self.current_file_key = None;
-            self.status.current_item = None;
-            return Ok(());
-        }
         let report = PlexTimelineReport {
             rating_key: previous.rating_key.clone(),
             state: PlexTimelineState::Stopped,
-            time_millis: previous.position_millis,
+            time_millis: previous.time_millis,
             duration_millis: previous.duration_millis,
         };
         self.transport.report_timeline(server_url, token, &report)?;
+        self.latest_report = None;
         self.last_report_signature = Some(ReportSignature::from_report(&report, now));
         self.status = PlexSyncStatus {
             state: PlexSyncState::Syncing,
@@ -2039,7 +2091,6 @@ struct ReportSignature {
     rating_key: String,
     state: PlexTimelineState,
     position_millis: u64,
-    duration_millis: Option<u64>,
     reported_at: SystemTime,
 }
 
@@ -2049,7 +2100,6 @@ impl ReportSignature {
             rating_key: report.rating_key.clone(),
             state: report.state,
             position_millis: report.time_millis,
-            duration_millis: report.duration_millis,
             reported_at,
         }
     }
@@ -2122,8 +2172,8 @@ fn resolve_media_match_for_file<T>(
 where
     T: PlexSyncTransport,
 {
-    if let Some(cached) = cache.entries.get(file_key).cloned() {
-        return Ok(Some(cached.into()));
+    if let Some(cached) = cache.match_for_file(file_key, file) {
+        return Ok(Some(cached));
     }
     if media_match_retry_pending(unmatched_keys, file_key, now) {
         return Ok(None);
@@ -2131,9 +2181,10 @@ where
     let matched =
         search_media_match_for_file(transport, unmatched_keys, server, file, file_key, now)?;
     if let Some(item) = matched.as_ref() {
-        cache
-            .entries
-            .insert(file_key.to_owned(), PlexCachedMatch::from(item.clone()));
+        cache.entries.insert(
+            file_key.to_owned(),
+            PlexCachedMatch::for_file(item.clone(), file),
+        );
     }
     Ok(matched)
 }
@@ -2606,12 +2657,7 @@ pub fn cache_key_for_file(file: &LocalFileUpdate) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    let duration = file
-        .duration_seconds
-        .and_then(seconds_to_millis)
-        .map(|millis| millis.to_string())
-        .unwrap_or_else(|| "unknown".to_owned());
-    Some(format!("name:{name}:duration:{duration}"))
+    Some(format!("name:{name}"))
 }
 
 pub fn server_scoped_cache_key_for_file(
@@ -3623,6 +3669,7 @@ mod tests {
     use super::*;
 
     mod part_selection_adversarial;
+    mod watch_state_regressions;
 
     fn plex_cache_test_path(label: &str) -> PathBuf {
         let sequence = PLEX_CACHE_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -3643,6 +3690,7 @@ mod tests {
                     title: format!("Movie {rating_key}"),
                     media_type: PlexMediaType::Movie,
                     duration_millis: Some(90_000),
+                    file_identity: Default::default(),
                 },
             )]),
         }
@@ -3848,6 +3896,7 @@ mod tests {
         stream_urls: Rc<RefCell<Vec<String>>>,
         stream_tokens: Rc<RefCell<Vec<String>>>,
         reports: Rc<RefCell<Vec<PlexTimelineReport>>>,
+        failed_reports_remaining: Rc<RefCell<usize>>,
     }
 
     impl PlexSyncTransport for FakeTransport {
@@ -3877,6 +3926,11 @@ mod tests {
             _token: &str,
             report: &PlexTimelineReport,
         ) -> PlexResult<()> {
+            let mut failures = self.failed_reports_remaining.borrow_mut();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(PlexError::Http("timeline fixture unavailable".to_owned()));
+            }
             self.reports.borrow_mut().push(report.clone());
             Ok(())
         }
@@ -4044,6 +4098,7 @@ mod tests {
                     title: format!("Example {rating_key}"),
                     media_type: PlexMediaType::Movie,
                     duration_millis: Some(7_200_000),
+                    file_identity: Default::default(),
                 },
             )]),
         };
@@ -5660,8 +5715,7 @@ mod tests {
             ),
         )
         .with_position_seconds(1.0)
-        .with_paused(false)
-        .with_changed_at(now);
+        .with_paused(false);
 
         let status = engine.tick(Some(event), now);
 
@@ -5687,8 +5741,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
         let event = PlexWatchEvent::new(movie_file())
             .with_position_seconds(1.0)
-            .with_paused(false)
-            .with_changed_at(now);
+            .with_paused(false);
 
         engine.tick(Some(event.clone()), now);
         engine.tick(
@@ -5858,8 +5911,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
         let event = PlexWatchEvent::new(movie_file())
             .with_position_seconds(1.0)
-            .with_paused(false)
-            .with_changed_at(now);
+            .with_paused(false);
 
         engine.tick(Some(event.clone()), now);
         engine.tick(

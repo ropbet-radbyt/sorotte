@@ -366,6 +366,7 @@ fn seed_cached_plex_match_for_local_path(
             title: title.to_owned(),
             media_type: PlexMediaType::Episode,
             duration_millis: Some(90_000),
+            file_identity: Default::default(),
         },
     );
     cache
@@ -405,6 +406,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_shared_local
             title: "Episode 1".to_owned(),
             media_type: PlexMediaType::Episode,
             duration_millis: Some(90_000),
+            file_identity: Default::default(),
         },
     );
     cache
