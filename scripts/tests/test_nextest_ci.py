@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+import os
 import pathlib
 import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 from scripts.verification_tools import pins as verification_pins
 
@@ -216,6 +221,70 @@ class NextestConfigPolicyTests(unittest.TestCase):
             nextest_ci.NEXTEST_COMMAND[-2:],
             ("--flaky-result", "fail"),
         )
+
+
+class NextestArtifactLocationTests(unittest.TestCase):
+    def test_shared_cargo_targets_keep_fresh_evidence_in_the_workspace(self) -> None:
+        clean_junit = '<testsuites><testsuite><testcase name="passes" /></testsuite></testsuites>'
+        for absolute_target in (False, True):
+            for emits_report in (False, True):
+                with self.subTest(absolute=absolute_target, report=emits_report):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        root = pathlib.Path(temporary).resolve() / "workspace"
+                        config = root / ".config" / "nextest.toml"
+                        config.parent.mkdir(parents=True)
+                        config.write_text(VALID_CONFIG, encoding="utf-8")
+                        store = root / "target" / "nextest" / "ci"
+                        store.mkdir(parents=True)
+                        junit = store / "junit.xml"
+                        junit.write_text(clean_junit, encoding="utf-8")
+
+                        cargo_target = root.parent / "shared-builds"
+                        unrelated = cargo_target / "nextest" / "ci" / "junit.xml"
+                        unrelated.parent.mkdir(parents=True)
+                        unrelated.write_text("another workspace's evidence", encoding="utf-8")
+                        configured_target = (
+                            str(cargo_target) if absolute_target else "../shared-builds"
+                        )
+
+                        def run_nextest(*args, **kwargs):
+                            self.assertEqual(pathlib.Path(kwargs["cwd"]), root)
+                            self.assertFalse(
+                                junit.exists(), "remove stale evidence before the producer runs"
+                            )
+                            if emits_report:
+                                # Nextest's default store is workspace-relative,
+                                # independent of Cargo's build output directory.
+                                junit.write_text(clean_junit, encoding="utf-8")
+                            process = mock.Mock(stdout=io.StringIO(""))
+                            process.wait.return_value = 0
+                            return process
+
+                        with (
+                            mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": configured_target}),
+                            mock.patch.object(
+                                nextest_ci, "_check_version", return_value=("pinned nextest", [])
+                            ),
+                            mock.patch.object(
+                                nextest_ci.subprocess, "Popen", side_effect=run_nextest
+                            ),
+                            contextlib.redirect_stdout(io.StringIO()),
+                        ):
+                            result = nextest_ci.run_required_suite(root)
+
+                        self.assertEqual(result, 0 if emits_report else 1)
+                        report = json.loads(
+                            (store / "policy.json").read_text(encoding="utf-8")
+                        )
+                        self.assertEqual(report["outcome"], "passed" if emits_report else "failed")
+                        self.assertEqual(report["junit"]["testcases"], int(emits_report))
+                        if not emits_report:
+                            self.assertTrue(
+                                any("did not produce" in item for item in report["violations"])
+                            )
+                        self.assertEqual(
+                            unrelated.read_text(encoding="utf-8"), "another workspace's evidence"
+                        )
 
 
 class NextestJunitPolicyTests(unittest.TestCase):
