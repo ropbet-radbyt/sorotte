@@ -293,6 +293,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_snapshot_fills_each_missing_endpoint_part_independently() {
+        for (host, port, expected_host, expected_port) in [
+            (Some("explicit.example"), None, "explicit.example", 8123),
+            (None, Some(8995), "fallback.example", 8995),
+        ] {
+            let snapshot = stored_client_settings_runtime_snapshot(&StoredClientSettings {
+                host: host.map(str::to_owned),
+                port,
+                public_servers: Some(vec![(
+                    "Public".to_owned(),
+                    "fallback.example:8123".to_owned(),
+                )]),
+                ..StoredClientSettings::default()
+            });
+
+            assert_eq!(snapshot.settings.host.as_deref(), Some(expected_host));
+            assert_eq!(snapshot.settings.port, Some(expected_port));
+        }
+    }
+
+    #[test]
     fn stored_runtime_snapshot_filters_zero_port_public_server_before_fallback() {
         let settings = StoredClientSettings {
             public_servers: Some(vec![
