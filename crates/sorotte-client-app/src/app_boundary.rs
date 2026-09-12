@@ -161,10 +161,8 @@ pub mod state {
         StreamingRecoveryPolicy, SyncConfig, TlsPolicy, Username, resolve_client_config,
     };
     pub use crate::stored_config::{
-        StoredClientSettingsConfigPlan, StoredClientSettingsEnvPresence,
         StoredClientSettingsRuntimeSnapshot, normalize_controlled_room_input,
-        parse_host_and_optional_port_from_host_arg, stored_client_settings_config_plan,
-        stored_client_settings_runtime_snapshot,
+        parse_host_and_optional_port_from_host_arg, stored_client_settings_runtime_snapshot,
     };
     pub use crate::stored_settings::{
         AutoplayThresholdOverride, StoredClientSettings, autoplay_threshold_override_setting_value,
@@ -219,12 +217,6 @@ mod tests {
             Some("example.com")
         );
         assert_eq!(runtime_config.connection.port.get(), 8998);
-        let config_plan = state::stored_client_settings_config_plan(
-            &settings,
-            &state::StoredClientSettingsEnvPresence::default(),
-        );
-        assert_eq!(config_plan.host.as_deref(), Some("example.com"));
-        assert_eq!(config_plan.port, Some(8998));
 
         let parsed = persistence::parse_sorotte_ini_stored_client_settings(
             "[server_data]\nhost = syncplay.test\n",

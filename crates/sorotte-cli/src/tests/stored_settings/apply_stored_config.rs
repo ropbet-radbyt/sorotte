@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_preserves_env_precedence() {
+fn apply_stored_client_settings_preserves_env_precedence() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SOROTTE_CLIENT_HOST";
     let key_name = "SOROTTE_CLIENT_NAME";
@@ -39,7 +39,7 @@ fn apply_stored_client_settings_if_env_absent_preserves_env_precedence() {
     let original_show_osd_warnings = config.show_osd_warnings_override;
     let original_dont_slow_down_with_me = config.dont_slow_down_with_me_override;
     let original_rewind_threshold = config.rewind_threshold_seconds_override;
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             language: Some("de".to_owned()),
@@ -117,6 +117,7 @@ fn apply_stored_client_settings_if_env_absent_preserves_env_precedence() {
             show_contact_info: None,
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.host, original_host);
@@ -213,18 +214,19 @@ fn apply_stored_client_settings_if_env_absent_preserves_env_precedence() {
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_applies_server_password() {
+fn apply_stored_client_settings_applies_server_password() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_server_password = "SOROTTE_CLIENT_SERVER_PASSWORD";
     let prior_server_password = std::env::var_os(key_server_password);
     env.remove_var(key_server_password);
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             server_password: Some("stored-secret".into()),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(
@@ -242,18 +244,19 @@ fn apply_stored_client_settings_if_env_absent_applies_server_password() {
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_applies_ready_at_start() {
+fn apply_stored_client_settings_applies_ready_at_start() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_ready_at_start = "SOROTTE_CLIENT_READY_AT_START";
     let prior_ready_at_start = std::env::var_os(key_ready_at_start);
     env.remove_var(key_ready_at_start);
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             ready_at_start: Some(true),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.ready_at_start_override, Some(true));
@@ -265,18 +268,19 @@ fn apply_stored_client_settings_if_env_absent_applies_ready_at_start() {
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_applies_shared_playlist_enabled() {
+fn apply_stored_client_settings_applies_shared_playlist_enabled() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_shared_playlist_enabled = "SOROTTE_CLIENT_SHARED_PLAYLIST_ENABLED";
     let prior_shared_playlist_enabled = std::env::var_os(key_shared_playlist_enabled);
     env.remove_var(key_shared_playlist_enabled);
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             shared_playlist_enabled: Some(false),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.shared_playlists_enabled_override, Some(false));
@@ -288,13 +292,13 @@ fn apply_stored_client_settings_if_env_absent_applies_shared_playlist_enabled() 
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_uses_room_list_when_room_missing() {
+fn apply_stored_client_settings_uses_room_list_when_room_missing() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_room = "SOROTTE_CLIENT_ROOM";
     let prior_room = std::env::var_os(key_room);
     env.remove_var(key_room);
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             room: None,
@@ -305,6 +309,7 @@ fn apply_stored_client_settings_if_env_absent_uses_room_list_when_room_missing()
             ]),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.room, "+room:ABCDEF123456");
@@ -323,19 +328,20 @@ fn apply_stored_client_settings_if_env_absent_uses_room_list_when_room_missing()
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_prefers_room_over_room_list() {
+fn apply_stored_client_settings_prefers_room_over_room_list() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_room = "SOROTTE_CLIENT_ROOM";
     let prior_room = std::env::var_os(key_room);
     env.remove_var(key_room);
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             room: Some("stored-room".to_owned()),
             room_list: Some(vec!["fallback-room".to_owned()]),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.room, "stored-room");
@@ -347,7 +353,7 @@ fn apply_stored_client_settings_if_env_absent_prefers_room_over_room_list() {
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_uses_public_servers_when_host_missing() {
+fn apply_stored_client_settings_uses_public_servers_when_host_missing() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SOROTTE_CLIENT_HOST";
     let key_port = "SOROTTE_CLIENT_PORT";
@@ -357,7 +363,7 @@ fn apply_stored_client_settings_if_env_absent_uses_public_servers_when_host_miss
     env.remove_var(key_port);
 
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             host: None,
@@ -368,6 +374,7 @@ fn apply_stored_client_settings_if_env_absent_uses_public_servers_when_host_miss
             ]),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.host, "public.example");
@@ -384,7 +391,7 @@ fn apply_stored_client_settings_if_env_absent_uses_public_servers_when_host_miss
 }
 
 #[test]
-fn apply_stored_client_settings_if_env_absent_prefers_stored_host_over_public_servers() {
+fn apply_stored_client_settings_prefers_stored_host_over_public_servers() {
     let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
     let key_host = "SOROTTE_CLIENT_HOST";
     let key_port = "SOROTTE_CLIENT_PORT";
@@ -394,7 +401,7 @@ fn apply_stored_client_settings_if_env_absent_prefers_stored_host_over_public_se
     env.remove_var(key_port);
 
     let mut config = test_client_loop_config();
-    apply_stored_client_settings_if_env_absent(
+    apply_stored_client_settings(
         &mut config,
         &StoredClientSettings {
             host: Some("stored.example".to_owned()),
@@ -405,6 +412,7 @@ fn apply_stored_client_settings_if_env_absent_prefers_stored_host_over_public_se
             )]),
             ..StoredClientSettings::default()
         },
+        crate::env_support::env_trimmed,
     );
 
     assert_eq!(config.host, "stored.example");

@@ -760,6 +760,25 @@ pub(in crate::app) struct GuiDialogControl {
     pub(in crate::app) value: String,
 }
 
+impl GuiDialogControl {
+    pub(super) fn new(id: SettingId, kind: GuiDialogControlKind, value: impl Into<String>) -> Self {
+        Self {
+            id,
+            label: id.label(),
+            kind,
+            value: value.into(),
+        }
+    }
+
+    pub(super) fn checkbox(id: SettingId, value: bool) -> Self {
+        Self::new(
+            id,
+            GuiDialogControlKind::Checkbox,
+            super::super::support::bool_label(value),
+        )
+    }
+}
+
 impl std::fmt::Debug for GuiDialogControl {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = if self.kind == GuiDialogControlKind::PasswordInput {

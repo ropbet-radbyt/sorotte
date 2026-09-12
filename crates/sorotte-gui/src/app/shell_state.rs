@@ -17,7 +17,7 @@ use sorotte_secret::SecretValue;
 use super::GuiLaunchMode;
 use super::remote_services;
 use super::support::{
-    bool_label, optional_f64_text, optional_i64_text, optional_port_text, optional_room_text,
+    optional_f64_text, optional_i64_text, optional_port_text, optional_room_text,
     optional_string_list_multiline_text, optional_text, player_arguments_text_for_path,
 };
 use super::ui_state::GuiUpdateCheckState;

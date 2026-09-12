@@ -1,8 +1,8 @@
 //! Generated black-box contracts for persisted configuration composition.
 //!
 //! The oracle is the independently generated model below. The tests only use
-//! the public app boundary to render and parse `sorotte.ini`, normalize a
-//! runtime snapshot, and project environment-aware startup overrides.
+//! the public app boundary for persistence and runtime resolution, then apply
+//! the result to the actual CLI configuration with an injected environment.
 
 use proptest::{
     prelude::*,
@@ -13,12 +13,13 @@ use sorotte_client_app::app_boundary::{
         parse_sorotte_ini_stored_client_settings, upsert_sorotte_ini_stored_client_settings,
     },
     state::{
-        AutoplayThresholdOverride, StoredClientSettings, StoredClientSettingsConfigPlan,
-        StoredClientSettingsEnvPresence, stored_client_settings_config_plan,
-        stored_client_settings_runtime_snapshot,
+        AutoplayThresholdOverride, StoredClientSettings, stored_client_settings_runtime_snapshot,
     },
 };
 use sorotte_client_core::{PrivacyMode, UnpauseActionMode};
+
+use super::ClientLoopConfig;
+use super::tests::configured;
 
 const DEFAULT_CASES: u32 = 512;
 const MAX_CASES: u32 = 100_000;
@@ -126,48 +127,44 @@ impl OverrideField {
         Self::ALL[selector % FIELD_COUNT]
     }
 
-    fn mark_present(self, presence: &mut StoredClientSettingsEnvPresence) {
+    fn env_name(self) -> &'static str {
         match self {
-            Self::Host => presence.host = true,
-            Self::Port => presence.port = true,
-            Self::ServerPassword => presence.server_password = true,
-            Self::Username => presence.username = true,
-            Self::Room => presence.room = true,
-            Self::Autoplay => presence.autoplay = true,
-            Self::AutoplayRequireSameFilenames => {
-                presence.autoplay_require_same_filenames = true;
-            }
-            Self::ReadyAtStart => presence.ready_at_start = true,
-            Self::SharedPlaylist => presence.shared_playlist_enabled = true,
-            Self::PauseOnLeave => presence.pause_on_leave = true,
-            Self::LoopAtEndOfPlaylist => presence.loop_at_end_of_playlist = true,
-            Self::LoopSingleFiles => presence.loop_single_files = true,
-            Self::OnlySwitchToTrustedDomains => {
-                presence.only_switch_to_trusted_domains = true;
-            }
-            Self::TrustedDomains => presence.trusted_domains = true,
-            Self::RewindOnDesync => presence.rewind_on_desync = true,
-            Self::FastforwardOnDesync => presence.fastforward_on_desync = true,
-            Self::SlowOnDesync => presence.slow_on_desync = true,
-            Self::DontSlowDownWithMe => presence.dont_slow_down_with_me = true,
-            Self::RewindThreshold => presence.rewind_threshold_seconds = true,
-            Self::FastforwardThreshold => presence.fastforward_threshold_seconds = true,
-            Self::SlowdownThreshold => presence.slowdown_threshold_seconds = true,
-            Self::UnpauseAction => presence.unpause_action = true,
-            Self::AutoplayMinUsers => presence.autoplay_min_users = true,
-            Self::FilenamePrivacyMode => presence.filename_privacy_mode = true,
-            Self::FilesizePrivacyMode => presence.filesize_privacy_mode = true,
-            Self::ShowDurationNotification => presence.show_duration_notification = true,
-            Self::ShowSameRoomOsd => presence.show_same_room_osd = true,
-            Self::ShowOsdWarnings => presence.show_osd_warnings = true,
-            Self::ShowNoncontrollerOsd => presence.show_noncontroller_osd = true,
-            Self::ShowDifferentRoomOsd => presence.show_different_room_osd = true,
+            Self::Host => "SOROTTE_CLIENT_HOST",
+            Self::Port => "SOROTTE_CLIENT_PORT",
+            Self::ServerPassword => "SOROTTE_CLIENT_SERVER_PASSWORD",
+            Self::Username => "SOROTTE_CLIENT_USERNAME",
+            Self::Room => "SOROTTE_CLIENT_ROOM",
+            Self::Autoplay => "SOROTTE_CLIENT_AUTOPLAY",
+            Self::AutoplayRequireSameFilenames => "SOROTTE_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES",
+            Self::ReadyAtStart => "SOROTTE_CLIENT_READY_AT_START",
+            Self::SharedPlaylist => "SOROTTE_CLIENT_SHARED_PLAYLIST_ENABLED",
+            Self::PauseOnLeave => "SOROTTE_CLIENT_PAUSE_ON_LEAVE",
+            Self::LoopAtEndOfPlaylist => "SOROTTE_CLIENT_LOOP_AT_END_OF_PLAYLIST",
+            Self::LoopSingleFiles => "SOROTTE_CLIENT_LOOP_SINGLE_FILES",
+            Self::OnlySwitchToTrustedDomains => "SOROTTE_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS",
+            Self::TrustedDomains => "SOROTTE_CLIENT_TRUSTED_DOMAINS",
+            Self::RewindOnDesync => "SOROTTE_CLIENT_REWIND_ON_DESYNC",
+            Self::FastforwardOnDesync => "SOROTTE_CLIENT_FASTFORWARD_ON_DESYNC",
+            Self::SlowOnDesync => "SOROTTE_CLIENT_SLOW_ON_DESYNC",
+            Self::DontSlowDownWithMe => "SOROTTE_CLIENT_DONT_SLOW_DOWN_WITH_ME",
+            Self::RewindThreshold => "SOROTTE_CLIENT_REWIND_THRESHOLD_SECONDS",
+            Self::FastforwardThreshold => "SOROTTE_CLIENT_FASTFORWARD_THRESHOLD_SECONDS",
+            Self::SlowdownThreshold => "SOROTTE_CLIENT_SLOWDOWN_THRESHOLD_SECONDS",
+            Self::UnpauseAction => "SOROTTE_CLIENT_UNPAUSE_ACTION",
+            Self::AutoplayMinUsers => "SOROTTE_CLIENT_AUTOPLAY_MIN_USERS",
+            Self::FilenamePrivacyMode => "SOROTTE_CLIENT_FILENAME_PRIVACY_MODE",
+            Self::FilesizePrivacyMode => "SOROTTE_CLIENT_FILESIZE_PRIVACY_MODE",
+            Self::ShowDurationNotification => "SOROTTE_CLIENT_SHOW_DURATION_NOTIFICATION",
+            Self::ShowSameRoomOsd => "SOROTTE_CLIENT_SHOW_SAME_ROOM_OSD",
+            Self::ShowOsdWarnings => "SOROTTE_CLIENT_SHOW_OSD_WARNINGS",
+            Self::ShowNoncontrollerOsd => "SOROTTE_CLIENT_SHOW_NONCONTROLLER_OSD",
+            Self::ShowDifferentRoomOsd => "SOROTTE_CLIENT_SHOW_DIFFERENT_ROOM_OSD",
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-enum ProjectedValue {
+pub(super) enum ProjectedValue {
     Text(String),
     Port(u16),
     Bool(bool),
@@ -582,72 +579,87 @@ fn stored_values(settings: &StoredClientSettings) -> Vec<ProjectedValue> {
     ]
 }
 
-fn plan_values(plan: &StoredClientSettingsConfigPlan) -> Vec<Option<ProjectedValue>> {
+pub(super) fn config_values(config: &ClientLoopConfig) -> Vec<Option<ProjectedValue>> {
     vec![
-        plan.host.clone().map(ProjectedValue::Text),
-        plan.port.map(ProjectedValue::Port),
-        plan.server_password
+        Some(ProjectedValue::Text(config.host.clone())),
+        Some(ProjectedValue::Port(config.port)),
+        config
+            .server_password
             .as_ref()
             .map(|value| ProjectedValue::Text(value.expose_secret().to_owned())),
-        plan.username.clone().map(ProjectedValue::Text),
-        plan.room.clone().map(ProjectedValue::Text),
-        plan.autoplay_enabled.map(ProjectedValue::Bool),
-        plan.autoplay_require_same_filenames
+        Some(ProjectedValue::Text(config.username.clone())),
+        Some(ProjectedValue::Text(config.room.clone())),
+        Some(ProjectedValue::Bool(config.autoplay_enabled)),
+        Some(ProjectedValue::Bool(config.autoplay_require_same_filenames)),
+        config.ready_at_start_override.map(ProjectedValue::Bool),
+        config
+            .shared_playlists_enabled_override
             .map(ProjectedValue::Bool),
-        plan.ready_at_start_override.map(ProjectedValue::Bool),
-        plan.shared_playlists_enabled_override
+        config.pause_on_leave_override.map(ProjectedValue::Bool),
+        config
+            .loop_at_end_of_playlist_override
             .map(ProjectedValue::Bool),
-        plan.pause_on_leave_override.map(ProjectedValue::Bool),
-        plan.loop_at_end_of_playlist_override
+        config.loop_single_files_override.map(ProjectedValue::Bool),
+        config
+            .only_switch_to_trusted_domains_override
             .map(ProjectedValue::Bool),
-        plan.loop_single_files_override.map(ProjectedValue::Bool),
-        plan.only_switch_to_trusted_domains_override
-            .map(ProjectedValue::Bool),
-        plan.trusted_domains_override
+        config
+            .trusted_domains_override
             .clone()
             .map(ProjectedValue::TextList),
-        plan.rewind_on_desync_override.map(ProjectedValue::Bool),
-        plan.fastforward_on_desync_override
+        config.rewind_on_desync_override.map(ProjectedValue::Bool),
+        config
+            .fastforward_on_desync_override
             .map(ProjectedValue::Bool),
-        plan.slow_on_desync_override.map(ProjectedValue::Bool),
-        plan.dont_slow_down_with_me_override
+        config.slow_on_desync_override.map(ProjectedValue::Bool),
+        config
+            .dont_slow_down_with_me_override
             .map(ProjectedValue::Bool),
-        plan.rewind_threshold_seconds_override
+        config
+            .rewind_threshold_seconds_override
             .map(|value| ProjectedValue::Seconds(value.to_bits())),
-        plan.fastforward_threshold_seconds_override
+        config
+            .fastforward_threshold_seconds_override
             .map(|value| ProjectedValue::Seconds(value.to_bits())),
-        plan.slowdown_threshold_seconds_override
+        config
+            .slowdown_threshold_seconds_override
             .map(|value| ProjectedValue::Seconds(value.to_bits())),
-        plan.unpause_action_override
+        config
+            .unpause_action_override
             .as_ref()
             .map(|value| ProjectedValue::UnpauseAction(unpause_action_name(value))),
-        plan.auto_play_threshold_override
+        config
+            .auto_play_threshold_override
             .as_ref()
             .map(|value| ProjectedValue::AutoplayMinUsers(autoplay_min_users_name(value))),
-        plan.filename_privacy_mode
-            .map(|value| ProjectedValue::PrivacyMode(privacy_mode_name(value))),
-        plan.filesize_privacy_mode
-            .map(|value| ProjectedValue::PrivacyMode(privacy_mode_name(value))),
-        plan.show_duration_notification_override
+        Some(ProjectedValue::PrivacyMode(privacy_mode_name(
+            config.filename_privacy_mode,
+        ))),
+        Some(ProjectedValue::PrivacyMode(privacy_mode_name(
+            config.filesize_privacy_mode,
+        ))),
+        config
+            .show_duration_notification_override
             .map(ProjectedValue::Bool),
-        plan.show_same_room_osd_override.map(ProjectedValue::Bool),
-        plan.show_osd_warnings_override.map(ProjectedValue::Bool),
-        plan.show_noncontroller_osd_override
+        config.show_same_room_osd_override.map(ProjectedValue::Bool),
+        config.show_osd_warnings_override.map(ProjectedValue::Bool),
+        config
+            .show_noncontroller_osd_override
             .map(ProjectedValue::Bool),
-        plan.show_different_room_osd_override
+        config
+            .show_different_room_osd_override
             .map(ProjectedValue::Bool),
     ]
 }
 
-fn render_parse_and_plan(
+fn render_parse_and_apply(
     model: &GeneratedConfig,
     existing: &str,
-    env_presence: &StoredClientSettingsEnvPresence,
-) -> (String, StoredClientSettings, StoredClientSettingsConfigPlan) {
+) -> (String, StoredClientSettings, ClientLoopConfig) {
     let rendered = upsert_sorotte_ini_stored_client_settings(existing, &model.to_stored());
     let parsed = parse_sorotte_ini_stored_client_settings(&rendered);
-    let plan = stored_client_settings_config_plan(&parsed, env_presence);
-    (rendered, parsed, plan)
+    let config = configured(&parsed, &[]);
+    (rendered, parsed, config)
 }
 
 fn unknown_fixture(words: [u64; 2]) -> (String, Vec<String>) {
@@ -697,6 +709,25 @@ proptest! {
     #![proptest_config(configured_proptest())]
 
     #[test]
+    fn absent_saved_values_and_present_environment_preserve_existing_cli_values(
+        model_words in any::<[u64; 8]>(),
+    ) {
+        let model = GeneratedConfig::from_words(model_words);
+        let initial = configured(&model.to_stored(), &[]);
+        let expected = config_values(&initial);
+        let mut config = initial.clone();
+        super::apply_stored_client_settings(&mut config, &StoredClientSettings::default(), |_| None);
+        prop_assert_eq!(config_values(&config), expected.clone());
+
+        let mut changed = model.clone();
+        for field in OverrideField::ALL {
+            changed.mutate(field);
+        }
+        super::apply_stored_client_settings(&mut config, &changed.to_stored(), |_| Some("1".into()));
+        prop_assert_eq!(config_values(&config), expected);
+    }
+
+    #[test]
     fn supported_fields_roundtrip_project_and_remain_idempotent(
         model_words in any::<[u64; 8]>(),
         fixture_words in any::<[u64; 2]>(),
@@ -704,10 +735,9 @@ proptest! {
         let model = GeneratedConfig::from_words(model_words);
         let expected = model.values();
         let (fixture, sentinels) = unknown_fixture(fixture_words);
-        let (rendered, parsed, plan) = render_parse_and_plan(
+        let (rendered, parsed, config) = render_parse_and_apply(
             &model,
             &fixture,
-            &StoredClientSettingsEnvPresence::default(),
         );
 
         prop_assert_eq!(stored_values(&parsed), expected.clone());
@@ -718,7 +748,7 @@ proptest! {
             snapshot.validation_issues,
         );
         prop_assert_eq!(
-            plan_values(&plan),
+            config_values(&config),
             expected.into_iter().map(Some).collect::<Vec<_>>(),
         );
         prop_assert_eq!(snapshot.controlled_room_password_override, None);
@@ -744,20 +774,18 @@ proptest! {
         let mut changed = original.clone();
         changed.mutate(field);
 
-        let (_, original_parsed, original_plan) = render_parse_and_plan(
+        let (_, original_parsed, original_config) = render_parse_and_apply(
             &original,
             "",
-            &StoredClientSettingsEnvPresence::default(),
         );
-        let (_, changed_parsed, changed_plan) = render_parse_and_plan(
+        let (_, changed_parsed, changed_config) = render_parse_and_apply(
             &changed,
             "",
-            &StoredClientSettingsEnvPresence::default(),
         );
         let original_stored = stored_values(&original_parsed);
         let changed_stored = stored_values(&changed_parsed);
-        let original_projection = plan_values(&original_plan);
-        let changed_projection = plan_values(&changed_plan);
+        let original_projection = config_values(&original_config);
+        let changed_projection = config_values(&changed_config);
 
         for index in 0..FIELD_COUNT {
             if index == field as usize {
@@ -801,16 +829,11 @@ proptest! {
         let model = GeneratedConfig::from_words(model_words);
         let rendered = upsert_sorotte_ini_stored_client_settings("", &model.to_stored());
         let parsed = parse_sorotte_ini_stored_client_settings(&rendered);
-        let baseline = stored_client_settings_config_plan(
-            &parsed,
-            &StoredClientSettingsEnvPresence::default(),
-        );
-        let mut presence = StoredClientSettingsEnvPresence::default();
-        field.mark_present(&mut presence);
-        let suppressed =
-            stored_client_settings_config_plan(&parsed, &presence);
-        let baseline_values = plan_values(&baseline);
-        let suppressed_values = plan_values(&suppressed);
+        let baseline = configured(&parsed, &[]);
+        let suppressed = configured(&parsed, &[field.env_name()]);
+        let initial_values = config_values(&crate::tests::test_client_loop_config());
+        let baseline_values = config_values(&baseline);
+        let suppressed_values = config_values(&suppressed);
 
         for index in 0..FIELD_COUNT {
             if index == field as usize {
@@ -820,8 +843,8 @@ proptest! {
                 );
                 prop_assert_eq!(
                     &suppressed_values[index],
-                    &None,
-                    "environment presence did not suppress {:?}",
+                    &initial_values[index],
+                    "environment presence did not preserve the initial CLI value for {:?}",
                     field,
                 );
             } else {

@@ -6,7 +6,7 @@ global_inputs = [".gitattributes", "Cargo.toml", "Cargo.lock", "rust-toolchain.t
 # that package's shards. These additional edges declare cross-package contracts.
 [[dependency]]
 paths = ["crates/sorotte-secret/**"]
-shards = ["privacy-secret", "client-runtime-config", "settings-duplicate-keys", "plex-http-origin", "server-auth"]
+shards = ["privacy-secret", "client-runtime-config", "cli-stored-config", "settings-duplicate-keys", "plex-http-origin", "server-auth"]
 
 [[dependency]]
 paths = ["crates/sorotte-protocol/**", "fixtures/**"]
@@ -14,11 +14,15 @@ shards = ["protocol-codec", "client-ping", "client-inbound-order", "cli-framing"
 
 [[dependency]]
 paths = ["crates/sorotte-client-core/**", "crates/sorotte-core/**"]
-shards = ["client-reconnect-state", "client-ping", "client-runtime-config", "client-inbound-order", "client-playlist-shuffle", "client-local-seek-echo"]
+shards = ["client-reconnect-state", "client-ping", "client-runtime-config", "cli-stored-config", "client-inbound-order", "client-playlist-shuffle", "client-local-seek-echo"]
+
+[[dependency]]
+paths = ["crates/sorotte-client-app/**"]
+shards = ["cli-stored-config"]
 
 [[dependency]]
 paths = ["crates/sorotte-client-app/src/sorotte_ini/**", "crates/sorotte-client-app/src/sorotte_ini.rs", "crates/sorotte-gui/src/app/runtime_owner/requests/**", "crates/sorotte-cli/src/stored_settings*"]
-shards = ["settings-duplicate-keys", "client-runtime-config"]
+shards = ["settings-duplicate-keys", "client-runtime-config", "cli-stored-config"]
 
 [[dependency]]
 paths = ["crates/sorotte-server/src/network/**", "crates/sorotte-server/src/network.rs", "crates/sorotte-server/src/backpressure.rs", "crates/sorotte-server/src/frame_limits.rs"]

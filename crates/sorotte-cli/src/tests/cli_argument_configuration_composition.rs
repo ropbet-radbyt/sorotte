@@ -846,9 +846,10 @@ fn generated_cli_configuration_composition_matches_independent_precedence_oracle
     for case in &cases {
         install_generated_environment(&env, &case.environment);
         let mut production = build_client_loop_config_from_env();
-        apply_stored_client_settings_if_env_absent(
+        apply_stored_client_settings(
             &mut production,
             &case.stored.as_production_settings(),
+            crate::env_support::env_trimmed,
         );
 
         let arguments = case.arguments();

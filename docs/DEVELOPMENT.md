@@ -71,6 +71,14 @@ for hypothetical downstream Rust consumers. Syncplay protocol interoperability
 and settings import remain supported compatibility contracts and retain their
 behavioral tests.
 
+Sorotte INI field names and codecs are declared together in
+`sorotte-client-app/src/sorotte_ini/fields.rs`; parsing, updating and three-way
+merging use those bindings. Keep stored overrides, validated `ClientConfig`
+values and unsaved GUI text distinct. The CLI applies the runtime snapshot
+directly, with environment precedence owned by `stored_settings/config_apply.rs`.
+Its generated composition and controlled-room properties live beside that code;
+the `cli-stored-config` mutation shard follows the same application boundary.
+
 Player observations use one acknowledged `PlayerEventBatch` stream. Attachment
 epochs, media generations, load attempts, event sequences and observation clocks
 have separate meanings. A snapshot replaces the complete retained projection;

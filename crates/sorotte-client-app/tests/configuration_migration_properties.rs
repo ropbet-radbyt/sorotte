@@ -1,7 +1,7 @@
 //! Generated black-box contracts for migrating legacy `sorotte.ini` inputs.
 //!
 //! These tests deliberately start from legacy spellings and container formats
-//! rather than the canonical DTOs exercised by `configuration_composition_properties`.
+//! rather than the canonical DTOs exercised by `configuration_composition_tests`.
 //! The public app boundary must parse them, preserve their meaning through an
 //! in-place update, and produce an idempotent canonical rewrite.
 

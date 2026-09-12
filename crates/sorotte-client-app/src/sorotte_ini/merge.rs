@@ -3,25 +3,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::stored_settings::StoredClientSettings;
 
 use super::{
-    helpers::{ini_section_name, remove_ini_value, unescape_sorotte_ini_value, upsert_ini_value},
-    writer::upsert_sorotte_ini_stored_client_settings,
+    fields::INI_FIELDS,
+    helpers::{
+        escape_sorotte_ini_value, remove_ini_value, unescape_sorotte_ini_value, upsert_ini_value,
+    },
 };
 
-fn recognized_values(settings: &StoredClientSettings) -> BTreeMap<(String, String), String> {
-    let rendered = upsert_sorotte_ini_stored_client_settings("", settings);
-    let mut section = String::new();
-    let mut values = BTreeMap::new();
-    for line in rendered.lines() {
-        if let Some(name) = ini_section_name(line.trim()) {
-            section = name.to_owned();
-        } else if let Some((key, value)) = line.split_once('=') {
-            values.insert(
-                (section.clone(), key.trim().to_owned()),
-                unescape_sorotte_ini_value(value.trim()),
-            );
-        }
-    }
-    values
+fn recognized_values(
+    settings: &StoredClientSettings,
+) -> BTreeMap<(&'static str, &'static str), String> {
+    INI_FIELDS
+        .iter()
+        .filter_map(|field| {
+            let value = (field.write)(settings)?;
+            // Match the INI read boundary: ordinary outer spaces are trimmed,
+            // while escaped control characters remain part of the value.
+            let value = unescape_sorotte_ini_value(escape_sorotte_ini_value(&value).trim());
+            Some(((field.section, field.key), value))
+        })
+        .collect()
 }
 
 /// Apply only intended changes. A field that is unchanged from the caller's
@@ -41,15 +41,15 @@ pub(super) fn merge_settings_contents(
         .collect();
     let keys: BTreeSet<_> = before.keys().chain(after.keys()).collect();
     let mut changed = false;
-    for (section, key) in keys {
-        if before.get(&(section.clone(), key.clone())) == after.get(&(section.clone(), key.clone()))
-        {
+    for key in keys {
+        if before.get(key) == after.get(key) {
             continue;
         }
         changed = true;
-        match after.get(&(section.clone(), key.clone())) {
-            Some(value) => upsert_ini_value(&mut lines, section, key, value),
-            None => remove_ini_value(&mut lines, section, key),
+        let (section, name) = key;
+        match after.get(key) {
+            Some(value) => upsert_ini_value(&mut lines, section, name, value),
+            None => remove_ini_value(&mut lines, section, name),
         }
     }
     if !changed {

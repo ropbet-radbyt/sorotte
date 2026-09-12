@@ -433,96 +433,47 @@ impl FirstRunConfigurationDialogDraft {
     }
 
     fn apply_bool_value_to_settings(&mut self, id: SettingId, value: bool) {
-        match id {
-            SettingId::PlaybackReadyAtStart => {
-                self.settings.ready_at_start = Some(value);
-            }
-            SettingId::PlaybackAutoplay => {
-                self.settings.autoplay_initial_state = Some(value);
-            }
+        let field = match id {
+            SettingId::PlaybackReadyAtStart => &mut self.settings.ready_at_start,
+            SettingId::PlaybackAutoplay => &mut self.settings.autoplay_initial_state,
             SettingId::PlaybackRequireSameFilenames => {
-                self.settings.autoplay_require_same_filenames = Some(value);
+                &mut self.settings.autoplay_require_same_filenames
             }
-            SettingId::PlaybackSharedPlaylists => {
-                self.settings.shared_playlist_enabled = Some(value);
-            }
-            SettingId::PlaybackPauseOnLeave => {
-                self.settings.pause_on_leave = Some(value);
-            }
-            SettingId::PlaybackLoopPlaylist => {
-                self.settings.loop_at_end_of_playlist = Some(value);
-            }
-            SettingId::PlaybackLoopSingleFiles => {
-                self.settings.loop_single_files = Some(value);
-            }
+            SettingId::PlaybackSharedPlaylists => &mut self.settings.shared_playlist_enabled,
+            SettingId::PlaybackPauseOnLeave => &mut self.settings.pause_on_leave,
+            SettingId::PlaybackLoopPlaylist => &mut self.settings.loop_at_end_of_playlist,
+            SettingId::PlaybackLoopSingleFiles => &mut self.settings.loop_single_files,
             SettingId::PrivacyTrustedDomainsOnly => {
-                self.settings.only_switch_to_trusted_domains = Some(value);
+                &mut self.settings.only_switch_to_trusted_domains
             }
-            SettingId::SyncRewindOnDesync => {
-                self.settings.rewind_on_desync = Some(value);
-            }
-            SettingId::SyncFastforwardOnDesync => {
-                self.settings.fastforward_on_desync = Some(value);
-            }
-            SettingId::SyncSlowOnDesync => {
-                self.settings.slow_on_desync = Some(value);
-            }
-            SettingId::SyncDontSlowDownWithMe => {
-                self.settings.dont_slow_down_with_me = Some(value);
-            }
-            SettingId::StreamingDiskCache => {
-                self.settings.streaming_disk_cache_enabled = Some(value);
-            }
+            SettingId::SyncRewindOnDesync => &mut self.settings.rewind_on_desync,
+            SettingId::SyncFastforwardOnDesync => &mut self.settings.fastforward_on_desync,
+            SettingId::SyncSlowOnDesync => &mut self.settings.slow_on_desync,
+            SettingId::SyncDontSlowDownWithMe => &mut self.settings.dont_slow_down_with_me,
+            SettingId::StreamingDiskCache => &mut self.settings.streaming_disk_cache_enabled,
             SettingId::StreamingQualityDowngradeSuggestions => {
-                self.settings.streaming_quality_downgrade_suggestions = Some(value);
+                &mut self.settings.streaming_quality_downgrade_suggestions
             }
-            SettingId::ChatInputEnabled => {
-                self.settings.chat_input_enabled = Some(value);
-            }
-            SettingId::ChatOutputEnabled => {
-                self.settings.chat_output_enabled = Some(value);
-            }
-            SettingId::ChatDirectInput => {
-                self.settings.chat_direct_input = Some(value);
-            }
-            SettingId::ChatMoveOsd => {
-                self.settings.chat_move_osd = Some(value);
-            }
-            SettingId::OsdShow => {
-                self.settings.show_osd = Some(value);
-            }
-            SettingId::OsdShowDuration => {
-                self.settings.show_duration_notification = Some(value);
-            }
-            SettingId::OsdShowSameRoom => {
-                self.settings.show_same_room_osd = Some(value);
-            }
-            SettingId::OsdShowWarnings => {
-                self.settings.show_osd_warnings = Some(value);
-            }
-            SettingId::OsdShowSlowdown => {
-                self.settings.show_slowdown_osd = Some(value);
-            }
-            SettingId::OsdShowNoncontroller => {
-                self.settings.show_noncontroller_osd = Some(value);
-            }
-            SettingId::OsdShowDifferentRoom => {
-                self.settings.show_different_room_osd = Some(value);
-            }
-            SettingId::OsdShowContactInfo => {
-                self.settings.show_contact_info = Some(value);
-            }
+            SettingId::ChatInputEnabled => &mut self.settings.chat_input_enabled,
+            SettingId::ChatOutputEnabled => &mut self.settings.chat_output_enabled,
+            SettingId::ChatDirectInput => &mut self.settings.chat_direct_input,
+            SettingId::ChatMoveOsd => &mut self.settings.chat_move_osd,
+            SettingId::OsdShow => &mut self.settings.show_osd,
+            SettingId::OsdShowDuration => &mut self.settings.show_duration_notification,
+            SettingId::OsdShowSameRoom => &mut self.settings.show_same_room_osd,
+            SettingId::OsdShowWarnings => &mut self.settings.show_osd_warnings,
+            SettingId::OsdShowSlowdown => &mut self.settings.show_slowdown_osd,
+            SettingId::OsdShowNoncontroller => &mut self.settings.show_noncontroller_osd,
+            SettingId::OsdShowDifferentRoom => &mut self.settings.show_different_room_osd,
+            SettingId::OsdShowContactInfo => &mut self.settings.show_contact_info,
             SettingId::GeneralCheckForUpdatesAutomatically => {
-                self.settings.check_for_updates_automatically = Some(value);
+                &mut self.settings.check_for_updates_automatically
             }
-            SettingId::GeneralAutosaveJoinsToList => {
-                self.settings.autosave_joins_to_list = Some(value);
-            }
-            SettingId::GeneralForceGuiPrompt => {
-                self.settings.force_gui_prompt = Some(value);
-            }
-            _ => {}
-        }
+            SettingId::GeneralAutosaveJoinsToList => &mut self.settings.autosave_joins_to_list,
+            SettingId::GeneralForceGuiPrompt => &mut self.settings.force_gui_prompt,
+            _ => return,
+        };
+        *field = Some(value);
     }
 
     fn refresh_derived_controls(&mut self) {

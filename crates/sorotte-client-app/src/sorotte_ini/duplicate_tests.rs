@@ -3,6 +3,46 @@ use crate::stored_settings::StoredClientSettings;
 use proptest::prelude::*;
 
 #[test]
+fn invalid_duplicates_keep_valid_values_except_an_unsupported_language() {
+    let parsed = parse_sorotte_ini_stored_client_settings(
+        "[general]\nlanguage=pt-br\nlanguage=unsupported\n\
+         [server_data]\nport=8123\nport=0\n\
+         [client_settings]\nstreamingBufferTarget=1.5\nstreamingBufferTarget=NaN\n\
+         roomList=['one']\nroomList= \n\
+         [gui]\nshowOSD=True\nshowOSD=invalid\n",
+    );
+    assert_eq!(parsed.language, None);
+    assert_eq!(parsed.port, Some(8123));
+    assert_eq!(parsed.streaming_buffer_target_seconds, Some(1.5));
+    assert_eq!(parsed.room_list, Some(vec!["one".to_owned()]));
+    assert_eq!(parsed.show_osd, Some(true));
+}
+
+#[test]
+fn three_way_merge_compares_ini_values_and_retains_escaped_controls() {
+    let baseline = StoredClientSettings {
+        username: Some("original".into()),
+        room: Some("room".into()),
+        ..Default::default()
+    };
+    let mut desired = baseline.clone();
+    desired.room = Some("  room  ".into());
+    let current =
+        "\u{feff}; keep CRLF\r\n[client_settings]\r\nroom=concurrent-room\r\nname=original\r\n";
+    assert_eq!(
+        super::merge::merge_settings_contents(current, &baseline, &desired),
+        current
+    );
+
+    desired.username = Some(" \tnew%name\n ".into());
+    let merged = super::merge::merge_settings_contents(current, &baseline, &desired);
+    assert!(merged.starts_with('\u{feff}'));
+    let saved = parse_sorotte_ini_stored_client_settings(&merged);
+    assert_eq!(saved.username.as_deref(), Some("\tnew%name\n"));
+    assert_eq!(saved.room.as_deref(), Some("concurrent-room"));
+}
+
+#[test]
 fn missing_key_is_inserted_inside_the_final_matching_section() {
     let desired = StoredClientSettings {
         username: Some("Alice".into()),

@@ -1,9 +1,8 @@
 //! Deterministic black-box properties for controlled-room configuration.
 //!
 //! The oracle below is independent of the production implementation. The
-//! properties exercise only the public client-app boundary: normalization,
-//! command presentation, INI persistence, runtime resolution, and
-//! environment-aware startup composition.
+//! properties exercise normalization, command presentation, INI persistence,
+//! runtime resolution and application to the actual CLI startup configuration.
 
 use proptest::{
     prelude::*,
@@ -15,11 +14,13 @@ use sorotte_client_app::app_boundary::{
         parse_sorotte_ini_stored_client_settings, upsert_sorotte_ini_stored_client_settings,
     },
     state::{
-        StoredClientSettings, StoredClientSettingsEnvPresence, TlsPolicy,
-        normalize_controlled_room_input, stored_client_settings_config_plan,
+        StoredClientSettings, TlsPolicy, normalize_controlled_room_input,
         stored_client_settings_runtime_snapshot,
     },
 };
+
+use super::configuration_composition_tests::config_values;
+use super::tests::configured;
 
 const DEFAULT_CASES: u32 = 512;
 const MAX_CASES: u32 = 100_000;
@@ -162,40 +163,42 @@ fn exposed(secret: Option<&sorotte_secret::SecretValue>) -> Option<&str> {
     secret.map(sorotte_secret::SecretValue::expose_secret)
 }
 
-fn unrelated_environment(words: [u64; 4]) -> StoredClientSettingsEnvPresence {
+fn unrelated_environment(words: [u64; 4]) -> Vec<&'static str> {
     let flag = |bit: u32| (words[bit as usize % words.len()] & (1_u64 << bit)) != 0;
-    StoredClientSettingsEnvPresence {
-        host: flag(0),
-        port: flag(1),
-        server_password: flag(2),
-        username: flag(3),
-        room: false,
-        autoplay: flag(4),
-        autoplay_require_same_filenames: flag(5),
-        ready_at_start: flag(6),
-        shared_playlist_enabled: flag(7),
-        pause_on_leave: flag(8),
-        loop_at_end_of_playlist: flag(9),
-        loop_single_files: flag(10),
-        only_switch_to_trusted_domains: flag(11),
-        trusted_domains: flag(12),
-        rewind_on_desync: flag(13),
-        fastforward_on_desync: flag(14),
-        slow_on_desync: flag(15),
-        dont_slow_down_with_me: flag(16),
-        rewind_threshold_seconds: flag(17),
-        fastforward_threshold_seconds: flag(18),
-        slowdown_threshold_seconds: flag(19),
-        unpause_action: flag(20),
-        autoplay_min_users: flag(21),
-        filename_privacy_mode: flag(22),
-        filesize_privacy_mode: flag(23),
-        show_duration_notification: flag(24),
-        show_same_room_osd: flag(25),
-        show_osd_warnings: flag(26),
-        show_noncontroller_osd: flag(27),
-        show_different_room_osd: flag(28),
-    }
+    [
+        ("SOROTTE_CLIENT_HOST", 0),
+        ("SOROTTE_CLIENT_PORT", 1),
+        ("SOROTTE_CLIENT_SERVER_PASSWORD", 2),
+        ("SOROTTE_CLIENT_USERNAME", 3),
+        ("SOROTTE_CLIENT_AUTOPLAY", 4),
+        ("SOROTTE_CLIENT_AUTOPLAY_REQUIRE_SAME_FILENAMES", 5),
+        ("SOROTTE_CLIENT_READY_AT_START", 6),
+        ("SOROTTE_CLIENT_SHARED_PLAYLIST_ENABLED", 7),
+        ("SOROTTE_CLIENT_PAUSE_ON_LEAVE", 8),
+        ("SOROTTE_CLIENT_LOOP_AT_END_OF_PLAYLIST", 9),
+        ("SOROTTE_CLIENT_LOOP_SINGLE_FILES", 10),
+        ("SOROTTE_CLIENT_ONLY_SWITCH_TO_TRUSTED_DOMAINS", 11),
+        ("SOROTTE_CLIENT_TRUSTED_DOMAINS", 12),
+        ("SOROTTE_CLIENT_REWIND_ON_DESYNC", 13),
+        ("SOROTTE_CLIENT_FASTFORWARD_ON_DESYNC", 14),
+        ("SOROTTE_CLIENT_SLOW_ON_DESYNC", 15),
+        ("SOROTTE_CLIENT_DONT_SLOW_DOWN_WITH_ME", 16),
+        ("SOROTTE_CLIENT_REWIND_THRESHOLD_SECONDS", 17),
+        ("SOROTTE_CLIENT_FASTFORWARD_THRESHOLD_SECONDS", 18),
+        ("SOROTTE_CLIENT_SLOWDOWN_THRESHOLD_SECONDS", 19),
+        ("SOROTTE_CLIENT_UNPAUSE_ACTION", 20),
+        ("SOROTTE_CLIENT_AUTOPLAY_MIN_USERS", 21),
+        ("SOROTTE_CLIENT_FILENAME_PRIVACY_MODE", 22),
+        ("SOROTTE_CLIENT_FILESIZE_PRIVACY_MODE", 23),
+        ("SOROTTE_CLIENT_SHOW_DURATION_NOTIFICATION", 24),
+        ("SOROTTE_CLIENT_SHOW_SAME_ROOM_OSD", 25),
+        ("SOROTTE_CLIENT_SHOW_OSD_WARNINGS", 26),
+        ("SOROTTE_CLIENT_SHOW_NONCONTROLLER_OSD", 27),
+        ("SOROTTE_CLIENT_SHOW_DIFFERENT_ROOM_OSD", 28),
+    ]
+    .into_iter()
+    .filter_map(|(name, bit)| flag(bit).then_some(name))
+    .collect()
 }
 
 fn malformed_room(selector: u8, words: [u64; 4]) -> String {
@@ -252,7 +255,7 @@ proptest! {
     }
 
     #[test]
-    fn malformed_and_passwordless_legacy_rooms_never_manufacture_credentials(
+    fn malformed_and_passwordless_controlled_rooms_never_manufacture_credentials(
         selector in any::<u8>(),
         words in any::<[u64; 4]>(),
     ) {
@@ -268,13 +271,13 @@ proptest! {
             ..StoredClientSettings::default()
         };
         let snapshot = stored_client_settings_runtime_snapshot(&settings);
-        let plan = stored_client_settings_config_plan(
+        let config = configured(
             &settings,
-            &StoredClientSettingsEnvPresence::default(),
+            &[],
         );
         prop_assert_eq!(snapshot.controlled_room_password_override, None);
         prop_assert_eq!(snapshot.config.connection.controlled_room_password, None);
-        prop_assert_eq!(plan.controlled_room_password_override, None);
+        prop_assert_eq!(config.controlled_room_password_override, None);
         prop_assert_eq!(snapshot.config.connection.tls_policy, TlsPolicy::PreferTls);
     }
 
@@ -354,10 +357,10 @@ proptest! {
 
         let unrelated = unrelated_environment(words);
         let unshadowed =
-            stored_client_settings_config_plan(&settings, &unrelated);
+            configured(&settings, &unrelated);
         prop_assert_eq!(
-            unshadowed.room.as_deref(),
-            expected.as_ref().map(|(room, _)| room.as_str()),
+            unshadowed.room.as_str(),
+            expected.as_ref().map(|(room, _)| room.as_str()).unwrap_or("cli-room"),
         );
         prop_assert_eq!(
             exposed(unshadowed.controlled_room_password_override.as_ref()),
@@ -365,13 +368,14 @@ proptest! {
         );
 
         let mut room_shadow = unrelated;
-        room_shadow.room = true;
+        room_shadow.push("SOROTTE_CLIENT_ROOM");
         let shadowed =
-            stored_client_settings_config_plan(&settings, &room_shadow);
+            configured(&settings, &room_shadow);
         let mut expected_shadowed = unshadowed;
-        expected_shadowed.room = None;
+        expected_shadowed.room = "cli-room".to_owned();
         expected_shadowed.controlled_room_password_override = None;
-        prop_assert_eq!(shadowed, expected_shadowed);
+        prop_assert_eq!(config_values(&shadowed), config_values(&expected_shadowed));
+        prop_assert_eq!(shadowed.controlled_room_password_override, expected_shadowed.controlled_room_password_override);
     }
 
     #[test]
@@ -393,9 +397,9 @@ proptest! {
         };
 
         let snapshot = stored_client_settings_runtime_snapshot(&settings);
-        let plan = stored_client_settings_config_plan(
+        let config = configured(
             &settings,
-            &StoredClientSettingsEnvPresence::default(),
+            &[],
         );
         prop_assert_eq!(
             exposed(snapshot.config.connection.controlled_room_password.as_ref()),
@@ -406,7 +410,7 @@ proptest! {
         for (label, debug) in [
             ("settings", format!("{settings:?}")),
             ("snapshot", format!("{snapshot:?}")),
-            ("config plan", format!("{plan:?}")),
+            ("CLI config", format!("{config:?}")),
         ] {
             prop_assert!(debug.contains("<redacted>"), "{label} omitted a redaction marker");
             prop_assert!(!debug.contains(&room_marker), "{label} exposed the room marker");
@@ -417,29 +421,23 @@ proptest! {
             prop_assert!(!debug.contains(&server_marker), "{label} exposed the server marker");
         }
 
-        let server_shadowed = stored_client_settings_config_plan(
+        let server_shadowed = configured(
             &settings,
-            &StoredClientSettingsEnvPresence {
-                server_password: true,
-                ..StoredClientSettingsEnvPresence::default()
-            },
+            &["SOROTTE_CLIENT_SERVER_PASSWORD"],
         );
         prop_assert_eq!(server_shadowed.server_password, None);
-        prop_assert_eq!(server_shadowed.room, plan.room.clone());
+        prop_assert_eq!(server_shadowed.room, config.room.clone());
         prop_assert_eq!(
             server_shadowed.controlled_room_password_override,
-            plan.controlled_room_password_override.clone(),
+            config.controlled_room_password_override.clone(),
         );
 
-        let room_shadowed = stored_client_settings_config_plan(
+        let room_shadowed = configured(
             &settings,
-            &StoredClientSettingsEnvPresence {
-                room: true,
-                ..StoredClientSettingsEnvPresence::default()
-            },
+            &["SOROTTE_CLIENT_ROOM"],
         );
-        prop_assert_eq!(room_shadowed.room, None);
+        prop_assert_eq!(room_shadowed.room, "cli-room");
         prop_assert_eq!(room_shadowed.controlled_room_password_override, None);
-        prop_assert_eq!(room_shadowed.server_password, plan.server_password);
+        prop_assert_eq!(room_shadowed.server_password, config.server_password);
     }
 }

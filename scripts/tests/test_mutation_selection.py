@@ -34,6 +34,16 @@ class MutationSelectionTests(unittest.TestCase):
     def test_docs_do_not_trigger_mutation_work(self):
         self.assertEqual(self.select("docs/DEVELOPMENT.md", "README.md", "crates/sorotte-secret/README.md", "fixtures/README.md"), set())
 
+    def test_settings_application_keeps_mutation_coverage_across_the_app_cli_boundary(self):
+        for path in (
+            "crates/sorotte-client-app/src/stored_config.rs",
+            "crates/sorotte-client-app/src/sorotte_ini/fields.rs",
+            "crates/sorotte-client-core/src/lib.rs",
+            "crates/sorotte-secret/src/lib.rs",
+            "crates/sorotte-cli/src/stored_settings/config_apply.rs",
+        ):
+            self.assertIn("cli-stored-config", self.select(path))
+
     def test_gui_test_addition_keeps_package_selection_without_a_global_inventory_update(self):
         selected = self.select("crates/sorotte-gui/src/app/media_match_support/process_fault_tests.rs")
         self.assertIn("gui-playlist-delivery-fence", selected)
