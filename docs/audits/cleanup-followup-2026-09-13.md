@@ -78,6 +78,12 @@ Tests construct the remaining seam-only actions, so compiling tests exposes
 variants that have no caller anywhere. Removing the previous blanket allowance
 is what exposed the unused disconnect action.
 
+The room summary borrows an existing readiness projection and constructs a
+Syncplay-ready fallback only when that projection is absent. This removes the
+late-initialized fallback binding without copying existing readiness state.
+The widget test covers fallback, projection precedence and return to the current
+Syncplay ready flag after the projection is removed.
+
 ## Terminology
 
 | Previous name or wording | Current concept/name |
@@ -85,7 +91,7 @@ is what exposed the unused disconnect action.
 | `FirstRunConfigurationDialogState` / `FirstRunConfigurationDialogDraft` | `GuiConfigurationState` / `GuiConfigurationDraft`, used throughout normal operation |
 | `SyncplayConfigurationGetter*` Rust support tables and CLI headings | `SyncplayStartupOptionSupport`, `SyncplayIniFieldSupport` and `SyncplayInputSupportStatus` |
 | `ManifestRead::Legacy` | `Version1Or2`, preserving readers and migration into checksummed version 3 slots |
-| `legacy_readiness` | `syncplay_readiness` |
+| `legacy_readiness` | A lazy `from_syncplay_ready` fallback when no readiness projection exists |
 | `legacy` readiness test participant | `unsupported_participant`, lacking coordinated-start support |
 | “Legacy extension peers” | Peers without a stable playback request ID |
 | “legacy model/adapter” position fallback | Session/list position before accepted transport telemetry |

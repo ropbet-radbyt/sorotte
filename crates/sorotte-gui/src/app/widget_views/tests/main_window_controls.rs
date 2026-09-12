@@ -217,6 +217,44 @@ fn gui_shell_app_state_projects_main_window_widget_trees() {
 }
 
 #[test]
+fn participant_readiness_uses_syncplay_flag_only_without_a_readiness_projection() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        username: Some("Alice".to_owned()),
+        room: Some("Lounge".to_owned()),
+        ..StoredClientSettings::default()
+    });
+    state.main_window.readiness.clear();
+    state.main_window.users[0].is_ready = true;
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:user:0:readiness")
+            .and_then(|node| node.value.as_deref()),
+        Some("Ready")
+    );
+
+    state.main_window.readiness.insert(
+        "Alice".to_owned(),
+        ParticipantReadinessPresentation::from_syncplay_ready("Alice", false),
+    );
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:user:0:readiness")
+            .and_then(|node| node.value.as_deref()),
+        Some("Not Ready"),
+        "the supplied readiness projection takes precedence over the Syncplay ready flag"
+    );
+
+    state.main_window.readiness.clear();
+    let tree = state.main_window_widget_tree();
+    assert_eq!(
+        tree.find("main-window:user:0:readiness")
+            .and_then(|node| node.value.as_deref()),
+        Some("Ready"),
+        "removing the projection restores the current Syncplay ready flag"
+    );
+}
+
+#[test]
 fn strict_mixed_room_explains_automatic_start_unavailability_in_widget_tree() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("Alice".to_owned()),
