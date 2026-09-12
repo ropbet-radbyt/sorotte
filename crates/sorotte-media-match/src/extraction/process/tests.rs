@@ -8,6 +8,9 @@ use std::sync::atomic::AtomicU64;
 
 use crate::{MediaExtractionSettings, MediaMatchToolPaths, fingerprint_media_file_cancellable};
 
+#[cfg(unix)]
+mod unix_busy_tests;
+
 const FIXTURE_TEST: &str = "extraction::process::tests::media_tool_process_fixture";
 const FIXTURE_MODE: &str = "SOROTTE_MEDIA_PROCESS_FIXTURE";
 const FIXTURE_MARKER: &str = "SOROTTE_MEDIA_PROCESS_MARKER";

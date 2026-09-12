@@ -10,12 +10,12 @@ fn probes_validate_each_tool_and_preserve_exit_failure() {
         (HelperTool::Ffmpeg, "ffmpeg"),
         (HelperTool::Ffprobe, "ffprobe"),
     ] {
-        assert!(tool.probe(&tool_fixture(root.path(), mode), None).is_ok());
-        assert!(
-            tool.probe(&tool_fixture(root.path(), "wrong"), None)
-                .unwrap_err()
-                .contains("version banner")
-        );
+        let result = tool.probe(&tool_fixture(root.path(), mode), None);
+        assert!(result.is_ok(), "{tool:?}: {result:?}");
+        let error = tool
+            .probe(&tool_fixture(root.path(), "wrong"), None)
+            .unwrap_err();
+        assert!(error.contains("version banner"), "{tool:?}: {error}");
     }
     let error = HelperTool::YtDlp
         .probe(&tool_fixture(root.path(), "fail"), None)
