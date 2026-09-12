@@ -83,13 +83,6 @@ impl GuiSessionRuntimeAdapter for RecordingMediaLoadIntentSession {
         Ok(current_servers)
     }
 
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
     fn prepare_attached_playback_media(
         &mut self,
         _logical_id: sorotte_client_core::LogicalMediaId,
@@ -596,13 +589,6 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 
@@ -3043,13 +3029,6 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misse
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
     }
 
     let root = test_temp_root("plex-stream-while-media-match-misses");
@@ -4432,13 +4411,6 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
     }
 
     let root = test_temp_root("media-match-remote-queued-during-index");
@@ -4523,13 +4495,6 @@ fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

@@ -163,7 +163,7 @@ fn gui_persisted_config_runtime_owner_waits_for_matching_local_file_before_apply
         .session
         .as_mut()
         .expect("session should exist")
-        .note_local_playlist_index_reset_intent(true);
+        .seed_playlist_reset_intent_for_test(true);
     owner
         .session
         .as_mut()
@@ -324,7 +324,7 @@ fn gui_persisted_config_runtime_owner_retries_playlist_reset_after_transient_att
         .session
         .as_mut()
         .expect("session should exist")
-        .note_local_playlist_index_reset_intent(true);
+        .seed_playlist_reset_intent_for_test(true);
     owner
         .session
         .as_mut()

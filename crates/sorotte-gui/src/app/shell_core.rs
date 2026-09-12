@@ -215,6 +215,7 @@ impl SorotteGuiShellAppState {
     pub(super) fn stream_helper_issue_title(&self) -> Option<&'static str> {
         match self.stream_helper.health {
             super::GuiStreamHelperHealth::Healthy => None,
+            super::GuiStreamHelperHealth::Checking => Some("Checking stream helpers"),
             super::GuiStreamHelperHealth::MissingDownloader => Some("yt-dlp required"),
             super::GuiStreamHelperHealth::MissingJsRuntime => Some("Deno runtime required"),
             super::GuiStreamHelperHealth::Stale => Some("Stream helper update recommended"),
@@ -231,6 +232,7 @@ impl SorotteGuiShellAppState {
     pub(super) fn stream_helper_issue_summary(&self) -> Option<&'static str> {
         match self.stream_helper.health {
             super::GuiStreamHelperHealth::Healthy => None,
+            super::GuiStreamHelperHealth::Checking => Some("Checking stream helpers"),
             super::GuiStreamHelperHealth::MissingDownloader => {
                 Some("Extractor-backed page URLs need yt-dlp before mpv can load them.")
             }

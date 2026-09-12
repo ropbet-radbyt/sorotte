@@ -54,8 +54,19 @@ impl OwnedTool {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        checkpoint()?;
-        let child = command.spawn().map_err(|error| tool_error(tool, error))?;
+        let child = loop {
+            checkpoint()?;
+            match command.spawn() {
+                Ok(child) => break child,
+                // A concurrent fork can retain an executable's writable file
+                // descriptor until exec, even after our copy closes it. Retry
+                // only ETXTBSY, within the caller's deadline and cancellation.
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    thread::sleep(super::MEDIA_TOOL_POLL_INTERVAL);
+                }
+                Err(error) => return Err(tool_error(tool, error)),
+            }
+        };
         let group_id = child.id() as libc::pid_t;
         let mut owned = Self {
             child,

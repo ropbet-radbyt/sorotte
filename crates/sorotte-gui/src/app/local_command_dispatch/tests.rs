@@ -57,6 +57,7 @@ fn update_candidate() -> UpdateCandidate {
 
 fn staged_update(candidate: UpdateCandidate) -> StagedUpdate {
     StagedUpdate {
+        stage_lease: None,
         candidate,
         package_path: "C:/Temp/sorotte.zip".to_owned(),
         source_dir: "C:/Temp/sorotte-update".to_owned(),

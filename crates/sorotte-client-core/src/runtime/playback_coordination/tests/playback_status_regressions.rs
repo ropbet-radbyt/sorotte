@@ -20,13 +20,13 @@ fn delayed_remote_pause_observation_preserves_participant_readiness() {
         r#"{"State":{"playstate":{"position":1.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
         0.05,
     ).unwrap();
+    let command_id = runtime.begin_external_player_pause_command(
+        true,
+        PlayerCommandCause::RemoteRoomSynchronization,
+        0.05,
+    );
     runtime
-        .record_external_system_player_pause_command_result(
-            true,
-            PlayerCommandCause::RemoteRoomSynchronization,
-            true,
-            0.05,
-        )
+        .finish_external_player_pause_command(command_id, true, 0.05)
         .unwrap();
     runtime.deliver_queued_protocol_messages();
     for now in [3.0, 3.2] {

@@ -4,7 +4,7 @@ use super::paths::{
     discover_managed_stream_helper_component, managed_downloader_file_name,
     managed_js_runtime_file_name,
 };
-use super::process::{find_executable_on_path, probe_executable_version};
+use super::process::find_executable_on_path;
 use super::{
     ManagedStreamHelperComponent, StreamHelperAttachMode, StreamHelperComponentProbe,
     StreamHelperDiscovery, StreamHelperSource,
@@ -15,38 +15,42 @@ pub(in crate::app::stream_support) fn probe_stream_helper_component(
     attach_mode: StreamHelperAttachMode,
     managed: Option<PathBuf>,
     environment: Option<PathBuf>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> StreamHelperComponentProbe {
-    let describe_effective_path =
-        |path: PathBuf, source: StreamHelperSource, source_label: &'static str| {
-            match probe_executable_version(&path, &["--version"]) {
-                Ok(version) => StreamHelperComponentProbe {
-                    effective_path: Some(path.clone()),
-                    effective_source: Some(source),
-                    effective_version: Some(version.clone()),
-                    effective_error: None,
-                    status: format!("{source_label}: {version} ({})", path.display()),
-                },
-                Err(error) => StreamHelperComponentProbe {
-                    effective_path: Some(path.clone()),
-                    effective_source: Some(source),
-                    effective_version: None,
-                    effective_error: Some(error.clone()),
-                    status: format!(
-                        "{source_label} at '{}' is unusable: {error}",
-                        path.display()
-                    ),
-                },
-            }
+    let describe_effective_path = |path: PathBuf, source: StreamHelperSource| {
+        let source_label = match source {
+            StreamHelperSource::Managed => "Managed install",
+            StreamHelperSource::Environment => "PATH",
         };
+        match component.helper_tool().probe(&path, cancel) {
+            Ok(version) => StreamHelperComponentProbe {
+                effective_path: Some(path.clone()),
+                effective_source: Some(source),
+                effective_version: Some(version.clone()),
+                effective_error: None,
+                status: format!("{source_label}: {version} ({})", path.display()),
+            },
+            Err(error) => StreamHelperComponentProbe {
+                effective_path: Some(path.clone()),
+                effective_source: Some(source),
+                effective_version: None,
+                effective_error: Some(error.clone()),
+                status: format!(
+                    "{source_label} at '{}' is unusable: {error}",
+                    path.display()
+                ),
+            },
+        }
+    };
 
     match attach_mode {
         StreamHelperAttachMode::ManagedPlayer => managed
             .map(|path| {
-                describe_effective_path(path, StreamHelperSource::Managed, "Managed install")
+                describe_effective_path(path, StreamHelperSource::Managed)
             })
             .or_else(|| {
                 environment.map(|path| {
-                    describe_effective_path(path, StreamHelperSource::Environment, "PATH")
+                    describe_effective_path(path, StreamHelperSource::Environment)
                 })
             })
             .unwrap_or_else(|| StreamHelperComponentProbe {
@@ -60,7 +64,7 @@ pub(in crate::app::stream_support) fn probe_stream_helper_component(
                 ),
             }),
         StreamHelperAttachMode::ExternalPlayer => environment
-            .map(|path| describe_effective_path(path, StreamHelperSource::Environment, "PATH"))
+            .map(|path| describe_effective_path(path, StreamHelperSource::Environment))
             .unwrap_or_else(|| {
                 if let Some(path) = managed {
                     return StreamHelperComponentProbe {
@@ -98,8 +102,6 @@ pub(in crate::app::stream_support) fn discover_stream_helpers(
         environment_downloader: find_executable_on_path(&[
             managed_downloader_file_name(),
             "yt-dlp",
-            "youtube-dl.exe",
-            "youtube-dl",
         ]),
         managed_js_runtime: root.and_then(|root| {
             discover_managed_stream_helper_component(root, managed_js_runtime_file_name())

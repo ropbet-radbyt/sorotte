@@ -120,6 +120,7 @@ fn seed_cached_plex_versions(root: &std::path::Path, media_paths: &[std::path::P
                 title: "Same episode".to_owned(),
                 media_type: PlexMediaType::Episode,
                 duration_millis: Some(90_000),
+                file_identity: Default::default(),
             },
         );
     }
@@ -1041,13 +1042,6 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

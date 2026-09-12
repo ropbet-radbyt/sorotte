@@ -41,13 +41,6 @@ impl GuiSessionRuntimeAdapter for ReceiptTimeRecordingSession {
     ) -> Result<Vec<(String, String)>, String> {
         Ok(current_servers)
     }
-
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
 }
 
 #[test]

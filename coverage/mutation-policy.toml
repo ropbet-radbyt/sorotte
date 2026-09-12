@@ -118,7 +118,7 @@ files = [
     "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
     "crates/sorotte-client-core/src/runtime/queued_control.rs",
 ]
-mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|observe_transport_with_semantics|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
+mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|RuntimePlaybackCoordination::observe_transport\\b|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
 test_target = "lib"
 test_filter = "runtime::playback_coordination::tests::participant_status_"
 jobs = 2
@@ -1169,7 +1169,7 @@ review_by = "2026-11-30"
 id = "client-participant-status-runtime-observe-actions-default"
 shard = "client-participant-status-runtime"
 file = "crates/sorotte-client-core/src/runtime/playback_coordination.rs"
-function = "RuntimePlaybackCoordination::observe_transport_with_semantics"
+function = "RuntimePlaybackCoordination::observe_transport"
 return_type = "-> Vec<PlaybackCoordinatorAction>"
 genre = "FnValue"
 replacement = "vec![Default::default()]"

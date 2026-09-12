@@ -3,7 +3,7 @@ mod media_match;
 mod pending_completions;
 mod playback;
 mod session_controls;
-mod stream_helper;
+pub(super) mod stream_helper;
 
 use std::path::{Path, PathBuf};
 
@@ -104,6 +104,8 @@ impl GuiPersistedConfigRuntimeOwner {
     ) {
         match plugin {
             GuiPluginSelection::StreamSupport => {
+                self.stream_helper_worker = None;
+                self.stream_helper_probe_scope = None;
                 self.startup_stream_helper_probe_completed = true;
                 self.startup_stream_helper_probe_rx = None;
                 self.pending_stream_retry_target = None;
@@ -111,6 +113,8 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.clear_stream_helper_remediation_progress(handle, projected_state);
             }
             GuiPluginSelection::MediaMatching => {
+                self.media_match_tool_worker_rx = None;
+                self.clear_media_match_remediation_progress(handle, projected_state);
                 self.request_media_match_background_worker_cancel(
                     handle,
                     projected_state,

@@ -1,20 +1,17 @@
+#[cfg(any(windows, test))]
+use std::time::Duration;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     env, fs,
-    io::Read,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
@@ -31,34 +28,15 @@ use sorotte_media_match::{
 #[cfg(test)]
 use sorotte_media_match::AudioAnchor;
 
-use super::shell_state::{
-    GuiMediaMatchRuntimeSnapshot, GuiMediaMatchToolHealth,
-    media_match_settings_from_stored_settings,
-};
-
-#[cfg(windows)]
-use zip::ZipArchive;
+use super::shell_state::{GuiMediaMatchRuntimeSnapshot, GuiMediaMatchToolHealth};
 
 const MEDIA_MATCH_METADATA_VERSION: u32 = 1;
 const MEDIA_MATCH_PREFILTER_THRESHOLD: usize = 64;
 const MEDIA_MATCH_PREFILTER_LIMIT: usize = 24;
 const MEDIA_MATCH_DISCOVERY_MAX_DEPTH: usize = 64;
 const MEDIA_MATCH_DISCOVERY_MAX_NODES: usize = 250_000;
-const MEDIA_MATCH_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES: usize = 64 * 1024;
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(windows)]
 const MEDIA_MATCH_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-#[cfg(windows)]
-const MEDIA_MATCH_DOWNLOAD_PROGRESS_STEP_BYTES: u64 = 1024 * 1024;
-#[cfg(windows)]
-const MEDIA_MATCH_DOWNLOAD_BUFFER_BYTES: usize = 64 * 1024;
-#[cfg(windows)]
-const MEDIA_MATCH_DOWNLOAD_PREALLOC_MAX_BYTES: usize = 128 * 1024 * 1024;
-#[cfg(windows)]
-const MEDIA_MATCH_USER_AGENT: &str = concat!("sorotte-gui/", env!("CARGO_PKG_VERSION"));
 #[cfg(windows)]
 const FFMPEG_WINDOWS_ZIP_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
@@ -357,16 +335,10 @@ impl MediaMatchTool {
         }
     }
 
-    fn version_args(self) -> &'static [&'static str] {
+    fn helper_tool(self) -> crate::app::helper_tools::HelperTool {
         match self {
-            Self::Ffmpeg | Self::Ffprobe => &["-version"],
-        }
-    }
-
-    fn version_banner_prefix(self) -> &'static str {
-        match self {
-            Self::Ffmpeg => "ffmpeg version ",
-            Self::Ffprobe => "ffprobe version ",
+            Self::Ffmpeg => crate::app::helper_tools::HelperTool::Ffmpeg,
+            Self::Ffprobe => crate::app::helper_tools::HelperTool::Ffprobe,
         }
     }
 
@@ -526,13 +498,14 @@ pub(super) fn managed_media_match_tool_path(root: &Path, tool: MediaMatchTool) -
     managed_media_match_bin_dir(root).join(tool.managed_file_name())
 }
 
-pub(super) fn probe_media_match_runtime_snapshot(
+pub(super) fn probe_media_match_runtime_snapshot_with_cancel(
     root: Option<&Path>,
     settings: &MediaMatchSettings,
+    cancel: Option<&AtomicBool>,
 ) -> GuiMediaMatchRuntimeSnapshot {
     let extraction_settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
-    let ffmpeg = probe_tool(root, MediaMatchTool::Ffmpeg);
-    let ffprobe = probe_tool(root, MediaMatchTool::Ffprobe);
+    let ffmpeg = probe_tool_with_cancel(root, MediaMatchTool::Ffmpeg, cancel);
+    let ffprobe = probe_tool_with_cancel(root, MediaMatchTool::Ffprobe, cancel);
     media_match_runtime_snapshot_from_probes(root, settings, ffmpeg, ffprobe, &extraction_settings)
 }
 
@@ -564,63 +537,33 @@ fn media_match_runtime_snapshot_from_probes(
     }
 }
 
-pub(super) fn probe_media_match_startup_snapshot(
-    root: Option<&Path>,
-    settings: Option<&sorotte_client_app::app_boundary::state::StoredClientSettings>,
-) -> GuiMediaMatchRuntimeSnapshot {
-    let settings = settings
-        .map(media_match_settings_from_stored_settings)
-        .unwrap_or_default();
-    probe_media_match_runtime_snapshot(root, &settings)
-}
-
-pub(super) fn import_managed_media_match_tool_with_progress<F>(
+pub(super) fn import_managed_media_match_tool_with_progress(
     root: &Path,
     tool: MediaMatchTool,
     source_path: &Path,
-    mut progress: F,
-) -> Result<String, String>
-where
-    F: FnMut(MediaMatchToolProgress),
-{
+    cancel: Option<&AtomicBool>,
+    mut progress: impl FnMut(MediaMatchToolProgress),
+) -> Result<String, String> {
+    let install =
+        crate::app::helper_tools::ToolInstall::begin(&managed_media_match_bin_dir(root), cancel)?;
     progress(MediaMatchToolProgress::new(
         format!("Importing {}", tool.display_name()),
         Some(source_path.display().to_string()),
         0.15,
     ));
-    if !source_path.is_file() {
-        return Err(format!(
-            "{} import source does not exist: {}",
-            tool.display_name(),
-            source_path.display()
-        ));
-    }
-    let bin_dir = managed_media_match_bin_dir(root);
-    fs::create_dir_all(&bin_dir).map_err(|error| {
-        format!(
-            "failed creating media-match tool directory '{}': {error}",
-            bin_dir.display()
-        )
-    })?;
-    let target = managed_media_match_tool_path(root, tool);
-    fs::copy(source_path, &target).map_err(|error| {
-        format!(
-            "failed importing {} to '{}': {error}",
-            tool.display_name(),
-            target.display()
-        )
-    })?;
+    let staged = install.copy_executable(source_path, tool.managed_file_name(), cancel)?;
     progress(MediaMatchToolProgress::new(
         format!("Verifying {}", tool.display_name()),
-        Some(target.display().to_string()),
+        None,
         0.72,
     ));
-    let version = probe_executable_version(&target, tool.version_args(), tool)?;
+    let version = tool.helper_tool().probe(&staged, cancel)?;
     let mut metadata = load_managed_media_match_metadata(root).unwrap_or_default();
     metadata.version = MEDIA_MATCH_METADATA_VERSION;
     metadata.installed_at_unix_seconds = Some(current_unix_seconds());
     tool.assign_version(&mut metadata, version.clone());
-    save_managed_media_match_metadata(root, &metadata)?;
+    install.write_metadata(&metadata)?;
+    install.commit(&[tool.managed_file_name()], cancel)?;
     progress(MediaMatchToolProgress::new(
         format!("Imported {}", tool.display_name()),
         Some(version.clone()),
@@ -632,55 +575,38 @@ where
     ))
 }
 
-pub(super) fn install_or_update_managed_media_match_tools_with_progress<F>(
+pub(super) fn install_or_update_managed_media_match_tools_with_progress(
     root: &Path,
-    mut progress: F,
-) -> Result<String, String>
-where
-    F: FnMut(MediaMatchToolProgress),
-{
+    cancel: Option<&AtomicBool>,
+    mut progress: impl FnMut(MediaMatchToolProgress),
+) -> Result<String, String> {
     #[cfg(not(windows))]
     {
-        let _ = root;
-        progress(MediaMatchToolProgress::new(
-            "Media Matching tool install unavailable",
-            Some("Import ffmpeg and ffprobe manually on this platform.".to_owned()),
-            1.0,
-        ));
+        let _ = (root, cancel, &mut progress);
         Err("Automatic Media Matching tool installation is currently Windows-only.".to_owned())
     }
     #[cfg(windows)]
     {
-        let bin_dir = managed_media_match_bin_dir(root);
-        fs::create_dir_all(&bin_dir).map_err(|error| {
-            format!(
-                "failed creating media-match tool directory '{}': {error}",
-                bin_dir.display()
-            )
-        })?;
-        let client = media_match_http_client()?;
-        let ffmpeg_zip = download_bytes_with_progress(
-            &client,
+        use crate::app::helper_tools::{ToolInstall, download_to_path, extract_executable};
+        let bin = managed_media_match_bin_dir(root);
+        let install = ToolInstall::begin(&bin, cancel)?;
+        let archive = install.path("ffmpeg.zip");
+        download_to_path(
             FFMPEG_WINDOWS_ZIP_URL,
-            "Downloading ffmpeg tools",
-            0.08,
-            0.54,
-            &mut progress,
-        )?;
-        progress(MediaMatchToolProgress::new(
-            "Extracting ffmpeg tools",
-            Some("Installing ffmpeg.exe and ffprobe.exe.".to_owned()),
-            0.55,
-        ));
-        extract_zip_entry(
-            &ffmpeg_zip,
-            "ffmpeg.exe",
-            &managed_media_match_tool_path(root, MediaMatchTool::Ffmpeg),
-        )?;
-        extract_zip_entry(
-            &ffmpeg_zip,
-            "ffprobe.exe",
-            &managed_media_match_tool_path(root, MediaMatchTool::Ffprobe),
+            &archive,
+            MEDIA_MATCH_DOWNLOAD_TIMEOUT,
+            cancel,
+            |done, total| {
+                progress(MediaMatchToolProgress::new(
+                    "Downloading ffmpeg tools",
+                    Some(download_progress_detail(
+                        FFMPEG_WINDOWS_ZIP_URL,
+                        total,
+                        done,
+                    )),
+                    download_progress_fraction(0.08, 0.54, total, done),
+                ));
+            },
         )?;
         let mut metadata = ManagedMediaMatchMetadata {
             version: MEDIA_MATCH_METADATA_VERSION,
@@ -688,22 +614,26 @@ where
             ..ManagedMediaMatchMetadata::default()
         };
         for tool in [MediaMatchTool::Ffmpeg, MediaMatchTool::Ffprobe] {
+            let staged = install.path(tool.managed_file_name());
             progress(MediaMatchToolProgress::new(
                 format!("Verifying {}", tool.display_name()),
                 None,
                 0.76,
             ));
-            let version = probe_executable_version(
-                &managed_media_match_tool_path(root, tool),
-                tool.version_args(),
-                tool,
-            )?;
-            tool.assign_version(&mut metadata, version);
+            extract_executable(&archive, tool.managed_file_name(), &staged, cancel)?;
+            tool.assign_version(&mut metadata, tool.helper_tool().probe(&staged, cancel)?);
         }
-        save_managed_media_match_metadata(root, &metadata)?;
+        install.write_metadata(&metadata)?;
+        install.commit(
+            &[
+                MediaMatchTool::Ffmpeg.managed_file_name(),
+                MediaMatchTool::Ffprobe.managed_file_name(),
+            ],
+            cancel,
+        )?;
         progress(MediaMatchToolProgress::new(
             "Media Matching tools installed",
-            Some(format!("{}; V3 is ready.", bin_dir.display())),
+            Some(format!("{}; V3 is ready.", bin.display())),
             1.0,
         ));
         Ok(media_match_install_success_message())
@@ -1352,6 +1282,14 @@ fn initial_media_match_rebuild_cache(
 }
 
 fn probe_tool(root: Option<&Path>, tool: MediaMatchTool) -> MediaMatchToolProbe {
+    probe_tool_with_cancel(root, tool, None)
+}
+
+fn probe_tool_with_cancel(
+    root: Option<&Path>,
+    tool: MediaMatchTool,
+    cancel: Option<&AtomicBool>,
+) -> MediaMatchToolProbe {
     let path = root
         .map(|root| managed_media_match_tool_path(root, tool))
         .filter(|path| path.is_file())
@@ -1364,7 +1302,7 @@ fn probe_tool(root: Option<&Path>, tool: MediaMatchTool) -> MediaMatchToolProbe 
             status: format!("Missing {}", tool.display_name()),
         };
     };
-    match probe_executable_version(&path, tool.version_args(), tool) {
+    match tool.helper_tool().probe(&path, cancel) {
         Ok(version) => MediaMatchToolProbe {
             path: Some(path.clone()),
             error: None,
@@ -1420,6 +1358,11 @@ fn media_match_health_message(
 }
 
 fn media_match_cache_status(root: &Path) -> String {
+    // Resolving an index path can acquire an activation lock and create its directory.
+    // A tool-status refresh must not initialize an index that has never existed.
+    if !managed_media_match_index_dir(root).is_dir() {
+        return "empty".to_owned();
+    }
     if !managed_media_match_index_path(root).exists() {
         return "empty".to_owned();
     }
@@ -2824,211 +2767,25 @@ fn find_executable_on_path(file_name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+#[cfg(test)]
 fn probe_executable_version(
     path: &Path,
     args: &[&str],
     expected_tool: MediaMatchTool,
 ) -> Result<String, String> {
-    let output =
-        probe_executable_output_with_timeout(path, args, MEDIA_MATCH_VERSION_PROBE_TIMEOUT)?;
-    debug_assert!(output.stderr.len() <= MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES);
-    debug_assert!(
-        !output.stderr_truncated || output.stderr.len() == MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES
-    );
-    if !output.status.success() {
-        return Err(format!(
-            "exited with status {}",
-            output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown".to_owned())
-        ));
-    }
-    parse_executable_version_output(&output.stdout, output.stdout_truncated, expected_tool)
+    expected_tool
+        .helper_tool()
+        .probe_with_args(path, args, None)
 }
 
-fn parse_executable_version_output(
-    stdout: &[u8],
-    stdout_truncated: bool,
-    expected_tool: MediaMatchTool,
-) -> Result<String, String> {
-    let (first_line, terminated) =
-        first_nonempty_output_line(stdout).ok_or_else(|| "version output was empty".to_owned())?;
-    if stdout_truncated && !terminated {
-        return Err(format!(
-            "{} version banner exceeded the {} byte capture limit",
-            expected_tool.display_name(),
-            MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES
-        ));
-    }
-    let first_line = std::str::from_utf8(first_line)
-        .map_err(|_| "version banner was not valid UTF-8".to_owned())?
-        .trim_end();
-    let Some(version) = first_line.strip_prefix(expected_tool.version_banner_prefix()) else {
-        return Err(format!(
-            "output did not begin with a {} version banner",
-            expected_tool.display_name()
-        ));
-    };
-    if version.trim().is_empty() {
-        return Err(format!(
-            "{} version banner did not contain a version",
-            expected_tool.display_name()
-        ));
-    }
-    Ok(first_line.to_owned())
-}
-
-#[derive(Debug)]
-struct BoundedProcessOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-}
-
-#[derive(Debug)]
-struct BoundedPipeCapture {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-fn first_nonempty_output_line(bytes: &[u8]) -> Option<(&[u8], bool)> {
-    bytes
-        .split_inclusive(|byte| *byte == b'\n')
-        .find_map(|line| {
-            let terminated = line.ends_with(b"\n");
-            let line = line.strip_suffix(b"\n").unwrap_or(line);
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            (!line.iter().all(u8::is_ascii_whitespace)).then_some((line, terminated))
-        })
-}
-
-fn drain_pipe_bounded(
-    mut pipe: impl Read,
-    capture_limit: usize,
-) -> Result<BoundedPipeCapture, String> {
-    let mut bytes = Vec::with_capacity(capture_limit.min(8 * 1024));
-    let mut buffer = [0_u8; 8 * 1024];
-    let mut truncated = false;
-    loop {
-        let count = pipe
-            .read(&mut buffer)
-            .map_err(|error| format!("failed draining child process output: {error}"))?;
-        if count == 0 {
-            break;
-        }
-        let retained = capture_limit.saturating_sub(bytes.len()).min(count);
-        bytes.extend_from_slice(&buffer[..retained]);
-        truncated |= retained < count;
-    }
-    Ok(BoundedPipeCapture { bytes, truncated })
-}
-
+#[cfg(test)]
 fn probe_executable_output_with_timeout(
     path: &Path,
     args: &[&str],
     timeout: Duration,
-) -> Result<BoundedProcessOutput, String> {
-    probe_executable_output_with_timeout_after_spawn(path, args, timeout, || {})
-}
-
-fn probe_executable_output_with_timeout_after_spawn(
-    path: &Path,
-    args: &[&str],
-    timeout: Duration,
-    after_spawn: impl FnOnce(),
-) -> Result<BoundedProcessOutput, String> {
-    let mut child = hidden_media_match_command(path)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            format!(
-                "failed to run '{} {}': {error}",
-                path.display(),
-                args.join(" ")
-            )
-        })?;
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(format!(
-            "failed opening stdout from '{} {}'",
-            path.display(),
-            args.join(" ")
-        ));
-    };
-    let Some(stderr) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(format!(
-            "failed opening stderr from '{} {}'",
-            path.display(),
-            args.join(" ")
-        ));
-    };
-    let stdout_drain =
-        thread::spawn(move || drain_pipe_bounded(stdout, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
-    let stderr_drain =
-        thread::spawn(move || drain_pipe_bounded(stderr, MEDIA_MATCH_VERSION_CAPTURE_LIMIT_BYTES));
-    after_spawn();
-    let started = Instant::now();
-    let completion = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(format!(
-                    "timed out after {:.1}s running '{} {}'",
-                    timeout.as_secs_f64(),
-                    path.display(),
-                    args.join(" ")
-                ));
-            }
-            Ok(None) => std::thread::sleep(MEDIA_MATCH_VERSION_PROBE_POLL_INTERVAL),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(format!(
-                    "failed waiting for '{} {}': {error}",
-                    path.display(),
-                    args.join(" ")
-                ));
-            }
-        }
-    };
-    let stdout = stdout_drain
-        .join()
-        .map_err(|_| "stdout drain thread panicked".to_owned())??;
-    let stderr = stderr_drain
-        .join()
-        .map_err(|_| "stderr drain thread panicked".to_owned())??;
-    let status = completion?;
-    Ok(BoundedProcessOutput {
-        status,
-        stdout: stdout.bytes,
-        stderr: stderr.bytes,
-        stdout_truncated: stdout.truncated,
-        stderr_truncated: stderr.truncated,
-    })
-}
-
-#[cfg(windows)]
-fn hidden_media_match_command(path: &Path) -> Command {
-    let mut command = Command::new(path);
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
-}
-
-#[cfg(not(windows))]
-fn hidden_media_match_command(path: &Path) -> Command {
-    Command::new(path)
+) -> Result<std::process::Output, String> {
+    sorotte_media_match::run_tool_probe("media tool", path, args, timeout, None)
+        .map_err(|error| error.to_string())
 }
 
 fn load_managed_media_match_metadata(root: &Path) -> Option<ManagedMediaMatchMetadata> {
@@ -3139,21 +2896,6 @@ fn refresh_media_match_v3_anchor_stats_for_settings(
     Ok(())
 }
 
-fn save_managed_media_match_metadata(
-    root: &Path,
-    metadata: &ManagedMediaMatchMetadata,
-) -> Result<(), String> {
-    let path = managed_media_match_metadata_path(root);
-    let contents = serde_json::to_string_pretty(metadata)
-        .map_err(|error| format!("failed serializing media-match metadata: {error}"))?;
-    fs::write(&path, contents).map_err(|error| {
-        format!(
-            "failed writing media-match metadata '{}': {error}",
-            path.display()
-        )
-    })
-}
-
 fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3167,89 +2909,6 @@ fn current_unix_millis() -> u64 {
         .unwrap_or_default()
         .as_millis();
     millis.min(u128::from(u64::MAX)) as u64
-}
-
-#[cfg(windows)]
-fn media_match_http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(MEDIA_MATCH_DOWNLOAD_TIMEOUT)
-        .user_agent(MEDIA_MATCH_USER_AGENT)
-        .build()
-        .map_err(|error| format!("failed creating Media Matching HTTP client: {error}"))
-}
-
-#[cfg(windows)]
-fn download_bytes_with_progress<F>(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    label: &str,
-    progress_start: f32,
-    progress_end: f32,
-    progress: &mut F,
-) -> Result<Vec<u8>, String>
-where
-    F: FnMut(MediaMatchToolProgress),
-{
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|error| format!("failed downloading {url}: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("failed downloading {url}: {error}"))?;
-    let total_bytes = response.content_length();
-    let capacity = total_bytes
-        .and_then(|total| usize::try_from(total).ok())
-        .map(|total| total.min(MEDIA_MATCH_DOWNLOAD_PREALLOC_MAX_BYTES))
-        .unwrap_or(0);
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut buffer = [0u8; MEDIA_MATCH_DOWNLOAD_BUFFER_BYTES];
-    let mut downloaded_bytes = 0u64;
-    let mut next_progress_report = 0u64;
-
-    loop {
-        let read = response.read(&mut buffer).map_err(|error| {
-            format!(
-                "failed reading {url} after {}: {error}",
-                format_downloaded_bytes(total_bytes, downloaded_bytes)
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&buffer[..read]);
-        downloaded_bytes = downloaded_bytes.saturating_add(read as u64);
-        if downloaded_bytes >= next_progress_report
-            || total_bytes.is_some_and(|total| downloaded_bytes >= total)
-        {
-            progress(MediaMatchToolProgress::new(
-                label,
-                Some(download_progress_detail(url, total_bytes, downloaded_bytes)),
-                download_progress_fraction(
-                    progress_start,
-                    progress_end,
-                    total_bytes,
-                    downloaded_bytes,
-                ),
-            ));
-            next_progress_report =
-                downloaded_bytes.saturating_add(MEDIA_MATCH_DOWNLOAD_PROGRESS_STEP_BYTES);
-        }
-    }
-
-    if let Some(total) = total_bytes
-        && downloaded_bytes < total
-    {
-        return Err(format!(
-            "download from {url} ended early after {}",
-            format_downloaded_bytes(total_bytes, downloaded_bytes)
-        ));
-    }
-    progress(MediaMatchToolProgress::new(
-        label,
-        Some(download_progress_detail(url, total_bytes, downloaded_bytes)),
-        progress_end,
-    ));
-    Ok(bytes)
 }
 
 #[cfg(any(windows, test))]
@@ -3300,34 +2959,19 @@ fn format_mib(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
 }
 
-#[cfg(windows)]
-fn extract_zip_entry(zip_bytes: &[u8], suffix: &str, target: &Path) -> Result<(), String> {
-    let reader = std::io::Cursor::new(zip_bytes);
-    let mut archive = ZipArchive::new(reader)
-        .map_err(|error| format!("failed reading downloaded zip archive: {error}"))?;
-    for index in 0..archive.len() {
-        let mut file = archive
-            .by_index(index)
-            .map_err(|error| format!("failed reading zip entry {index}: {error}"))?;
-        let name = file.name().replace('\\', "/");
-        if !name.ends_with(suffix) {
-            continue;
-        }
-        let mut output = fs::File::create(target)
-            .map_err(|error| format!("failed creating '{}': {error}", target.display()))?;
-        std::io::copy(&mut file, &mut output)
-            .map_err(|error| format!("failed extracting '{}': {error}", target.display()))?;
-        return Ok(());
-    }
-    Err(format!("downloaded archive did not contain {suffix}"))
-}
-
 #[cfg(test)]
 mod process_fault_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checking_missing_cache_status_does_not_create_an_index_directory() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(media_match_cache_status(root.path()), "empty");
+        assert!(!managed_media_match_index_dir(root.path()).exists());
+    }
 
     fn unique_media_match_test_root(label: &str) -> PathBuf {
         let mut root = std::env::temp_dir();

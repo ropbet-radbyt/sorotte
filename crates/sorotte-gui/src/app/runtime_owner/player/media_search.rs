@@ -2751,6 +2751,7 @@ mod plex_cache_coordination_tests {
                     title: format!("Movie {rating_key}"),
                     media_type: PlexMediaType::Movie,
                     duration_millis: Some(90_000),
+                    file_identity: Default::default(),
                 },
             )]),
         }

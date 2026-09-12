@@ -683,6 +683,15 @@ class DiffCoverageTests(unittest.TestCase):
             set(range(1, len(structural) + 1)),
         )
 
+    def test_empty_item_body_is_structural_but_inline_methods_remain_executable(self) -> None:
+        lines = [
+            "impl Eq for StageLease {}",
+            "impl StageLease {",
+            "impl StageLease { fn run() { execute(); } }",
+            "impl Eq for StageLease {} fn run() { execute(); }",
+        ]
+        self.assertEqual(coverage.lexical_non_coverable_lines(lines), {1, 2})
+
     def test_constant_field_allowance_never_overrides_recorded_zero_hits(self) -> None:
         line = "reason: StartGateDegradedReason::UnsupportedParticipant,"
         self.source.write_text(line + "\n", encoding="utf-8")

@@ -2542,7 +2542,7 @@ mod tests {
             .session
             .as_mut()
             .expect("session should exist")
-            .note_local_playlist_index_reset_intent(true);
+            .seed_playlist_reset_intent_for_test(true);
 
         owner.reconcile_local_shared_playlist_media_paths(&runtime_state_for_shell(&state));
         let playlist_generation = owner.playlist_resolution.generation;

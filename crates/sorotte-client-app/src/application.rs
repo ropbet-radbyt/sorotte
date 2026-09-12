@@ -679,7 +679,7 @@ where
         if file.size_bytes.is_none() {
             file.size_bytes = session_file.size_bytes;
         }
-        let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
+        let mut event = PlexWatchEvent::new(file);
         if let Some(position_seconds) = session.local_position_seconds() {
             event = event.with_position_seconds(position_seconds);
         }
@@ -1979,16 +1979,6 @@ where
             .observe_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
     }
 
-    pub fn rebase_external_player_transport_at_epoch(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        now_seconds: f64,
-        adapter_epoch: u64,
-    ) -> Vec<PlaybackCoordinatorAction> {
-        self.runtime
-            .rebase_external_player_transport_at_epoch(update, now_seconds, adapter_epoch)
-    }
-
     pub fn reconcile_external_player_playback(
         &mut self,
         now_seconds: f64,
@@ -2218,16 +2208,6 @@ where
         self.runtime.readiness_gate_holds_current_playback()
     }
 
-    pub fn record_external_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), PlayerError> {
-        self.runtime
-            .record_external_player_pause_command_result(paused, succeeded, now_seconds)
-    }
-
     pub fn begin_external_player_pause_command(
         &mut self,
         paused: bool,
@@ -2246,22 +2226,6 @@ where
     ) -> Result<(), PlayerError> {
         self.runtime
             .finish_external_player_pause_command(command_id, succeeded, now_seconds)
-    }
-
-    pub fn record_external_system_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        cause: sorotte_client_core::PlayerCommandCause,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), PlayerError> {
-        self.runtime
-            .record_external_system_player_pause_command_result(
-                paused,
-                cause,
-                succeeded,
-                now_seconds,
-            )
     }
 
     pub fn observe_external_player_end_of_file(

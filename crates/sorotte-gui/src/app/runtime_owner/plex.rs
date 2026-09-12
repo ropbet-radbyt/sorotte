@@ -1069,7 +1069,7 @@ impl GuiPersistedConfigRuntimeOwner {
             return None;
         }
         self.player_local_file.clone().map(|file| {
-            let mut event = PlexWatchEvent::new(file).with_changed_at(SystemTime::now());
+            let mut event = PlexWatchEvent::new(file);
             if let Some(position) = self.player_position_seconds {
                 event = event.with_position_seconds(position);
             }

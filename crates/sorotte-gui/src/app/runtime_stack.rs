@@ -15,7 +15,6 @@ mod transport;
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    path::Path,
     time::{Duration, Instant},
 };
 
@@ -36,7 +35,7 @@ use sorotte_client_core::{
     RoomPlaylistView, RoomPlaystateView, SYNCPLAY_COMPAT_VERSION, SYNCPLAY_WIRE_VERSION,
     syncplay_server_password_token,
 };
-use sorotte_media_match::{MediaMatchTier, MediaMatchWireSignature};
+use sorotte_media_match::MediaMatchTier;
 use sorotte_player_api::{
     PlayerCommandId, PlayerError, PlayerMediaGeneration, PlayerPlaybackTelemetryUpdate,
     PlayerTransportTelemetryUpdate,

@@ -253,7 +253,8 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn request_user_list(&mut self) -> Result<bool, String> {
+    #[cfg(test)]
+    fn queue_user_list_for_test(&mut self) -> Result<bool, String> {
         self.dispatch_application_command(ClientCommand::RequestUserList)
             .map_err(|error| {
                 format!("Client-core session runtime user-list dispatch failed: {error}")
@@ -766,20 +767,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn rebase_attached_player_transport_telemetry(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        Ok(gui_actions_from_playback_coordinator(
-            self.runtime.rebase_external_player_transport_at_epoch(
-                update,
-                now_seconds,
-                self.playback_transport_adapter_epoch,
-            ),
-        ))
-    }
-
     fn observe_external_player_end_of_file(&mut self, now_seconds: f64) -> Result<(), String> {
         self.runtime
             .observe_external_player_end_of_file(now_seconds)
@@ -1037,10 +1024,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().local_paused()
     }
 
-    fn local_paused_for_cache(&self) -> Option<bool> {
-        self.runtime.session().local_paused_for_cache()
-    }
-
     fn local_username(&self) -> Option<&str> {
         self.runtime.session().username()
     }
@@ -1101,7 +1084,8 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime.session().server_media_match_supported()
     }
 
-    fn note_local_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+    #[cfg(test)]
+    fn seed_playlist_reset_intent_for_test(&mut self, pause_before_sync: bool) {
         self.runtime
             .session_mut()
             .begin_local_playlist_index_reset_intent(pause_before_sync, system_time_seconds());
@@ -1138,12 +1122,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.runtime
             .session_mut()
             .complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
-    }
-
-    fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
-        self.runtime
-            .session_mut()
-            .take_pending_playlist_index_reset_intent()
     }
 
     fn has_pending_playlist_index_reset_intent(&self) -> bool {
@@ -1222,10 +1200,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             recently_advanced,
         );
         Ok(())
-    }
-
-    fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
-        self.runtime.session().current_room_media_match_signatures()
     }
 
     fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
@@ -1367,36 +1341,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| format!("Client-core player command completion failed: {error}"))
     }
 
-    fn record_external_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), String> {
-        self.runtime
-            .record_external_player_pause_command_result(paused, succeeded, now_seconds)
-            .map_err(|error| format!("Client-core player command-result dispatch failed: {error}"))
-    }
-
-    fn record_external_system_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        cause: PlayerCommandCause,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), String> {
-        self.runtime
-            .record_external_system_player_pause_command_result(
-                paused,
-                cause,
-                succeeded,
-                now_seconds,
-            )
-            .map_err(|error| {
-                format!("Client-core system player command-result dispatch failed: {error}")
-            })
-    }
-
     fn take_attached_player_local_runtime_actions(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -1532,22 +1476,6 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
 
     fn missing_media_search_target_file_name(&self) -> Result<String, String> {
         GuiClientCoreChatSessionRuntimeAdapter::missing_media_search_target_file_name(self)
-    }
-
-    fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String> {
-        let target_file_name = self.missing_media_search_target_file_name()?;
-        for directory in directories {
-            let trimmed = directory.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Some(found_path) =
-                Self::search_path_for_missing_media_target(&target_file_name, Path::new(trimmed))?
-            {
-                return Ok(Some(found_path));
-            }
-        }
-        Ok(None)
     }
 
     fn handle_transport_disconnect(

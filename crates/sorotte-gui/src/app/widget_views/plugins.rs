@@ -1122,6 +1122,7 @@ impl SorotteGuiShellAppState {
         }
 
         let level = match self.stream_helper.health {
+            GuiStreamHelperHealth::Checking => GuiTransientNotificationLevel::Info,
             GuiStreamHelperHealth::Broken => GuiTransientNotificationLevel::Error,
             GuiStreamHelperHealth::Healthy if self.stream_helper_remediation.active => {
                 GuiTransientNotificationLevel::Success

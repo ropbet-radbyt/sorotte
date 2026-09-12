@@ -201,6 +201,8 @@ fn gui_persisted_config_runtime_owner_syncs_attached_player_runtime_state() {
         media_match_runtime_snapshot: Default::default(),
         media_match_remediation_runtime_snapshot: Default::default(),
         media_match_tool_worker_rx: None,
+        stream_helper_worker: None,
+        stream_helper_probe_scope: None,
         media_match_background_worker_rx: None,
         media_match_background_worker_cancel: None,
         media_match_background_trigger_key: None,

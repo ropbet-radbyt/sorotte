@@ -44,6 +44,7 @@ struct UpdaterArgs {
     log_path: PathBuf,
     restart: bool,
     detached_helper_sha256: Option<String>,
+    stage_handoff: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,17 +465,31 @@ where
         let _ = append_log(&args.log_path, &error);
         return Err(error);
     }
+    let stage_lease = match (&args.stage_handoff, &args.input) {
+        (Some(_), Some(UpdateInput::Package { package, .. })) => {
+            Some(sorotte_gui::update_stage::StageLease::acquire(
+                package
+                    .parent()
+                    .ok_or("Update package has no stage directory")?,
+            )?)
+        }
+        (None, _) => None,
+        _ => return Err("A stage handoff requires an authenticated update package".to_owned()),
+    };
     if matches!(
         updater_location_check(&args)?,
         UpdaterExecutionLocation::InstalledBootstrap
     ) {
-        return launch_detached_update_helper(&args);
+        return launch_detached_update_helper(&args, stage_lease.as_ref());
     }
 
     // Serialize every install mutation by target. The detached helper retains this guard through
     // crash recovery, replacement, restart, and final cleanup, so another live updater cannot
     // interpret this process's journal as abandoned.
     let _target_update_lock = TargetUpdateLock::acquire(&args.target_dir)?;
+    if let (Some(lease), Some(handoff)) = (&stage_lease, &args.stage_handoff) {
+        lease.acknowledge(handoff)?;
+    }
     let running = env::current_exe()
         .map_err(|error| format!("failed resolving updater path for cleanup: {error}"))?;
     match cleanup_stale_bootstrap_dirs(&args.target_dir, &running) {
@@ -572,10 +587,14 @@ where
     let mut restart = false;
     let mut recover = false;
     let mut detached_helper_sha256 = None;
+    let mut stage_handoff = None;
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--stage-handoff" => {
+                stage_handoff = Some(required_value(&mut args, "--stage-handoff")?)
+            }
             "--pid" => {
                 let value = args
                     .next()
@@ -647,6 +666,7 @@ where
         log_path: log_path.ok_or_else(|| "--log is required".to_owned())?,
         restart,
         detached_helper_sha256,
+        stage_handoff,
     })
 }
 
@@ -794,7 +814,10 @@ fn validate_updater_location(args: &UpdaterArgs) -> Result<UpdaterExecutionLocat
     Ok(UpdaterExecutionLocation::DetachedHelper)
 }
 
-fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
+fn launch_detached_update_helper(
+    args: &UpdaterArgs,
+    stage_lease: Option<&sorotte_gui::update_stage::StageLease>,
+) -> Result<(), String> {
     let running = env::current_exe()
         .map_err(|error| format!("failed resolving installed updater path: {error}"))?;
     reject_reparse_path(&running)?;
@@ -849,13 +872,21 @@ fn launch_detached_update_helper(args: &UpdaterArgs) -> Result<(), String> {
     )?;
     let mut command = Command::new(&detached_path);
     command.args(detached_update_helper_args(args, &expected_sha256));
-    spawn_background_without_inherited_stdio(&mut command).map_err(|error| {
-        let _ = remove_directory_if_exists(&bootstrap_dir);
-        format!(
-            "failed launching detached update helper {}: {error}",
-            detached_path.display()
-        )
-    })?;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            let _ = remove_directory_if_exists(&bootstrap_dir);
+            format!(
+                "failed launching detached update helper {}: {error}",
+                detached_path.display()
+            )
+        })?;
+    if let (Some(lease), Some(handoff)) = (stage_lease, &args.stage_handoff) {
+        lease.wait_for_handoff(handoff, &mut child)?;
+    }
     Ok(())
 }
 
@@ -901,6 +932,9 @@ fn detached_update_helper_args(args: &UpdaterArgs, expected_sha256: &str) -> Vec
             result.push(backup_dir.display().to_string());
         }
         None => result.push("--recover".to_owned()),
+    }
+    if let Some(handoff) = &args.stage_handoff {
+        result.extend(["--stage-handoff".to_owned(), handoff.clone()]);
     }
     if args.restart {
         result.push("--restart".to_owned());

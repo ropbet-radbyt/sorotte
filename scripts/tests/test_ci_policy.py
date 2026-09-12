@@ -2614,7 +2614,7 @@ class CiPolicyTests(unittest.TestCase):
                             "(participant_status|ParticipantStatus|"
                             "record_observation_outcomes|"
                             "commit_mapped_transport_observation|"
-                            "observe_transport_with_semantics|"
+                            r"RuntimePlaybackCoordination::observe_transport\b|"
                             "reset_sync_state_for_reconnect|"
                             "delete field logical_pause from struct "
                             "PlayerTransportDelta expression in "
@@ -4273,7 +4273,7 @@ class CiPolicyTests(unittest.TestCase):
                                 ),
                                 (
                                     "RuntimePlaybackCoordination::"
-                                    "observe_transport_with_semantics"
+                                    "observe_transport"
                                 ),
                                 "-> Vec<PlaybackCoordinatorAction>",
                                 "FnValue",

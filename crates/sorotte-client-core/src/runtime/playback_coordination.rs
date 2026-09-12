@@ -1193,23 +1193,6 @@ impl RuntimePlaybackCoordination {
         update: PlayerTransportTelemetryUpdate,
         external_now_seconds: f64,
     ) -> Vec<PlaybackCoordinatorAction> {
-        self.observe_transport_with_semantics(update, external_now_seconds, false)
-    }
-
-    pub(crate) fn rebase_transport(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        external_now_seconds: f64,
-    ) -> Vec<PlaybackCoordinatorAction> {
-        self.observe_transport_with_semantics(update, external_now_seconds, true)
-    }
-
-    fn observe_transport_with_semantics(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        external_now_seconds: f64,
-        replace_previous_state: bool,
-    ) -> Vec<PlaybackCoordinatorAction> {
         // Receiving an update establishes adapter capability even when the
         // event itself is stale or cannot be bound to the active load. Once
         // known, reconnect validation must never fall back to direct player
@@ -1267,17 +1250,13 @@ impl RuntimePlaybackCoordination {
             external_now_seconds,
             delivery_reference_seconds,
             candidate_offset_seconds,
-            replace_previous_state,
-            replace_previous_state,
+            false,
+            false,
         );
         if commit_outcome == MappedTransportCommitOutcome::LifecycleFenced {
             return Vec::new();
         }
-        let actions = if replace_previous_state {
-            self.coordinator.rebase_observation(observation)
-        } else {
-            self.coordinator.observe(observation)
-        };
+        let actions = self.coordinator.observe(observation);
         self.record_observation_outcomes(&actions);
         actions
     }
@@ -1292,18 +1271,6 @@ impl RuntimePlaybackCoordination {
             return Vec::new();
         }
         self.observe_transport(update, external_now_seconds)
-    }
-
-    pub(crate) fn rebase_transport_at_epoch(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        external_now_seconds: f64,
-        adapter_epoch: u64,
-    ) -> Vec<PlaybackCoordinatorAction> {
-        if adapter_epoch != self.adapter_epoch {
-            return Vec::new();
-        }
-        self.rebase_transport(update, external_now_seconds)
     }
 
     /// Records an EOF discovered by a unsequenced attached-player surface that
@@ -2725,25 +2692,6 @@ where
         actions
     }
 
-    pub fn rebase_external_player_transport_at_epoch(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        now_seconds: f64,
-        adapter_epoch: u64,
-    ) -> Vec<PlaybackCoordinatorAction> {
-        let mut actions = self.playback_coordination.rebase_transport_at_epoch(
-            update,
-            now_seconds,
-            adapter_epoch,
-        );
-        let _ = self.handle_latest_player_readiness_observation();
-        let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
-        let _ = self.report_playback_barrier_observations(&actions);
-        self.apply_external_coordinator_control_actions(&actions);
-        let _ = self.emit_participant_status_transition(now_seconds);
-        actions
-    }
-
     /// Feeds a unsequenced attached-player EOF signal through the same technical
     /// readiness and causal-classification path as an adapter-reported
     /// `PlayerTransportPhase::Ended` observation.
@@ -2946,22 +2894,6 @@ where
     /// sessions intentionally use a no-op adapter there.
     pub fn interrupt_external_playback_recovery(&mut self) -> Vec<PlaybackCoordinatorAction> {
         self.playback_coordination.interrupt_recovery()
-    }
-
-    /// Tags a pause/play command issued through an attached-player system
-    /// seam. The explicit cause prevents remote synchronization, gate holds,
-    /// playlist transitions, and lifecycle corrections from being mistaken
-    /// for a native user gesture when their telemetry arrives later.
-    pub fn record_external_system_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        cause: PlayerCommandCause,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), PlayerError> {
-        debug_assert_ne!(cause, PlayerCommandCause::LocalUserPlaybackControl);
-        let command_id = self.begin_external_player_pause_command(paused, cause, now_seconds);
-        self.finish_external_player_pause_command(command_id, succeeded, now_seconds)
     }
 
     pub fn observe_external_player_transport(

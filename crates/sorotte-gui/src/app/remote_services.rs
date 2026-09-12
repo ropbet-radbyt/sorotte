@@ -188,6 +188,7 @@ pub(crate) enum UpdateDownloadState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StagedUpdate {
+    pub(crate) stage_lease: Option<crate::update_stage::StageLease>,
     pub(crate) candidate: UpdateCandidate,
     pub(crate) package_path: String,
     pub(crate) source_dir: String,
@@ -472,16 +473,7 @@ pub(crate) fn cleanup_update_staging_root(gui_config_root: Option<&Path>) -> Res
             ));
         }
     }
-    cleanup_updates_root_entries(&updates_root, None)?;
-    match fs::remove_dir(&updates_root) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
-        Err(error) => Err(format!(
-            "failed to remove update staging directory {}: {error}",
-            updates_root.display()
-        )),
-    }
+    cleanup_updates_root_entries(&updates_root)
 }
 
 fn check_for_github_update(
@@ -1237,7 +1229,18 @@ fn download_and_stage_update_inner(
     let gui_config_root = gui_config_root.ok_or_else(|| {
         "Cannot stage update because the Sorotte GUI config root is unavailable.".to_owned()
     })?;
+    stage_update_in_root(candidate, gui_config_root, |stage_dir| {
+        stage_update_payload(candidate, stage_dir, cancelled)
+    })
+}
+
+fn stage_update_in_root(
+    candidate: &UpdateCandidate,
+    gui_config_root: &Path,
+    payload: impl FnOnce(&Path) -> Result<StagedUpdate, String>,
+) -> Result<StagedUpdate, String> {
     let updates_root = gui_config_root.join("updates");
+    let catalog = crate::update_stage::catalog_lock(&updates_root)?;
     fs::create_dir_all(&updates_root)
         .map_err(|error| format!("failed creating update staging root: {error}"))?;
     let metadata = fs::symlink_metadata(&updates_root)
@@ -1257,23 +1260,23 @@ fn download_and_stage_update_inner(
     ));
     sorotte_client_app::app_boundary::persistence::create_private_directory(&stage_dir)
         .map_err(|error| format!("failed creating private update stage: {error}"))?;
-    // Each attempt owns a fresh stage; a failed download never removes an older stage or rollback.
-    stage_update_payload(candidate, &stage_dir, cancelled)
-        .map_err(|error| cleanup_failed_stage_dir(&stage_dir, error))
+    let lease = crate::update_stage::StageLease::create(&stage_dir)?;
+    drop(catalog);
+    // Keep ownership from the first download byte through all staged-result clones and handoff.
+    match payload(&stage_dir) {
+        Ok(mut staged) => {
+            staged.stage_lease = Some(lease);
+            Ok(staged)
+        }
+        Err(error) => {
+            drop(lease);
+            Err(cleanup_failed_stage_dir(&stage_dir, error))
+        }
+    }
 }
 
-#[cfg(test)]
-fn cleanup_updates_root(updates_root: &Path, active_stage_dir: &Path) -> Result<(), String> {
-    let active_stage_name = active_stage_dir
-        .file_name()
-        .ok_or_else(|| "active update stage directory has no name".to_owned())?;
-    cleanup_updates_root_entries(updates_root, Some(active_stage_name))
-}
-
-fn cleanup_updates_root_entries(
-    updates_root: &Path,
-    active_stage_name: Option<&std::ffi::OsStr>,
-) -> Result<(), String> {
+fn cleanup_updates_root_entries(updates_root: &Path) -> Result<(), String> {
+    let _catalog = crate::update_stage::catalog_lock(updates_root)?;
     let root_metadata = fs::symlink_metadata(updates_root).map_err(|error| {
         format!(
             "failed to inspect update staging directory {}: {error}",
@@ -1298,10 +1301,6 @@ fn cleanup_updates_root_entries(
                 updates_root.display()
             )
         })?;
-        let entry_name = entry.file_name();
-        if active_stage_name.is_some_and(|active_stage_name| entry_name == active_stage_name) {
-            continue;
-        }
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
             format!(
@@ -1315,9 +1314,20 @@ fn cleanup_updates_root_entries(
                 path.display()
             ));
         }
+        if metadata.is_dir() && crate::update_stage::stage_is_live(&path)? {
+            continue;
+        }
         remove_update_staging_entry(&path, metadata.file_type())?;
     }
-    Ok(())
+    match fs::remove_dir(updates_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error) => Err(format!(
+            "failed to remove update staging directory {}: {error}",
+            updates_root.display()
+        )),
+    }
 }
 
 fn remove_update_staging_entry(path: &Path, file_type: fs::FileType) -> Result<(), String> {
@@ -1415,6 +1425,7 @@ fn stage_update_payload(
     }
     let log_path = stage_dir.join("sorotte-gui-updater.log");
     Ok(StagedUpdate {
+        stage_lease: None,
         candidate: staged_candidate,
         package_path: package_path.display().to_string(),
         source_dir: source_dir.display().to_string(),
@@ -1610,20 +1621,27 @@ fn launch_staged_update_inner(staged_update: &StagedUpdate) -> Result<(), String
     let target_dir = target_exe
         .parent()
         .ok_or_else(|| "current GUI executable has no parent directory".to_owned())?;
-    let helper_args = staged_update_helper_args(staged_update, target_dir, &current_pid);
+    let lease = staged_update
+        .stage_lease
+        .as_ref()
+        .ok_or("Staged update ownership is unavailable")?;
+    let handoff = lease.begin_handoff()?;
+    let helper_args =
+        staged_update_helper_args(staged_update, target_dir, &current_pid, Some(&handoff));
     let mut command = Command::new(&staged_update.updater_path);
     command.args(&helper_args);
     configure_gui_child_process(&mut command);
-    command
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to launch update helper: {error}"))?;
-    Ok(())
+    lease.wait_for_handoff(&handoff, &mut child)
 }
 
 fn staged_update_helper_args(
     staged_update: &StagedUpdate,
     target_dir: &Path,
     current_pid: &str,
+    stage_handoff: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "--pid".to_owned(),
@@ -1639,6 +1657,9 @@ fn staged_update_helper_args(
         "--log".to_owned(),
         staged_update.log_path.clone(),
     ];
+    if let Some(handoff) = stage_handoff {
+        args.extend(["--stage-handoff".to_owned(), handoff.to_owned()]);
+    }
     if staged_update.restart {
         args.push("--restart".to_owned());
     }
@@ -1766,7 +1787,7 @@ fn env_response_override(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn ensure_rustls_crypto_provider() {
+pub(in crate::app) fn ensure_rustls_crypto_provider() {
     RUSTLS_PROVIDER_INIT.get_or_init(|| {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
@@ -1946,7 +1967,7 @@ mod tests {
         SOROTTE_GUI_INSTALL_MARKER, SOROTTE_GUI_TARGET, SelfUpdateCapability, StagedUpdate,
         StoredClientSettings, UpdateCandidate, UpdateCandidateSource, UpdateChannel,
         UpdateCheckResult, UpdateCheckStatus, UpdateManifest, apply_self_update_capability,
-        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root,
+        cleanup_failed_stage_dir, cleanup_update_staging_root, cleanup_updates_root_entries,
         fetch_public_servers_from_url, normal_package_basename, parse_public_server_response,
         parse_version, safe_zip_relative_path, sanitize_wordpress_public_server_response,
         select_newest_dev_artifact, select_stable_gui_release_asset,
@@ -2262,10 +2283,10 @@ mod tests {
         assert!(error.contains("mismatch"));
     }
 
-    #[test]
-    fn update_helper_receives_original_package_and_authenticated_digest() {
+    fn staged_update_fixture() -> StagedUpdate {
         let digest = "a".repeat(64);
-        let staged = StagedUpdate {
+        StagedUpdate {
+            stage_lease: None,
             candidate: UpdateCandidate {
                 channel: UpdateChannel::Stable,
                 version: "0.2.4".to_owned(),
@@ -2285,9 +2306,15 @@ mod tests {
             backup_dir: "C:/updates/mutable-backup".to_owned(),
             log_path: "C:/updates/update.log".to_owned(),
             restart: true,
-        };
+        }
+    }
 
-        let args = staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123");
+    #[test]
+    fn update_helper_receives_original_package_and_authenticated_digest() {
+        let staged = staged_update_fixture();
+        let digest = staged.candidate.sha256.clone();
+
+        let args = staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123", None);
 
         assert!(
             args.windows(2)
@@ -2299,6 +2326,56 @@ mod tests {
         );
         assert!(!args.iter().any(|arg| arg == "--source-dir"));
         assert!(!args.iter().any(|arg| arg == "--backup-dir"));
+        let handoff_args =
+            staged_update_helper_args(&staged, Path::new("C:/Sorotte"), "123", Some("owned-nonce"));
+        assert!(
+            handoff_args
+                .windows(2)
+                .any(|pair| pair == ["--stage-handoff", "owned-nonce"])
+        );
+    }
+
+    #[test]
+    fn update_stage_is_owned_during_payload_and_all_retained_results_then_reclaimed() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = staged_update_fixture();
+        let staged = super::stage_update_in_root(&fixture.candidate, root.path(), |stage| {
+            assert!(crate::update_stage::stage_is_live(stage).unwrap());
+            cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+            assert!(stage.is_dir());
+            let mut result = fixture.clone();
+            result.source_dir = stage.display().to_string();
+            Ok(result)
+        })
+        .unwrap();
+        let clone = staged.clone();
+        assert_eq!(staged.stage_lease, clone.stage_lease);
+        let stage = PathBuf::from(&staged.source_dir);
+        drop(staged);
+        cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+        assert!(stage.is_dir());
+        drop(clone);
+        cleanup_updates_root_entries(&root.path().join("updates")).unwrap();
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn failed_payload_drops_ownership_and_removes_only_its_partial_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = staged_update_fixture();
+        let unrelated = root.path().join("keep");
+        fs::write(&unrelated, b"retained").unwrap();
+        let mut partial = PathBuf::new();
+        let error = super::stage_update_in_root(&fixture.candidate, root.path(), |stage| {
+            partial = stage.to_path_buf();
+            assert!(crate::update_stage::stage_is_live(stage).unwrap());
+            fs::write(stage.join("partial.zip"), b"partial").unwrap();
+            Err("download failed".to_owned())
+        })
+        .unwrap_err();
+        assert!(error.contains("download failed"));
+        assert!(!partial.exists());
+        assert_eq!(fs::read(unrelated).unwrap(), b"retained");
     }
 
     #[cfg(windows)]
@@ -2333,7 +2410,8 @@ mod tests {
         .expect("stale stage file should be written");
         fs::write(&stale_file, b"old").expect("stale root file should be written");
 
-        cleanup_updates_root(&updates_root, &active_stage_dir)
+        let _lease = crate::update_stage::StageLease::create(&active_stage_dir).unwrap();
+        cleanup_updates_root_entries(&updates_root)
             .expect("stale update entries should be removed");
 
         assert!(active_stage_dir.exists());
@@ -2360,6 +2438,68 @@ mod tests {
 
         assert!(!updates_root.exists());
         fs::remove_dir_all(&config_root).expect("test config root should be removed");
+    }
+
+    #[test]
+    fn another_gui_startup_preserves_download_handoff_and_updater_ownership() {
+        use crate::update_stage::StageLease;
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("updates").join("active");
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("update.zip"), b"retained package").unwrap();
+        let lease = StageLease::create(&stage).unwrap();
+        cleanup_update_staging_root(Some(root.path())).unwrap();
+        assert!(stage.join("update.zip").exists());
+        let nonce = lease.begin_handoff().unwrap();
+        // The GUI can die before its updater starts. The durable startup reservation
+        // covers that gap; no PID or file-age guess is used for a live owner.
+        drop(lease);
+        cleanup_update_staging_root(Some(root.path())).unwrap();
+        assert!(stage.join("update.zip").exists());
+        let image = root.path().join(if cfg!(windows) {
+            "stage-owner-fixture.exe"
+        } else {
+            "stage-owner-fixture"
+        });
+        fs::copy(std::env::current_exe().unwrap(), &image).unwrap();
+        let mut command = std::process::Command::new(&image);
+        command
+            .args([
+                "--exact",
+                "update_stage::tests::stage_lease_process_fixture",
+                "--nocapture",
+            ])
+            .env("SOROTTE_STAGE_FIXTURE_ROOT", &stage)
+            .env("SOROTTE_STAGE_FIXTURE_HANDOFF", &nonce);
+        super::configure_gui_child_process(&mut command);
+        let mut child = command.spawn().unwrap();
+        let observer = StageLease::acquire(&stage).unwrap();
+        let accepted = observer.wait_for_handoff(&nonce, &mut child);
+        drop(observer);
+        if accepted.is_ok() {
+            cleanup_update_staging_root(Some(root.path())).unwrap();
+            assert!(stage.join("update.zip").exists());
+            fs::write(stage.join("release-owner"), b"done").unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                break child.wait().unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        accepted.unwrap();
+        assert!(status.success());
+        cleanup_update_staging_root(Some(root.path())).unwrap();
+        assert!(
+            !stage.exists(),
+            "the completed, unowned stage is reclaimable"
+        );
     }
 
     #[cfg(windows)]

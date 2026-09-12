@@ -43,13 +43,6 @@ impl GuiSessionRuntimeAdapter for PositionSession {
         Ok(current_servers)
     }
 
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
     fn sync_local_playback_telemetry(
         &mut self,
         _paused: Option<bool>,
@@ -181,13 +174,6 @@ impl GuiSessionRuntimeAdapter for AlternateRoomPositionSession {
         _language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String> {
         Ok(current_servers)
-    }
-
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
     }
 
     fn current_room_name(&self) -> Option<&str> {

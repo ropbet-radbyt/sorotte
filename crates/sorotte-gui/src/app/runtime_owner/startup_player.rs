@@ -87,6 +87,8 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_remediation_runtime_snapshot:
                 GuiMediaMatchRemediationRuntimeSnapshot::default(),
             media_match_tool_worker_rx: None,
+            stream_helper_worker: None,
+            stream_helper_probe_scope: None,
             media_match_background_worker_rx: None,
             media_match_background_worker_cancel: None,
             media_match_background_trigger_key: None,
@@ -1187,13 +1189,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         target: Option<&str>,
     ) -> GuiStreamHelperRuntimeSnapshot {
-        let snapshot = probe_stream_helper_runtime_snapshot(
-            self.syncplay_qsettings_root().as_deref(),
-            self.player_stream_helper_attach_mode(),
-            target,
-        );
-        self.stream_helper_runtime_snapshot = snapshot.clone();
-        snapshot
+        self.queue_stream_helper_probe(target)
     }
 
     pub(super) fn refresh_startup_stream_helper_snapshot(
@@ -1220,8 +1216,47 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         settings: &sorotte_media_match::MediaMatchSettings,
     ) -> GuiMediaMatchRuntimeSnapshot {
-        let mut snapshot =
-            probe_media_match_runtime_snapshot(self.syncplay_qsettings_root().as_deref(), settings);
+        let root = self.syncplay_qsettings_root();
+        if self
+            .media_match_tool_worker_rx
+            .as_ref()
+            .is_some_and(|worker| worker.root != root)
+        {
+            self.media_match_tool_worker_rx = None;
+        }
+        self.media_match_runtime_snapshot.install_location = root.as_deref().map(|root| {
+            crate::app::media_match_support::managed_media_match_bin_dir(root)
+                .display()
+                .to_string()
+        });
+        self.media_match_runtime_snapshot
+            .open_install_location_available = root.is_some();
+        if self.media_match_tool_worker_rx.is_none() {
+            let root = self.syncplay_qsettings_root();
+            let probe_root = root.clone();
+            let settings = settings.clone();
+            match crate::app::helper_tools::HelperWorker::spawn(
+                "sorotte-media-tools-probe",
+                root,
+                move |cancel, tx| {
+                    let snapshot = crate::app::media_match_support::probe_media_match_runtime_snapshot_with_cancel(probe_root.as_deref(), &settings, Some(cancel));
+                    let _ = tx.send(GuiMediaMatchToolWorkerEvent::Probed(Box::new(snapshot)));
+                },
+            ) {
+                Ok(worker) => self.media_match_tool_worker_rx = Some(worker),
+                Err(error) => self.media_match_runtime_snapshot.message = Some(error),
+            }
+        }
+        self.media_match_runtime_snapshot.settings = settings.clone();
+        self.media_match_runtime_snapshot.clone()
+    }
+
+    pub(super) fn apply_media_match_probe_snapshot(
+        &mut self,
+        mut snapshot: GuiMediaMatchRuntimeSnapshot,
+        settings: &sorotte_media_match::MediaMatchSettings,
+    ) -> GuiMediaMatchRuntimeSnapshot {
+        snapshot.settings = settings.clone();
         snapshot.current_decision = self.media_match_runtime_snapshot.current_decision.clone();
         snapshot.nearest_match = self.media_match_runtime_snapshot.nearest_match.clone();
         snapshot.last_evidence = self.media_match_runtime_snapshot.last_evidence.clone();
@@ -1245,8 +1280,10 @@ impl GuiPersistedConfigRuntimeOwner {
             self.media_match_runtime_snapshot = GuiMediaMatchRuntimeSnapshot::from(&state);
             return;
         }
-        let snapshot =
-            probe_media_match_startup_snapshot(self.syncplay_qsettings_root().as_deref(), settings);
+        let settings = settings
+            .map(crate::app::shell_state::media_match_settings_from_stored_settings)
+            .unwrap_or_default();
+        let snapshot = self.refresh_media_match_runtime_snapshot(&settings);
         self.media_match_runtime_snapshot = snapshot;
     }
 

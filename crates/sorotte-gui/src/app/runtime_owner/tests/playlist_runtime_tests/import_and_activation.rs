@@ -194,6 +194,7 @@ fn gui_persisted_config_runtime_owner_publishes_cached_plex_uri_for_existing_m3u
             title: "Episode 1".to_owned(),
             media_type: PlexMediaType::Episode,
             duration_millis: Some(90_000),
+            file_identity: Default::default(),
         },
     );
     cache

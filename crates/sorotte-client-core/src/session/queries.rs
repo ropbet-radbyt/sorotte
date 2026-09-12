@@ -946,17 +946,6 @@ impl ClientSession {
             .and_then(|file| file.media_match.as_ref())
     }
 
-    pub fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
-        self.current_room_media_match_peer_file_states()
-            .into_iter()
-            .filter_map(|state| {
-                state
-                    .media_match_signature
-                    .map(|signature| (state.username, signature))
-            })
-            .collect()
-    }
-
     pub fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
         let Some((local_username, local_room)) = self.local_username_and_room() else {
             return Vec::new();

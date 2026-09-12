@@ -170,6 +170,8 @@ Explicit-IPC mode applies a practical subset of startup player options directly 
 
 ## Streaming, Buffering, and Recovery
 
+Stream Support checks yt-dlp and Deno in the background before opening an extractor page URL. The GUI remains usable while helpers are checked, imported, or downloaded. Disabling the corresponding plugin cancels its pending helper work. Imports must identify themselves as the selected tool; a failed import or installation keeps the previous binaries and metadata. Successful remediation retries the selected playlist entry without adding it again.
+
 The GUI Streaming section and the `[client_settings]` section of `sorotte.ini` support typed quality and cache controls. A conservative example is:
 
 ```ini
