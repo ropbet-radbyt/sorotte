@@ -14,6 +14,9 @@ use sorotte_protocol::{
     ListPayload, ProtocolMessage, decode_message_line, extract_hello_from_message,
 };
 
+#[path = "support/tcp.rs"]
+mod tcp;
+
 struct ServerChild {
     child: Option<Child>,
 }
@@ -85,7 +88,10 @@ fn wait_for_server(port: u16, child: &mut Child) -> TcpStream {
         {
             panic!("sorotte-server exited before accepting connections: {status}");
         }
-        if let Ok(stream) = TcpStream::connect(address) {
+        if let Ok(stream) = TcpStream::connect(address).and_then(|stream| {
+            tcp::require_server_peer(&stream)?;
+            Ok(stream)
+        }) {
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .expect("read timeout should be configurable");
