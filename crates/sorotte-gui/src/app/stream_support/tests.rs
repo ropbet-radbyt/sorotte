@@ -4,36 +4,14 @@ use crate::app::shell_state::{
 
 use super::install::{
     import_managed_stream_helper_downloader, import_managed_stream_helper_js_runtime,
-    validate_installed_stream_helper_component,
 };
 use super::metadata::{
     current_unix_seconds, load_managed_stream_helper_metadata, managed_installation_is_stale,
 };
 use super::paths::{managed_stream_helper_bin_dir, managed_stream_helper_path_prefixes};
-use super::process::find_executable_on_path;
 use super::snapshot::{probe_stream_helper_runtime_snapshot, probe_stream_helper_startup_snapshot};
-use super::{
-    ManagedStreamHelperComponent, ManagedStreamHelperMetadata, STREAM_HELPER_STALE_AFTER,
-    StreamHelperAttachMode,
-};
-
-fn version_capable_executable() -> std::path::PathBuf {
-    [
-        "python.exe",
-        "python",
-        "python3.exe",
-        "python3",
-        "pwsh.exe",
-        "pwsh",
-        "powershell.exe",
-        "powershell",
-        "node.exe",
-        "node",
-    ]
-    .iter()
-    .find_map(|candidate| find_executable_on_path(&[*candidate]))
-    .expect("a version-capable executable should be available on PATH for stream-helper tests")
-}
+use super::{ManagedStreamHelperMetadata, STREAM_HELPER_STALE_AFTER, StreamHelperAttachMode};
+use crate::app::helper_tools::tests::tool_fixture;
 
 #[test]
 fn managed_stream_helper_path_prefixes_include_existing_bin_dir() {
@@ -200,7 +178,8 @@ fn importing_stream_helper_binaries_populates_managed_helper_paths_and_metadata(
         std::process::id(),
         current_unix_seconds()
     ));
-    let source_executable = version_capable_executable();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let source_executable = tool_fixture(fixture_root.path(), "yt-dlp");
 
     let downloader_message = import_managed_stream_helper_downloader(&root, &source_executable)
         .expect("downloader import should succeed");
@@ -215,6 +194,7 @@ fn importing_stream_helper_binaries_populates_managed_helper_paths_and_metadata(
             .is_file()
     );
 
+    let source_executable = tool_fixture(fixture_root.path(), "deno");
     let js_runtime_message = import_managed_stream_helper_js_runtime(&root, &source_executable)
         .expect("js-runtime import should succeed");
     assert!(js_runtime_message.contains("Imported Deno"));
@@ -241,29 +221,30 @@ fn importing_stream_helper_binaries_populates_managed_helper_paths_and_metadata(
 }
 
 #[test]
-fn installed_stream_helper_validation_rejects_unusable_binaries() {
-    let root = std::env::temp_dir().join(format!(
-        "syncplay-stream-helper-invalid-install-{}-{}",
-        std::process::id(),
-        current_unix_seconds()
-    ));
-    let path = managed_stream_helper_bin_dir(&root).join(if cfg!(windows) {
-        "yt-dlp.exe"
-    } else {
-        "yt-dlp"
-    });
-    std::fs::create_dir_all(path.parent().expect("managed helper dir should exist"))
-        .expect("managed helper dir should be created");
-    std::fs::write(&path, b"not an executable").expect("invalid helper payload should be written");
-
-    let error =
-        validate_installed_stream_helper_component(&path, ManagedStreamHelperComponent::Downloader)
-            .expect_err("invalid helper payload should fail validation");
-    assert!(error.contains("yt-dlp could not be executed after install"));
-    assert!(
-        !path.exists(),
-        "failed install validation should remove the unusable helper payload"
-    );
-
-    let _ = std::fs::remove_dir_all(root);
+fn wrong_program_import_preserves_previous_helper_and_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let fixtures = tempfile::tempdir().unwrap();
+    import_managed_stream_helper_downloader(root.path(), &tool_fixture(fixtures.path(), "yt-dlp"))
+        .unwrap();
+    let bin = managed_stream_helper_bin_dir(root.path());
+    let downloader = bin.join(super::paths::managed_downloader_file_name());
+    let old_binary = std::fs::read(&downloader).unwrap();
+    let old_metadata = std::fs::read(bin.join("metadata.json")).unwrap();
+    for mode in ["wrong", "fail"] {
+        assert!(
+            import_managed_stream_helper_downloader(
+                root.path(),
+                &tool_fixture(fixtures.path(), mode)
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&downloader).unwrap(), old_binary);
+        assert_eq!(
+            std::fs::read(bin.join("metadata.json")).unwrap(),
+            old_metadata
+        );
+    }
+    // Selecting the installed executable itself must also work without deleting the source.
+    import_managed_stream_helper_downloader(root.path(), &downloader).unwrap();
+    assert_eq!(std::fs::read(&downloader).unwrap(), old_binary);
 }

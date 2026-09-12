@@ -233,6 +233,7 @@ pub(super) enum GuiStreamTargetKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiStreamHelperHealth {
     Healthy,
+    Checking,
     MissingDownloader,
     MissingJsRuntime,
     Stale,
@@ -245,6 +246,7 @@ impl GuiStreamHelperHealth {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
+            Self::Checking => "checking",
             Self::MissingDownloader => "missing-downloader",
             Self::MissingJsRuntime => "missing-js-runtime",
             Self::Stale => "stale",

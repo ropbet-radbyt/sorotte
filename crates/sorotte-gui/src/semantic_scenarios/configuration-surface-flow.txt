@@ -21,6 +21,17 @@ activate	plugins:plex:enabled
 assert-value	plugins:plex:enabled	no
 activate	plugins:plex:enabled
 assert-value	plugins:plex:enabled	yes
+# Helper plugin toggles cancel owned background work while preserving the draft.
+activate	plugins:list:stream-support
+activate	plugins:stream-support:enabled
+assert-value	plugins:stream-support:enabled	no
+activate	plugins:stream-support:enabled
+assert-value	plugins:stream-support:enabled	yes
+activate	plugins:list:media-matching
+activate	plugins:media-matching:enabled
+assert-value	plugins:media-matching:enabled	no
+activate	plugins:media-matching:enabled
+assert-value	plugins:media-matching:enabled	yes
 activate	configuration-root
 assert-value	settings.connection.host	draft-only.example
 assert-value	settings.connection.server_password.status	No password is configured.

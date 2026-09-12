@@ -130,8 +130,7 @@ impl GuiPersistedConfigRuntimeOwner {
         error: String,
     ) {
         let message = format!("{failure_label}: {error}");
-        let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
+        let mut snapshot = self.media_match_runtime_snapshot.clone();
         snapshot.message = Some(message.clone());
         self.media_match_runtime_snapshot = snapshot.clone();
         self.clear_media_match_remediation_progress(handle, projected_state);
@@ -419,9 +418,31 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(rx) = self.media_match_tool_worker_rx.take() else {
             return;
         };
+        if rx.root != self.media_match_root_for_request(projected_state)
+            || !projected_state
+                .settings
+                .plugin_enablement
+                .enabled_for(GuiPluginSelection::MediaMatching)
+        {
+            self.clear_media_match_remediation_progress(handle, projected_state);
+            return;
+        }
         let mut keep_rx = true;
         loop {
-            match rx.try_recv() {
+            match rx.rx.try_recv() {
+                Ok(GuiMediaMatchToolWorkerEvent::Probed(snapshot)) => {
+                    keep_rx = false;
+                    let snapshot = self.apply_media_match_probe_snapshot(
+                        *snapshot,
+                        &projected_state.media_match.model.settings,
+                    );
+                    Self::push_actions_and_project(
+                        handle,
+                        projected_state,
+                        vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+                    );
+                    break;
+                }
                 Ok(GuiMediaMatchToolWorkerEvent::Progress(progress)) => {
                     self.apply_media_match_progress(handle, projected_state, progress);
                 }
@@ -1993,22 +2014,26 @@ impl GuiPersistedConfigRuntimeOwner {
             ),
             0.02,
         );
-        let (tx, rx) = mpsc::channel();
-        match thread::Builder::new()
-            .name("sorotte-gui-media-match-install".to_owned())
-            .spawn(move || {
+        match crate::app::helper_tools::HelperWorker::spawn(
+            "sorotte-gui-media-match-install",
+            Some(root.clone()),
+            move |cancel, tx| {
                 let progress_tx = tx.clone();
-                let result =
-                    install_or_update_managed_media_match_tools_with_progress(&root, |progress| {
+                let result = install_or_update_managed_media_match_tools_with_progress(
+                    &root,
+                    Some(cancel),
+                    |progress| {
                         let _ = progress_tx.send(GuiMediaMatchToolWorkerEvent::Progress(progress));
-                    });
+                    },
+                );
                 let _ = tx.send(GuiMediaMatchToolWorkerEvent::Finished {
                     result,
                     failure_label: "Media Matching tool install failed",
                 });
-            }) {
-            Ok(_thread) => {
-                self.media_match_tool_worker_rx = Some(rx);
+            },
+        ) {
+            Ok(worker) => {
+                self.media_match_tool_worker_rx = Some(worker);
             }
             Err(error) => self.finish_media_match_tool_error(
                 handle,
@@ -2057,18 +2082,16 @@ impl GuiPersistedConfigRuntimeOwner {
             Some(source_path.clone()),
             0.02,
         );
-        let (tx, rx) = mpsc::channel();
-        match thread::Builder::new()
-            .name(format!(
-                "sorotte-gui-media-match-import-{}",
-                tool.display_name()
-            ))
-            .spawn(move || {
+        match crate::app::helper_tools::HelperWorker::spawn(
+            "sorotte-gui-media-match-import",
+            Some(root.clone()),
+            move |cancel, tx| {
                 let progress_tx = tx.clone();
                 let result = import_managed_media_match_tool_with_progress(
                     &root,
                     tool,
                     Path::new(&source_path),
+                    Some(cancel),
                     |progress| {
                         let _ = progress_tx.send(GuiMediaMatchToolWorkerEvent::Progress(progress));
                     },
@@ -2077,9 +2100,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     result,
                     failure_label: "Media Matching tool import failed",
                 });
-            }) {
-            Ok(_thread) => {
-                self.media_match_tool_worker_rx = Some(rx);
+            },
+        ) {
+            Ok(worker) => {
+                self.media_match_tool_worker_rx = Some(worker);
             }
             Err(error) => self.finish_media_match_tool_error(
                 handle,
@@ -2141,24 +2165,11 @@ impl GuiPersistedConfigRuntimeOwner {
         let _ = self.media_match_config_path_for_request(projected_state);
         let snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
-        let mut actions = vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(
-            snapshot.clone(),
-        )];
-        if snapshot.health == GuiMediaMatchToolHealth::Healthy {
-            let message = "Media Matching tools are ready.".to_owned();
-            actions.push(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Success,
-                message: message.clone(),
-            });
-            actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-        } else if let Some(message) = snapshot.message.clone() {
-            actions.push(GuiShellAction::PushTransientNotification {
-                level: GuiTransientNotificationLevel::Warning,
-                message: message.clone(),
-            });
-            actions.push(GuiShellAction::AnnounceSystemChatEvent(message));
-        }
-        Self::push_actions_and_project(handle, projected_state, actions);
+        Self::push_actions_and_project(
+            handle,
+            projected_state,
+            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
+        );
         true
     }
 

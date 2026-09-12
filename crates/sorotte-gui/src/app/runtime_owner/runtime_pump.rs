@@ -50,6 +50,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.drain_player_chat_input(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_media_match_tool_worker(handle, &mut projected_state);
+        media_resolution_completed |= self.pump_stream_helper_worker(handle, &mut projected_state);
         self.pump_media_match_background_worker(handle, &mut projected_state);
         media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
@@ -107,6 +108,8 @@ impl GuiPersistedConfigRuntimeOwner {
             self.drain_player_chat_input(handle, &mut projected_state);
             self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
             self.pump_media_match_tool_worker(handle, &mut projected_state);
+            media_resolution_completed |=
+                self.pump_stream_helper_worker(handle, &mut projected_state);
             self.pump_media_match_background_worker(handle, &mut projected_state);
             media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
             let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
@@ -395,6 +398,12 @@ impl GuiPersistedConfigRuntimeOwner {
             self.startup_stream_helper_probe_completed = true;
             self.startup_stream_helper_probe_rx = None;
             return;
+        }
+        if self.stream_helper_runtime_snapshot.target.is_some()
+            || self.stream_helper_worker.is_some()
+        {
+            self.startup_stream_helper_probe_completed = true;
+            self.startup_stream_helper_probe_rx = None;
         }
         if self.startup_stream_helper_probe_completed {
             return;

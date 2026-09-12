@@ -59,8 +59,7 @@ use sorotte_plex::{
 use self::updates::GuiUpdateRuntime;
 use super::media_match_support::{
     GuiMediaMatchIndexBuildTransaction, MediaMatchIndexRebuildResult, MediaMatchToolProgress,
-    clear_persisted_media_match_cache_at_root, probe_media_match_runtime_snapshot,
-    probe_media_match_startup_snapshot,
+    clear_persisted_media_match_cache_at_root,
 };
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
@@ -463,11 +462,14 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) playlist_auto_advance_eof_latched: bool,
     pub(super) user_offset_seconds: f64,
     pub(super) stream_helper_runtime_snapshot: GuiStreamHelperRuntimeSnapshot,
+    stream_helper_worker: Option<requests::stream_helper::StreamHelperWorker>,
+    stream_helper_probe_scope: Option<requests::stream_helper::StreamHelperProbeScope>,
     pub(super) stream_helper_remediation_runtime_snapshot:
         GuiStreamHelperRemediationRuntimeSnapshot,
     pub(super) media_match_runtime_snapshot: GuiMediaMatchRuntimeSnapshot,
     pub(super) media_match_remediation_runtime_snapshot: GuiMediaMatchRemediationRuntimeSnapshot,
-    pub(super) media_match_tool_worker_rx: Option<mpsc::Receiver<GuiMediaMatchToolWorkerEvent>>,
+    pub(super) media_match_tool_worker_rx:
+        Option<super::helper_tools::HelperWorker<GuiMediaMatchToolWorkerEvent>>,
     pub(super) media_match_background_worker_rx:
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
@@ -1147,6 +1149,7 @@ impl std::fmt::Debug for GuiPendingPlaylistSourceResolution {
 
 #[derive(Debug)]
 pub(super) enum GuiMediaMatchToolWorkerEvent {
+    Probed(Box<GuiMediaMatchRuntimeSnapshot>),
     Progress(MediaMatchToolProgress),
     Finished {
         result: Result<String, String>,

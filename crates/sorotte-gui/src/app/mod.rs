@@ -5,6 +5,7 @@ mod connection_workflows;
 mod feature_slices;
 mod feature_snapshots;
 mod feedback_workflows;
+mod helper_tools;
 mod launcher;
 mod local_command_dispatch;
 mod main_window_projection;

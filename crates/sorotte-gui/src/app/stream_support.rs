@@ -25,12 +25,12 @@ pub(super) use paths::{
 #[cfg(test)]
 pub(super) use process::with_stream_helper_path_lookup_for_test;
 pub(super) use snapshot::{
-    probe_stream_helper_runtime_snapshot, probe_stream_helper_startup_snapshot,
+    probe_stream_helper_runtime_snapshot, probe_stream_helper_runtime_snapshot_with_cancel,
+    probe_stream_helper_startup_snapshot,
 };
 
 const STREAM_HELPER_STALE_AFTER: Duration = Duration::from_secs(30 * 86_400);
 const STREAM_HELPER_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
-const STREAM_HELPER_USER_AGENT: &str = concat!("sorotte-gui/", env!("CARGO_PKG_VERSION"));
 const YTDLP_WINDOWS_LATEST_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 
@@ -109,6 +109,12 @@ impl StreamHelperRemediationProgress {
 }
 
 impl ManagedStreamHelperComponent {
+    fn helper_tool(self) -> crate::app::helper_tools::HelperTool {
+        match self {
+            Self::Downloader => crate::app::helper_tools::HelperTool::YtDlp,
+            Self::JsRuntime => crate::app::helper_tools::HelperTool::Deno,
+        }
+    }
     fn display_name(self) -> &'static str {
         match self {
             Self::Downloader => "yt-dlp",

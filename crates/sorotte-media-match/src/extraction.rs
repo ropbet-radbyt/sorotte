@@ -11,6 +11,25 @@ use std::os::windows::ffi::OsStrExt;
 mod process;
 use process::{Deadline, PROBE_STDOUT_LIMIT};
 
+/// Run a helper probe with one deadline for execution and both output pipes.
+/// The owned job/process group is reaped before returning, including on cancellation.
+pub fn run_tool_probe(
+    tool: &'static str,
+    path: &Path,
+    args: &[&str],
+    timeout: std::time::Duration,
+    cancel_flag: Option<&AtomicBool>,
+) -> Result<Output, MediaFingerprintError> {
+    process::run_output(
+        tool,
+        process::command(path, args.iter().map(std::ffi::OsString::from)),
+        cancel_flag,
+        Deadline::after(timeout),
+        PROBE_STDOUT_LIMIT,
+    )
+    .map(|(output, _)| output)
+}
+
 use crate::{
     AudioAnchor, MEDIA_MATCH_ALGORITHM_VERSION,
     anchors::media_fingerprint_wire_summary_from_record,

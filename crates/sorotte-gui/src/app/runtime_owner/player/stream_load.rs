@@ -10,6 +10,7 @@ impl GuiPersistedConfigRuntimeOwner {
         health: GuiStreamHelperHealth,
     ) -> GuiTransientNotificationLevel {
         match health {
+            GuiStreamHelperHealth::Checking => GuiTransientNotificationLevel::Info,
             GuiStreamHelperHealth::Broken => GuiTransientNotificationLevel::Error,
             GuiStreamHelperHealth::Healthy
             | GuiStreamHelperHealth::MissingDownloader

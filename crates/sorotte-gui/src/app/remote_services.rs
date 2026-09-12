@@ -1766,7 +1766,7 @@ fn env_response_override(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn ensure_rustls_crypto_provider() {
+pub(in crate::app) fn ensure_rustls_crypto_provider() {
     RUSTLS_PROVIDER_INIT.get_or_init(|| {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });

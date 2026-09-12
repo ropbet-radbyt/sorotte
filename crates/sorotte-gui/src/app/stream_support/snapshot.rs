@@ -18,6 +18,15 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
     attach_mode: StreamHelperAttachMode,
     target: Option<&str>,
 ) -> GuiStreamHelperRuntimeSnapshot {
+    probe_stream_helper_runtime_snapshot_with_cancel(root, attach_mode, target, None)
+}
+
+pub(in crate::app) fn probe_stream_helper_runtime_snapshot_with_cancel(
+    root: Option<&Path>,
+    attach_mode: StreamHelperAttachMode,
+    target: Option<&str>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> GuiStreamHelperRuntimeSnapshot {
     let extractor_target = target.and_then(|target| {
         (browser_stream_target_kind(target, None) == GuiStreamTargetKind::ExtractorPageUrl)
             .then_some(target)
@@ -70,12 +79,14 @@ pub(in crate::app) fn probe_stream_helper_runtime_snapshot(
         attach_mode,
         discovery.managed_downloader.clone(),
         discovery.environment_downloader.clone(),
+        cancel,
     );
     let js_runtime_probe = probe_stream_helper_component(
         ManagedStreamHelperComponent::JsRuntime,
         attach_mode,
         discovery.managed_js_runtime.clone(),
         discovery.environment_js_runtime.clone(),
+        cancel,
     );
     let snapshot_details = StreamHelperRuntimeSnapshotDetails {
         install_location: install_location.clone(),
