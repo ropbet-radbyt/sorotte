@@ -81,13 +81,6 @@ impl GuiSessionRuntimeAdapter for CoordinatorAuthoritySession {
         Ok(current_servers)
     }
 
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
     fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
         Some(PlaybackCoordinationSnapshot {
             media_generation: Some(1),

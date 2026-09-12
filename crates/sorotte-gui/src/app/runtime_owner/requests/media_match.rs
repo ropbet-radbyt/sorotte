@@ -2456,13 +2456,6 @@ mod tests {
             Ok(self.target.clone())
         }
 
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
         fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
             Ok(())
         }
@@ -2512,13 +2505,6 @@ mod tests {
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(current_servers)
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

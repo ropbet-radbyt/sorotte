@@ -1880,13 +1880,6 @@ impl GuiSessionRuntimeAdapter for PlaybackPublicationProbeSession {
     ) -> Result<Vec<(String, String)>, String> {
         Ok(Vec::new())
     }
-
-    fn search_missing_media(
-        &mut self,
-        _directories: Vec<String>,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
 }
 
 struct PlaybackPublicationProbePlayer {

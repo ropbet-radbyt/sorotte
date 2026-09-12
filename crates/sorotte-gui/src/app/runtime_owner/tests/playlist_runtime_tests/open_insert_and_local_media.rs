@@ -1477,7 +1477,7 @@ fn gui_persisted_config_runtime_owner_flushes_shared_playlist_before_player_open
             .session
             .as_mut()
             .expect("loopback session should remain installed")
-            .request_user_list()
+            .queue_user_list_for_test()
             .expect("first-State user-list refresh should queue"),
         "first-State user-list refresh should produce a reliable List"
     );
@@ -1570,7 +1570,7 @@ fn gui_persisted_config_runtime_owner_resumes_open_after_delayed_playlist_delive
         .session
         .as_mut()
         .expect("loopback session should remain installed")
-        .request_user_list()
+        .queue_user_list_for_test()
         .expect("reliable List should queue");
     owner.report_external_player_availability(ExternalPlayerAvailability::Connecting);
     let opens = std::sync::Arc::new(std::sync::Mutex::new(0));
@@ -3143,13 +3143,6 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

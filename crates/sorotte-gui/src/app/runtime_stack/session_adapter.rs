@@ -34,10 +34,6 @@ pub(in crate::app) enum GuiAttachedPlayerRuntimeAction {
     },
 }
 
-#[allow(
-    dead_code,
-    reason = "Session adapter hooks are exercised by concrete adapters and targeted GUI tests."
-)]
 pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     fn drain_gui_actions(&mut self, _state: &GuiRuntimeState) -> Vec<GuiShellAction> {
         Vec::new()
@@ -101,7 +97,8 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         self.apply_message_json(json_line)
     }
 
-    fn request_user_list(&mut self) -> Result<bool, String> {
+    #[cfg(test)]
+    fn queue_user_list_for_test(&mut self) -> Result<bool, String> {
         Ok(false)
     }
 
@@ -426,10 +423,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
-    fn local_paused_for_cache(&self) -> Option<bool> {
-        None
-    }
-
     fn local_username(&self) -> Option<&str> {
         None
     }
@@ -462,7 +455,8 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         None
     }
 
-    fn note_local_playlist_index_reset_intent(&mut self, _pause_before_sync: bool) {}
+    #[cfg(test)]
+    fn seed_playlist_reset_intent_for_test(&mut self, _pause_before_sync: bool) {}
 
     fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
         None
@@ -486,10 +480,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         &mut self,
         _player_attachment_epoch: u64,
     ) -> Option<bool> {
-        None
-    }
-
-    fn take_pending_playlist_index_reset_intent(&mut self) -> Option<bool> {
         None
     }
 
@@ -518,10 +508,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _tiers: BTreeMap<String, MediaMatchTier>,
     ) -> Result<(), String> {
         Ok(())
-    }
-
-    fn current_room_media_match_signatures(&self) -> Vec<(String, MediaMatchWireSignature)> {
-        Vec::new()
     }
 
     fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
@@ -567,25 +553,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         Ok(())
     }
 
-    fn record_external_player_pause_command_result(
-        &mut self,
-        _paused: bool,
-        _succeeded: bool,
-        _now_seconds: f64,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn record_external_system_player_pause_command_result(
-        &mut self,
-        _paused: bool,
-        _cause: PlayerCommandCause,
-        _succeeded: bool,
-        _now_seconds: f64,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
     fn take_attached_player_local_runtime_actions(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -597,14 +564,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
         _now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         Ok(Vec::new())
-    }
-
-    fn rebase_attached_player_transport_telemetry(
-        &mut self,
-        update: PlayerTransportTelemetryUpdate,
-        now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        self.sync_attached_player_transport_telemetry(update, now_seconds)
     }
 
     fn restore_desync_correction_dispatch_snapshot(
@@ -648,8 +607,6 @@ pub(in crate::app) trait GuiSessionRuntimeAdapter: Send {
     fn missing_media_search_target_file_name(&self) -> Result<String, String> {
         Err("Attached session runtime does not expose a missing-media search target.".to_owned())
     }
-
-    fn search_missing_media(&mut self, directories: Vec<String>) -> Result<Option<String>, String>;
 
     fn handle_transport_disconnect(
         &mut self,

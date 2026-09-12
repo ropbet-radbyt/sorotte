@@ -723,7 +723,7 @@ fn gui_persisted_config_runtime_owner_preserves_deliberate_seek_after_recent_rew
         session
             .sync_local_playback_telemetry(Some(false), Some(2.0))
             .expect("initial local telemetry should sync");
-        session.note_local_playlist_index_reset_intent(true);
+        session.seed_playlist_reset_intent_for_test(true);
     }
 
     handle.push_request(GuiRuntimeRequest::SeekToPosition(10.0));

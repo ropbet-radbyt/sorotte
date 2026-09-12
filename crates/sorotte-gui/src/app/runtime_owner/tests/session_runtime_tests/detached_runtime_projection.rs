@@ -72,13 +72,6 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
     }
 
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(
@@ -307,13 +300,6 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

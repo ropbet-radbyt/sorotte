@@ -753,7 +753,14 @@ fn list_snapshot_file_payload_tracks_mixed_raw_and_hashed_metadata() {
             "profiles": [{"profile": "audio-constellation-v3", "algorithmVersion": 3, "durationMs": null, "audio": null}]
         })
     );
-    assert_eq!(session.current_room_media_match_signatures().len(), 1);
+    assert_eq!(
+        session
+            .current_room_media_match_peer_file_states()
+            .iter()
+            .filter(|peer| peer.media_match_signature.is_some())
+            .count(),
+        1
+    );
 }
 
 #[test]

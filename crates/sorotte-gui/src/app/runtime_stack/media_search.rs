@@ -84,14 +84,6 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         Ok(file_name.to_owned())
     }
 
-    fn missing_media_file_name_matches(target: &str, candidate: &str) -> bool {
-        if cfg!(windows) {
-            candidate.eq_ignore_ascii_case(target)
-        } else {
-            candidate == target
-        }
-    }
-
     pub(in crate::app) fn missing_media_file_name_lookup_key(
         target_file_name: &str,
     ) -> Option<String> {
@@ -687,75 +679,5 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             worker_count,
             report_progress,
         )
-    }
-
-    pub(in crate::app) fn search_path_for_missing_media_target(
-        target_file_name: &str,
-        path: &Path,
-    ) -> Result<Option<String>, String> {
-        let target_file_name = target_file_name.trim();
-        let target_name = Path::new(target_file_name)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(target_file_name);
-        if path.is_file() {
-            let matches_target =
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|candidate| {
-                        Self::missing_media_file_name_matches(target_name, candidate)
-                    });
-            if matches_target {
-                return Ok(Some(path.to_string_lossy().into_owned()));
-            }
-            return Ok(None);
-        }
-
-        if !path.is_dir() {
-            return Ok(None);
-        }
-
-        let mut pending_directories = vec![path.to_path_buf()];
-        while let Some(directory) = pending_directories.pop() {
-            for candidate in [
-                directory.join(target_file_name),
-                directory.join(target_name),
-            ] {
-                if candidate.is_file() {
-                    return Ok(Some(candidate.to_string_lossy().into_owned()));
-                }
-            }
-
-            let mut found_path = None;
-            Self::visit_missing_media_directory_entries(
-                &directory,
-                |file_name, is_dir, is_file| {
-                    if found_path.is_some() {
-                        return false;
-                    }
-                    if is_dir {
-                        pending_directories.push(directory.join(file_name));
-                        return true;
-                    }
-                    if !is_file {
-                        return true;
-                    }
-                    let matches_target = file_name.to_str().is_some_and(|candidate| {
-                        Self::missing_media_file_name_matches(target_name, candidate)
-                    });
-                    if matches_target {
-                        found_path = Some(directory.join(file_name).to_string_lossy().into_owned());
-                        return false;
-                    }
-                    true
-                },
-            )?;
-            if found_path.is_some() {
-                return Ok(found_path);
-            }
-        }
-        Ok(None)
     }
 }

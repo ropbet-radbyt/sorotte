@@ -748,24 +748,6 @@ where
         }
     }
 
-    /// Tags the result of a pause/play command issued by an attached player
-    /// surface outside the core adapter. The resulting telemetry edge remains
-    /// causally owned by the original Sorotte gesture and therefore cannot be
-    /// reclassified as a second native-player readiness mutation.
-    pub fn record_external_player_pause_command_result(
-        &mut self,
-        paused: bool,
-        succeeded: bool,
-        now_seconds: f64,
-    ) -> Result<(), PlayerError> {
-        let command_id = self.begin_external_player_pause_command(
-            paused,
-            PlayerCommandCause::LocalUserPlaybackControl,
-            now_seconds,
-        );
-        self.finish_external_player_pause_command(command_id, succeeded, now_seconds)
-    }
-
     /// Confirms an explicit native-player action only when the classifier has
     /// already staged the matching same-scope transport edge. Successful
     /// confirmation consumes that edge and dispatches its indirect readiness

@@ -2960,13 +2960,6 @@ mod ordered_delivery_tests {
             Ok(current_servers)
         }
 
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-
         fn sync_attached_player_transport_telemetry(
             &mut self,
             _update: sorotte_player_api::PlayerTransportTelemetryUpdate,
@@ -3000,13 +2993,6 @@ mod ordered_delivery_tests {
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(current_servers)
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
 
         fn prepare_attached_playback_media(

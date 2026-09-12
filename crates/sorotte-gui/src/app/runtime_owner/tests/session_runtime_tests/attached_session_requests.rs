@@ -112,13 +112,6 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
         fn missing_media_search_target_file_name(&self) -> Result<String, String> {
             Ok("found.mkv".to_owned())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Err("owner-side missing-media resolution should be used instead".to_owned())
-        }
     }
 
     fn drain_actions_except_media_index(

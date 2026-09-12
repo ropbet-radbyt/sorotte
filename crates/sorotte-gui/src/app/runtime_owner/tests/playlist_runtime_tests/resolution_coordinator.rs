@@ -1042,13 +1042,6 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
     }
 
     let root = test_temp_root("playlist-origin-session-revision");

@@ -126,13 +126,6 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
         }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
-        }
     }
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(TelemetryPlayerState {
@@ -360,7 +353,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         .session
         .as_mut()
         .expect("session should exist")
-        .note_local_playlist_index_reset_intent(true);
+        .seed_playlist_reset_intent_for_test(true);
 
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         shared_playlist_enabled: Some(true),
@@ -473,13 +466,6 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
             _language: Option<&str>,
         ) -> Result<Vec<(String, String)>, String> {
             Ok(Vec::new())
-        }
-
-        fn search_missing_media(
-            &mut self,
-            _directories: Vec<String>,
-        ) -> Result<Option<String>, String> {
-            Ok(None)
         }
     }
 

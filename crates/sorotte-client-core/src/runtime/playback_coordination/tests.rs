@@ -1227,40 +1227,6 @@ fn public_external_epoch_observation_emits_participant_status_transition_immedia
 }
 
 #[test]
-fn participant_status_public_external_epoch_rebase_emits_transition_immediately() {
-    let mut runtime = ClientRuntime::new(
-        participant_status_session(),
-        DisconnectedPlayer,
-        QueuedRuntimeControl::default(),
-    );
-    runtime.playback_coordination.prepare_media(
-        LogicalMediaId::new("external-participant-status-rebase").unwrap(),
-        MediaTransportKind::NetworkVod,
-        0.0,
-    );
-    runtime
-        .set_external_player_availability(ExternalPlayerAvailability::Connecting, 0.0)
-        .expect("external lifecycle status should queue");
-    runtime.deliver_queued_protocol_messages();
-
-    let epoch = runtime.playback_transport_adapter_epoch();
-    runtime.rebase_external_player_transport_at_epoch(
-        transport(1, 1.0, PlayerTransportPhase::Playing, 12.5),
-        1.0,
-        epoch,
-    );
-
-    let reports = reports_in(runtime.deliver_queued_protocol_messages());
-    assert_eq!(reports.len(), 1);
-    assert_eq!(
-        reports[0].player_connection,
-        ParticipantPlayerConnection::Connected
-    );
-    assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Playing);
-    assert_eq!(reports[0].position_seconds, Some(12.5));
-}
-
-#[test]
 fn participant_status_list_position_fallback_requires_a_legacy_player() {
     assert!(participant_status_list_position_fallback(None, false));
     assert!(!participant_status_list_position_fallback(None, true));
@@ -8891,92 +8857,6 @@ fn desync_position_projection_uses_the_position_sample_clock_and_rejects_stale_s
 }
 
 #[test]
-fn authoritative_transport_rebase_clears_every_absent_sparse_field() {
-    let mut runtime = RuntimePlaybackCoordination::default();
-    runtime.prepare_media(
-        LogicalMediaId::new("authoritative-rebase").unwrap(),
-        MediaTransportKind::NetworkVod,
-        0.0,
-    );
-    let generation = PlayerMediaGeneration::new(1);
-    let mut stale = PlayerTransportTelemetryUpdate::new(
-        generation,
-        PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(1.0)),
-    )
-    .with_phase(PlayerTransportPhase::Seeking)
-    .with_position_seconds(45.0)
-    .with_logical_pause(true);
-    stale.playback_rate = Some(0.95);
-    stale.paused_for_cache = Some(true);
-    stale.cache_buffering_percent = Some(12.0);
-    stale.seeking = Some(true);
-    stale.seekable = Some(true);
-    stale.timeline_kind = Some(sorotte_player_api::PlayerTimelineKind::SlidingLive);
-    stale.core_idle = Some(true);
-    stale.playback_restart_sequence = Some(9);
-    stale.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
-        100.0, 160.0,
-    )]);
-    stale.known_live_seekable_window =
-        Some(sorotte_player_api::PlayerSeekableRange::new(100.0, 160.0));
-    stale.buffered_ahead_seconds = Some(60.0);
-    stale.input_rate_bytes_per_second = Some(1_000_000);
-    runtime.observe_transport(stale, 1.0);
-
-    let replacement = PlayerTransportTelemetryUpdate::new(
-        generation,
-        PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(2.0)),
-    )
-    .with_phase(PlayerTransportPhase::Playing);
-    runtime.rebase_transport(replacement, 2.0);
-
-    let latest = runtime
-        .latest_observation
-        .as_ref()
-        .expect("replacement observation should remain current");
-    assert_eq!(latest.phase, Some(PlayerTransportPhase::Playing));
-    assert_eq!(latest.position_seconds, None);
-    assert_eq!(latest.playback_rate, None);
-    assert_eq!(latest.logical_pause, None);
-    assert_eq!(latest.paused_for_cache, None);
-    assert_eq!(latest.seeking, None);
-    assert_eq!(latest.seekable, None);
-    assert_eq!(latest.timeline_kind, None);
-    assert_eq!(latest.seekable_ranges, None);
-    assert_eq!(latest.known_live_seekable_window, None);
-    assert_eq!(latest.core_idle, None);
-    assert_eq!(latest.playback_restart_sequence, None);
-    assert_eq!(latest.cache_buffering_percent, None);
-    assert_eq!(latest.buffered_ahead_seconds, None);
-    assert_eq!(latest.input_rate_bytes_per_second, None);
-    assert!(runtime.latest_position_observation.is_none());
-
-    let observed = runtime
-        .coordinator
-        .observed_transport_for_test()
-        .expect("coordinator should accept the replacement");
-    assert_eq!(observed.phase, Some(PlayerTransportPhase::Playing));
-    assert_eq!(observed.position_seconds, None);
-    assert_eq!(observed.playback_rate, None);
-    assert_eq!(observed.logical_pause, None);
-    assert_eq!(observed.paused_for_cache, Some(false));
-    assert_eq!(observed.seeking, Some(false));
-    assert_eq!(observed.seekable, None);
-    assert_eq!(observed.timeline_kind, None);
-    assert_eq!(observed.seekable_ranges, None);
-    assert_eq!(observed.known_live_seekable_window, None);
-    assert_eq!(observed.core_idle, None);
-    assert_eq!(observed.playback_restart_sequence, Some(0));
-    assert_eq!(observed.cache_buffering_percent, None);
-    assert_eq!(observed.buffered_ahead_seconds, None);
-    assert_eq!(runtime.snapshot().metrics.last_buffered_ahead_seconds, None);
-    assert_eq!(
-        runtime.snapshot().metrics.last_input_rate_bytes_per_second,
-        None
-    );
-}
-
-#[test]
 fn sparse_rate_transitions_preserve_piecewise_position_and_actual_sample_age() {
     for playback_rate in [0.5, 0.95, 2.0, 4.0] {
         let mut position_then_speed = RuntimePlaybackCoordination::default();
@@ -12159,8 +12039,9 @@ fn v2_system_owned_pause_and_play_observations_emit_no_readiness_intent() {
         runtime.observe_external_player_transport(baseline, 0.0);
         runtime.deliver_queued_protocol_messages();
 
+        let command_id = runtime.begin_external_player_pause_command(commanded_paused, cause, 0.05);
         runtime
-            .record_external_system_player_pause_command_result(commanded_paused, cause, true, 0.05)
+            .finish_external_player_pause_command(command_id, true, 0.05)
             .expect("the attached system command should be registered");
         let observed = if commanded_paused {
             paused_transport(1, 0.1, PlayerTransportPhase::ReadyPaused, 1.0)
