@@ -96,6 +96,7 @@ fn parse_sorotte_ini_stored_client_settings_leaves_missing_plugin_gates_unset() 
 fn streaming_controls_roundtrip_through_sorotte_ini() {
     let settings = StoredClientSettings {
         streaming_quality_preset: Some("720p".to_owned()),
+        streaming_custom_format: Some("bestvideo[height<=1080]+bestaudio/best".to_owned()),
         streaming_buffer_target_seconds: Some(8.0),
         streaming_read_ahead_seconds: Some(45.0),
         streaming_memory_cache_mebibytes: Some(256),
@@ -135,6 +136,7 @@ fn streaming_controls_roundtrip_through_sorotte_ini() {
         Some("remain-paused")
     );
     assert_eq!(reparsed.streaming_quality_downgrade_suggestions, Some(true));
+    assert_eq!(reparsed, settings);
 }
 
 #[test]

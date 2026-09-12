@@ -46,7 +46,7 @@ fn upsert_sorotte_ini_stored_client_settings_with_plex_identity_clear(
         remove_ini_value(&mut lines, "plex", "selectedServerUrl");
         remove_ini_value(&mut lines, "plex", "selectedServerToken");
     }
-    for field in INI_FIELDS {
+    for field in INI_FIELDS.iter() {
         if let Some(value) = (field.write)(settings) {
             upsert_ini_value(&mut lines, field.section, field.key, &value);
         }
