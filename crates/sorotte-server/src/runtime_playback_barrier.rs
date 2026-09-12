@@ -355,8 +355,8 @@ impl ServerRuntime {
         retry_after_ms: u64,
     ) -> Vec<DirectedProtocolMessage> {
         let Some(request_id) = request_id else {
-            // Legacy extension peers have no stable application identity to
-            // correlate. Reject atomically without emitting a fatal generic
+            // Peers without a stable request ID have no identity to correlate.
+            // Reject atomically without emitting a fatal generic
             // protocol error that would tear down their transport.
             return Vec::new();
         };

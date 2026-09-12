@@ -10,8 +10,8 @@ use super::runtime_bridge::GuiPlexPlaylistJobCancellationReason;
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::runtime_state::GuiRuntimeState;
 use super::shell_state::{
-    FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot,
+    GuiCommandAvailabilityRuntimeOverride, GuiCommandAvailabilityState,
+    GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot, GuiConfigurationDraft,
     GuiMediaIndexStatusState, GuiMediaMatchRemediationState, GuiMediaMatchState,
     GuiPendingOperationState, GuiPlayerSetupIssue, GuiPlexPlaylistSearchState, GuiPlexState,
     GuiPluginEnablementState, GuiSavedServerConnectIntent, GuiSeekPreparationDegradedReason,
@@ -332,7 +332,7 @@ pub(in crate::app) mod settings {
         pub(in crate::app) config_storage: GuiConfigStorageRuntimeSnapshot,
         pub(in crate::app) pending_storage_target: Option<GuiConfigStorageChangeTarget>,
         pub(in crate::app) saved: StoredClientSettings,
-        pub(in crate::app) draft: FirstRunConfigurationDialogDraft,
+        pub(in crate::app) draft: GuiConfigurationDraft,
         pub(in crate::app) validation: GuiValidationState,
         pub(in crate::app) runtime_validation_issues: Vec<GuiValidationIssue>,
     }

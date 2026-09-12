@@ -302,13 +302,11 @@ pub use self::control::{
     ClientEffect, ClientEffectError, ClientEffectSink, ClientRuntimeAction, PendingProtocolLine,
     PlaybackBarrierRequestScope, QueuedRuntimeControl, ReadinessIntentScope,
 };
-pub use self::inbound::{
-    ClientCompatibilityFallback, FileDuration, FileSize, PeerCapabilities, SharedFile,
-};
 pub(crate) use self::inbound::{
     ClientHello, ClientInboundCommand, ClientListUser, ClientPlaystate, ClientSetCommand,
     ClientStateUpdate, normalize_client_protocol_message, normalize_client_state_payload,
 };
+pub use self::inbound::{FileDuration, FileSize, PeerCapabilities, SharedFile};
 pub use self::model::{
     ClientEvent, ClientModel, ConnectionPhase, ConnectionState, ControllerState,
     LocalPauseChangeHealth, PendingReadinessIntent, PlaybackSyncState, PlaylistState,

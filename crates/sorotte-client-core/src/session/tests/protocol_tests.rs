@@ -425,15 +425,6 @@ fn list_set_and_state_messages_reconcile_client_view() {
             .and_then(|capabilities| capabilities.ui_mode.as_deref()),
         Some("GUI")
     );
-    assert!(
-        session
-            .drain_compatibility_fallbacks()
-            .iter()
-            .any(|fallback| matches!(
-                fallback,
-                crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
-            ))
-    );
     assert_eq!(session.user_controller("bob"), Some(true));
 
     session
@@ -605,7 +596,7 @@ fn set_command_order_completion_preserves_complete_wire_permutation_exactly() {
 }
 
 #[test]
-fn invalid_file_extensions_become_typed_compatibility_fallbacks() {
+fn invalid_file_extensions_are_dropped_while_valid_metadata_survives() {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -616,15 +607,6 @@ fn invalid_file_extensions_become_typed_compatibility_fallbacks() {
     assert_eq!(session.user_file_name("bob"), Some("movie.mkv"));
     assert_eq!(session.user_file_size("bob"), None);
     assert_eq!(session.user_media_match_signature("bob"), None);
-    let fallbacks = session.drain_compatibility_fallbacks();
-    assert!(fallbacks.iter().any(|fallback| matches!(
-        fallback,
-        crate::ClientCompatibilityFallback::IgnoredInvalidFileSize { .. }
-    )));
-    assert!(fallbacks.iter().any(|fallback| matches!(
-        fallback,
-        crate::ClientCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
-    )));
 }
 
 #[test]

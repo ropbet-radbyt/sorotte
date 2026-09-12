@@ -1,4 +1,4 @@
-use std::{future::Future, time::Duration};
+use std::{future::Future, ops::ControlFlow, time::Duration};
 
 use anyhow::anyhow;
 use serde_json::Value;
@@ -12,24 +12,14 @@ use sorotte_client_app::app_boundary::{
     diagnostics::ReconnectCorrectionDiagnosticsState,
     notifications::FileDifferenceNotificationState,
     session::{
-        ClientNetworkLoopAttemptDisposition, ClientNetworkLoopAttemptExecutionPlan,
-        ClientNetworkLoopAttemptPlan, ClientNetworkLoopEventPlan,
-        ClientNetworkLoopExecutionOutcome, ClientNetworkLoopReconnectExhaustedErrorAction,
-        ClientNetworkLoopReconnectExhaustedErrorKind, ClientNetworkLoopStartupPlan,
-        ClientNetworkLoopStartupPlanInputs, ConnectedSessionBranchPlan,
-        ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction, ConnectedSessionDrainPlan,
-        ConnectedSessionEventExecutionPlan, ConnectedSessionInboundApplyPlan,
-        ConnectedSessionInboundPostApplyAction, ConnectedSessionInboundPostApplyPlan,
-        ConnectedSessionOuterLoopExitKind as ConnectedSessionExit, ConnectedSessionProtocolPlan,
+        ConnectedSessionBranchPlan, ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction,
+        ConnectedSessionDrainPlan, ConnectedSessionEventExecutionPlan,
+        ConnectedSessionInboundApplyPlan, ConnectedSessionInboundPostApplyAction,
+        ConnectedSessionInboundPostApplyPlan, ConnectedSessionProtocolPlan,
         ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
         ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        client_network_loop_attempt_disposition_for_execution_plan,
-        client_network_loop_attempt_execution_plan_for_connect_failure,
-        client_network_loop_attempt_execution_plan_for_connected_session_exit,
-        client_network_loop_execution_outcome,
-        client_network_loop_reconnect_exhausted_error_action, client_network_loop_startup_plan,
-        client_reconnect_backoff_plan, connected_session_autoplay_tick_event_execution_plan,
-        connected_session_drain_actions, connected_session_inbound_message_event_execution_plan,
+        connected_session_autoplay_tick_event_execution_plan, connected_session_drain_actions,
+        connected_session_inbound_message_event_execution_plan,
         connected_session_inbound_post_apply_actions,
         connected_session_local_input_event_execution_plan,
         connected_session_player_coordination_tick_event_execution_plan,
@@ -171,4 +161,10 @@ pub(super) fn cli_plex_config_from_env_and_stored_settings(
         config.selected_server_token = Some(value);
     }
     config
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectedSessionExit {
+    TransportClosed,
+    RuntimeWindowElapsed,
 }

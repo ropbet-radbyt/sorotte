@@ -275,7 +275,6 @@ impl GuiQueuedRuntimeBridge {
                 | GuiShellAction::CompleteSavedServerConnect
                 | GuiShellAction::CancelSavedServerConnect
                 | GuiShellAction::CompleteSessionDisconnect
-                | GuiShellAction::CancelSessionDisconnect
                 | GuiShellAction::CompleteSelectedPublicServerConnect
                 | GuiShellAction::CompletePublicServerRefresh(_)
                 | GuiShellAction::CompleteMissingMediaSearch(_)

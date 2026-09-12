@@ -14,8 +14,8 @@ use super::*;
 use crate::{
     PARTICIPANT_STATUS_MAX_BUFFERED_AHEAD_SECONDS, PARTICIPANT_STATUS_MAX_PLAYBACK_RATE,
     PARTICIPANT_STATUS_MAX_POSITION_SECONDS, PARTICIPANT_STATUS_MAX_SAMPLE_AGE_MILLIS,
-    PROTOCOL_TIMEOUT_SECONDS, RoomPlaybackState, ServerCompatibilityFallback,
-    ServerOutboundDelivery, capture_server_lifecycle_transitions,
+    PROTOCOL_TIMEOUT_SECONDS, RoomPlaybackState, ServerOutboundDelivery,
+    capture_server_lifecycle_transitions,
 };
 
 #[test]
@@ -2710,35 +2710,54 @@ fn buffering_forced_state_publishes_final_scope_for_an_immediate_exact_echo() {
 }
 
 #[test]
-fn malformed_participant_status_fallback_never_retains_attacker_tokens() {
+fn malformed_participant_status_preserves_report_and_accepts_next_valid_update() {
     const CANARY: &str = "participant-status-secret-canary-947adc";
     let mut runtime = ServerRuntime::default();
     runtime
         .handle_line("alice", &hello("alice", "room", true, false))
         .unwrap();
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new()
+            .with_report(status_report(1, ParticipantPlaybackPhase::Playing)),
+    );
     runtime
         .handle_line(
             "alice",
             &json!({
-                "State": {
-                    SOROTTE_PARTICIPANT_STATUS_V1: {
-                        "report": CANARY,
-                    },
-                },
+                "State": { SOROTTE_PARTICIPANT_STATUS_V1: { "report": CANARY } },
             })
             .to_string(),
         )
-        .expect("malformed additive status should use compatibility fallback");
+        .expect("malformed additive status must not reject its containing State");
+    assert_eq!(
+        runtime.client_participant_status["alice"]
+            .report
+            .report_sequence,
+        1
+    );
+    assert_eq!(
+        runtime.client_participant_status["alice"].report.phase,
+        ParticipantPlaybackPhase::Playing
+    );
+    assert!(!format!("{runtime:?}").contains(CANARY));
 
-    let fallbacks = runtime.drain_compatibility_fallbacks();
-    assert!(fallbacks.iter().any(|fallback| matches!(
-        fallback,
-        ServerCompatibilityFallback::IgnoredInvalidFeatures { context }
-            if context == "State.sorotteParticipantStatusV1"
-    )));
-    assert!(
-        !format!("{fallbacks:?}").contains(CANARY),
-        "fallback diagnostics must not reproduce malformed attacker-controlled values"
+    send_status(
+        &mut runtime,
+        "alice",
+        ParticipantStatusStateExtension::new()
+            .with_report(status_report(2, ParticipantPlaybackPhase::ReadyPaused)),
+    );
+    assert_eq!(
+        runtime.client_participant_status["alice"]
+            .report
+            .report_sequence,
+        2
+    );
+    assert_eq!(
+        runtime.client_participant_status["alice"].report.phase,
+        ParticipantPlaybackPhase::ReadyPaused
     );
 }
 

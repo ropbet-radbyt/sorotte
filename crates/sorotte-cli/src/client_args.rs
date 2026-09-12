@@ -1,10 +1,7 @@
 #[cfg(test)]
 use sorotte_client_app::app_boundary::state::parse_host_and_optional_port_from_host_arg as shared_parse_host_and_optional_port_from_host_arg;
 use sorotte_client_app::app_boundary::{
-    compatibility::{
-        syncplay_configuration_getter_ini_compat_entries,
-        syncplay_configuration_getter_startup_compat_entries,
-    },
+    compatibility::{syncplay_ini_field_support, syncplay_startup_option_support},
     language::runtime_language_selection_line,
     state::{StoredClientSettings, normalize_controlled_room_input},
 };

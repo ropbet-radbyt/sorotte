@@ -58,10 +58,8 @@ use sorotte_client_app::app_boundary::application::{
     ClientApplication, ClientApplicationSettings, PlexClientConfig,
 };
 use sorotte_client_app::app_boundary::compatibility::{
-    SyncplayConfigurationGetterCompatibilityStatus, SyncplayConfigurationGetterIniCompatEntry,
-    SyncplayConfigurationGetterStartupCompatEntry,
-    syncplay_configuration_getter_ini_compat_entries,
-    syncplay_configuration_getter_startup_compat_entries,
+    SyncplayIniFieldSupport, SyncplayInputSupportStatus, SyncplayStartupOptionSupport,
+    syncplay_ini_field_support, syncplay_startup_option_support,
 };
 use sorotte_client_app::app_boundary::persistence::{
     format_serialized_per_player_arguments_map, format_serialized_public_servers_list,

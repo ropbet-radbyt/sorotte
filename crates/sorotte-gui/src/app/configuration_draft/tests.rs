@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{
-    FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, SecretDraft, SettingId,
-};
+use super::{GuiConfigurationDraft, GuiConfigurationState, SecretDraft, SettingId};
 use crate::app::shell_state::{GuiSettingApplyRequirement, GuiSettingValueOrigin};
 
 use sorotte_client_app::app_boundary::state::{AutoplayThresholdOverride, StoredClientSettings};
@@ -10,8 +8,7 @@ use sorotte_client_core::UnpauseActionMode;
 
 #[test]
 fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
-    let mut draft =
-        FirstRunConfigurationDialogDraft::from_stored_settings(&StoredClientSettings::default());
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&StoredClientSettings::default());
 
     assert!(draft.apply_text_value(SettingId::ConnectionHost, "syncplay.example"));
     assert!(draft.apply_text_value(SettingId::ConnectionPort, "8995"));
@@ -110,8 +107,7 @@ fn configuration_draft_applies_edits_and_round_trips_to_stored_settings() {
 
 #[test]
 fn configuration_draft_rejects_readonly_control_edits() {
-    let mut draft =
-        FirstRunConfigurationDialogDraft::from_stored_settings(&StoredClientSettings::default());
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&StoredClientSettings::default());
 
     assert!(!draft.apply_text_value(SettingId::ConnectionPublicServerCount, "5"));
     assert_eq!(draft.to_stored_settings().public_servers, None);
@@ -125,7 +121,7 @@ fn configuration_draft_refreshes_player_arguments_when_player_path_changes() {
         "C:/Program Files/mpv/mpv.exe".to_owned(),
         vec!["--profile=fast".to_owned()],
     );
-    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&StoredClientSettings {
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&StoredClientSettings {
         player_path: Some("mpv".to_owned()),
         per_player_arguments: Some(per_player_arguments),
         ..StoredClientSettings::default()
@@ -161,7 +157,7 @@ fn configuration_draft_noop_round_trip_preserves_settings_and_catalogs_every_id(
         update_channel: Some("stable".to_owned()),
         ..StoredClientSettings::default()
     };
-    let draft = FirstRunConfigurationDialogDraft::from_stored_settings(&settings);
+    let draft = GuiConfigurationDraft::from_stored_settings(&settings);
 
     assert_eq!(draft.to_stored_settings(), settings);
     assert_eq!(
@@ -187,7 +183,7 @@ fn configuration_secret_draft_preserves_replaces_clears_and_cancels() {
         server_password: Some("original-secret".into()),
         ..StoredClientSettings::default()
     };
-    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&original);
 
     assert_eq!(draft.server_password, SecretDraft::Unchanged);
     assert_eq!(
@@ -217,8 +213,7 @@ fn configuration_secret_draft_preserves_replaces_clears_and_cancels() {
 
 #[test]
 fn configuration_effective_defaults_retain_their_override_origin() {
-    let defaults =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings::default());
+    let defaults = GuiConfigurationState::from_stored_settings(&StoredClientSettings::default());
     assert_eq!(defaults.readiness.unpause_action.effective, "IfOthersReady");
     assert_eq!(
         defaults.readiness.unpause_action.origin(),
@@ -229,12 +224,11 @@ fn configuration_effective_defaults_retain_their_override_origin() {
         GuiSettingValueOrigin::ApplicationDefault
     );
 
-    let overridden =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings {
-            unpause_action: Some(UnpauseActionMode::Always),
-            autoplay_min_users: Some(AutoplayThresholdOverride::Set(2)),
-            ..StoredClientSettings::default()
-        });
+    let overridden = GuiConfigurationState::from_stored_settings(&StoredClientSettings {
+        unpause_action: Some(UnpauseActionMode::Always),
+        autoplay_min_users: Some(AutoplayThresholdOverride::Set(2)),
+        ..StoredClientSettings::default()
+    });
     assert_eq!(
         overridden.readiness.unpause_action.origin(),
         GuiSettingValueOrigin::StoredOverride
@@ -266,7 +260,7 @@ fn changed_setting_ids_include_secret_intent_and_same_length_server_replacement(
         public_servers: Some(vec![("One".to_owned(), "one.example:8999".to_owned())]),
         ..StoredClientSettings::default()
     };
-    let mut draft = FirstRunConfigurationDialogDraft::from_stored_settings(&original);
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&original);
     draft.remove_server_password();
     draft.settings.public_servers = Some(vec![("Two".to_owned(), "two.example:8999".to_owned())]);
 

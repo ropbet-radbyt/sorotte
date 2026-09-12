@@ -23,10 +23,8 @@ pub mod commands {
 
 pub mod compatibility {
     pub use crate::syncplay_config_contract::{
-        SyncplayConfigurationGetterCompatibilityStatus, SyncplayConfigurationGetterIniCompatEntry,
-        SyncplayConfigurationGetterStartupCompatEntry,
-        syncplay_configuration_getter_ini_compat_entries,
-        syncplay_configuration_getter_startup_compat_entries,
+        SyncplayIniFieldSupport, SyncplayInputSupportStatus, SyncplayStartupOptionSupport,
+        syncplay_ini_field_support, syncplay_startup_option_support,
     };
 }
 
@@ -124,24 +122,14 @@ pub mod storage {
 
 pub mod session {
     pub use crate::session_loop::{
-        ClientNetworkLoopAttemptDisposition, ClientNetworkLoopAttemptExecutionPlan,
-        ClientNetworkLoopAttemptPlan, ClientNetworkLoopEventPlan,
-        ClientNetworkLoopExecutionOutcome, ClientNetworkLoopReconnectExhaustedErrorAction,
-        ClientNetworkLoopReconnectExhaustedErrorKind, ClientNetworkLoopStartupPlan,
-        ClientNetworkLoopStartupPlanInputs, ClientReconnectBackoffPlan, ConnectedSessionBranchPlan,
-        ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction, ConnectedSessionDrainPlan,
-        ConnectedSessionEventExecutionPlan, ConnectedSessionInboundApplyPlan,
-        ConnectedSessionInboundPostApplyAction, ConnectedSessionInboundPostApplyPlan,
-        ConnectedSessionOuterLoopExitKind, ConnectedSessionProtocolPlan,
+        ConnectedSessionBranchPlan, ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction,
+        ConnectedSessionDrainPlan, ConnectedSessionEventExecutionPlan,
+        ConnectedSessionInboundApplyPlan, ConnectedSessionInboundPostApplyAction,
+        ConnectedSessionInboundPostApplyPlan, ConnectedSessionProtocolPlan,
         ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
         ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        client_network_loop_attempt_disposition_for_execution_plan,
-        client_network_loop_attempt_execution_plan_for_connect_failure,
-        client_network_loop_attempt_execution_plan_for_connected_session_exit,
-        client_network_loop_execution_outcome,
-        client_network_loop_reconnect_exhausted_error_action, client_network_loop_startup_plan,
-        client_reconnect_backoff_plan, connected_session_autoplay_tick_event_execution_plan,
-        connected_session_drain_actions, connected_session_inbound_message_event_execution_plan,
+        connected_session_autoplay_tick_event_execution_plan, connected_session_drain_actions,
+        connected_session_inbound_message_event_execution_plan,
         connected_session_inbound_post_apply_actions,
         connected_session_local_input_event_execution_plan,
         connected_session_player_coordination_tick_event_execution_plan,
@@ -173,36 +161,7 @@ pub mod state {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        commands, compatibility, diagnostics, language, notifications, persistence, session, state,
-        storage,
-    };
-
-    #[test]
-    fn app_boundary_commands_compatibility_and_language_surface_remain_available() {
-        assert!(!compatibility::syncplay_configuration_getter_startup_compat_entries().is_empty());
-        assert!(!compatibility::syncplay_configuration_getter_ini_compat_entries().is_empty());
-        assert!(language::SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY.contains("de/en/es"));
-        assert!(commands::parse_local_input_command("list").is_some());
-        assert_eq!(storage::SOROTTE_CONFIG_FILE_NAME, "sorotte.ini");
-    }
-
-    #[test]
-    fn app_boundary_notifications_diagnostics_and_session_surface_remain_available() {
-        assert!(matches!(
-            diagnostics::ReconnectCorrectionDiagnosticsFormat::Text,
-            diagnostics::ReconnectCorrectionDiagnosticsFormat::Text
-        ));
-        assert!(matches!(
-            session::ConnectedSessionRuntimeStepAction::RunRoomPauseSync,
-            session::ConnectedSessionRuntimeStepAction::RunRoomPauseSync
-        ));
-        assert!(matches!(
-            session::ConnectedSessionOuterLoopExitKind::TransportClosed,
-            session::ConnectedSessionOuterLoopExitKind::TransportClosed
-        ));
-        assert!(!notifications::format_duration(65.0).is_empty());
-    }
+    use super::{persistence, state};
 
     #[test]
     fn app_boundary_state_and_persistence_surface_round_trip_basic_values() {

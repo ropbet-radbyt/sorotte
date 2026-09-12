@@ -39,8 +39,8 @@ fn room_clock_advances_between_sparse_snapshots_and_stops_at_pause_or_stale_owne
 }
 
 use super::{
-    FirstRunConfigurationDialogState, GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot,
-    GuiConfigurationDraftRuntimeSnapshot, GuiConfigurationRuntimeSnapshot, GuiConfigurationTab,
+    GuiCommandAvailabilityState, GuiCommandRuntimeSnapshot, GuiConfigurationDraftRuntimeSnapshot,
+    GuiConfigurationRuntimeSnapshot, GuiConfigurationState, GuiConfigurationTab,
     GuiConfigurationTextValue, GuiControllerAuthEditSessionState, GuiDialogControl,
     GuiDialogControlKind, GuiDraftRuntimeSnapshot, GuiErrorRuntimeSnapshot,
     GuiFeedbackRuntimeSnapshot, GuiFocusedConfigurationControlRuntimeSnapshot,
@@ -196,8 +196,7 @@ fn assert_chat_pane_ready(chat: &[super::MainWindowChatRow]) {
 
 #[test]
 fn configuration_surface_defaults_to_first_run_mode() {
-    let state =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings::default());
+    let state = GuiConfigurationState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(state.launch_mode, GuiLaunchMode::FirstRun);
     assert_eq!(state.system.language_tag, "en");
@@ -316,7 +315,7 @@ fn gui_shell_app_state_defaults_to_setup_connection() {
 
 #[test]
 fn configuration_surface_preserves_explicit_false_chat_settings() {
-    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings {
+    let state = GuiConfigurationState::from_stored_settings(&StoredClientSettings {
         chat_input_enabled: Some(false),
         chat_output_enabled: Some(false),
         ..StoredClientSettings::default()
@@ -368,7 +367,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
         "C:/Program Files/mpv/mpv.exe".to_owned(),
         vec!["--profile=fast".to_owned(), "--no-border".to_owned()],
     );
-    let state = FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings {
+    let state = GuiConfigurationState::from_stored_settings(&StoredClientSettings {
         language: Some("pt-br".to_owned()),
         check_for_updates_automatically: Some(true),
         update_channel: Some("dev".to_owned()),
@@ -512,8 +511,7 @@ fn configuration_surface_maps_existing_stored_settings_into_sections() {
 
 #[test]
 fn configuration_surface_exposes_typed_dialog_controls_for_editable_fields() {
-    let state =
-        FirstRunConfigurationDialogState::from_stored_settings(&StoredClientSettings::default());
+    let state = GuiConfigurationState::from_stored_settings(&StoredClientSettings::default());
     let sections = state.dialog_sections();
 
     let connection = sections

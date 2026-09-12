@@ -1346,7 +1346,6 @@ fn explicit_null_directional_status_fields_are_treated_as_absent() {
             .and_then(|view| view.status.position_seconds),
         Some(42.5)
     );
-    assert!(session.drain_compatibility_fallbacks().is_empty());
 
     session
         .apply_message_json_at(
@@ -1366,26 +1365,19 @@ fn explicit_null_directional_status_fields_are_treated_as_absent() {
             .and_then(|view| view.status.position_seconds),
         None
     );
-    assert!(session.drain_compatibility_fallbacks().is_empty());
 }
 
 #[test]
-fn non_object_participant_status_extension_is_rejected_categorically() {
+fn non_object_participant_status_extension_does_not_reject_valid_playstate() {
     let mut session = status_session();
     session
         .apply_message_json_at(
-            r#"{"State":{"sorotteParticipantStatusV1":"attacker-controlled-shape"}}"#,
+            r#"{"State":{"playstate":{"position":18.0,"paused":false,"setBy":"bob"},"sorotteParticipantStatusV1":"attacker-controlled-shape"}}"#,
             1.0,
         )
         .expect("malformed advisory status must not reject its containing State");
 
     assert!(session.user_participant_status_at("bob", 1.0).is_none());
-    let fallbacks = session.drain_compatibility_fallbacks();
-    assert_eq!(fallbacks.len(), 1);
-    assert!(
-        !format!("{fallbacks:?}").contains("attacker-controlled-shape"),
-        "categorical compatibility diagnostics must not retain attacker input"
-    );
 }
 
 #[test]
@@ -1429,7 +1421,6 @@ fn malformed_snapshot_still_applies_valid_advancing_scope_as_an_invalidation() {
         session.model.room.participant_status_snapshot_revision,
         Some(1)
     );
-    assert_eq!(session.drain_compatibility_fallbacks().len(), 1);
 }
 
 #[test]
@@ -1459,7 +1450,6 @@ fn malformed_scope_cannot_advance_snapshot_under_previous_epoch() {
         session.user_participant_status_at("bob", 2.0).is_none(),
         "old exact evidence must retire when the bundled authority is malformed"
     );
-    assert_eq!(session.drain_compatibility_fallbacks().len(), 1);
 }
 
 #[test]
@@ -1704,35 +1694,55 @@ fn participant_status_remains_advisory_to_ordinary_playstate() {
 }
 
 #[test]
-fn malformed_participant_status_fallback_never_retains_attacker_tokens() {
+fn malformed_participant_status_preserves_snapshot_and_accepts_next_valid_update() {
     let mut session = status_session();
-    assert!(session.drain_compatibility_fallbacks().is_empty());
-
+    session
+        .apply_message_json_at(&bob_status_state(1, 0, "playing"), 1.0)
+        .unwrap();
     let canary = "attacker-controlled-participant-phase-canary";
     let message = serde_json::json!({
         "State": {
             "sorotteParticipantStatusV1": {
                 "snapshot": {
-                    "revision": 1,
+                    "revision": 2,
                     "participants": {
-                        "bob": {
-                            "availability": "fresh",
-                            "phase": canary,
-                        },
+                        "bob": { "availability": "fresh", "phase": canary },
                     },
                 },
             },
         },
     })
     .to_string();
+    session
+        .apply_message_json_at(&message, 2.0)
+        .expect("malformed additive status must not reject the containing State");
+    assert_eq!(
+        session.model.room.participant_status_snapshot_revision,
+        Some(1)
+    );
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 2.0)
+            .unwrap()
+            .status
+            .phase,
+        Some(ParticipantPlaybackPhase::Playing)
+    );
+    assert!(!format!("{session:?}").contains(canary));
 
     session
-        .apply_message_json(&message)
-        .expect("malformed additive status must not reject the containing State");
-    let fallbacks = session.drain_compatibility_fallbacks();
-    assert_eq!(fallbacks.len(), 1);
-    let rendered = format!("{fallbacks:?}");
-    assert!(rendered.contains("IgnoredInvalidFeatures"));
-    assert!(rendered.contains("State.sorotteParticipantStatusV1"));
-    assert!(!rendered.contains(canary));
+        .apply_message_json_at(&bob_status_state(2, 0, "readyPaused"), 3.0)
+        .expect("a discarded snapshot must not consume the next valid revision");
+    assert_eq!(
+        session.model.room.participant_status_snapshot_revision,
+        Some(2)
+    );
+    assert_eq!(
+        session
+            .user_participant_status_at("bob", 3.0)
+            .unwrap()
+            .status
+            .phase,
+        Some(ParticipantPlaybackPhase::ReadyPaused)
+    );
 }

@@ -9,7 +9,6 @@ pub struct ClientSession {
     pending_controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
-    pending_compatibility_fallbacks: Vec<ClientCompatibilityFallback>,
     pending_playstate_transport_evidence: Option<PendingPlaystateTransportEvidence>,
     playback_barrier: playback_barrier::ClientPlaybackBarrierState,
 }
@@ -21,24 +20,6 @@ struct PendingPlaystateTransportEvidence {
     paused: bool,
     seek_position_seconds: Option<f64>,
     authority_observed_at_seconds: f64,
-}
-
-const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
-
-impl ClientSession {
-    pub(crate) fn retain_compatibility_fallbacks(
-        &mut self,
-        fallbacks: impl IntoIterator<Item = ClientCompatibilityFallback>,
-    ) {
-        let remaining = MAX_PENDING_COMPATIBILITY_FALLBACKS
-            .saturating_sub(self.pending_compatibility_fallbacks.len());
-        self.pending_compatibility_fallbacks.extend(
-            fallbacks
-                .into_iter()
-                .take(remaining)
-                .map(ClientCompatibilityFallback::bounded),
-        );
-    }
 }
 
 /// Opaque rollback state for a playback-rate command emitted by desync correction.

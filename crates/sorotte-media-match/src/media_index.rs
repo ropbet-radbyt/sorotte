@@ -105,7 +105,7 @@ struct ResolvedMediaIndex {
 enum ManifestRead {
     Missing,
     Valid(MediaIndexManifest),
-    Legacy(MediaIndexManifest),
+    Version1Or2(MediaIndexManifest),
     CorruptKnownFormat(String),
     UnsupportedVersion(u32),
 }
@@ -1072,7 +1072,7 @@ fn read_media_index_manifest_slot(path: &Path) -> ManifestRead {
         }
         ManifestRead::Valid(manifest)
     } else {
-        ManifestRead::Legacy(manifest)
+        ManifestRead::Version1Or2(manifest)
     }
 }
 
@@ -1101,7 +1101,7 @@ fn read_best_media_index_manifest(root: &Path) -> Result<Option<MediaIndexManife
         return Ok(Some(manifest));
     }
     if let Some(manifest) = reads.iter().find_map(|read| match read {
-        ManifestRead::Legacy(manifest) => Some(manifest.clone()),
+        ManifestRead::Version1Or2(manifest) => Some(manifest.clone()),
         _ => None,
     }) {
         return Ok(Some(manifest));

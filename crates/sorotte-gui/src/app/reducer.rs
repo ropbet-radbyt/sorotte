@@ -209,7 +209,6 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::CancelSavedServerConnect
             | GuiShellAction::BeginSessionDisconnect
             | GuiShellAction::CompleteSessionDisconnect
-            | GuiShellAction::CancelSessionDisconnect
             | GuiShellAction::BeginSelectedPublicServerConnect
             | GuiShellAction::CompleteSelectedPublicServerConnect
             | GuiShellAction::BeginPublicServerRefresh
@@ -251,8 +250,6 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::TogglePlexSync(_)
             | GuiShellAction::TogglePlexStreaming(_)
             | GuiShellAction::DisconnectPlex
-            | GuiShellAction::ToggleMainWindowPlaybackButtons
-            | GuiShellAction::ToggleMainWindowAutoplayControls
             | GuiShellAction::ToggleMainWindowHideEmptyRooms
             | GuiShellAction::ToggleMainWindowRoomChange
             | GuiShellAction::RequestMainWindowUserMediaOpen(_)

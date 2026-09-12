@@ -718,8 +718,6 @@ pub(in crate::app) struct GuiSystemSection {
     pub(in crate::app) update_channel_label: String,
     pub(in crate::app) autosave_joins_to_list: bool,
     pub(in crate::app) force_gui_prompt: bool,
-    pub(in crate::app) compatibility_startup_entry_count: usize,
-    pub(in crate::app) ignored_startup_exception_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -860,7 +858,7 @@ impl GuiDialogSection {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::app) struct FirstRunConfigurationDialogState {
+pub(in crate::app) struct GuiConfigurationState {
     pub(in crate::app) launch_mode: GuiLaunchMode,
     pub(in crate::app) connection: GuiConnectionSettingsSection,
     pub(in crate::app) readiness: GuiReadinessSection,
@@ -874,10 +872,8 @@ pub(in crate::app) struct FirstRunConfigurationDialogState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::app) struct FirstRunConfigurationDialogDraft {
+pub(in crate::app) struct GuiConfigurationDraft {
     pub(in crate::app) launch_mode: GuiLaunchMode,
-    pub(in crate::app) compatibility_startup_entry_count: usize,
-    pub(in crate::app) ignored_startup_exception_count: usize,
     pub(in crate::app) sections: Vec<GuiDialogSection>,
     pub(in crate::app) settings: StoredClientSettings,
     pub(in crate::app) server_password: SecretDraft,

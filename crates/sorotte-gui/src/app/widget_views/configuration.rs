@@ -17,9 +17,9 @@ impl SorotteGuiShellAppState {
             apply_requirements.insert(GuiSettingApplyRequirement::OnSave);
         }
         let resolved_draft =
-            FirstRunConfigurationDialogState::from_stored_settings(&self.configuration.settings);
+            GuiConfigurationState::from_stored_settings(&self.configuration.settings);
         let resolved_persisted =
-            FirstRunConfigurationDialogState::from_stored_settings(&self.saved_configuration);
+            GuiConfigurationState::from_stored_settings(&self.saved_configuration);
         let player_arguments_enabled = self
             .configuration
             .settings

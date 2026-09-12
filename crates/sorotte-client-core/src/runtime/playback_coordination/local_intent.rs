@@ -126,8 +126,8 @@ impl RuntimePlaybackCoordination {
             // The session-model fallback exists only for adapters that never
             // produced accepted rich transport telemetry. A lifecycle or
             // adapter-epoch fence must not resurrect that retired adapter's
-            // cached position through the legacy model. A genuinely legacy
-            // adapter may still use the long-standing session-model path.
+            // cached position through the session/list projection. An adapter
+            // that has never supplied transport telemetry may use this fallback.
             return if participant_status_list_position_fallback(
                 self.external_player_availability,
                 self.transport_telemetry_ever_observed,
@@ -677,7 +677,7 @@ where
 {
     /// Stages a user-owned pause/play command before the external player can
     /// synchronously publish its resulting transport observation. The staged
-    /// intent overlays ordinary legacy room state until the matching server
+    /// intent overlays ordinary Syncplay room playstate until the matching server
     /// echo arrives. Server barrier authority can preempt it; room buffering
     /// can preempt Play but admits Pause as a monotonic safety transition.
     pub fn stage_external_player_pause_intent(
@@ -871,7 +871,7 @@ where
             && self.session.local_can_control().unwrap_or(false)
             && !self.readiness_gate_holds_current_playback();
         if !readiness_v2_supported || controller_can_own_v2_transport {
-            // Legacy rooms still need a short transport overlay while the
+            // Rooms without coordinated start still need a short transport overlay while the
             // canonical self-echo is in flight. Readiness V2 uses the same
             // overlay only after the classifier proves an authorized native
             // gesture outside the exact Preparing gate.

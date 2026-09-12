@@ -9,7 +9,7 @@ use sorotte_client_app::app_boundary::state::*;
 use sorotte_client_core::PrivacyMode;
 
 pub(super) struct GuiConfigurationContext<'a> {
-    pub(super) configuration: &'a FirstRunConfigurationDialogDraft,
+    pub(super) configuration: &'a GuiConfigurationDraft,
     pub(super) public_servers: &'a PublicServerBrowserShellState,
     pub(super) media_search: &'a MediaSearchWorkflowShellState,
 }
@@ -349,7 +349,7 @@ impl GuiConfigurationContext<'_> {
     }
 }
 pub(super) fn saved_session_connect_target(
-    configuration: &FirstRunConfigurationDialogDraft,
+    configuration: &GuiConfigurationDraft,
 ) -> Option<GuiSavedSessionConnectTarget> {
     let raw_host = configuration
         .control_value(SettingId::ConnectionHost)
@@ -419,7 +419,7 @@ pub(super) fn saved_session_connect_target(
 }
 
 pub(super) fn connect_blocked_by_player_setup_issue(
-    configuration: &FirstRunConfigurationDialogDraft,
+    configuration: &GuiConfigurationDraft,
     player_setup_issue: &Option<GuiPlayerSetupIssue>,
 ) -> bool {
     configuration.launch_mode == super::GuiLaunchMode::FirstRun
@@ -454,7 +454,7 @@ pub(super) fn chat_send_unavailable_reason_from_settings(
 }
 
 pub(in crate::app) fn connect_once_runtime_settings(
-    configuration: &FirstRunConfigurationDialogDraft,
+    configuration: &GuiConfigurationDraft,
     saved_configuration: &StoredClientSettings,
 ) -> StoredClientSettings {
     let draft = configuration.to_stored_settings();
@@ -470,7 +470,7 @@ pub(in crate::app) fn connect_once_runtime_settings(
 }
 
 pub(in crate::app) fn submitted_saved_server_connect_settings(
-    configuration: &FirstRunConfigurationDialogDraft,
+    configuration: &GuiConfigurationDraft,
     saved_configuration: &StoredClientSettings,
     intent: GuiSavedServerConnectIntent,
 ) -> StoredClientSettings {
@@ -483,7 +483,7 @@ pub(in crate::app) fn submitted_saved_server_connect_settings(
 }
 
 pub(super) struct GuiCommandAvailabilityContext<'a> {
-    pub(super) configuration: &'a FirstRunConfigurationDialogDraft,
+    pub(super) configuration: &'a GuiConfigurationDraft,
     pub(super) saved_configuration: &'a StoredClientSettings,
     pub(super) pending_config_storage_target: &'a Option<GuiConfigStorageChangeTarget>,
     pub(super) pending_operation: &'a Option<GuiPendingOperationState>,
@@ -543,7 +543,7 @@ impl GuiCommandAvailabilityContext<'_> {
 
 pub(super) fn apply_persisted_settings_patch(
     saved_configuration: &mut StoredClientSettings,
-    configuration: &mut FirstRunConfigurationDialogDraft,
+    configuration: &mut GuiConfigurationDraft,
     plugin_enablement: &mut GuiPluginEnablementState,
     media_match: &mut GuiMediaMatchState,
     plex: &mut GuiPlexState,
@@ -675,7 +675,7 @@ pub(super) fn restore_selected_public_server_address(
 }
 pub(super) fn apply_public_server_selection(
     servers: &mut PublicServerBrowserShellState,
-    configuration: &mut FirstRunConfigurationDialogDraft,
+    configuration: &mut GuiConfigurationDraft,
     index: usize,
 ) -> Result<(), &'static str> {
     let Some(row) = servers.servers.get(index) else {

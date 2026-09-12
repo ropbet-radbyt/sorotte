@@ -1,13 +1,11 @@
 use super::*;
 
-impl FirstRunConfigurationDialogDraft {
+impl GuiConfigurationDraft {
     #[cfg(test)]
     pub(in crate::app) fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
-            "sorotte-gui setup surface initialized in {} mode ({} startup entries, {} ignored exception).",
+            "sorotte-gui setup surface initialized in {} mode.",
             self.launch_mode.label(),
-            self.compatibility_startup_entry_count,
-            self.ignored_startup_exception_count,
         )];
 
         for section in &self.sections {

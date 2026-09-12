@@ -27,8 +27,8 @@ pub enum RoomBufferingPolicy {
 pub struct RoomBufferingPolicyPayload {
     pub media_generation: u64,
     /// Opaque application-level request identity retained across transport
-    /// reconnects. Legacy peers omit this field and continue to rely on the
-    /// connection-scoped nonce.
+    /// reconnects. Requests without this identity rely on the connection-scoped
+    /// nonce. The server omits the identity from snapshots sent to other clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     /// Strictly increasing connection-scoped request nonce when
@@ -368,8 +368,8 @@ pub struct PrepareMediaPayload {
     #[serde(default)]
     pub request_nonce: u64,
     /// Opaque application-level request identity retained across transport
-    /// reconnects. Legacy peers omit this field and continue to rely on the
-    /// connection-scoped nonce.
+    /// reconnects. Requests without this identity rely on the connection-scoped
+    /// nonce. The server omits the identity from snapshots sent to other clients.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(default)]

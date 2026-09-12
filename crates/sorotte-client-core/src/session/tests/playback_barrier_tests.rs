@@ -552,7 +552,6 @@ fn barrier_extension_and_ordinary_playstate_remain_separate_in_mixed_rooms() {
             .playback_barrier_status()
             .is_some_and(|status| status.excluded_unsupported_clients.contains("legacy-bob"))
     );
-    assert!(session.drain_compatibility_fallbacks().is_empty());
 
     let mut legacy_session = ClientSession::default();
     legacy_session

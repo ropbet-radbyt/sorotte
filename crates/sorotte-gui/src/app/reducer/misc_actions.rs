@@ -87,12 +87,6 @@ impl SorotteGuiShellAppState {
                 self.clear_action_error_and_refresh();
                 true
             }
-            GuiShellAction::ToggleMainWindowPlaybackButtons => {
-                self.toggle_main_window_playback_buttons()
-            }
-            GuiShellAction::ToggleMainWindowAutoplayControls => {
-                self.toggle_main_window_autoplay_controls()
-            }
             GuiShellAction::ToggleMainWindowHideEmptyRooms => {
                 self.toggle_main_window_hide_empty_rooms()
             }

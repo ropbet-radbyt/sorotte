@@ -118,11 +118,6 @@ impl GuiRuntimeState {
                     return false;
                 }
             }
-            GuiShellAction::CancelSessionDisconnect => {
-                if !self.cancel_operation(GuiPendingOperationKind::DisconnectSession) {
-                    return false;
-                }
-            }
             GuiShellAction::CancelLocalChatSend => {
                 if !self.cancel_operation(GuiPendingOperationKind::SendChatMessage) {
                     return false;

@@ -330,7 +330,7 @@ impl SorotteGuiShellAppState {
             .into_iter()
             .map(|user_index| {
                 let user = &self.main_window.users[user_index];
-                let legacy_readiness;
+                let syncplay_readiness;
                 let readiness = if let Some(readiness) = self
                     .main_window
                     .readiness
@@ -338,11 +338,11 @@ impl SorotteGuiShellAppState {
                 {
                     readiness
                 } else {
-                    legacy_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_syncplay_ready(
+                    syncplay_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_syncplay_ready(
                         user.username.clone(),
                         user.is_ready,
                     );
-                    &legacy_readiness
+                    &syncplay_readiness
                 };
                 let mut cue_parts = Vec::new();
                 if !user.has_file {
