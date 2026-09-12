@@ -13,7 +13,7 @@ constantly==23.10.4
 cryptography==50.0.1
 cyclonedx-python-lib==11.12.0
 defusedxml==0.7.1
-filelock==3.32.5
+filelock==3.32.6
 hyperlink==21.0.0
 idna==3.19
 incremental==24.11.0
@@ -24,10 +24,10 @@ msgpack==1.2.2
 packageurl-python==0.17.6
 packaging==26.3
 pip==26.2.1
-pip-api==0.0.34
+pip-api==0.0.35
 pip-audit==2.10.1
 pip-requirements-parser==32.0.1
-platformdirs==4.11.7
+platformdirs==4.11.8
 py-serializable==2.1.0
 pyasn1==0.6.4
 pyasn1-modules==0.4.2
