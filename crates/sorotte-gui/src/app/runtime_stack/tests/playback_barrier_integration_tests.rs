@@ -268,8 +268,7 @@ fn real_gui_adapter_keeps_retry_later_nonfatal_and_retries_the_same_attempt_once
 
 #[test]
 fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echoes() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
@@ -485,8 +484,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
 
 #[test]
 fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let _ = adapter.deliver_outbound_protocol_lines().unwrap();
     adapter
         .apply_message_json(

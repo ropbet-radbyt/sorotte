@@ -148,3 +148,28 @@ run was cancelled before provisioning its Windows guest because it targeted the
 superseded version. Release publication follows the repository's qualified-PR
 handoff: verify the ordinary merge, then tag the original qualified candidate and
 publish its tested artifacts.
+
+## Critical-path coverage follow-up
+
+Candidate `fc0c61943fbcf3b52f1254de6347a87dc6b3da2c` passed the strict native GUI
+inventory, including drag-and-drop, and release playback qualification in
+[native run 34754030877](https://github.com/ropbet-radbyt/sorotte/actions/runs/34754030877).
+The controller and watchdog completed; the guest stopped, its runner automatically
+unregistered, and credentials were removed without cleanup errors.
+Its changed-line coverage was 96.96% overall
+but 84% on critical paths, below the unchanged 90% requirement. The missed paths
+were successful undo seek and a constructor-error branch in public-server setup.
+
+The real-session undo test now retries after the attached player rejects the
+first seek. It verifies that failure keeps the original position and undo target,
+then success restores the previous position and records the reverse undo target.
+
+Session construction only applies typed settings and starts a fresh disconnected
+application. Settings application is infallible; that initial connection phase
+always permits `BeginConnecting`, and neither operation performs I/O. The
+constructor now returns `GuiClientSession` directly. Callers no longer unwrap an
+infallible result or retain impossible constructor-error branches. Network,
+session-operation and runtime-settings failures keep their existing handling.
+Existing startup tests verify the initial Connecting phase and subsequent Hello
+transition. No coverage threshold or classification was changed. The superseded
+package campaign was cancelled before provisioning its Windows guest.

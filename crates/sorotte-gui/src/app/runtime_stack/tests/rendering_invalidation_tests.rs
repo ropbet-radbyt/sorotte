@@ -9,7 +9,7 @@ fn playing_session() -> (SorotteGuiShellAppState, GuiClientSession) {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut session = GuiClientSession::new("alice", "room1").expect("session should initialize");
+    let mut session = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut session, &state);
     session
         .deliver_outbound_protocol_lines()

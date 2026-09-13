@@ -9,8 +9,7 @@ fn gui_client_session_surfaces_controller_auth_transitions_as_notifications() {
         room: Some(room.to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", room).expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", room);
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -104,8 +103,7 @@ fn gui_client_session_surfaces_controlled_room_creation_before_reidentify() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -218,8 +216,7 @@ fn gui_client_session_auto_reidentifies_controlled_room_when_password_is_stored(
         ..StoredClientSettings::default()
     });
     let mut adapter =
-        GuiClientSession::new_with_control_password("alice", room, Some("ab-123-456".into()))
-            .expect("client-core chat adapter should bootstrap");
+        GuiClientSession::new_with_control_password("alice", room, Some("ab-123-456".into()));
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -254,8 +251,7 @@ fn gui_client_session_auto_reidentifies_controlled_room_when_password_is_stored(
 
 #[test]
 fn gui_client_session_set_room_preserves_autoplay_state() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -320,8 +316,7 @@ fn gui_client_session_surfaces_autoplay_countdown_notifications() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -421,8 +416,7 @@ fn gui_client_session_queues_attached_player_unpause_when_autoplay_fires() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()

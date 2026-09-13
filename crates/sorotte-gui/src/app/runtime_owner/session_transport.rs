@@ -405,7 +405,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .connection
                 .controlled_room_password
                 .clone(),
-        )?;
+        );
         session.apply_runtime_settings_snapshot(&runtime_settings)?;
         let session = Box::new(session);
         let session_transport = GuiQueuedSessionTransportHandle::default();

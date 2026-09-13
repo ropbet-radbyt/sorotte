@@ -32,7 +32,7 @@ fn assert_playlist(adapter: &GuiClientSession, files: &[&str], index: i64) {
 
 #[test]
 fn current_server_append_select_edit_playlist_remains_authoritative() {
-    let mut adapter = GuiClientSession::new("alice", "room1").unwrap();
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".into()),
         room: Some("room1".into()),
@@ -74,7 +74,7 @@ fn current_server_append_select_edit_playlist_remains_authoritative() {
 
 #[test]
 fn current_server_pending_append_cannot_mask_newer_selection() {
-    let mut adapter = GuiClientSession::new("alice", "room1").unwrap();
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let mut server = sorotte_server::ServerRuntime::new();
     exchange(&mut adapter, &mut server);
     adapter

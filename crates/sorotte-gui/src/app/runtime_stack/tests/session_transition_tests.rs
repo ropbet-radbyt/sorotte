@@ -6,8 +6,7 @@ use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snap
 
 #[test]
 fn gui_client_session_uses_network_receipt_time_after_delayed_owner_drain() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -85,8 +84,7 @@ fn gui_client_session_clears_stale_session_state_before_server_hello() {
         }
     )));
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let actions =
@@ -152,8 +150,7 @@ fn timestamped_local_and_room_samples_are_compared_at_the_same_clock() {
         update
     }
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -277,8 +274,7 @@ fn rich_transport_keeps_steady_state_attached_drift_correction() {
         update
     }
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     adapter
         .apply_message_json(
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}}}"#,
@@ -412,8 +408,7 @@ fn gui_client_session_dispatches_ready_at_start_after_server_hello() {
 
     let runtime_settings =
         stored_client_settings_runtime_snapshot(&state.configuration.to_stored_settings());
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
 
@@ -462,8 +457,7 @@ fn gui_client_session_applies_batched_top_level_commands() {
         chat_output_enabled: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     adapter
         .apply_message_json(
@@ -485,8 +479,7 @@ fn gui_client_session_applies_batched_top_level_commands() {
 
 #[test]
 fn gui_client_session_applies_valid_prefix_before_batched_unknown() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let result = adapter.apply_message_json(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true}},"Bogus":{"x":1}}"#,
@@ -505,8 +498,7 @@ fn gui_client_session_applies_valid_prefix_before_batched_unknown() {
 
 #[test]
 fn gui_client_session_requests_user_list_on_first_state_without_media() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -548,8 +540,7 @@ fn gui_client_session_requests_user_list_on_first_state_without_media() {
 
 #[test]
 fn gui_client_session_requests_user_list_on_first_state_with_local_media() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -589,8 +580,7 @@ fn gui_client_session_projects_remote_user_after_playlist_seed() {
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientSession::new("smoke-user", "smoke-room")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("smoke-user", "smoke-room");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -627,8 +617,7 @@ fn gui_client_session_projects_remote_user_after_playlist_seed() {
 
 #[test]
 fn gui_client_session_stops_reconnect_on_server_error() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let error = adapter
         .apply_message_json(r#"{"Error":{"message":"wrong-password-server-error"}}"#)
@@ -651,8 +640,7 @@ fn gui_client_session_persists_reconnect_transitions_to_system_chat() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -713,8 +701,7 @@ fn gui_client_session_dispatches_reconnect_playlist_restore_messages() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -795,8 +782,7 @@ fn gui_client_session_persists_reconnect_state_restore_details_to_system_chat() 
 
 #[test]
 fn gui_client_session_dispatches_remote_ready_changes_when_supported() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -825,8 +811,7 @@ fn gui_client_session_dispatches_remote_ready_changes_when_supported() {
 
 #[test]
 fn gui_client_session_rejects_remote_ready_changes_when_unsupported() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -849,8 +834,7 @@ fn gui_client_session_rejects_remote_ready_changes_when_unsupported() {
 
 #[test]
 fn gui_client_session_rejects_controller_auth_when_managed_rooms_are_unsupported() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -889,8 +873,7 @@ fn gui_client_session_restores_readiness_controls_after_server_hello() {
         stale_snapshot
     )));
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -941,8 +924,7 @@ fn gui_client_session_disables_remote_readiness_without_control() {
         room: Some("+room:ABCDEF123456".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientSession::new("alice", "+room:ABCDEF123456")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "+room:ABCDEF123456");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -974,8 +956,7 @@ fn gui_client_session_disables_remote_readiness_without_control() {
 
 #[test]
 fn gui_client_session_echoes_first_remote_authority() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()

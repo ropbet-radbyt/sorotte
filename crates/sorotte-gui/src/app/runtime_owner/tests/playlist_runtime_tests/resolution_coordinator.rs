@@ -44,8 +44,7 @@ fn detached_playlist_owner_and_state(
 }
 
 fn active_client_core_playlist_adapter() -> GuiClientSession {
-    let mut adapter = GuiClientSession::new("alice", "room1")
-        .expect("client-core playlist adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup hello should encode");

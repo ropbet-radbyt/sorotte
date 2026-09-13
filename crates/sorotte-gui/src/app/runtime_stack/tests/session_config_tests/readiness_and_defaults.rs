@@ -8,8 +8,7 @@ fn gui_client_session_preserves_ready_at_start_across_reconnect_before_first_hel
         ready_at_start: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
@@ -47,8 +46,7 @@ fn gui_client_session_preserves_ready_at_start_across_reconnect_after_hello_befo
         ready_at_start: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
@@ -95,8 +93,7 @@ fn gui_client_session_preserves_ready_at_start_across_reconnect_after_hello_befo
 
 #[test]
 fn gui_client_session_reconnect_hello_preserves_whitespace_room_names() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -140,8 +137,7 @@ fn gui_client_session_clears_text_backed_runtime_settings_to_defaults() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &configured_settings)
         .expect("configured runtime settings should sync");

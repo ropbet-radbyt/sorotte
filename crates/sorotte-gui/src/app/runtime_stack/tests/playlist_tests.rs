@@ -3,8 +3,7 @@ use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_client_session_dispatches_shared_playlist_operations() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -196,8 +195,7 @@ fn gui_client_session_dispatches_shared_playlist_operations() {
 
 #[test]
 fn gui_client_session_marks_single_item_loop_playlist_as_auto_advanceable() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -234,8 +232,7 @@ fn gui_client_session_marks_single_item_loop_playlist_as_auto_advanceable() {
 
 #[test]
 fn gui_client_session_replace_playlist_without_explicit_index_preserves_active_target() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -303,8 +300,7 @@ fn gui_client_session_disables_shared_playlist_when_server_feature_is_false() {
     });
     assert!(state.main_window.shared_playlist_enabled);
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -382,8 +378,7 @@ fn gui_client_session_clears_stale_shared_playlist_when_session_has_none() {
         },
     )));
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -457,8 +452,7 @@ fn gui_client_session_projects_local_playlist_replace_before_server_echo() {
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -507,8 +501,7 @@ fn gui_client_session_projects_local_playlist_replace_over_existing_room_playlis
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -579,8 +572,7 @@ fn gui_client_session_clears_stale_playback_pause_when_session_has_no_playstate(
     )));
     assert!(state.main_window.playback_paused);
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -639,8 +631,7 @@ fn gui_client_session_clears_stale_autoplay_state_when_session_has_no_override()
     )));
     assert!(state.main_window.autoplay_active);
 
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()

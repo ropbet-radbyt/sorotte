@@ -273,8 +273,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         message.get("Set")?.get("ready")?.get("isReady")?.as_bool()
     }
 
-    let mut session = crate::app::GuiClientSession::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let _ = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -532,8 +531,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             ));
     }
 
-    let mut session = crate::app::GuiClientSession::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let startup_lines = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -693,8 +691,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             ));
     }
 
-    let mut session = crate::app::GuiClientSession::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let startup_lines = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");

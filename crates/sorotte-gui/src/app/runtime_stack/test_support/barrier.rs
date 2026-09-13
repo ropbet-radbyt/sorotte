@@ -125,8 +125,7 @@ pub(in crate::app) fn barrier_request(adapter: &mut GuiClientSession) -> Prepare
 }
 
 pub(in crate::app) fn barrier_aware_controller(policy: PlaybackBarrierPolicy) -> GuiClientSession {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let startup = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");

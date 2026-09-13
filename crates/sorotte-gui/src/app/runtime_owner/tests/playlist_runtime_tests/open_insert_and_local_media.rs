@@ -292,8 +292,7 @@ fn every_selected_playlist_mutator_returns_its_real_protocol_delivery_fence() {
     ];
 
     for (case, mutate) in cases {
-        let mut session = GuiClientSession::new("alice", "room1")
-            .expect("client-core session adapter should bootstrap");
+        let mut session = GuiClientSession::new("alice", "room1");
         session
             .apply_message_json(
                 r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#,

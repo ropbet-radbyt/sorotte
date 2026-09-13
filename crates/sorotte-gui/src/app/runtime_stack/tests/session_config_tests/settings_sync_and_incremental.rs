@@ -29,8 +29,7 @@ fn gui_client_session_syncs_runtime_settings_into_session_and_reconnects_with_th
         ..StoredClientSettings::default()
     });
     let mut adapter =
-        GuiClientSession::new_with_control_password("alice", "room1", Some("ab-123-456".into()))
-            .expect("client-core chat adapter should bootstrap");
+        GuiClientSession::new_with_control_password("alice", "room1", Some("ab-123-456".into()));
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
@@ -163,8 +162,7 @@ fn gui_client_session_syncs_runtime_settings_into_session_and_reconnects_with_th
 
 #[test]
 fn gui_client_session_sets_media_match_peer_tiers() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     assert!(
         adapter
@@ -208,8 +206,7 @@ fn gui_client_session_clears_cached_username_when_runtime_settings_blank() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the startup hello");
@@ -229,8 +226,7 @@ fn gui_client_session_clears_cached_username_when_runtime_settings_blank() {
 
 #[test]
 fn gui_client_session_updates_dont_slow_down_with_me_without_reconnect() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let disabled_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         dont_slow_down_with_me: Some(false),
         ..StoredClientSettings::default()

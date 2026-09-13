@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn gui_client_session_normalizes_public_server_refresh_rows() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let refreshed = GuiClientSession::refresh_public_servers(
         &mut adapter,

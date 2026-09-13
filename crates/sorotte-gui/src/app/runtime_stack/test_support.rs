@@ -46,7 +46,7 @@ pub(in crate::app) fn active_session() -> GuiClientSession {
 }
 
 pub(in crate::app) fn active_session_in_room(room: &str) -> GuiClientSession {
-    let mut session = GuiClientSession::new("alice", room).unwrap();
+    let mut session = GuiClientSession::new("alice", room);
     session.deliver_outbound_protocol_lines().unwrap();
     session
         .apply_message_json(

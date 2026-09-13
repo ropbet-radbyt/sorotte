@@ -105,10 +105,7 @@ impl GuiClientSession {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn new(
-        username: impl Into<String>,
-        room: impl Into<String>,
-    ) -> Result<Self, String> {
+    pub(in crate::app) fn new(username: impl Into<String>, room: impl Into<String>) -> Self {
         Self::new_with_control_password(username, room, None)
     }
 
@@ -116,7 +113,7 @@ impl GuiClientSession {
         username: impl Into<String>,
         room: impl Into<String>,
         controlled_room_password_override: Option<SecretValue>,
-    ) -> Result<Self, String> {
+    ) -> Self {
         let username = username.into();
         let room = room.into();
         let mut runtime_settings = StoredClientSettingsRuntimeSnapshot {
@@ -129,14 +126,16 @@ impl GuiClientSession {
             controlled_room_password_override;
         let hello_json = Self::hello_json(&username, &room, &runtime_settings, None);
         let mut runtime = ClientApplication::with_default_session(GuiNoopClientRuntimePlayer);
-        Self::dispatch_command_to_application(
-            &mut runtime,
-            ClientCommand::update_settings(Self::application_settings(&runtime_settings, &room)),
-        )?;
-        Self::dispatch_command_to_application(&mut runtime, ClientCommand::BeginConnecting)?;
+        // Settings application is infallible, and a fresh disconnected
+        // application can always enter Connecting. Neither command performs I/O.
+        runtime.dispatch(ClientCommand::update_settings(Self::application_settings(
+            &runtime_settings,
+            &room,
+        )));
+        runtime.dispatch(ClientCommand::BeginConnecting);
 
         let playback_transport_adapter_epoch = runtime.playback_transport_adapter_epoch();
-        Ok(Self {
+        Self {
             username,
             baseline_room: room,
             pending_room_for_next_hello: None,
@@ -159,7 +158,7 @@ impl GuiClientSession {
             test_observer: None,
             #[cfg(test)]
             test_failure: None,
-        })
+        }
     }
 
     pub(in crate::app) fn apply_runtime_settings_snapshot(

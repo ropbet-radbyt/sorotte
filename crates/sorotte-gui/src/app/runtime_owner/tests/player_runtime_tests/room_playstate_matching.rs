@@ -212,8 +212,7 @@ fn commit_barrier(
 #[test]
 fn gui_controlled_reconnect_toggle_stays_dormant_before_transport_telemetry() {
     const ROOM: &str = "+room:ABCDEF123456";
-    let mut adapter =
-        GuiClientSession::new("alice", ROOM).expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", ROOM);
     let startup = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");

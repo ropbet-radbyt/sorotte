@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn staged_startup_hello_keeps_current_connection_ownership_across_settings_changes() {
-    let mut adapter = GuiClientSession::new("alice", "room-a")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room-a");
     let hello_a = adapter
         .begin_outbound_protocol_delivery()
         .expect("startup delivery should stage")
@@ -84,8 +83,7 @@ fn staged_startup_hello_keeps_current_connection_ownership_across_settings_chang
 
 #[test]
 fn startup_acknowledgement_rejects_an_outbox_front_mismatch_without_releasing_ownership() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let startup = adapter
         .begin_outbound_protocol_delivery()
         .expect("startup delivery should stage")
@@ -111,8 +109,7 @@ fn startup_acknowledgement_rejects_an_outbox_front_mismatch_without_releasing_ow
 
 #[test]
 fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     assert!(matches!(
         adapter.runtime.connection_phase(),
         sorotte_client_app::app_boundary::application::ConnectionPhase::Connecting
@@ -190,8 +187,7 @@ fn gui_client_core_outbound_delivery_retains_front_until_matching_write_receipt(
 
 #[test]
 fn failed_runtime_delivery_retries_only_after_reconnect_hello_completes() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let startup = adapter
         .begin_outbound_protocol_delivery()
         .expect("startup delivery should stage")
@@ -262,8 +258,7 @@ fn gui_hello_shared_playlist_feature_preserves_default_and_explicit_values() {
             shared_playlist_enabled: configured,
             ..StoredClientSettings::default()
         });
-        let mut adapter = GuiClientSession::new("alice", "room1")
-            .expect("client-core chat adapter should bootstrap");
+        let mut adapter = GuiClientSession::new("alice", "room1");
         GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
             .expect("runtime settings should sync into the startup Hello");
 
@@ -298,8 +293,7 @@ fn gui_client_session_startup_hello_includes_hashed_password_and_full_features()
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the startup hello");
@@ -406,8 +400,7 @@ fn gui_client_session_reconnect_hello_uses_updated_runtime_identity() {
         room: Some("room2".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -439,8 +432,7 @@ fn gui_client_session_reconnect_hello_uses_server_assigned_username() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -470,8 +462,7 @@ fn gui_client_session_reconnect_hello_uses_server_assigned_username() {
 #[test]
 fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
     const TOKEN: &str = "same-room-reconnect-token";
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let _ = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -502,8 +493,7 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
         Some(TOKEN)
     );
 
-    let mut switched =
-        GuiClientSession::new("alice", "room1").expect("room-switch adapter should bootstrap");
+    let mut switched = GuiClientSession::new("alice", "room1");
     let _ = switched
         .deliver_outbound_protocol_lines()
         .expect("room-switch startup hello should encode");
@@ -542,8 +532,7 @@ fn gui_reconnect_hello_presents_server_token_only_for_the_same_room() {
 #[test]
 fn gui_reconnect_reset_carries_same_room_token_into_replacement_runtime_hello() {
     const TOKEN: &str = "reset-path-reconnect-token";
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let _ = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -579,8 +568,7 @@ fn gui_reconnect_reset_carries_same_room_token_into_replacement_runtime_hello() 
 
 #[test]
 fn gui_client_session_reconnect_hello_preserves_current_room_over_local_file_name() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -614,8 +602,7 @@ fn gui_client_session_reconnect_hello_preserves_current_room_over_local_file_nam
 
 #[test]
 fn gui_client_session_reconnect_hello_preserves_pending_room_switch() {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -665,8 +652,7 @@ fn gui_client_session_reconnect_hello_preserves_pending_room_switch() {
 #[test]
 fn gui_client_session_reconnect_hello_follows_server_authoritative_room_after_mismatched_room_response()
  {
-    let mut adapter =
-        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
