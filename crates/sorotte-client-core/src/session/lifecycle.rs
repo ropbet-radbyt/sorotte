@@ -1028,8 +1028,7 @@ impl ClientSession {
         now_seconds: Option<f64>,
     ) -> Result<(), ProtocolError> {
         let normalized = normalize_client_protocol_message(message);
-        self.retain_compatibility_fallbacks(normalized.fallbacks);
-        match normalized.command {
+        match normalized {
             ClientInboundCommand::Hello(hello) => self.apply_hello(hello),
             ClientInboundCommand::Set(commands) => self.apply_set(commands, now_seconds),
             ClientInboundCommand::List(rooms) => self.apply_list(rooms),

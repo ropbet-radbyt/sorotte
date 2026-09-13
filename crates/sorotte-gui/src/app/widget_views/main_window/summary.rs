@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+
 use super::*;
 use crate::app::shell_state::{
     GuiPlaylistSourcePolicy, MainWindowParticipantStatusPresentation,
     MainWindowParticipantStatusReport, MainWindowUserRow,
 };
+use sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation;
 
 impl SorotteGuiShellAppState {
     fn seek_preparation_panel(&self) -> Option<GuiWidgetNode> {
@@ -330,19 +333,12 @@ impl SorotteGuiShellAppState {
             .into_iter()
             .map(|user_index| {
                 let user = &self.main_window.users[user_index];
-                let legacy_readiness;
-                let readiness = if let Some(readiness) = self
-                    .main_window
-                    .readiness
-                    .get(&user.username)
-                {
-                    readiness
-                } else {
-                    legacy_readiness = sorotte_client_app::app_boundary::readiness::ParticipantReadinessPresentation::from_syncplay_ready(
+                let readiness = match self.main_window.readiness.get(&user.username) {
+                    Some(readiness) => Cow::Borrowed(readiness),
+                    None => Cow::Owned(ParticipantReadinessPresentation::from_syncplay_ready(
                         user.username.clone(),
                         user.is_ready,
-                    );
-                    &legacy_readiness
+                    )),
                 };
                 let mut cue_parts = Vec::new();
                 if !user.has_file {
@@ -366,7 +362,7 @@ impl SorotteGuiShellAppState {
                     format!(" [{}]", cue_parts.join(", "))
                 };
                 let participant_status_tooltip =
-                    participant_status_tooltip(user, readiness, &user.participant_status);
+                    participant_status_tooltip(user, &readiness, &user.participant_status);
                 let mut user_children = vec![GuiWidgetNode::layout(
                     format!("main-window:user:{user_index}:summary"),
                     format!("{} Summary", user.username),

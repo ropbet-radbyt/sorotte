@@ -389,17 +389,7 @@ impl ServerRuntime {
             return Err(frame_limits::frame_capacity_error());
         }
         let normalized = normalize_server_protocol_message(message);
-        const MAX_PENDING_COMPATIBILITY_FALLBACKS: usize = 128;
-        let remaining = MAX_PENDING_COMPATIBILITY_FALLBACKS
-            .saturating_sub(self.pending_compatibility_fallbacks.len());
-        self.pending_compatibility_fallbacks.extend(
-            normalized
-                .fallbacks
-                .into_iter()
-                .take(remaining)
-                .map(ServerCompatibilityFallback::bounded),
-        );
-        match normalized.command {
+        match normalized {
             ServerInboundCommand::Hello(hello) => {
                 self.handle_hello_for_peer(client_id, hello, peer_ip)
             }

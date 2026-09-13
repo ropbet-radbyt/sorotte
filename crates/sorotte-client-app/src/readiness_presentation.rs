@@ -559,14 +559,14 @@ mod tests {
 
     #[test]
     fn strict_mixed_room_presentation_explains_automatic_start_degradation() {
-        let mut legacy = canonical(
+        let mut unsupported_participant = canonical(
             UserReadinessIntent::NotReady,
             TechnicalPlayabilityPhase::Unknown,
             false,
             false,
             None,
         );
-        legacy.participation_role = StartParticipationRole::ExcludedUnsupported;
+        unsupported_participant.participation_role = StartParticipationRole::ExcludedUnsupported;
         let snapshot = RoomReadinessSnapshot {
             room_readiness_revision: 9,
             media_generation: Some(3),
@@ -579,7 +579,8 @@ mod tests {
             participants: Default::default(),
         };
         let presentation =
-            ParticipantReadinessPresentation::from_v2(&legacy, None).with_room_snapshot(&snapshot);
+            ParticipantReadinessPresentation::from_v2(&unsupported_participant, None)
+                .with_room_snapshot(&snapshot);
 
         assert_eq!(
             presentation.participation_detail_label(),

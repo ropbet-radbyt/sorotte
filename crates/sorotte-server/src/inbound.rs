@@ -1,68 +1,6 @@
 use super::*;
 use sorotte_media_match::MediaMatchWireSignature;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerCompatibilityFallback {
-    IgnoredSetCommand { command: String },
-    UsedSyncplayFeatureDefaults { context: String },
-    IgnoredInvalidFileSize { context: String },
-    IgnoredInvalidMediaMatch { context: String, reason: String },
-    IgnoredInvalidFeatures { context: String },
-    IgnoredInvalidPlaybackBarrier { context: String, reason: String },
-    IgnoredInvalidReadiness { context: String, reason: String },
-    IgnoredUnexpectedMessage { command: &'static str },
-}
-
-const MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES: usize = 512;
-
-fn bounded_fallback_text(mut value: String) -> String {
-    if value.len() <= MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES {
-        return value;
-    }
-    let mut end = MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value.truncate(end);
-    value
-}
-
-impl ServerCompatibilityFallback {
-    pub(crate) fn bounded(self) -> Self {
-        match self {
-            Self::IgnoredSetCommand { command } => Self::IgnoredSetCommand {
-                command: bounded_fallback_text(command),
-            },
-            Self::UsedSyncplayFeatureDefaults { context } => Self::UsedSyncplayFeatureDefaults {
-                context: bounded_fallback_text(context),
-            },
-            Self::IgnoredInvalidFileSize { context } => Self::IgnoredInvalidFileSize {
-                context: bounded_fallback_text(context),
-            },
-            Self::IgnoredInvalidMediaMatch { context, reason } => Self::IgnoredInvalidMediaMatch {
-                context: bounded_fallback_text(context),
-                reason: bounded_fallback_text(reason),
-            },
-            Self::IgnoredInvalidFeatures { context } => Self::IgnoredInvalidFeatures {
-                context: bounded_fallback_text(context),
-            },
-            Self::IgnoredInvalidPlaybackBarrier { context, reason } => {
-                Self::IgnoredInvalidPlaybackBarrier {
-                    context: bounded_fallback_text(context),
-                    reason: bounded_fallback_text(reason),
-                }
-            }
-            Self::IgnoredInvalidReadiness { context, reason } => Self::IgnoredInvalidReadiness {
-                context: bounded_fallback_text(context),
-                reason: bounded_fallback_text(reason),
-            },
-            Self::IgnoredUnexpectedMessage { command } => {
-                Self::IgnoredUnexpectedMessage { command }
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ServerFileSize {
     Number(serde_json::Number),
@@ -338,12 +276,6 @@ impl std::fmt::Debug for ServerInboundCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NormalizedServerInbound {
-    pub(crate) command: ServerInboundCommand,
-    pub(crate) fallbacks: Vec<ServerCompatibilityFallback>,
-}
-
 fn bool_feature(features: &serde_json::Map<String, Value>, name: &str) -> bool {
     features.get(name).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -379,22 +311,11 @@ fn syncplay_capabilities_for_version(version: &str) -> ServerClientCapabilities 
     }
 }
 
-fn normalize_capabilities(
-    value: Option<Value>,
-    version: &str,
-    context: &str,
-    fallbacks: &mut Vec<ServerCompatibilityFallback>,
-) -> ServerClientCapabilities {
+fn normalize_capabilities(value: Option<Value>, version: &str) -> ServerClientCapabilities {
     let Some(Value::Object(features)) = value else {
-        fallbacks.push(ServerCompatibilityFallback::UsedSyncplayFeatureDefaults {
-            context: context.to_owned(),
-        });
         return syncplay_capabilities_for_version(version);
     };
     if features.is_empty() {
-        fallbacks.push(ServerCompatibilityFallback::UsedSyncplayFeatureDefaults {
-            context: context.to_owned(),
-        });
         return syncplay_capabilities_for_version(version);
     }
     capabilities_from_object(features)
@@ -443,35 +364,16 @@ fn capabilities_from_object(features: serde_json::Map<String, Value>) -> ServerC
     }
 }
 
-fn normalize_file(
-    file: FilePayload,
-    context: &str,
-    fallbacks: &mut Vec<ServerCompatibilityFallback>,
-) -> Option<ServerSharedFile> {
+fn normalize_file(file: FilePayload) -> Option<ServerSharedFile> {
     let size = match file.size {
         Some(Value::Number(number)) => Some(ServerFileSize::Number(number)),
         Some(Value::String(text)) => Some(ServerFileSize::Text(text)),
-        Some(Value::Null) | None => None,
-        Some(_) => {
-            fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidFileSize {
-                context: context.to_owned(),
-            });
-            None
-        }
+        _ => None,
     };
     let mut extra = file.extra;
-    let media_match = extra.remove("mediaMatch").and_then(|value| {
-        match serde_json::from_value::<MediaMatchWireSignature>(value) {
-            Ok(signature) => Some(signature),
-            Err(reason) => {
-                fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidMediaMatch {
-                    context: context.to_owned(),
-                    reason: reason.to_string(),
-                });
-                None
-            }
-        }
-    });
+    let media_match = extra
+        .remove("mediaMatch")
+        .and_then(|value| serde_json::from_value::<MediaMatchWireSignature>(value).ok());
     let file = ServerSharedFile {
         name: file
             .name
@@ -484,16 +386,12 @@ fn normalize_file(
     (!file.is_empty()).then_some(file)
 }
 
-pub(crate) fn normalize_server_protocol_message(
-    message: ProtocolMessage,
-) -> NormalizedServerInbound {
-    let mut fallbacks = Vec::new();
-    let command = match message {
+pub(crate) fn normalize_server_protocol_message(message: ProtocolMessage) -> ServerInboundCommand {
+    match message {
         ProtocolMessage::Hello(message) => {
             let hello = message.hello;
             let version = hello.effective_version().to_owned();
-            let capabilities =
-                normalize_capabilities(hello.features, &version, "Hello.features", &mut fallbacks);
+            let capabilities = normalize_capabilities(hello.features, &version);
             let password_token = hello
                 .extra
                 .get("password")
@@ -516,26 +414,8 @@ pub(crate) fn normalize_server_protocol_message(
         }
         ProtocolMessage::Set(message) => {
             let mut set = message.set;
-            let mut playback_barrier = match set.playback_barrier_v1() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
-                        context: "Set.sorottePlaybackBarrierV1".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
-            let mut readiness = match set.readiness_v2() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidReadiness {
-                        context: "Set.sorotteReadinessV2".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
+            let mut playback_barrier = set.playback_barrier_v1().ok().flatten();
+            let mut readiness = set.readiness_v2().ok().flatten();
             let mut order = set.command_order.clone();
             for command in [
                 "room",
@@ -554,81 +434,67 @@ pub(crate) fn normalize_server_protocol_message(
             }
             let mut commands = Vec::new();
             for name in order {
-                let command = match name.as_str() {
-                    "room" => set
-                        .room
-                        .take()
-                        .map(|room| ServerSetCommand::Room(room.name)),
-                    "file" => set.file.take().map(|file| {
-                        ServerSetCommand::File(normalize_file(file, "Set.file", &mut fallbacks))
-                    }),
-                    "controllerAuth" => {
-                        set.controller_auth
+                let command =
+                    match name.as_str() {
+                        "room" => set
+                            .room
                             .take()
-                            .map(|auth| ServerSetCommand::ControllerAuth {
+                            .map(|room| ServerSetCommand::Room(room.name)),
+                        "file" => set
+                            .file
+                            .take()
+                            .map(|file| ServerSetCommand::File(normalize_file(file))),
+                        "controllerAuth" => set.controller_auth.take().map(|auth| {
+                            ServerSetCommand::ControllerAuth {
                                 room: auth.room,
                                 password: auth.password.unwrap_or_default(),
+                            }
+                        }),
+                        "ready" => set.ready.take().and_then(|ready| {
+                            ready.is_ready.map(|is_ready| ServerSetCommand::Ready {
+                                ready: is_ready,
+                                manually_initiated: ready.manually_initiated.unwrap_or(false),
+                                username: ready.username,
+                                set_by: ready.set_by,
                             })
-                    }
-                    "ready" => set.ready.take().and_then(|ready| {
-                        ready.is_ready.map(|is_ready| ServerSetCommand::Ready {
-                            ready: is_ready,
-                            manually_initiated: ready.manually_initiated.unwrap_or(false),
-                            username: ready.username,
-                            set_by: ready.set_by,
-                        })
-                    }),
-                    "playlistChange" => set.playlist_change.take().map(|playlist| {
-                        ServerSetCommand::PlaylistChange(canonical_playlist_files_from_change(
-                            &playlist,
-                        ))
-                    }),
-                    "playlistIndex" => set.playlist_index.take().map(|playlist| {
-                        let precondition = if !playlist.has_expected_playlist_state() {
-                            ServerPlaylistIndexPrecondition::Unconditional
-                        } else if let (Some(index), Some(epoch)) = (
-                            playlist.expected_playlist_index(),
-                            playlist.expected_playlist_epoch(),
-                        ) {
-                            ServerPlaylistIndexPrecondition::Expected { index, epoch }
-                        } else {
-                            ServerPlaylistIndexPrecondition::Invalid
-                        };
-                        ServerSetCommand::PlaylistIndex(ServerPlaylistIndexCommand {
-                            index: playlist.index_value(),
-                            precondition,
-                        })
-                    }),
-                    "features" => set.features.take().and_then(|features| match features {
-                        Value::Object(features) => Some(ServerSetCommand::Features(
-                            capabilities_from_object(features),
-                        )),
-                        _ => {
-                            fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidFeatures {
-                                context: "Set.features".to_owned(),
-                            });
-                            None
-                        }
-                    }),
-                    SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
-                        .take()
-                        .map(Box::new)
-                        .map(ServerSetCommand::PlaybackBarrier),
-                    SOROTTE_READINESS_V2 => readiness
-                        .take()
-                        .map(Box::new)
-                        .map(ServerSetCommand::Readiness),
-                    _ => {
-                        if set.extra.contains_key(&name)
-                            || matches!(name.as_str(), "user" | "newControlledRoom")
-                        {
-                            fallbacks.push(ServerCompatibilityFallback::IgnoredSetCommand {
-                                command: name,
-                            });
-                        }
-                        None
-                    }
-                };
+                        }),
+                        "playlistChange" => set.playlist_change.take().map(|playlist| {
+                            ServerSetCommand::PlaylistChange(canonical_playlist_files_from_change(
+                                &playlist,
+                            ))
+                        }),
+                        "playlistIndex" => set.playlist_index.take().map(|playlist| {
+                            let precondition = if !playlist.has_expected_playlist_state() {
+                                ServerPlaylistIndexPrecondition::Unconditional
+                            } else if let (Some(index), Some(epoch)) = (
+                                playlist.expected_playlist_index(),
+                                playlist.expected_playlist_epoch(),
+                            ) {
+                                ServerPlaylistIndexPrecondition::Expected { index, epoch }
+                            } else {
+                                ServerPlaylistIndexPrecondition::Invalid
+                            };
+                            ServerSetCommand::PlaylistIndex(ServerPlaylistIndexCommand {
+                                index: playlist.index_value(),
+                                precondition,
+                            })
+                        }),
+                        "features" => set.features.take().and_then(|features| match features {
+                            Value::Object(features) => Some(ServerSetCommand::Features(
+                                capabilities_from_object(features),
+                            )),
+                            _ => None,
+                        }),
+                        SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
+                            .take()
+                            .map(Box::new)
+                            .map(ServerSetCommand::PlaybackBarrier),
+                        SOROTTE_READINESS_V2 => readiness
+                            .take()
+                            .map(Box::new)
+                            .map(ServerSetCommand::Readiness),
+                        _ => None,
+                    };
                 if let Some(command) = command {
                     commands.push(command);
                 }
@@ -637,49 +503,17 @@ pub(crate) fn normalize_server_protocol_message(
         }
         ProtocolMessage::List(message) => match message.list {
             ListPayload::Request(_) => ServerInboundCommand::ListRequest,
-            ListPayload::Rooms(_) => {
-                fallbacks.push(ServerCompatibilityFallback::IgnoredUnexpectedMessage {
-                    command: "List snapshot",
-                });
-                ServerInboundCommand::Ignore
-            }
+            ListPayload::Rooms(_) => ServerInboundCommand::Ignore,
         },
         ProtocolMessage::State(message) => {
             let state = message.state;
-            let playback_barrier = match state.playback_barrier_v1() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
-                        context: "State.sorottePlaybackBarrierV1".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
-            let readiness = match state.readiness_v2() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidReadiness {
-                        context: "State.sorotteReadinessV2".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
-            let participant_status = match state.participant_status_report_v1() {
-                Ok(report) => {
-                    report.map(|report| ParticipantStatusStateExtension::new().with_report(report))
-                }
-                Err(_) => {
-                    // Reuse the existing categorical public fallback instead
-                    // of extending an exhaustive public enum. Never retain
-                    // Serde's diagnostic because it can embed attacker data.
-                    fallbacks.push(ServerCompatibilityFallback::IgnoredInvalidFeatures {
-                        context: "State.sorotteParticipantStatusV1".to_owned(),
-                    });
-                    None
-                }
-            };
+            let playback_barrier = state.playback_barrier_v1().ok().flatten();
+            let readiness = state.readiness_v2().ok().flatten();
+            let participant_status = state
+                .participant_status_report_v1()
+                .ok()
+                .flatten()
+                .map(|report| ParticipantStatusStateExtension::new().with_report(report));
             let ignoring = state.ignoring_on_the_fly.unwrap_or_default();
             ServerInboundCommand::State(Box::new(ServerStateCommand {
                 playstate: state.playstate.map(|playstate| {
@@ -709,13 +543,8 @@ pub(crate) fn normalize_server_protocol_message(
             ChatPayload::Text(message) => message,
             ChatPayload::Message(message) => message.message,
         }),
-        ProtocolMessage::Error(_) => {
-            fallbacks
-                .push(ServerCompatibilityFallback::IgnoredUnexpectedMessage { command: "Error" });
-            ServerInboundCommand::Ignore
-        }
-    };
-    NormalizedServerInbound { command, fallbacks }
+        ProtocolMessage::Error(_) => ServerInboundCommand::Ignore,
+    }
 }
 
 #[cfg(test)]

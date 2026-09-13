@@ -1,6 +1,6 @@
 use super::*;
 
-impl FirstRunConfigurationDialogState {
+impl GuiConfigurationState {
     pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let config = ClientConfig::resolve(settings).config;
         let advanced_player_arguments = settings
@@ -26,11 +26,6 @@ impl FirstRunConfigurationDialogState {
             })
             .collect::<Vec<_>>()
             .join("; ");
-        let startup_entries = syncplay_configuration_getter_startup_compat_entries();
-        let ignored_startup_exception_count = startup_entries
-            .iter()
-            .filter(|entry| entry.status == SyncplayConfigurationGetterCompatibilityStatus::Ignored)
-            .count();
 
         Self {
             launch_mode: if settings == &StoredClientSettings::default() {
@@ -249,8 +244,6 @@ impl FirstRunConfigurationDialogState {
                 update_channel_label: config.interface.update_channel.to_ascii_lowercase(),
                 autosave_joins_to_list: config.interface.autosave_joins_to_list,
                 force_gui_prompt: config.interface.force_gui_prompt,
-                compatibility_startup_entry_count: startup_entries.len(),
-                ignored_startup_exception_count,
             },
         }
     }

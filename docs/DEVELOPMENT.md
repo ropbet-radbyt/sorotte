@@ -71,6 +71,15 @@ for hypothetical downstream Rust consumers. Syncplay protocol interoperability
 and settings import remain supported compatibility contracts and retain their
 behavioral tests.
 
+Protocol normalizers return accepted commands directly. Malformed additive input
+must leave unrelated valid fields usable; test the retained state and the next
+valid update instead of introducing unconsumed diagnostic queues.
+
+The CLI owns its outer connection/retry loop and startup inputs. Keep failed
+connection outcomes together with their original errors; shared connected-session
+behavior remains in `sorotte-client-app`. Test retry timing, cleanup and socket
+behavior at the execution boundary.
+
 Outbound protocol messages remain session-owned until their exact completed-write
 receipt is acknowledged. Inspect `control().outbound_messages()` to observe
 pending, still-coalescible work. Use the pending-line lease and acknowledgement

@@ -77,75 +77,55 @@ async fn run_reconnect_backoff(
         || stop_requested = true,
     );
 
-    let plan = client_reconnect_backoff_plan(*retries, stop_requested, reconnect_delay);
-
-    if plan.stop_retrying {
+    if stop_requested {
         return Ok(true);
     }
-
-    let Some(delay_seconds) = plan.sleep_delay_seconds else {
-        return Err(anyhow!(
-            "active reconnect backoff plan did not include a sleep delay"
-        ));
-    };
+    let delay_seconds = reconnect_delay.unwrap_or(0.1);
     wait_with_player_integration_maintenance(runtime, Duration::from_secs_f64(delay_seconds)).await;
-    *retries = plan.next_retries;
+    *retries = retries.saturating_add(1);
     Ok(false)
 }
 
-async fn run_client_network_loop_event_plan(
+#[derive(Debug)]
+enum ConnectionAttemptOutcome {
+    ConnectFailed(anyhow::Error),
+    SessionFailed(anyhow::Error),
+    TransportClosed,
+    RuntimeWindowElapsed,
+}
+
+async fn finish_connection_attempt(
     runtime: &mut ClientApplication<MpvAdapter>,
     retries: &mut u32,
     network_start: &Instant,
-    plan: ClientNetworkLoopEventPlan,
-) -> anyhow::Result<ClientNetworkLoopExecutionOutcome> {
-    if plan.return_success {
-        return Ok(client_network_loop_execution_outcome(plan, false));
-    }
-    if plan.run_disconnect {
-        ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
-            now_seconds: network_start.elapsed().as_secs_f64(),
-        }))?;
-    }
-    let reconnect_exhausted =
-        plan.run_reconnect_backoff && run_reconnect_backoff(runtime, retries).await?;
-    Ok(client_network_loop_execution_outcome(
-        plan,
-        reconnect_exhausted,
-    ))
-}
-
-async fn run_client_network_loop_attempt_plan(
-    runtime: &mut ClientApplication<MpvAdapter>,
-    retries: &mut u32,
-    network_start: &Instant,
-    plan: ClientNetworkLoopAttemptPlan,
-) -> anyhow::Result<ClientNetworkLoopExecutionOutcome> {
-    if plan.reset_retries_before_event {
-        *retries = 0;
-    }
-    run_client_network_loop_event_plan(runtime, retries, network_start, plan.event).await
-}
-
-fn reconnect_exhausted_error_from_attempt_disposition(
-    kind: ClientNetworkLoopReconnectExhaustedErrorKind,
-    connect_error: Option<anyhow::Error>,
-) -> anyhow::Error {
-    match client_network_loop_reconnect_exhausted_error_action(kind) {
-        ClientNetworkLoopReconnectExhaustedErrorAction::UseConnectError => connect_error
-            .unwrap_or_else(|| {
-                anyhow!("connect-failure exhaustion did not include the original connect error")
-            }),
-        ClientNetworkLoopReconnectExhaustedErrorAction::StaticMessage(message) => {
-            anyhow!(message)
+    outcome: ConnectionAttemptOutcome,
+) -> anyhow::Result<ControlFlow<()>> {
+    let error = match outcome {
+        ConnectionAttemptOutcome::RuntimeWindowElapsed => {
+            *retries = 0;
+            return Ok(ControlFlow::Break(()));
         }
+        ConnectionAttemptOutcome::TransportClosed => {
+            *retries = 0;
+            ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
+                now_seconds: network_start.elapsed().as_secs_f64(),
+            }))?;
+            anyhow!("server connection closed and reconnect retries were exhausted")
+        }
+        ConnectionAttemptOutcome::SessionFailed(error) => {
+            emit_application_service_events(runtime.shutdown_plex_service().await);
+            ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
+                now_seconds: network_start.elapsed().as_secs_f64(),
+            }))?;
+            error
+        }
+        ConnectionAttemptOutcome::ConnectFailed(error) => error,
+    };
+    if run_reconnect_backoff(runtime, retries).await? {
+        Err(error)
+    } else {
+        Ok(ControlFlow::Continue(()))
     }
-}
-
-enum ClientNetworkLoopTransportAttemptOutcome {
-    ReturnSuccess,
-    Continue,
-    ReconnectExhausted(anyhow::Error),
 }
 
 struct ClientNetworkLoopTransportAttemptContext<'a, F, G>
@@ -200,32 +180,9 @@ where
     }
 }
 
-struct ClientNetworkLoopStartupExecutionPlan {
-    diagnostics_config: ClientLoopDiagnosticsConfig,
-    startup_plan: ClientNetworkLoopStartupPlan,
-}
-
-fn client_network_loop_startup_execution_plan(
-    config: &ClientLoopConfig,
-    startup_playlist_file_on_connect: Option<&str>,
-    argument_overrides: Option<&SyncplayClientArgOverrides>,
-) -> ClientNetworkLoopStartupExecutionPlan {
-    ClientNetworkLoopStartupExecutionPlan {
-        diagnostics_config: client_loop_diagnostics_config(argument_overrides),
-        startup_plan: client_network_loop_startup_plan(ClientNetworkLoopStartupPlanInputs {
-            endpoint_host: &config.host,
-            endpoint_port: config.port,
-            stdin_enabled: env_flag_enabled("SOROTTE_CLIENT_STDIN"),
-            has_argument_overrides: argument_overrides.is_some(),
-            chat_message_on_connect: env_trimmed("SOROTTE_CLIENT_CHAT_MESSAGE").as_deref(),
-            startup_playlist_file_on_connect,
-        }),
-    }
-}
-
 fn bootstrap_client_network_loop_state<F, G>(
     config: &ClientLoopConfig,
-    startup_plan: ClientNetworkLoopStartupPlan,
+    startup_playlist_file_on_connect: Option<&str>,
     argument_overrides: Option<&SyncplayClientArgOverrides>,
     stored_settings: Option<&StoredClientSettings>,
     notification_sink: F,
@@ -235,13 +192,10 @@ where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    let ClientNetworkLoopStartupPlan {
-        endpoint,
-        spawn_local_input_receiver,
-        apply_explicit_mpv_ipc_startup,
-        chat_message_on_connect,
-        startup_playlist_file_on_connect,
-    } = startup_plan;
+    let endpoint = format!("{}:{}", config.host, config.port);
+    let stdin_enabled = env_flag_enabled("SOROTTE_CLIENT_STDIN");
+    let chat_message_on_connect = env_trimmed("SOROTTE_CLIENT_CHAT_MESSAGE");
+    let startup_playlist_file_on_connect = startup_playlist_file_on_connect.map(str::to_owned);
     let (mut runtime, managed_mpv_process_guard) = create_client_runtime_with_managed_mpv_support(
         config,
         argument_overrides,
@@ -250,8 +204,7 @@ where
     let _ = runtime.dispatch(ClientCommand::Connect {
         endpoint: endpoint.clone(),
     });
-    if apply_explicit_mpv_ipc_startup
-        && let Some(overrides) = argument_overrides
+    if let Some(overrides) = argument_overrides
         && let Err(error) = runtime.with_player_io(|player| {
             apply_startup_file_to_attached_player_if_explicit_mpv_ipc(player, overrides)
         })
@@ -264,8 +217,7 @@ where
             runtime,
             chat_message_on_connect,
             startup_playlist_file_on_connect,
-            local_input_rx: spawn_local_input_receiver
-                .then(crate::stdin_input::spawn_local_input_receiver),
+            local_input_rx: stdin_enabled.then(crate::stdin_input::spawn_local_input_receiver),
             notification_sink,
             file_difference_sink,
             plex_config: cli_plex_config_from_env_and_stored_settings(stored_settings),
@@ -332,41 +284,16 @@ where
         )
         .await?
         {
-            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess => return Ok(()),
-            ClientNetworkLoopTransportAttemptOutcome::Continue => {}
-            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(error) => {
-                return Err(error);
-            }
+            ControlFlow::Break(()) => return Ok(()),
+            ControlFlow::Continue(()) => {}
         }
     }
 }
 
-async fn run_client_network_loop_from_startup_execution_plan(
-    config: &ClientLoopConfig,
-    startup: ClientNetworkLoopStartupExecutionPlan,
-    argument_overrides: Option<&SyncplayClientArgOverrides>,
-    stored_settings: Option<&StoredClientSettings>,
-) -> anyhow::Result<()> {
-    let ClientNetworkLoopStartupExecutionPlan {
-        diagnostics_config,
-        startup_plan,
-    } = startup;
-    let bootstrap = bootstrap_client_network_loop_state(
-        config,
-        startup_plan,
-        argument_overrides,
-        stored_settings,
-        emit_autoplay_countdown_notification,
-        emit_file_difference_notification,
-    )?;
-    let network_start = Instant::now();
-    run_client_network_loop_retry_loop(config, diagnostics_config, &network_start, bootstrap).await
-}
-
-async fn client_network_loop_transport_attempt_execution_plan<F, G>(
+async fn connect_and_run_session<F, G>(
     endpoint: &str,
     launch: ConnectedSessionLaunchContext<'_, F, G>,
-) -> anyhow::Result<(ClientNetworkLoopAttemptExecutionPlan, Option<anyhow::Error>)>
+) -> ConnectionAttemptOutcome
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
@@ -377,39 +304,33 @@ where
         tokio::time::timeout(connect_timeout, TcpStream::connect(endpoint)),
     )
     .await;
-    Ok(match connect_result {
+    match connect_result {
         Ok(Ok(stream)) => {
             match run_connected_client_session_with_startup_overrides_and_diagnostics(
                 stream, launch,
             )
             .await
             {
-                Ok(exit) => (
-                    client_network_loop_attempt_execution_plan_for_connected_session_exit(exit),
-                    None,
-                ),
-                // The caller deliberately converts every pre-session/session error into the
-                // same reconnect attempt plan used for TCP-connect failures.
-                Err(error) => return Err(error),
+                Ok(ConnectedSessionExit::TransportClosed) => {
+                    ConnectionAttemptOutcome::TransportClosed
+                }
+                Ok(ConnectedSessionExit::RuntimeWindowElapsed) => {
+                    ConnectionAttemptOutcome::RuntimeWindowElapsed
+                }
+                Err(error) => ConnectionAttemptOutcome::SessionFailed(error),
             }
         }
-        Ok(Err(connect_err)) => (
-            client_network_loop_attempt_execution_plan_for_connect_failure(),
-            Some(connect_err.into()),
-        ),
-        Err(_) => (
-            client_network_loop_attempt_execution_plan_for_connect_failure(),
-            Some(anyhow!(
-                "TCP connection to {endpoint} timed out after {:.1} seconds",
-                connect_timeout.as_secs_f64()
-            )),
-        ),
-    })
+        Ok(Err(error)) => ConnectionAttemptOutcome::ConnectFailed(error.into()),
+        Err(_) => ConnectionAttemptOutcome::ConnectFailed(anyhow!(
+            "TCP connection to {endpoint} timed out after {:.1} seconds",
+            connect_timeout.as_secs_f64()
+        )),
+    }
 }
 
 async fn run_client_network_loop_transport_attempt<F, G>(
     attempt: ClientNetworkLoopTransportAttemptContext<'_, F, G>,
-) -> anyhow::Result<ClientNetworkLoopTransportAttemptOutcome>
+) -> anyhow::Result<ControlFlow<()>>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
@@ -433,7 +354,7 @@ where
         network_options_health_reporter,
         tls_policy_override,
     } = launch;
-    let attempt_result = client_network_loop_transport_attempt_execution_plan(
+    let attempt_result = connect_and_run_session(
         endpoint,
         ConnectedSessionLaunchContext {
             runtime: &mut *runtime,
@@ -450,42 +371,7 @@ where
         },
     )
     .await;
-    let (attempt_execution_plan, connect_error) = match attempt_result {
-        Ok(result) => result,
-        Err(error) => {
-            emit_application_service_events(runtime.shutdown_plex_service().await);
-            ensure_application_command_succeeded(runtime.dispatch(ClientCommand::Disconnect {
-                now_seconds: network_start.elapsed().as_secs_f64(),
-            }))?;
-            (
-                client_network_loop_attempt_execution_plan_for_connect_failure(),
-                Some(error),
-            )
-        }
-    };
-    let attempt_disposition = client_network_loop_attempt_disposition_for_execution_plan(
-        attempt_execution_plan,
-        run_client_network_loop_attempt_plan(
-            runtime,
-            retries,
-            network_start,
-            attempt_execution_plan.attempt_plan,
-        )
-        .await?,
-    );
-    Ok(match attempt_disposition {
-        ClientNetworkLoopAttemptDisposition::ReturnSuccess => {
-            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess
-        }
-        ClientNetworkLoopAttemptDisposition::Continue => {
-            ClientNetworkLoopTransportAttemptOutcome::Continue
-        }
-        ClientNetworkLoopAttemptDisposition::ReconnectExhausted(kind) => {
-            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(
-                reconnect_exhausted_error_from_attempt_disposition(kind, connect_error),
-            )
-        }
-    })
+    finish_connection_attempt(runtime, retries, network_start, attempt_result).await
 }
 
 #[cfg(test)]
@@ -537,13 +423,10 @@ pub(crate) async fn run_client_network_loop_with_prepared_runtime_for_test(
         )
         .await?
         {
-            ClientNetworkLoopTransportAttemptOutcome::ReturnSuccess => {
+            ControlFlow::Break(()) => {
                 return Ok(retry_state.runtime);
             }
-            ClientNetworkLoopTransportAttemptOutcome::Continue => {}
-            ClientNetworkLoopTransportAttemptOutcome::ReconnectExhausted(error) => {
-                return Err(error);
-            }
+            ControlFlow::Continue(()) => {}
         }
     }
 }
@@ -569,23 +452,99 @@ pub(crate) async fn run_client_network_loop_with_startup_overrides_and_stored_se
     argument_overrides: Option<&SyncplayClientArgOverrides>,
     stored_settings: Option<&StoredClientSettings>,
 ) -> anyhow::Result<()> {
-    run_client_network_loop_from_startup_execution_plan(
+    let diagnostics_config = client_loop_diagnostics_config(argument_overrides);
+    let bootstrap = bootstrap_client_network_loop_state(
         config,
-        client_network_loop_startup_execution_plan(
-            config,
-            startup_playlist_file_on_connect,
-            argument_overrides,
-        ),
+        startup_playlist_file_on_connect,
         argument_overrides,
         stored_settings,
-    )
-    .await
+        emit_autoplay_countdown_notification,
+        emit_file_difference_notification,
+    )?;
+    let network_start = Instant::now();
+    run_client_network_loop_retry_loop(config, diagnostics_config, &network_start, bootstrap).await
 }
 
 #[cfg(test)]
 mod deterministic_reconnect_time_tests {
     use super::*;
     use crate::{client_config::create_client_runtime, tests::test_client_loop_config};
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_window_completion_preserves_connection_and_does_not_back_off() {
+        let config = test_client_loop_config();
+        let mut runtime = create_client_runtime(&config);
+        runtime.dispatch(ClientCommand::Connect {
+            endpoint: "fixture:8999".to_owned(),
+        });
+        let before_phase = runtime.connection_phase().clone();
+        let mut retries = 7;
+        let started_at = Instant::now();
+        let control = finish_connection_attempt(
+            &mut runtime,
+            &mut retries,
+            &started_at,
+            ConnectionAttemptOutcome::RuntimeWindowElapsed,
+        )
+        .await
+        .unwrap();
+        assert!(control.is_break());
+        assert_eq!(retries, 0);
+        assert_eq!(runtime.connection_phase(), &before_phase);
+        assert_eq!(Instant::now().duration_since(started_at), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transport_close_resets_failed_attempts_before_scheduling_reconnect() {
+        let mut config = test_client_loop_config();
+        config.max_retries = 0;
+        let mut runtime = create_client_runtime(&config);
+        let mut retries = 7;
+        let started_at = Instant::now();
+        let control = finish_connection_attempt(
+            &mut runtime,
+            &mut retries,
+            &started_at,
+            ConnectionAttemptOutcome::TransportClosed,
+        )
+        .await
+        .unwrap();
+        assert!(
+            control.is_continue(),
+            "a completed session starts a fresh retry budget"
+        );
+        assert_eq!(retries, 1);
+        assert_eq!(
+            Instant::now().duration_since(started_at),
+            Duration::from_millis(100)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_and_session_failures_preserve_original_error_and_retry_budget() {
+        for session_failure in [false, true] {
+            let mut config = test_client_loop_config();
+            config.max_retries = 0;
+            let mut runtime = create_client_runtime(&config);
+            let mut retries = 1;
+            let started_at = Instant::now();
+            let original = std::io::Error::other("original attempt failure");
+            let outcome = if session_failure {
+                ConnectionAttemptOutcome::SessionFailed(original.into())
+            } else {
+                ConnectionAttemptOutcome::ConnectFailed(original.into())
+            };
+            let error = finish_connection_attempt(&mut runtime, &mut retries, &started_at, outcome)
+                .await
+                .expect_err("the existing retry budget must remain exhausted");
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().to_string(),
+                "original attempt failure"
+            );
+            assert_eq!(retries, 1);
+            assert_eq!(Instant::now().duration_since(started_at), Duration::ZERO);
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn reconnect_backoff_uses_exact_exponential_delays_and_no_terminal_sleep() {

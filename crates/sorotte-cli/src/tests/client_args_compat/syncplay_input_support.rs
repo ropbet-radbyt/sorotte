@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn syncplay_configuration_getter_startup_compat_matrix_covers_python_startup_inputs() {
-    let entries = syncplay_configuration_getter_startup_compat_entries();
+fn syncplay_startup_option_support_covers_python_startup_inputs() {
+    let entries = syncplay_startup_option_support();
     let expected_inputs = [
         "--no-gui",
         "--host",
@@ -40,9 +40,9 @@ fn syncplay_configuration_getter_startup_compat_matrix_covers_python_startup_inp
 }
 
 #[test]
-fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_ignored_inputs() {
-    fn entry_for(input: &str) -> SyncplayConfigurationGetterStartupCompatEntry {
-        *syncplay_configuration_getter_startup_compat_entries()
+fn syncplay_startup_option_support_classifies_supported_and_ignored_inputs() {
+    fn entry_for(input: &str) -> SyncplayStartupOptionSupport {
+        *syncplay_startup_option_support()
             .iter()
             .find(|entry| entry.input == input)
             .unwrap_or_else(|| panic!("missing compatibility entry for {input}"))
@@ -50,15 +50,15 @@ fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_
 
     assert_eq!(
         entry_for("--load-playlist-from-file").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("--debug").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("--player-path").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert!(
         entry_for("--player-path")
@@ -72,11 +72,11 @@ fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_
     );
     assert_eq!(
         entry_for("file").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("--language").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert!(
         entry_for("--language")
@@ -85,15 +85,15 @@ fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_
     );
     assert_eq!(
         entry_for("_args").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("--clear-gui-data").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("--force-gui-prompt").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert!(
         entry_for("--force-gui-prompt")
@@ -103,8 +103,8 @@ fn syncplay_configuration_getter_startup_compat_matrix_classifies_supported_and_
 }
 
 #[test]
-fn syncplay_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields() {
-    let entries = syncplay_configuration_getter_ini_compat_entries();
+fn syncplay_ini_field_support_covers_key_python_ini_fields() {
+    let entries = syncplay_ini_field_support();
     let expected_keys = [
         "server_data.host",
         "server_data.port",
@@ -155,9 +155,9 @@ fn syncplay_configuration_getter_ini_compat_matrix_covers_key_python_ini_fields(
 }
 
 #[test]
-fn syncplay_configuration_getter_ini_compat_matrix_classifies_supported_and_ignored_fields() {
-    fn entry_for(key: &str) -> SyncplayConfigurationGetterIniCompatEntry {
-        *syncplay_configuration_getter_ini_compat_entries()
+fn syncplay_ini_field_support_classifies_supported_and_ignored_fields() {
+    fn entry_for(key: &str) -> SyncplayIniFieldSupport {
+        *syncplay_ini_field_support()
             .iter()
             .find(|entry| entry.key == key)
             .unwrap_or_else(|| panic!("missing ini compatibility entry for {key}"))
@@ -165,51 +165,51 @@ fn syncplay_configuration_getter_ini_compat_matrix_classifies_supported_and_igno
 
     assert_eq!(
         entry_for("server_data.password").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.autoplayInitialState").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.readyAtStart").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.sharedPlaylistEnabled").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.unpauseAction").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.playerPath").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.perPlayerArguments").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.roomList").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.mediaSearchDirectories").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.publicServers").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
             entry_for("client_settings.{folderSearchFirstFileTimeout,folderSearchTimeout,folderSearchDoubleCheckInterval,folderSearchWarningThreshold}").status,
-            SyncplayConfigurationGetterCompatibilityStatus::Supported
+            SyncplayInputSupportStatus::Supported
         );
     assert_eq!(
         entry_for("client_settings.forceGuiPrompt").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert!(
         entry_for("client_settings.forceGuiPrompt")
@@ -218,39 +218,39 @@ fn syncplay_configuration_getter_ini_compat_matrix_classifies_supported_and_igno
     );
     assert_eq!(
         entry_for("client_settings.{onlySwitchToTrustedDomains,trustedDomains}").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.{slowOnDesync,rewindOnDesync,fastforwardOnDesync}").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.{slowdownThreshold,rewindThreshold,fastforwardThreshold}")
             .status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("client_settings.dontSlowDownWithMe").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
         entry_for("gui.{autosaveJoinsToList,showOSD,showSlowdownOSD,showContactInfo}").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
     assert_eq!(
             entry_for("gui.{chatMoveOSD,chatMaxLines,chatTopMargin,chatLeftMargin,chatBottomMargin,chatOSDMargin,notificationTimeout,alertTimeout,chatTimeout}").status,
-            SyncplayConfigurationGetterCompatibilityStatus::Supported
+            SyncplayInputSupportStatus::Supported
         );
     assert_eq!(
             entry_for("gui.{chatInputEnabled,chatInputFontUnderline,chatInputFontFamily,chatInputRelativeFontSize,chatInputFontWeight,chatInputFontColor,chatInputPosition,chatDirectInput,chatOutputEnabled,chatOutputFontUnderline,chatOutputFontFamily,chatOutputRelativeFontSize,chatOutputFontWeight,chatOutputMode}").status,
-            SyncplayConfigurationGetterCompatibilityStatus::Supported
+            SyncplayInputSupportStatus::Supported
         );
     assert_eq!(
         entry_for("gui.* (remaining unenumerated GUI keys / QSettings visual state)").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Ignored
+        SyncplayInputSupportStatus::Ignored
     );
     assert_eq!(
         entry_for("general.{checkForUpdatesAutomatically,lastCheckedForUpdates}").status,
-        SyncplayConfigurationGetterCompatibilityStatus::Supported
+        SyncplayInputSupportStatus::Supported
     );
 }

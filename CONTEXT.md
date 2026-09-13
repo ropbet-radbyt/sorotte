@@ -48,6 +48,14 @@ _Avoid_: Playlist contents revision, row number
 A causally bounded attempt to turn an accepted intent into canonical room authority and observable participant effects. It ends in convergence or an explicit rejection, failure, or supersession.
 _Avoid_: Button click, untracked command
 
+**Playback request identity**:
+A client's stable identity for one request to prepare or refresh room playback, retained across reconnects so the same request can be recognized. Other participants receive the room's playback information without this private identity.
+_Avoid_: Request nonce, media generation
+
+**Playback request nonce**:
+A connection-scoped sequence value used to order and recognize playback requests within that connection. It does not identify the same request across reconnects by itself.
+_Avoid_: Stable request identity, wall-clock timestamp
+
 **Convergence**:
 A participant has applied canonical room intent to the matching media generation and its player observation is within the declared playback bounds, or the participant has exposed a specific inability to do so.
 _Avoid_: Connected, probably synced

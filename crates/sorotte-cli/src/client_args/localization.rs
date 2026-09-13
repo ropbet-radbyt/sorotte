@@ -1,36 +1,34 @@
 pub(crate) fn localized_startup_compatibility_heading(language: Option<&str>) -> &'static str {
     match language {
-        Some("de") => "Syncplay-ConfigurationGetter Startkompatibilitaet:",
-        Some("es") => "Compatibilidad de inicio de Syncplay ConfigurationGetter:",
-        Some("eo") => "Ekfunkcia kongrueco de Syncplay ConfigurationGetter:",
-        Some("fi") => "Syncplay ConfigurationGetterin kaynnistysyhteensopivuus:",
-        Some("fr") => "Compatibilite de demarrage de Syncplay ConfigurationGetter :",
-        Some("it") => "Compatibilita di avvio di Syncplay ConfigurationGetter:",
-        Some("pt_PT" | "pt_BR") => {
-            "Compatibilidade de inicializacao do Syncplay ConfigurationGetter:"
-        }
-        Some("tr") => "Syncplay ConfigurationGetter baslangic uyumlulugu:",
-        Some("ru") => "Sovmestimost zapuska Syncplay ConfigurationGetter:",
-        Some("zh_CN") => "Syncplay ConfigurationGetter qidong jianrongxing:",
-        Some("ko") => "Syncplay ConfigurationGetter sijak hohwanseong:",
-        _ => "Syncplay ConfigurationGetter Startup Compatibility:",
+        Some("de") => "Syncplay Startkompatibilitaet:",
+        Some("es") => "Compatibilidad de inicio de Syncplay:",
+        Some("eo") => "Ekfunkcia kongrueco de Syncplay:",
+        Some("fi") => "Syncplayn kaynnistysyhteensopivuus:",
+        Some("fr") => "Compatibilite de demarrage de Syncplay :",
+        Some("it") => "Compatibilita di avvio di Syncplay:",
+        Some("pt_PT" | "pt_BR") => "Compatibilidade de inicializacao do Syncplay:",
+        Some("tr") => "Syncplay baslangic uyumlulugu:",
+        Some("ru") => "Sovmestimost zapuska Syncplay:",
+        Some("zh_CN") => "Syncplay qidong jianrongxing:",
+        Some("ko") => "Syncplay sijak hohwanseong:",
+        _ => "Syncplay Startup Compatibility:",
     }
 }
 
 pub(crate) fn localized_syncplay_ini_compatibility_heading(language: Option<&str>) -> &'static str {
     match language {
-        Some("de") => "Syncplay-ConfigurationGetter sorotte.ini-Kompatibilitaet:",
-        Some("es") => "Compatibilidad sorotte.ini de Syncplay ConfigurationGetter:",
-        Some("eo") => "sorotte.ini-kongrueco de Syncplay ConfigurationGetter:",
-        Some("fi") => "Syncplay ConfigurationGetterin sorotte.ini-yhteensopivuus:",
-        Some("fr") => "Compatibilite sorotte.ini de Syncplay ConfigurationGetter :",
-        Some("it") => "Compatibilita sorotte.ini di Syncplay ConfigurationGetter:",
-        Some("pt_PT" | "pt_BR") => "Compatibilidade sorotte.ini do Syncplay ConfigurationGetter:",
-        Some("tr") => "Syncplay ConfigurationGetter sorotte.ini uyumlulugu:",
-        Some("ru") => "Sovmestimost sorotte.ini Syncplay ConfigurationGetter:",
-        Some("zh_CN") => "Syncplay ConfigurationGetter sorotte.ini jianrongxing:",
-        Some("ko") => "Syncplay ConfigurationGetter sorotte.ini hohwanseong:",
-        _ => "Syncplay ConfigurationGetter sorotte.ini Compatibility:",
+        Some("de") => "Syncplay sorotte.ini-Kompatibilitaet:",
+        Some("es") => "Compatibilidad sorotte.ini de Syncplay:",
+        Some("eo") => "sorotte.ini-kongrueco de Syncplay:",
+        Some("fi") => "Syncplayn sorotte.ini-yhteensopivuus:",
+        Some("fr") => "Compatibilite sorotte.ini de Syncplay :",
+        Some("it") => "Compatibilita sorotte.ini di Syncplay:",
+        Some("pt_PT" | "pt_BR") => "Compatibilidade sorotte.ini do Syncplay:",
+        Some("tr") => "Syncplay sorotte.ini uyumlulugu:",
+        Some("ru") => "Sovmestimost sorotte.ini Syncplay:",
+        Some("zh_CN") => "Syncplay sorotte.ini jianrongxing:",
+        Some("ko") => "Syncplay sorotte.ini hohwanseong:",
+        _ => "Syncplay sorotte.ini Compatibility:",
     }
 }
 

@@ -2,7 +2,7 @@ use sorotte_client_app::app_boundary::commands::controlled_room_base_name;
 
 use super::render_egui::GuiWidgetEguiRenderer;
 use super::shell_state::{
-    FirstRunConfigurationDialogState, GuiConfigStorageChangeTarget, GuiConfigurationTab,
+    GuiConfigStorageChangeTarget, GuiConfigurationState, GuiConfigurationTab,
     GuiPendingOperationKind, GuiPlaylistDefaultSourceState, GuiPlaylistSourceState,
     GuiPlexPlaylistSearchResult, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
     GuiSeekPreparationDegradedReason, GuiSeekPreparationPhase, GuiSettingApplyRequirement,

@@ -335,7 +335,7 @@ mod tls;
 pub use actor::{ServerActorError, ServerActorHandle};
 pub use app::ServerApp;
 pub use backpressure::ServerOutboundBackpressureSnapshot;
-pub use inbound::{ServerClientCapabilities, ServerCompatibilityFallback};
+pub use inbound::ServerClientCapabilities;
 pub use network::{
     run_server_network_loop_until_shutdown, run_server_network_loops_and_shutdown_actor,
     run_server_network_loops_until_shutdown,
@@ -606,7 +606,6 @@ pub struct ServerRuntime {
     persistence_events: broadcast::Sender<ServerPersistenceEvent>,
     persistence_degraded_worker_count: Arc<AtomicUsize>,
     permanent_rooms: BTreeSet<String>,
-    pending_compatibility_fallbacks: Vec<ServerCompatibilityFallback>,
 }
 
 #[derive(Clone, PartialEq, Eq, Default)]

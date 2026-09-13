@@ -1,3 +1,5 @@
+#[cfg(test)]
+use self::session_runner::ConnectedSessionExit;
 use anyhow::anyhow;
 use sorotte_client_app::app_boundary::application::{ClientApplication, ClientCommand};
 #[cfg(test)]
@@ -27,8 +29,6 @@ use sorotte_client_app::app_boundary::language::normalized_runtime_language_tag;
 use sorotte_client_app::app_boundary::language::runtime_language_selection_line;
 #[cfg(test)]
 use sorotte_client_app::app_boundary::notifications::FileDifferenceNotificationState;
-#[cfg(test)]
-use sorotte_client_app::app_boundary::session::ConnectedSessionOuterLoopExitKind as ConnectedSessionExit;
 #[cfg(test)]
 use sorotte_client_app::app_boundary::state::{
     AutoplayThresholdOverride, StoredClientSettings, parse_autoplay_min_users_override,

@@ -335,7 +335,6 @@ struct SessionResetProjection {
     pending_controlled_room_creation_notifications: Vec<ControlledRoomCreationNotification>,
     pending_controller_auth_notifications: Vec<ControllerAuthTransitionNotification>,
     pending_user_change_notifications: Vec<UserChangeNotification>,
-    pending_compatibility_fallbacks: Vec<crate::ClientCompatibilityFallback>,
     pending_playstate_transport_evidence: String,
     playback_barrier: String,
 }
@@ -352,7 +351,6 @@ impl SessionResetProjection {
             pending_controlled_room_creation_notifications,
             pending_controller_auth_notifications,
             pending_user_change_notifications,
-            pending_compatibility_fallbacks,
             pending_playstate_transport_evidence,
             playback_barrier,
         } = session;
@@ -416,7 +414,6 @@ impl SessionResetProjection {
                 pending_controlled_room_creation_notifications.clone(),
             pending_controller_auth_notifications: pending_controller_auth_notifications.clone(),
             pending_user_change_notifications: pending_user_change_notifications.clone(),
-            pending_compatibility_fallbacks: pending_compatibility_fallbacks.clone(),
             pending_playstate_transport_evidence: format!(
                 "{pending_playstate_transport_evidence:#?}"
             ),
@@ -957,11 +954,6 @@ fn seed_notification_state(session: &mut ClientSession, seed: u64) {
             include_room_addendum: true,
             hide_from_osd: true,
         });
-    session.pending_compatibility_fallbacks.push(
-        crate::ClientCompatibilityFallback::IgnoredSetCommand {
-            command: format!("future-command-{seed}"),
-        },
-    );
 }
 
 fn seed_playback_barrier_state(session: &mut ClientSession, seed: u64) {
@@ -1089,7 +1081,6 @@ fn fresh_reference_preserving_only_durable_state(source: &ClientSession) -> Clie
     reference.model.controller.last_auth_password_attempt =
         source.model.controller.last_auth_password_attempt.clone();
     reference.model.controller.room_passwords = source.model.controller.room_passwords.clone();
-    reference.pending_compatibility_fallbacks = source.pending_compatibility_fallbacks.clone();
     reference
 }
 
@@ -1122,7 +1113,6 @@ fn assert_dense_seed(session: &ClientSession) {
     );
     assert!(!projection.pending_controller_auth_notifications.is_empty());
     assert!(!projection.pending_user_change_notifications.is_empty());
-    assert!(!projection.pending_compatibility_fallbacks.is_empty());
     assert_ne!(
         projection.pending_playstate_transport_evidence,
         fresh.pending_playstate_transport_evidence

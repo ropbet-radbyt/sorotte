@@ -391,7 +391,6 @@ fn set_features_normalizes_empty_objects_and_rejects_invalid_updates() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.2.255","features":{"chat":true}}}"#,
         )
         .expect("alice hello should establish session");
-    let _ = runtime.drain_compatibility_fallbacks();
 
     runtime
         .handle_line("client-1", r#"{"Set":{"features":{}}}"#)
@@ -407,7 +406,7 @@ fn set_features_normalizes_empty_objects_and_rejects_invalid_updates() {
 
     runtime
         .handle_line("client-1", r#"{"Set":{"features":[]}}"#)
-        .expect("invalid feature update should use a compatibility fallback");
+        .expect("invalid feature update should leave capabilities unchanged");
     assert!(
         !runtime
             .session("client-1")
@@ -415,15 +414,6 @@ fn set_features_normalizes_empty_objects_and_rejects_invalid_updates() {
             .capabilities
             .chat,
         "an invalid feature update must not replace the previous capabilities"
-    );
-    assert!(
-        runtime
-            .drain_compatibility_fallbacks()
-            .iter()
-            .any(|fallback| matches!(
-                fallback,
-                crate::ServerCompatibilityFallback::IgnoredInvalidFeatures { .. }
-            ))
     );
 }
 
@@ -436,7 +426,6 @@ fn invalid_file_extensions_are_dropped_at_the_server_boundary() {
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{}}}"#,
         )
         .expect("hello should establish session");
-    let _ = runtime.drain_compatibility_fallbacks();
 
     runtime
         .handle_line(
@@ -452,15 +441,6 @@ fn invalid_file_extensions_are_dropped_at_the_server_boundary() {
     assert_eq!(file.name.as_deref(), Some("movie.mkv"));
     assert_eq!(file.size, None);
     assert_eq!(file.media_match, None);
-    let fallbacks = runtime.drain_compatibility_fallbacks();
-    assert!(fallbacks.iter().any(|fallback| matches!(
-        fallback,
-        crate::ServerCompatibilityFallback::IgnoredInvalidFileSize { .. }
-    )));
-    assert!(fallbacks.iter().any(|fallback| matches!(
-        fallback,
-        crate::ServerCompatibilityFallback::IgnoredInvalidMediaMatch { .. }
-    )));
 }
 
 #[test]

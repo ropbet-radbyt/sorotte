@@ -121,7 +121,7 @@ pub(crate) fn print_syncplay_client_help(language: Option<&str>) {
         localized_compatibility_status_label(language),
         localized_compatibility_note_label(language),
     );
-    for entry in syncplay_configuration_getter_startup_compat_entries() {
+    for entry in syncplay_startup_option_support() {
         println!(
             "  {:<26} {:<10} {}",
             entry.input,
@@ -137,7 +137,7 @@ pub(crate) fn print_syncplay_client_help(language: Option<&str>) {
         localized_compatibility_status_label(language),
         localized_compatibility_note_label(language),
     );
-    for entry in syncplay_configuration_getter_ini_compat_entries() {
+    for entry in syncplay_ini_field_support() {
         println!(
             "  {:<66} {:<10} {}",
             entry.key,

@@ -80,7 +80,7 @@ impl GuiRuntimeState {
                 config_storage: GuiConfigStorageRuntimeSnapshot::default(),
                 pending_storage_target: None,
                 saved: shell_settings.clone(),
-                draft: FirstRunConfigurationDialogDraft::from_stored_settings(&shell_settings),
+                draft: GuiConfigurationDraft::from_stored_settings(&shell_settings),
                 validation: GuiValidationState::default(),
                 runtime_validation_issues: Vec::new(),
             },

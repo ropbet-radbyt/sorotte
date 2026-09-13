@@ -1,8 +1,4 @@
 use sorotte_client_app::app_boundary::{
-    compatibility::{
-        SyncplayConfigurationGetterCompatibilityStatus,
-        syncplay_configuration_getter_startup_compat_entries,
-    },
     language::SUPPORTED_RUNTIME_LANGUAGE_TAGS_DISPLAY,
     state::{
         ClientConfig, StoredClientSettings, autoplay_threshold_override_setting_value,
@@ -41,11 +37,11 @@ pub(super) use self::browser_support::{
     save_playlist_entries_to_path, shuffle_playlist_entries_in_place,
 };
 pub(super) use self::configuration_dialog::{
-    FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiChatSection,
-    GuiConfigurationTextValue, GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl,
-    GuiDialogControlKind, GuiDialogSection, GuiMediaSearchSection, GuiOsdSection,
-    GuiPrivacySection, GuiReadinessSection, GuiResolvedSettingValue, GuiSettingApplyRequirement,
-    GuiSettingValueOrigin, GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
+    GuiChatSection, GuiConfigurationDraft, GuiConfigurationState, GuiConfigurationTextValue,
+    GuiConnectionSettingsSection, GuiDesyncSection, GuiDialogControl, GuiDialogControlKind,
+    GuiDialogSection, GuiMediaSearchSection, GuiOsdSection, GuiPrivacySection, GuiReadinessSection,
+    GuiResolvedSettingValue, GuiSettingApplyRequirement, GuiSettingValueOrigin,
+    GuiStreamingSection, GuiSystemSection, SecretDraft, SettingId,
 };
 #[cfg(feature = "gui-semantic-smoke")]
 pub(super) use self::main_window::MainWindowRoomPlaybackIntent;
@@ -1103,7 +1099,7 @@ pub(super) struct SorotteGuiShellAppState {
     pub(super) media_match_remediation: GuiMediaMatchRemediationState,
     pub(super) plex: GuiPlexState,
     pub(super) saved_configuration: StoredClientSettings,
-    pub(super) configuration: FirstRunConfigurationDialogDraft,
+    pub(super) configuration: GuiConfigurationDraft,
     pub(super) main_window: MainWindowShellState,
     pub(super) menus: MenuDialogShellState,
     pub(super) public_servers: PublicServerBrowserShellState,

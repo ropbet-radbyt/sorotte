@@ -79,12 +79,12 @@ use super::runtime_stack::{
     GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
-    FirstRunConfigurationDialogDraft, GuiMediaMatchRemediationRuntimeSnapshot,
-    GuiMediaMatchRuntimeSnapshot, GuiMediaMatchState, GuiMediaSourceProviderId,
-    GuiPersistedSettingsPatch, GuiPlaylistEntryId, GuiPlexPlaylistSearchResult,
-    GuiPlexRuntimeSnapshot, GuiPlexServerReachability, GuiPlexServerRow, GuiPluginSelection,
-    GuiSettingApplyRequirement, GuiShellAction, GuiStreamHelperRemediationRuntimeSnapshot,
-    GuiStreamHelperRuntimeSnapshot, GuiTransientNotificationLevel, SettingId,
+    GuiConfigurationDraft, GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot,
+    GuiMediaMatchState, GuiMediaSourceProviderId, GuiPersistedSettingsPatch, GuiPlaylistEntryId,
+    GuiPlexPlaylistSearchResult, GuiPlexRuntimeSnapshot, GuiPlexServerReachability,
+    GuiPlexServerRow, GuiPluginSelection, GuiSettingApplyRequirement, GuiShellAction,
+    GuiStreamHelperRemediationRuntimeSnapshot, GuiStreamHelperRuntimeSnapshot,
+    GuiTransientNotificationLevel, SettingId,
 };
 use super::startup::{
     StartupPublicServerOutcome, explicit_mpv_ipc_path_from_lookup,
@@ -677,7 +677,7 @@ impl GuiPersistedConfigRuntimeOwner {
         .into_iter()
         .flatten()
         {
-            let settings = FirstRunConfigurationDialogDraft::merge_apply_requirement_from_settings(
+            let settings = GuiConfigurationDraft::merge_apply_requirement_from_settings(
                 &active_settings.settings,
                 saved_settings,
                 GuiSettingApplyRequirement::RestartPlayer,
@@ -750,8 +750,8 @@ impl GuiPersistedConfigRuntimeOwner {
         let saved_snapshot = stored_client_settings_runtime_snapshot(saved_settings);
         let saved_settings = Self::comparable_settings_for_runtime_snapshot(&saved_snapshot);
         let active_settings = Self::comparable_settings_for_runtime_snapshot(active_settings);
-        let saved = FirstRunConfigurationDialogDraft::from_stored_settings(&saved_settings);
-        let active = FirstRunConfigurationDialogDraft::from_stored_settings(&active_settings);
+        let saved = GuiConfigurationDraft::from_stored_settings(&saved_settings);
+        let active = GuiConfigurationDraft::from_stored_settings(&active_settings);
         SettingId::ALL
             .iter()
             .copied()

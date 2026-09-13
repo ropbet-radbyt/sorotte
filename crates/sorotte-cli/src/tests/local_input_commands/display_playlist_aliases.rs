@@ -4,11 +4,11 @@ use super::*;
 fn localized_legacy_compatibility_headings_use_selected_language() {
     assert_eq!(
         crate::localized_startup_compatibility_heading(Some("fr")),
-        "Compatibilite de demarrage de Syncplay ConfigurationGetter :"
+        "Compatibilite de demarrage de Syncplay :"
     );
     assert_eq!(
         crate::localized_syncplay_ini_compatibility_heading(Some("de")),
-        "Syncplay-ConfigurationGetter sorotte.ini-Kompatibilitaet:"
+        "Syncplay sorotte.ini-Kompatibilitaet:"
     );
     assert_eq!(
         crate::localized_compatibility_input_label(Some("es")),

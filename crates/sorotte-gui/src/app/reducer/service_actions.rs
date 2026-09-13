@@ -85,7 +85,6 @@ impl SorotteGuiShellAppState {
             GuiShellAction::CancelSavedServerConnect => self.cancel_saved_server_connect(),
             GuiShellAction::BeginSessionDisconnect => self.begin_session_disconnect(),
             GuiShellAction::CompleteSessionDisconnect => self.complete_session_disconnect(),
-            GuiShellAction::CancelSessionDisconnect => self.cancel_session_disconnect(),
             GuiShellAction::BeginSelectedPublicServerConnect => {
                 self.begin_selected_public_server_connect()
             }

@@ -10,18 +10,18 @@ use sorotte_client_app::app_boundary::state::{
 };
 
 use super::shell_state::{
-    FirstRunConfigurationDialogDraft, GuiCommandAvailabilityRuntimeOverride,
-    GuiCommandAvailabilityState, GuiControlledRoomCreateSessionState,
-    GuiControllerAuthEditSessionState, GuiFocusedConfigurationControlState,
-    GuiMainWindowUserEditSessionState, GuiMediaIndexStatusState, GuiPlaylistDefaultSourceState,
-    GuiPlaylistTextEditSessionState, GuiPublicServerEditSessionState,
-    GuiRoomHistoryEditSessionState, GuiSelectionState, GuiTextEditSessionState,
-    GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState, MainWindowChatRow,
-    MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow, MainWindowShellState,
-    MainWindowUserRow, MediaSearchDirectoryRow, MediaSearchWorkflowRuntimeFlags,
-    MediaSearchWorkflowShellState, MenuActionId, MenuActionShellItem, MenuDialogShellState,
-    MenuSectionId, MenuSectionShellState, PublicServerBrowserRow, PublicServerBrowserRuntimeFlags,
-    PublicServerBrowserShellState, SorotteGuiShellAppState,
+    GuiCommandAvailabilityRuntimeOverride, GuiCommandAvailabilityState, GuiConfigurationDraft,
+    GuiControlledRoomCreateSessionState, GuiControllerAuthEditSessionState,
+    GuiFocusedConfigurationControlState, GuiMainWindowUserEditSessionState,
+    GuiMediaIndexStatusState, GuiPlaylistDefaultSourceState, GuiPlaylistTextEditSessionState,
+    GuiPublicServerEditSessionState, GuiRoomHistoryEditSessionState, GuiSelectionState,
+    GuiTextEditSessionState, GuiTransientNotification, GuiUrlEditSessionState, GuiValidationState,
+    MainWindowChatRow, MainWindowPlaybackControls, MainWindowPlaylistRow, MainWindowRoomRow,
+    MainWindowShellState, MainWindowUserRow, MediaSearchDirectoryRow,
+    MediaSearchWorkflowRuntimeFlags, MediaSearchWorkflowShellState, MenuActionId,
+    MenuActionShellItem, MenuDialogShellState, MenuSectionId, MenuSectionShellState,
+    PublicServerBrowserRow, PublicServerBrowserRuntimeFlags, PublicServerBrowserShellState,
+    SorotteGuiShellAppState,
 };
 #[cfg(test)]
 use super::shell_state::{GuiPendingOperationState, GuiShellModal};

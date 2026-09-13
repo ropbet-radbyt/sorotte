@@ -5,8 +5,8 @@ use sorotte_client_app::app_boundary::{
 use sorotte_client_core::PrivacyMode;
 
 use super::shell_state::{
-    FirstRunConfigurationDialogDraft, FirstRunConfigurationDialogState, GuiDialogControl,
-    GuiDialogControlKind, GuiSettingApplyRequirement, SecretDraft, SettingId,
+    GuiConfigurationDraft, GuiConfigurationState, GuiDialogControl, GuiDialogControlKind,
+    GuiSettingApplyRequirement, SecretDraft, SettingId,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -17,9 +17,9 @@ use super::support::{
 #[cfg(test)]
 mod tests;
 
-impl FirstRunConfigurationDialogDraft {
+impl GuiConfigurationDraft {
     pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
-        let state = FirstRunConfigurationDialogState::from_stored_settings(settings);
+        let state = GuiConfigurationState::from_stored_settings(settings);
         let sections = state.dialog_sections();
         debug_assert_eq!(
             sections
@@ -31,8 +31,6 @@ impl FirstRunConfigurationDialogDraft {
         );
         Self {
             launch_mode: state.launch_mode,
-            compatibility_startup_entry_count: state.system.compatibility_startup_entry_count,
-            ignored_startup_exception_count: state.system.ignored_startup_exception_count,
             sections,
             settings: settings.clone(),
             server_password: SecretDraft::Unchanged,
@@ -478,8 +476,8 @@ impl FirstRunConfigurationDialogDraft {
 
     fn refresh_derived_controls(&mut self) {
         let baseline_settings = self.to_stored_settings();
-        let baseline = FirstRunConfigurationDialogState::from_stored_settings(&baseline_settings)
-            .dialog_sections();
+        let baseline =
+            GuiConfigurationState::from_stored_settings(&baseline_settings).dialog_sections();
         for section in &mut self.sections {
             for control in &mut section.controls {
                 let Some(baseline_control) = baseline

@@ -11,10 +11,6 @@ impl ClientSession {
             .map(SecretValue::expose_secret)
     }
 
-    pub fn drain_compatibility_fallbacks(&mut self) -> Vec<ClientCompatibilityFallback> {
-        std::mem::take(&mut self.pending_compatibility_fallbacks)
-    }
-
     pub fn username(&self) -> Option<&str> {
         self.model.connection.username.as_deref()
     }

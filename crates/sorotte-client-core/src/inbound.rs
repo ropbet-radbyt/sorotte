@@ -8,68 +8,6 @@ use sorotte_protocol::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ClientCompatibilityFallback {
-    IgnoredSetCommand { command: String },
-    UsedSyncplayFeatureDefaults { context: String },
-    IgnoredInvalidFileSize { context: String },
-    IgnoredInvalidMediaMatch { context: String, reason: String },
-    IgnoredInvalidFeatures { context: String },
-    IgnoredInvalidPlaybackBarrier { context: String, reason: String },
-    IgnoredInvalidReadinessV2 { context: String, reason: String },
-    IgnoredUnexpectedListRequest,
-}
-
-const MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES: usize = 512;
-
-fn truncate_compatibility_fallback_text(mut value: String) -> String {
-    if value.len() <= MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES {
-        return value;
-    }
-    let mut end = MAX_COMPATIBILITY_FALLBACK_TEXT_BYTES;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value.truncate(end);
-    value
-}
-
-impl ClientCompatibilityFallback {
-    pub(crate) fn bounded(self) -> Self {
-        match self {
-            Self::IgnoredSetCommand { command } => Self::IgnoredSetCommand {
-                command: truncate_compatibility_fallback_text(command),
-            },
-            Self::UsedSyncplayFeatureDefaults { context } => Self::UsedSyncplayFeatureDefaults {
-                context: truncate_compatibility_fallback_text(context),
-            },
-            Self::IgnoredInvalidFileSize { context } => Self::IgnoredInvalidFileSize {
-                context: truncate_compatibility_fallback_text(context),
-            },
-            Self::IgnoredInvalidMediaMatch { context, reason } => Self::IgnoredInvalidMediaMatch {
-                context: truncate_compatibility_fallback_text(context),
-                reason: truncate_compatibility_fallback_text(reason),
-            },
-            Self::IgnoredInvalidFeatures { context } => Self::IgnoredInvalidFeatures {
-                context: truncate_compatibility_fallback_text(context),
-            },
-            Self::IgnoredInvalidPlaybackBarrier { context, reason } => {
-                Self::IgnoredInvalidPlaybackBarrier {
-                    context: truncate_compatibility_fallback_text(context),
-                    reason: truncate_compatibility_fallback_text(reason),
-                }
-            }
-            Self::IgnoredInvalidReadinessV2 { context, reason } => {
-                Self::IgnoredInvalidReadinessV2 {
-                    context: truncate_compatibility_fallback_text(context),
-                    reason: truncate_compatibility_fallback_text(reason),
-                }
-            }
-            Self::IgnoredUnexpectedListRequest => Self::IgnoredUnexpectedListRequest,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum FileSize {
     Number(Number),
     Text(String),
@@ -433,12 +371,6 @@ impl std::fmt::Debug for ClientInboundCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct NormalizedClientInbound {
-    pub(crate) command: ClientInboundCommand,
-    pub(crate) fallbacks: Vec<ClientCompatibilityFallback>,
-}
-
 fn feature_bool(features: Option<&Value>, name: &str) -> Option<bool> {
     features
         .and_then(Value::as_object)
@@ -518,47 +450,20 @@ fn participant_status_capability(value: &Value) -> Option<bool> {
     )
 }
 
-fn normalize_size(
-    value: Option<Value>,
-    context: &str,
-    fallbacks: &mut Vec<ClientCompatibilityFallback>,
-) -> Option<FileSize> {
+fn normalize_size(value: Option<Value>) -> Option<FileSize> {
     match value {
         Some(Value::Number(number)) => Some(FileSize::Number(number)),
         Some(Value::String(text)) => Some(FileSize::Text(text)),
-        Some(Value::Null) | None => None,
-        Some(_) => {
-            fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidFileSize {
-                context: context.to_owned(),
-            });
-            None
-        }
+        _ => None,
     }
 }
 
-fn normalize_media_match(
-    value: Option<Value>,
-    context: &str,
-    fallbacks: &mut Vec<ClientCompatibilityFallback>,
-) -> Option<MediaMatchWireSignature> {
+fn normalize_media_match(value: Option<Value>) -> Option<MediaMatchWireSignature> {
     let value = value?;
-    match media_match_wire_signature_from_value(&value) {
-        Ok(signature) => Some(signature),
-        Err(reason) => {
-            fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidMediaMatch {
-                context: context.to_owned(),
-                reason,
-            });
-            None
-        }
-    }
+    media_match_wire_signature_from_value(&value).ok()
 }
 
-fn normalize_file_value(
-    value: Value,
-    context: &str,
-    fallbacks: &mut Vec<ClientCompatibilityFallback>,
-) -> Option<SharedFile> {
+fn normalize_file_value(value: Value) -> Option<SharedFile> {
     match value {
         Value::Null => None,
         Value::String(name) if !name.is_empty() => Some(SharedFile::with_name(name)),
@@ -572,15 +477,11 @@ fn normalize_file_value(
                     Value::Number(number) => FileDuration::from_number(&number),
                     _ => None,
                 }),
-                size: normalize_size(fields.remove("size"), context, fallbacks),
-                media_match: normalize_media_match(
-                    fields.remove(MEDIA_MATCH_FILE_PAYLOAD_KEY),
-                    context,
-                    fallbacks,
-                ),
+                size: normalize_size(fields.remove("size")),
+                media_match: normalize_media_match(fields.remove(MEDIA_MATCH_FILE_PAYLOAD_KEY)),
                 extra: fields.into_iter().collect(),
             };
-            // Legacy clients use the raw object's truthiness for presence.
+            // Syncplay uses the raw object's truthiness for presence.
             // Keep that decision separate from whether this version could
             // normalize any of the object's metadata.
             was_nonempty.then_some(file)
@@ -589,11 +490,8 @@ fn normalize_file_value(
     }
 }
 
-pub(crate) fn normalize_client_protocol_message(
-    message: ProtocolMessage,
-) -> NormalizedClientInbound {
-    let mut fallbacks = Vec::new();
-    let command = match message {
+pub(crate) fn normalize_client_protocol_message(message: ProtocolMessage) -> ClientInboundCommand {
+    match message {
         ProtocolMessage::Hello(message) => {
             let hello = message.hello;
             let readiness_reconnect_token = hello
@@ -603,11 +501,6 @@ pub(crate) fn normalize_client_protocol_message(
                 .filter(|token| !token.is_empty())
                 .map(SecretValue::from);
             let server_version = hello.effective_version().to_owned();
-            if !hello.features.as_ref().is_some_and(Value::is_object) {
-                fallbacks.push(ClientCompatibilityFallback::UsedSyncplayFeatureDefaults {
-                    context: "Hello.features".to_owned(),
-                });
-            }
             let participant_status_v1 =
                 feature_bool(hello.features.as_ref(), SOROTTE_PARTICIPANT_STATUS_V1)
                     .unwrap_or(false);
@@ -680,26 +573,8 @@ pub(crate) fn normalize_client_protocol_message(
             })
         }
         ProtocolMessage::Set(message) => {
-            let mut playback_barrier = match message.set.playback_barrier_v1() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidPlaybackBarrier {
-                        context: "Set.sorottePlaybackBarrierV1".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
-            let mut readiness_v2 = match message.set.readiness_v2() {
-                Ok(extension) => extension,
-                Err(reason) => {
-                    fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidReadinessV2 {
-                        context: "Set.sorotteReadinessV2".to_owned(),
-                        reason: reason.to_string(),
-                    });
-                    None
-                }
-            };
+            let mut playback_barrier = message.set.playback_barrier_v1().ok().flatten();
+            let mut readiness_v2 = message.set.readiness_v2().ok().flatten();
             let mut commands = Vec::new();
             for (name, mut set) in ordered_set_commands(message.set) {
                 let command = match name.as_str() {
@@ -707,20 +582,11 @@ pub(crate) fn normalize_client_protocol_message(
                         .room
                         .take()
                         .map(|room| ClientSetCommand::Room(room.name)),
-                    "file" => set.file.take().and_then(|_| {
-                        fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
-                            command: "file".to_owned(),
-                        });
-                        None
-                    }),
                     "user" => set.user.take().map(|users| {
                         let updates = users
                             .into_iter()
                             .map(|(username, user)| {
-                                let context = format!("Set.user.{username}.file");
-                                let file = user.file.and_then(|file| {
-                                    normalize_file_value(file, &context, &mut fallbacks)
-                                });
+                                let file = user.file.and_then(normalize_file_value);
                                 let joined = user
                                     .event
                                     .as_ref()
@@ -739,16 +605,7 @@ pub(crate) fn normalize_client_protocol_message(
                                     .or(event_features);
                                 let participant_status_v1 =
                                     features.as_ref().and_then(participant_status_capability);
-                                let capabilities = features.and_then(|features| {
-                                    peer_capabilities(&features).or_else(|| {
-                                        fallbacks.push(
-                                            ClientCompatibilityFallback::IgnoredInvalidFeatures {
-                                                context: format!("Set.user.{username}.features"),
-                                            },
-                                        );
-                                        None
-                                    })
-                                });
+                                let capabilities = features.as_ref().and_then(peer_capabilities);
                                 ClientUserUpdate {
                                     username,
                                     room: user.room.map(|room| room.name),
@@ -819,14 +676,6 @@ pub(crate) fn normalize_client_protocol_message(
                                     participant_status_v1,
                                 }
                             })
-                            .or_else(|| {
-                                fallbacks.push(
-                                    ClientCompatibilityFallback::IgnoredInvalidFeatures {
-                                        context: "Set.features".to_owned(),
-                                    },
-                                );
-                                None
-                            })
                     }),
                     SOROTTE_PLAYBACK_BARRIER_V1 => playback_barrier
                         .take()
@@ -836,14 +685,7 @@ pub(crate) fn normalize_client_protocol_message(
                         .take()
                         .map(Box::new)
                         .map(ClientSetCommand::ReadinessV2),
-                    _ => {
-                        if set.extra.contains_key(&name) {
-                            fallbacks.push(ClientCompatibilityFallback::IgnoredSetCommand {
-                                command: name,
-                            });
-                        }
-                        None
-                    }
+                    _ => None,
                 };
                 if let Some(command) = command {
                     commands.push(command);
@@ -852,10 +694,7 @@ pub(crate) fn normalize_client_protocol_message(
             ClientInboundCommand::Set(commands)
         }
         ProtocolMessage::List(message) => match message.list {
-            ListPayload::Request(_) => {
-                fallbacks.push(ClientCompatibilityFallback::IgnoredUnexpectedListRequest);
-                ClientInboundCommand::Ignore
-            }
+            ListPayload::Request(_) => ClientInboundCommand::Ignore,
             ListPayload::Rooms(rooms) => {
                 let rooms = rooms
                     .into_iter()
@@ -863,24 +702,13 @@ pub(crate) fn normalize_client_protocol_message(
                         let users = users
                             .into_iter()
                             .map(|(username, user)| {
-                                let context = format!("List.{room}.{username}.file");
-                                let file = user.file.and_then(|file| {
-                                    normalize_file_value(file, &context, &mut fallbacks)
-                                });
+                                let file = user.file.and_then(normalize_file_value);
                                 let participant_status_v1 = user
                                     .features
                                     .as_ref()
                                     .and_then(participant_status_capability);
-                                let capabilities = user.features.and_then(|features| {
-                                    peer_capabilities(&features).or_else(|| {
-                                        fallbacks.push(
-                                            ClientCompatibilityFallback::IgnoredInvalidFeatures {
-                                                context: format!("List.{room}.{username}.features"),
-                                            },
-                                        );
-                                        None
-                                    })
-                                });
+                                let capabilities =
+                                    user.features.as_ref().and_then(peer_capabilities);
                                 (
                                     username,
                                     ClientListUser {
@@ -904,14 +732,6 @@ pub(crate) fn normalize_client_protocol_message(
         },
         ProtocolMessage::State(message) => {
             let decoded_participant_status = decode_client_participant_status_state(&message.state);
-            if decoded_participant_status.invalid {
-                // Reuse the existing categorical public fallback instead of
-                // extending an exhaustive public enum. Serde's diagnostic can
-                // embed attacker data, so never retain its text.
-                fallbacks.push(ClientCompatibilityFallback::IgnoredInvalidFeatures {
-                    context: "State.sorotteParticipantStatusV1".to_owned(),
-                });
-            }
             ClientInboundCommand::State(normalize_client_state_payload_with_participant_status(
                 message.state,
                 decoded_participant_status,
@@ -929,8 +749,7 @@ pub(crate) fn normalize_client_protocol_message(
         }),
         ProtocolMessage::Error(message) => ClientInboundCommand::ServerError(message.error.message),
         ProtocolMessage::Tls(message) => ClientInboundCommand::UnexpectedTls(message.tls.start_tls),
-    };
-    NormalizedClientInbound { command, fallbacks }
+    }
 }
 
 #[derive(Default)]
@@ -938,7 +757,6 @@ struct DecodedClientParticipantStatusState {
     scope: Option<ParticipantPlaybackScope>,
     snapshot: Option<ParticipantStatusSnapshot>,
     scope_invalid: bool,
-    invalid: bool,
 }
 
 fn decode_client_participant_status_state(
@@ -948,10 +766,7 @@ fn decode_client_participant_status_state(
         return DecodedClientParticipantStatusState::default();
     };
     let Some(object) = value.as_object() else {
-        return DecodedClientParticipantStatusState {
-            invalid: true,
-            ..DecodedClientParticipantStatusState::default()
-        };
+        return DecodedClientParticipantStatusState::default();
     };
     let mut decoded = DecodedClientParticipantStatusState::default();
     if let Some(scope) = object.get("scope").filter(|value| !value.is_null()) {
@@ -959,17 +774,11 @@ fn decode_client_participant_status_state(
             Ok(scope) => decoded.scope = Some(scope),
             Err(_) => {
                 decoded.scope_invalid = true;
-                decoded.invalid = true;
             }
         }
     }
     if let Some(snapshot) = object.get("snapshot").filter(|value| !value.is_null()) {
-        match serde_json::from_value(snapshot.clone()) {
-            Ok(snapshot) => decoded.snapshot = Some(snapshot),
-            Err(_) => {
-                decoded.invalid = true;
-            }
-        }
+        decoded.snapshot = serde_json::from_value(snapshot.clone()).ok();
     }
     decoded
 }

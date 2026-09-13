@@ -1,6 +1,5 @@
 use super::*;
 use crate::ROOM_BUFFERING_REPORT_FRESHNESS_SECONDS;
-use crate::ServerCompatibilityFallback;
 use sorotte_client_app::app_boundary::application::ClientApplication;
 use sorotte_client_core::{
     ClientEffect, ClientEffectSink, ClientRuntime, ClientSession, LogicalMediaId,
@@ -2265,18 +2264,7 @@ fn unadvertised_and_malformed_barrier_extensions_are_compatibly_ignored() {
         )
         .expect("malformed extension should not reject the compatible State envelope");
     assert!(malformed.is_empty());
-    assert!(
-        runtime
-            .drain_compatibility_fallbacks()
-            .iter()
-            .any(|fallback| {
-                matches!(
-                    fallback,
-                    ServerCompatibilityFallback::IgnoredInvalidPlaybackBarrier { context, .. }
-                        if context == "State.sorottePlaybackBarrierV1"
-                )
-            })
-    );
+    assert!(runtime.room_playback_barriers.is_empty());
 }
 
 #[test]
