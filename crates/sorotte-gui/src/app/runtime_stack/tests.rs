@@ -38,6 +38,7 @@ mod participant_status_projection_tests;
 mod playback_barrier_integration_tests;
 mod playlist_tests;
 mod public_server_tests;
+mod rendering_invalidation_tests;
 mod session_config_tests;
 mod session_transition_tests;
 

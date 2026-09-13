@@ -592,9 +592,7 @@ fn gui_widget_egui_renderer_exposes_typed_menu_ids_to_accesskit() {
     });
     let context = egui::Context::default();
     context.enable_accesskit();
-    let mut renderer = GuiWidgetEguiRenderer::default();
-
-    state.render_shell_widgets(&mut renderer);
+    let mut renderer = GuiWidgetEguiRenderer::new(state.shell_widget_tree());
     let mut output = context.run_ui(egui::RawInput::default(), |ui| {
         for node in &menu_nodes {
             renderer.render_button_like(ui, node, &state);
@@ -876,8 +874,7 @@ fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
 
     for binding in GuiWidgetEguiRenderer::menu_shortcuts() {
         let context = egui::Context::default();
-        let mut renderer = GuiWidgetEguiRenderer::default();
-        state.render_shell_widgets(&mut renderer);
+        let mut renderer = GuiWidgetEguiRenderer::new(state.shell_widget_tree());
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
             key: binding.shortcut.logical_key,

@@ -3,6 +3,7 @@ use sorotte_secret::SecretValue;
 
 mod delivery_fence;
 mod event_drain;
+mod room_clock;
 mod runtime_adapter_impl;
 
 pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
@@ -23,6 +24,7 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) playback_transport_adapter_epoch: u64,
     pub(super) last_streaming_quality_suggestion: Option<StreamingQualityDowngradeSuggestion>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
+    room_clock: Option<room_clock::GuiRoomClockSample>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             playback_transport_adapter_epoch,
             last_streaming_quality_suggestion: None,
             tracked_remote_usernames: BTreeSet::new(),
+            room_clock: None,
         })
     }
 

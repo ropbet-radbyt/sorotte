@@ -442,6 +442,15 @@ impl ClientSession {
             .and_then(|room_name| self.model.room.playstates.get(room_name))
     }
 
+    /// Time of the stored room sample, unchanged by position extrapolation.
+    pub fn current_room_playstate_updated_at_seconds(&self) -> Option<f64> {
+        self.model
+            .room
+            .playstate_updated_at_seconds
+            .get(self.room()?)
+            .copied()
+    }
+
     pub(crate) fn current_room_transport_revision(&self) -> Option<u64> {
         let room_name = self.model.room.name.as_deref()?;
         self.model
@@ -454,12 +463,7 @@ impl ClientSession {
     pub fn current_room_playstate_at(&self, now_seconds: f64) -> Option<RoomPlaystateView> {
         let room_name = self.model.room.name.as_deref()?;
         let mut playstate = self.model.room.playstates.get(room_name)?.clone();
-        let updated_at_seconds = self
-            .model
-            .room
-            .playstate_updated_at_seconds
-            .get(room_name)
-            .copied();
+        let updated_at_seconds = self.current_room_playstate_updated_at_seconds();
         if playstate.paused == Some(false)
             && let (Some(position), Some(updated_at_seconds)) =
                 (playstate.position, updated_at_seconds)

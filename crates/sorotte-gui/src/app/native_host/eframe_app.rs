@@ -1,11 +1,23 @@
 use super::*;
 
 impl eframe::App for GuiNativeApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // eframe keeps this hook active while minimized, when no UI pass runs.
+        // Runtime output must be consumed independently of whether we paint.
+        self.drain_runtime_output(ctx);
+        if !self.runtime.shows_manual_pending_controls() && self.state.pending_operation.is_some() {
+            for action in self.runtime.actions_for_pending_completion(&self.state) {
+                self.state.apply(action);
+            }
+        }
+        self.runtime_pump.pump(&self.state);
+        self.drain_runtime_output(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         Self::apply_test_theme_override_from_lookup(&ctx, &env_trimmed);
-        let mut renderer = GuiWidgetEguiRenderer::default();
-        self.state.render_shell_widgets(&mut renderer);
+        let mut renderer = GuiWidgetEguiRenderer::new(self.state.active_shell_widget_tree());
         let show_manual_pending_controls = self.runtime.shows_manual_pending_controls();
         let dispatch_plan = GuiShellDispatchPlan::from_shell_actions(
             &self.state,
@@ -326,12 +338,6 @@ impl eframe::App for GuiNativeApp {
                 state_changed |= self.state.apply(action);
             }
         }
-        for action in self.runtime.drain_runtime_actions() {
-            if Self::action_requests_app_close(&action) {
-                close_requested = true;
-            }
-            state_changed |= self.state.apply(action);
-        }
         if let Some(paths) = selected_media_files {
             if let Some(path) = paths.first() {
                 self.state.remember_media_dialog_directory(path);
@@ -349,9 +355,7 @@ impl eframe::App for GuiNativeApp {
         if let Some(request) = dropped_files_request {
             state_changed |= self.apply_dropped_files_request(request);
         }
-        let auto_pending_completion_requested =
-            !show_manual_pending_controls && self.state.pending_operation.is_some();
-        if pending_completion_requested || auto_pending_completion_requested {
+        if pending_completion_requested {
             for action in self.runtime.actions_for_pending_completion(&self.state) {
                 state_changed |= self.state.apply(action);
             }
@@ -367,12 +371,6 @@ impl eframe::App for GuiNativeApp {
             state_changed |= self.state.apply(action);
         }
         self.runtime_pump.pump(&self.state);
-        for action in self.runtime.drain_runtime_actions() {
-            if Self::action_requests_app_close(&action) {
-                close_requested = true;
-            }
-            state_changed |= self.state.apply(action);
-        }
         if close_requested {
             super::super::test_lifecycle::record(
                 super::super::test_lifecycle::VIEWPORT_CLOSE_REQUESTED,
@@ -383,10 +381,23 @@ impl eframe::App for GuiNativeApp {
             || requested_playback_prompt.is_some()
             || playback_prompt_state_changed
             || pending_completion_requested
-            || auto_pending_completion_requested
             || pending_cancel_requested
         {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl GuiNativeApp {
+    fn drain_runtime_output(&mut self, ctx: &egui::Context) {
+        for action in self.runtime.drain_runtime_actions() {
+            if Self::action_requests_app_close(&action) {
+                super::super::test_lifecycle::record(
+                    super::super::test_lifecycle::VIEWPORT_CLOSE_REQUESTED,
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            self.state.apply(action);
         }
     }
 }

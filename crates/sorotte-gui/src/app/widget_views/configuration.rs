@@ -645,10 +645,7 @@ impl SorotteGuiShellAppState {
             GuiConfigurationTab::InterfaceSystem => interface_system_content,
         };
 
-        GuiWidgetNode::layout(
-            "configuration-root",
-            "Setup",
-            GuiLayoutMode::Stack,
+        GuiShellView::Setup.widget_tree_root(
             player_setup_panel
                 .into_iter()
                 .chain(self.setup_action_alert_widget_tree())

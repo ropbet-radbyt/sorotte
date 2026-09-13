@@ -145,8 +145,9 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         let main_window_runtime_snapshot = self.main_window_runtime_snapshot(state);
         let mut interaction_state = state.clone();
         if let Some(snapshot) = main_window_runtime_snapshot.as_ref() {
+            let applied = interaction_state.apply_main_window_runtime_snapshot(snapshot.clone());
             debug_assert!(
-                interaction_state.apply_main_window_runtime_snapshot(snapshot.clone()),
+                applied,
                 "runtime-projected main-window snapshots should remain shell-applicable"
             );
         }

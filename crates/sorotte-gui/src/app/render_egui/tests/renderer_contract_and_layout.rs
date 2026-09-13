@@ -1,14 +1,38 @@
 use super::*;
 
 #[test]
-fn gui_widget_egui_renderer_rebuilds_widget_tree_from_renderer_contract() {
-    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-    let expected_tree = state.shell_widget_tree();
-    let mut renderer = GuiWidgetEguiRenderer::default();
-
-    state.render_shell_widgets(&mut renderer);
-
-    assert_eq!(renderer.root(), Some(&expected_tree));
+fn active_widget_tree_keeps_navigation_and_only_builds_the_selected_surface() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    for view in [
+        GuiShellView::Room,
+        GuiShellView::Setup,
+        GuiShellView::Plugins,
+    ] {
+        state.active_view = view;
+        let complete = state.shell_widget_tree();
+        let visible = state.active_shell_widget_tree();
+        for id in ["main-window-root", "configuration-root", "plugins-root"] {
+            let expected = complete
+                .find(id)
+                .expect("full inventory contains each surface");
+            let actual = visible
+                .find(id)
+                .expect("navigation must retain every surface");
+            assert_eq!(actual.label, expected.label);
+            assert_eq!(actual.selected, expected.selected);
+            if expected.selected {
+                assert_eq!(
+                    actual, expected,
+                    "visible content must use the same widget builders"
+                );
+            } else {
+                assert!(
+                    actual.children.is_empty(),
+                    "inactive surfaces must not build their body"
+                );
+            }
+        }
+    }
 }
 
 #[test]

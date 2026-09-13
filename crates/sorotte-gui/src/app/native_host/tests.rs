@@ -13,6 +13,107 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
+fn queued_native_app() -> (GuiNativeApp, super::GuiQueuedRuntimeBridgeHandle) {
+    let (runtime, handle) = super::GuiQueuedRuntimeBridge::new();
+    let app = GuiNativeApp {
+        state: SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default()),
+        runtime: Box::new(runtime),
+        runtime_pump: Box::new(super::GuiNoopRuntimePump),
+        runtime_repaint_handle: None,
+        gui_state_root: None,
+        test_drop_request: None,
+        playback_prompt: None,
+        playback_prompt_buffer: String::new(),
+        playback_prompt_error: None,
+    };
+    (app, handle)
+}
+
+#[test]
+fn minimized_native_app_drains_runtime_actions_without_rendering() {
+    let (mut app, handle) = queued_native_app();
+    let context = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let initial_messages = app.state.main_window.chat.len();
+    for i in 0..32 {
+        handle.push_action(GuiShellAction::AnnounceSystemChatEvent(format!(
+            "event {i}"
+        )));
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    }
+    assert!(
+        handle.drain_actions().is_empty(),
+        "minimized windows must consume runtime output instead of accumulating a restore backlog"
+    );
+    assert_eq!(app.state.main_window.chat.len(), initial_messages + 32);
+}
+
+#[test]
+fn minimized_native_app_dispatches_pending_work_once_and_accepts_completion() {
+    let (mut app, handle) = queued_native_app();
+    app.state.pending_operation = Some(crate::app::GuiPendingOperationState {
+        kind: crate::app::GuiPendingOperationKind::SetPlaybackPause(true),
+    });
+    let context = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput::default();
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .minimized = Some(true);
+    for _ in 0..4 {
+        let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    }
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::CompletePendingOperation(
+            crate::app::GuiPendingCompletionRequest::SetPlaybackPause(true),
+        )]
+    );
+    handle.push_action(GuiShellAction::CompletePlaybackPauseState(true));
+    let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    assert!(app.state.pending_operation.is_none());
+    assert!(handle.drain_requests().is_empty());
+}
+
+#[test]
+fn minimized_native_app_closes_only_after_successful_update_launch() {
+    for success in [false, true] {
+        let (mut app, handle) = queued_native_app();
+        handle.push_action(GuiShellAction::ApplyStagedUpdateLaunchResult(
+            UpdateApplyLaunchResult {
+                success,
+                message: "update launch result".to_owned(),
+            },
+        ));
+        let context = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        let output = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+        assert_eq!(
+            output
+                .viewport_commands
+                .values()
+                .flatten()
+                .any(|command| { matches!(command, egui::ViewportCommand::Close) }),
+            success
+        );
+        assert!(handle.drain_actions().is_empty());
+    }
+}
+
 #[test]
 fn display_fixture_theme_selects_the_matching_global_palette() {
     let context = egui::Context::default();

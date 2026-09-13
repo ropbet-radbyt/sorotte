@@ -1,5 +1,23 @@
 use super::*;
 
+impl GuiShellView {
+    pub(super) fn widget_tree_root(self, children: Vec<GuiWidgetNode>) -> GuiWidgetNode {
+        let (id, label, layout) = match self {
+            Self::Room => ("main-window-root", "Room", GuiLayoutMode::Stack),
+            Self::Setup => ("configuration-root", "Setup", GuiLayoutMode::Stack),
+            Self::Plugins => (
+                "plugins-root",
+                "Plugins",
+                GuiLayoutMode::ResponsiveColumns {
+                    min_column_width: 260.0,
+                    max_columns: 3,
+                },
+            ),
+        };
+        GuiWidgetNode::layout(id, label, layout, children)
+    }
+}
+
 impl SorotteGuiShellAppState {
     pub(crate) fn update_indicator_widget_tree(&self) -> GuiWidgetNode {
         let model = self
@@ -164,13 +182,36 @@ impl SorotteGuiShellAppState {
     }
 
     pub(crate) fn shell_widget_tree(&self) -> GuiWidgetNode {
-        let mut configuration = self.configuration_widget_tree();
+        self.shell_widget_tree_with_surfaces([
+            self.main_window_widget_tree(),
+            self.configuration_widget_tree(),
+            self.plugins_widget_tree(),
+        ])
+    }
+
+    pub(crate) fn active_shell_widget_tree(&self) -> GuiWidgetNode {
+        let surfaces = [
+            GuiShellView::Room,
+            GuiShellView::Setup,
+            GuiShellView::Plugins,
+        ]
+        .map(|view| {
+            if view != self.active_view {
+                return view.widget_tree_root(Vec::new());
+            }
+            match view {
+                GuiShellView::Room => self.main_window_widget_tree(),
+                GuiShellView::Setup => self.configuration_widget_tree(),
+                GuiShellView::Plugins => self.plugins_widget_tree(),
+            }
+        });
+        self.shell_widget_tree_with_surfaces(surfaces)
+    }
+
+    fn shell_widget_tree_with_surfaces(&self, surfaces: [GuiWidgetNode; 3]) -> GuiWidgetNode {
+        let [mut main_window, mut configuration, mut plugins] = surfaces;
         configuration.selected = self.active_view == GuiShellView::Setup;
-
-        let mut main_window = self.main_window_widget_tree();
         main_window.selected = self.active_view == GuiShellView::Room;
-
-        let mut plugins = self.plugins_widget_tree();
         plugins.selected = self.active_view == GuiShellView::Plugins;
 
         let menus = self.menu_dialog_widget_tree();
