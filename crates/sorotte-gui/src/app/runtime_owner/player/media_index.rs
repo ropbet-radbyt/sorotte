@@ -442,8 +442,7 @@ impl GuiPersistedConfigRuntimeOwner {
         index: &GuiAttachedMediaSearchIndex,
         target: &str,
     ) -> Option<GuiUserMediaTargetResolution> {
-        let target_key =
-            GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(target)?;
+        let target_key = GuiClientSession::missing_media_file_name_lookup_key(target)?;
         let target_relative_key = Self::cached_missing_media_relative_target_key(target);
         let current_parent = self
             .player_local_file
@@ -584,8 +583,7 @@ impl GuiPersistedConfigRuntimeOwner {
         deadline: Option<Instant>,
     ) -> Vec<GuiAttachedMediaSearchRootRefreshResult> {
         let total_roots = search_roots.len();
-        let total_workers =
-            GuiClientCoreChatSessionRuntimeAdapter::configured_missing_media_parallelism().max(1);
+        let total_workers = GuiClientSession::configured_missing_media_parallelism().max(1);
         let root_worker_count = total_roots.min(total_workers).max(1);
         let per_root_worker_count = (total_workers / root_worker_count).max(1);
         let pending_roots = Arc::new(Mutex::new(
@@ -640,7 +638,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         *latest = Some(progress);
                     };
 
-                    let result = match GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path_with_progress_and_workers(
+                    let result = match GuiClientSession::build_missing_media_file_name_index_for_path_with_progress_and_workers(
                         &root,
                         deadline,
                         cancel_flag.as_ref(),

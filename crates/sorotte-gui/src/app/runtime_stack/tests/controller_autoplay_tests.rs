@@ -1,18 +1,16 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transitions_as_notifications()
- {
+fn gui_client_session_surfaces_controller_auth_transitions_as_notifications() {
     let room = "+room:ABCDEF123456";
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", room)
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", room).expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -29,7 +27,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
         )
         .expect("inbound server hello should apply");
     let hello_actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         hello_actions.iter().any(|action| matches!(
             action,
@@ -66,7 +64,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
         )
         .expect("controller auth success should apply");
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -100,15 +98,14 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controller_auth_transit
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creation_before_reidentify()
- {
+fn gui_client_session_surfaces_controlled_room_creation_before_reidentify() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -122,7 +119,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         )
         .expect("inbound server hello should apply");
     for action in
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
     {
         assert!(state.apply(action));
     }
@@ -133,7 +130,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
         )
         .expect("new controlled room message should apply");
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let created_notice_index = actions
         .iter()
         .position(|action| {
@@ -213,20 +210,16 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_controlled_room_creatio
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_room_when_password_is_stored()
- {
+fn gui_client_session_auto_reidentifies_controlled_room_when_password_is_stored() {
     let room = "+room:ABCDEF123456";
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some(room.to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
-        "alice",
-        room,
-        Some("ab-123-456".into()),
-    )
-    .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new_with_control_password("alice", room, Some("ab-123-456".into()))
+            .expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -239,7 +232,7 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
         )
         .expect("inbound server hello should apply");
     let hello_actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         hello_actions.iter().any(|action| matches!(
             action,
@@ -260,9 +253,9 @@ fn gui_client_core_chat_session_runtime_adapter_auto_reidentifies_controlled_roo
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_state() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_set_room_preserves_autoplay_state() {
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -307,7 +300,7 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
         "precondition: autoplay countdown should be running before the room switch"
     );
 
-    GuiSessionRuntimeAdapter::set_room(&mut adapter, "room2".to_owned())
+    GuiClientSession::set_room(&mut adapter, "room2".to_owned())
         .expect("room changes should dispatch through the session adapter");
 
     assert!(
@@ -321,14 +314,14 @@ fn gui_client_core_chat_session_runtime_adapter_set_room_preserves_autoplay_stat
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_notifications() {
+fn gui_client_session_surfaces_autoplay_countdown_notifications() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -341,7 +334,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         )
         .expect("inbound server hello should apply");
     let hello_actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     for action in hello_actions {
         assert!(state.apply(action));
     }
@@ -384,7 +377,7 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
         .expect("second autoplay tick should emit notification");
 
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert!(
         actions.iter().any(|action| matches!(
             action,
@@ -422,15 +415,14 @@ fn gui_client_core_chat_session_runtime_adapter_surfaces_autoplay_countdown_noti
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_when_autoplay_fires()
-{
+fn gui_client_session_queues_attached_player_unpause_when_autoplay_fires() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -471,7 +463,7 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         );
 
     for action in
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
     {
         assert!(state.apply(action));
     }
@@ -483,10 +475,9 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
     for _ in 0..4 {
         adapter.next_autoplay_tick_at =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
-        for action in GuiSessionRuntimeAdapter::drain_gui_actions(
-            &mut adapter,
-            &runtime_state_for_shell(&state),
-        ) {
+        for action in
+            GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        {
             assert!(state.apply(action));
         }
     }
@@ -497,7 +488,7 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         "the client-core autoplay timer should unpause the local session"
     );
     assert_eq!(
-        GuiSessionRuntimeAdapter::take_attached_player_local_runtime_actions(&mut adapter)
+        GuiClientSession::take_attached_player_local_runtime_actions(&mut adapter)
             .expect("attached-player local actions should drain"),
         vec![GuiAttachedPlayerRuntimeAction::Paused {
             paused: false,
@@ -506,7 +497,7 @@ fn gui_client_core_chat_session_runtime_adapter_queues_attached_player_unpause_w
         "the GUI adapter must carry the autoplay unpause to the attached player"
     );
     assert!(
-        GuiSessionRuntimeAdapter::take_attached_player_local_runtime_actions(&mut adapter)
+        GuiClientSession::take_attached_player_local_runtime_actions(&mut adapter)
             .expect("attached-player local actions should drain")
             .is_empty(),
         "attached-player local actions should be consumed once drained"

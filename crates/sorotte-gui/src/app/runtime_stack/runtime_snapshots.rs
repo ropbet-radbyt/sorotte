@@ -9,7 +9,7 @@ use super::super::shell_state::{
 use super::super::support::{
     nonempty_room_name_text, normalized_editable_text, system_time_seconds,
 };
-use super::GuiClientCoreChatSessionRuntimeAdapter;
+use super::GuiClientSession;
 use crate::app::runtime_state::GuiRuntimeState;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
@@ -145,7 +145,7 @@ fn room_playstate_authority_label(authority: RoomPlaystateAuthority) -> String {
     }
 }
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     fn session_readiness_presentations(
         &self,
         users: &[MainWindowRuntimeUserSnapshot],

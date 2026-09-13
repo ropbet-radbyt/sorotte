@@ -226,10 +226,12 @@ impl GuiWidgetNode {
             .sum::<usize>()
     }
 
+    #[cfg(test)]
     pub(super) fn render_with(&self, renderer: &mut impl GuiWidgetRenderer) {
         self.render_with_depth(renderer, 0);
     }
 
+    #[cfg(test)]
     fn render_with_depth(&self, renderer: &mut impl GuiWidgetRenderer, depth: usize) {
         renderer.begin_node(self, depth);
         for child in &self.children {
@@ -239,6 +241,7 @@ impl GuiWidgetNode {
     }
 }
 
+#[cfg(test)]
 pub(super) trait GuiWidgetRenderer {
     fn begin_node(&mut self, node: &GuiWidgetNode, depth: usize);
 

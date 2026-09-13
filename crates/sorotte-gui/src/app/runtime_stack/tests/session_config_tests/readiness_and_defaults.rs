@@ -1,19 +1,17 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_before_first_hello()
- {
+fn gui_client_session_preserves_ready_at_start_across_reconnect_before_first_hello() {
     let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ready_at_start: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -42,18 +40,17 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_reconnect_after_hello_before_ready_echo()
- {
+fn gui_client_session_preserves_ready_at_start_across_reconnect_after_hello_before_ready_echo() {
     let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ready_at_start: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -97,9 +94,9 @@ fn gui_client_core_chat_session_runtime_adapter_preserves_ready_at_start_across_
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whitespace_room_names() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_reconnect_hello_preserves_whitespace_room_names() {
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -125,7 +122,7 @@ fn gui_client_core_chat_session_runtime_adapter_reconnect_hello_preserves_whites
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_settings_to_defaults() {
+fn gui_client_session_clears_text_backed_runtime_settings_to_defaults() {
     let configured_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -143,12 +140,12 @@ fn gui_client_core_chat_session_runtime_adapter_clears_text_backed_runtime_setti
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new("alice", "room1").expect("client-core chat adapter should bootstrap");
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &configured_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &configured_settings)
         .expect("configured runtime settings should sync");
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &cleared_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &cleared_settings)
         .expect("cleared runtime settings should sync");
 
     assert_eq!(

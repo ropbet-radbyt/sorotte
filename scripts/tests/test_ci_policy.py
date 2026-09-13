@@ -2735,9 +2735,9 @@ class CiPolicyTests(unittest.TestCase):
                             "crates/sorotte-gui/src/app/runtime_stack/"
                             "playlist_delivery_fence.rs",
                             "crates/sorotte-gui/src/app/runtime_stack/"
-                            "client_core_adapter/delivery_fence.rs",
+                            "client_session/delivery_fence.rs",
                             "crates/sorotte-gui/src/app/runtime_stack/"
-                            "client_core_adapter/runtime_adapter_impl.rs",
+                            "client_session/operations.rs",
                         ],
                         "mutant_filter": (
                             "(Gui(PendingSharedPlaylistOpen|"

@@ -14,40 +14,20 @@ impl PlayerAdapter for TelemetryCapablePlayer {
     }
 }
 
-struct AvailabilityRecordingSession {
+struct AvailabilityProbe {
     observations: Arc<Mutex<Vec<ExternalPlayerAvailability>>>,
 }
 
-impl GuiSessionRuntimeAdapter for AvailabilityRecordingSession {
-    fn set_external_player_availability(
-        &mut self,
-        availability: ExternalPlayerAvailability,
-        _now_seconds: f64,
-    ) -> Result<bool, String> {
-        self.observations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(availability);
-        Ok(true)
-    }
-
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
+impl AvailabilityProbe {
+    fn into_session(self) -> crate::app::GuiClientSession {
+        crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+            if let crate::app::runtime_stack::test_support::SessionObservation::Availability(
+                value,
+            ) = event
+            {
+                self.observations.lock().unwrap().push(value);
+            }
+        })
     }
 }
 
@@ -55,9 +35,12 @@ impl GuiSessionRuntimeAdapter for AvailabilityRecordingSession {
 fn runtime_owner_reports_player_state_on_session_handoff_and_detach() {
     let observations = Arc::new(Mutex::new(Vec::new()));
     let session = || {
-        Box::new(AvailabilityRecordingSession {
-            observations: observations.clone(),
-        }) as Box<dyn GuiSessionRuntimeAdapter + Send>
+        Box::new(
+            AvailabilityProbe {
+                observations: observations.clone(),
+            }
+            .into_session(),
+        )
     };
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
 

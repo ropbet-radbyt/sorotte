@@ -117,6 +117,19 @@ remain in `SorotteGuiShellAppState`. Worker playlist selection uses
 edits. Test worker state across multiple calls, and deliver actual queued actions
 to a separate shell fixture when checking UI projection.
 
+The GUI runtime owner uses the concrete `GuiClientSession`. Exercise session
+behavior through real protocol messages and the completed-write receipt API;
+keep deterministic replacements at the transport and player boundaries. Test-only
+session observations can record ordering without replacing operation results.
+Narrow fault injection covers otherwise inaccessible failure paths.
+
+Native `App::logic` drains runtime output and progresses pending operations even
+when the window is minimized or occluded. `App::ui` handles visible controls and
+builds only the active shell body. Anchor the room clock once per received source
+sample: rendering its interpolated value must not manufacture new runtime input.
+The [GUI cleanup audit](audits/gui-session-rendering-cleanup-2026-09-13.md) records
+the redraw regression, hidden-window checks and physical GPU measurement limits.
+
 Use [the terminology glossary](../CONTEXT.md) and the
 [compatibility cleanup audit](audits/compatibility-terminology-cleanup-2026-09-11.md)
 to distinguish supported Syncplay behavior, missing peer capabilities, and

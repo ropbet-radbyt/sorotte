@@ -268,11 +268,6 @@ impl GuiWidgetEguiRenderer {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn root(&self) -> Option<&GuiWidgetNode> {
-        self.root.as_ref()
-    }
-
     pub(super) fn take_close_requested(&mut self) -> bool {
         std::mem::take(&mut self.close_requested)
     }

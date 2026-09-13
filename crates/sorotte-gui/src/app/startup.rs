@@ -19,7 +19,7 @@ use super::native_host::GuiEframeNativeHost;
 #[cfg(test)]
 use super::native_host::GuiTextPreviewHost;
 use super::remote_services;
-use super::runtime_stack::GuiClientCoreChatSessionRuntimeAdapter;
+use super::runtime_stack::GuiClientSession;
 use super::shell_state::{
     GuiConfigStorageRuntimeSnapshot, GuiShellAction, SorotteGuiShellAppState,
 };
@@ -100,10 +100,7 @@ where
         settings.chat_output_enabled = Some(true);
     }
     if let Some(public_servers) =
-        GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_sources(
-            &lookup,
-            &read_to_string,
-        )?
+        GuiClientSession::refreshed_public_server_rows_from_sources(&lookup, &read_to_string)?
     {
         settings.public_servers = Some(public_servers);
     }

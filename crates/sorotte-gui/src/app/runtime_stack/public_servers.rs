@@ -7,9 +7,9 @@ use sorotte_client_app::app_boundary::{
 
 use super::super::startup_support::env_trimmed;
 use super::super::support::normalized_editable_text;
-use super::GuiClientCoreChatSessionRuntimeAdapter;
+use super::GuiClientSession;
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     pub(in crate::app) fn normalize_public_server_rows(
         current_servers: Vec<(String, String)>,
     ) -> Vec<(String, String)> {

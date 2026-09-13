@@ -1,20 +1,15 @@
 use super::*;
 use crate::app::feature_slices::GuiRuntimeInput;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::support::system_time_seconds;
 use crate::app::testing::support::runtime_state_for_shell;
 
-fn playing_session() -> (
-    SorotteGuiShellAppState,
-    GuiClientCoreChatSessionRuntimeAdapter,
-) {
+fn playing_session() -> (SorotteGuiShellAppState, GuiClientSession) {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut session = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("session should initialize");
+    let mut session = GuiClientSession::new("alice", "room1").expect("session should initialize");
     sync_adapter_to_saved_session_settings(&mut session, &state);
     session
         .deliver_outbound_protocol_lines()
@@ -124,4 +119,28 @@ fn room_clock_accepts_new_samples_pause_seek_and_resume_then_settles() {
         );
         assert_eq!(state.main_window.room_playback_intent, clock);
     }
+}
+
+#[test]
+fn removed_local_playlist_selection_follows_the_room_in_the_same_update() {
+    let (mut state, mut session) = playing_session();
+    session.apply_message_json(
+        r#"{"Set":{"playlistChange":{"files":["first.mkv","current.mkv","local.mkv"],"user":"bob"},"playlistIndex":{"index":1,"user":"bob"}}}"#,
+    ).unwrap();
+    for action in session.drain_gui_actions(&runtime_state_for_shell(&state)) {
+        assert!(state.apply(action));
+    }
+    assert!(state.apply(GuiShellAction::SelectMainWindowPlaylist(2)));
+    assert!(state.main_window_playlist_selection_is_local);
+
+    session.apply_message_json(
+        r#"{"Set":{"playlistChange":{"files":["first.mkv","current.mkv"],"user":"bob"},"playlistIndex":{"index":1,"user":"bob"}}}"#,
+    ).unwrap();
+    for action in session.drain_gui_actions(&runtime_state_for_shell(&state)) {
+        assert!(state.apply(action));
+    }
+    // Snapshot projection removes the local selection before the canonical
+    // selection is computed. This must also happen without debug assertions.
+    assert!(!state.main_window_playlist_selection_is_local);
+    assert_eq!(state.selection.selected_main_window_playlist, Some(1));
 }

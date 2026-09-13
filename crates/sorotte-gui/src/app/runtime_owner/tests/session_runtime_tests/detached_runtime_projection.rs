@@ -3,88 +3,11 @@ use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
 fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_controls_live() {
-    #[derive(Debug, Default)]
-    struct RecordingDetachedSessionState {
-        runtime_settings:
-            Vec<sorotte_client_app::app_boundary::state::StoredClientSettingsRuntimeSnapshot>,
-        autoplay_enabled: Vec<bool>,
-        autoplay_thresholds: Vec<usize>,
-    }
-
-    struct RecordingDetachedSessionRuntimeAdapter {
-        state: std::sync::Arc<std::sync::Mutex<RecordingDetachedSessionState>>,
-    }
-
-    impl GuiSessionRuntimeAdapter for RecordingDetachedSessionRuntimeAdapter {
-        fn sync_runtime_settings(
-            &mut self,
-            runtime_settings: &sorotte_client_app::app_boundary::state::StoredClientSettingsRuntimeSnapshot,
-        ) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .runtime_settings
-                .push(runtime_settings.clone());
-            Ok(())
-        }
-
-        fn sync_local_playback_telemetry(
-            &mut self,
-            _paused: Option<bool>,
-            _position_seconds: Option<f64>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .autoplay_enabled
-                .push(enabled);
-            Ok(())
-        }
-
-        fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .autoplay_thresholds
-                .push(threshold);
-            Ok(())
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
-    let recorded = std::sync::Arc::new(std::sync::Mutex::new(
-        RecordingDetachedSessionState::default(),
-    ));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(RecordingDetachedSessionRuntimeAdapter {
-            state: recorded.clone(),
-        }),
+        Box::new(crate::app::runtime_stack::test_support::active_session()),
     );
     owner.player_paused = Some(true);
     owner.player_position_seconds = Some(12.5);
-
     let state_a = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         autoplay_initial_state: Some(true),
         dont_slow_down_with_me: Some(false),
@@ -98,8 +21,13 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
     });
     owner
         .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_a))
-        .expect("first detached-session preference sync should succeed");
-
+        .unwrap();
+    let settings_a = owner
+        .session
+        .as_ref()
+        .unwrap()
+        .configured_settings_for_test()
+        .clone();
     let state_b = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         autoplay_initial_state: Some(false),
         dont_slow_down_with_me: Some(true),
@@ -113,69 +41,33 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
     });
     owner
         .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_b))
-        .expect("second detached-session preference sync should succeed");
-
-    let mut recorded_state = recorded
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    assert_eq!(recorded_state.runtime_settings.len(), 2);
+        .unwrap();
+    let session = owner.session.as_ref().unwrap();
     assert_eq!(
-        recorded_state.runtime_settings[0]
-            .settings
-            .dont_slow_down_with_me,
-        Some(false)
+        session.configured_settings_for_test(),
+        &settings_a,
+        "an unsaved draft must not change the active session's settings"
     );
+    assert_eq!(settings_a.dont_slow_down_with_me, Some(false));
+    assert_eq!(settings_a.loop_single_files, Some(true));
+    assert_eq!(settings_a.rewind_on_desync, Some(false));
     assert_eq!(
-        recorded_state.runtime_settings[0]
-            .settings
-            .loop_single_files,
-        Some(true)
-    );
-    assert_eq!(
-        recorded_state.runtime_settings[0].settings.rewind_on_desync,
-        Some(false)
-    );
-    assert_eq!(
-        recorded_state.runtime_settings[0].settings.unpause_action,
+        settings_a.unpause_action,
         Some(sorotte_client_core::UnpauseActionMode::IfOthersReady)
     );
     assert_eq!(
-        recorded_state.runtime_settings[1]
-            .settings
-            .dont_slow_down_with_me,
-        Some(false)
+        session.runtime.session().autoplay_enabled(),
+        state_a.main_window.autoplay_active
     );
     assert_eq!(
-        recorded_state.runtime_settings[1]
-            .settings
-            .loop_single_files,
-        Some(true)
+        session
+            .runtime
+            .session()
+            .readiness_autoplay_config()
+            .auto_play_threshold,
+        Some(3)
     );
-    assert_eq!(
-        recorded_state.runtime_settings[1].settings.rewind_on_desync,
-        Some(false)
-    );
-    assert_eq!(
-        recorded_state.runtime_settings[1].settings.unpause_action,
-        Some(sorotte_client_core::UnpauseActionMode::IfOthersReady)
-    );
-    assert_eq!(
-        recorded_state.autoplay_enabled,
-        vec![
-            state_a.main_window.autoplay_active,
-            state_a.main_window.autoplay_active,
-        ]
-    );
-    assert_eq!(
-        recorded_state.autoplay_thresholds,
-        vec![
-            state_a.main_window.autoplay_threshold,
-            state_a.main_window.autoplay_threshold,
-        ]
-    );
-    recorded_state.autoplay_enabled.clear();
-    recorded_state.autoplay_thresholds.clear();
-    drop(recorded_state);
+    assert_eq!(session.local_position_seconds(), Some(12.5));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     handle.push_request(GuiRuntimeRequest::SetAutoplayEnabled(
@@ -187,36 +79,30 @@ fn gui_persisted_config_runtime_owner_pins_active_settings_but_keeps_explicit_co
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state_b);
     owner
         .sync_detached_session_preferences_and_player_state(&runtime_state_for_shell(&state_a))
-        .expect("explicit autoplay controls should survive the next active-session sync");
-
-    let recorded_state = recorded
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap();
+    let session = owner.session.as_ref().unwrap();
     assert_eq!(
-        recorded_state.autoplay_enabled.last().copied(),
-        Some(state_b.main_window.autoplay_active)
+        session.runtime.session().autoplay_enabled(),
+        state_b.main_window.autoplay_active
     );
     assert_eq!(
-        recorded_state.autoplay_thresholds.last().copied(),
-        Some(state_b.main_window.autoplay_threshold)
-    );
-    let last_runtime_settings = recorded_state
-        .runtime_settings
-        .last()
-        .expect("a post-command active-session sync should be recorded");
-    assert_eq!(
-        last_runtime_settings.settings.autoplay_initial_state,
-        Some(state_b.main_window.autoplay_active)
+        session
+            .runtime
+            .session()
+            .readiness_autoplay_config()
+            .auto_play_threshold,
+        Some(5)
     );
     assert_eq!(
-        last_runtime_settings.settings.autoplay_min_users,
-        Some(
-            sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(
-                state_b.main_window.autoplay_threshold,
-            )
-        )
+        session
+            .configured_settings_for_test()
+            .autoplay_initial_state,
+        Some(false)
     );
-    drop(recorded_state);
+    assert_eq!(
+        session.configured_settings_for_test().autoplay_min_users,
+        Some(sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(5))
+    );
     assert!(owner.active_session_settings.is_some());
     owner.remove_session_runtime();
     assert!(owner.active_session_settings.is_none());
@@ -265,41 +151,17 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
         synced_playback: Vec<(Option<bool>, Option<f64>)>,
     }
 
-    struct RecordingSessionRuntimeAdapter {
+    struct SessionObservationProbe {
         state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
     }
 
-    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
-        fn sync_local_playback_telemetry(
-            &mut self,
-            paused: Option<bool>,
-            position_seconds: Option<f64>,
-        ) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .synced_playback
-                .push((paused, position_seconds));
-            Ok(())
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
+    impl SessionObservationProbe {
+        fn into_session(self) -> crate::app::GuiClientSession {
+            crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+            if let crate::app::runtime_stack::test_support::SessionObservation::PlaybackObserved { paused, position } = event {
+                self.state.lock().unwrap().synced_playback.push((paused, position));
+            }
+        })
         }
     }
 
@@ -323,11 +185,13 @@ fn gui_persisted_config_runtime_owner_clamps_detached_session_position_to_file_d
     }
 
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(RecordingSessionRuntimeAdapter {
-            state: recorded.clone(),
-        }),
-    );
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(Box::new(
+            SessionObservationProbe {
+                state: recorded.clone(),
+            }
+            .into_session(),
+        ));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
         state: player_state.clone(),
     })));

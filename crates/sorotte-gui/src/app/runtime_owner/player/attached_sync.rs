@@ -501,7 +501,7 @@ impl GuiPersistedConfigRuntimeOwner {
             }
             // The coordinator consumes the canonical room state, including
             // server-owned transitions attributed to the local controller.
-            // Legacy self-echo filtering is intentionally below this branch.
+            // Syncplay self-echo filtering is intentionally below this branch.
             self.last_applied_attached_room_playstate = None;
             if state_changed {
                 self.refresh_player_state_impl();

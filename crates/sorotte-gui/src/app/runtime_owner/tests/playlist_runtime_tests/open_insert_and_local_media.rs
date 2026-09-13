@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::ExternalPlayerAvailability;
@@ -10,9 +9,8 @@ use crate::app::runtime_owner::{
     player::SelectedPlaylistMediaSyncOutcome,
 };
 use crate::app::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiOutboundProtocolDeliveryResult,
-    GuiPlaylistProtocolDeliveryFence, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
-    GuiSessionTransportDriver,
+    GuiClientSession, GuiOutboundProtocolDeliveryResult, GuiPlaylistProtocolDeliveryFence,
+    GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
 };
 use crate::app::{GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId, GuiPlaylistSourceStatus};
 use sorotte_plex::{
@@ -273,9 +271,7 @@ fn client_core_session_bootstrap_preserves_username_and_room_in_the_hello() {
 
 #[test]
 fn every_selected_playlist_mutator_returns_its_real_protocol_delivery_fence() {
-    type Mutation = fn(
-        &mut (dyn GuiSessionRuntimeAdapter + Send),
-    ) -> Result<GuiPlaylistProtocolDeliveryFence, String>;
+    type Mutation = fn(&mut GuiClientSession) -> Result<GuiPlaylistProtocolDeliveryFence, String>;
 
     let cases: [(&str, Mutation); 5] = [
         ("advance", |session| {
@@ -296,7 +292,7 @@ fn every_selected_playlist_mutator_returns_its_real_protocol_delivery_fence() {
     ];
 
     for (case, mutate) in cases {
-        let mut session = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
+        let mut session = GuiClientSession::new("alice", "room1")
             .expect("client-core session adapter should bootstrap");
         session
             .apply_message_json(
@@ -3102,59 +3098,11 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
     let media_root = test_temp_root("shared-playlist-control-unavailable");
     let media_path = media_root.join("blocked-drop.mkv");
     std::fs::write(&media_path, b"test").expect("blocked-drop fixture should be written");
-    #[derive(Debug, Default)]
-    struct NoControlSessionState {
-        replace_playlist_calls: usize,
-    }
-
-    struct NoControlSessionRuntimeAdapter {
-        state: std::sync::Arc<std::sync::Mutex<NoControlSessionState>>,
-    }
-
-    impl GuiSessionRuntimeAdapter for NoControlSessionRuntimeAdapter {
-        fn playlist_control_available(&self) -> bool {
-            false
-        }
-
-        fn replace_playlist(
-            &mut self,
-            _files: Vec<String>,
-            _selected_index: Option<usize>,
-        ) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .replace_playlist_calls += 1;
-            Ok(())
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
-    let session_state =
-        std::sync::Arc::new(std::sync::Mutex::new(NoControlSessionState::default()));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(NoControlSessionRuntimeAdapter {
-            state: session_state.clone(),
-        }),
-    );
+    let session =
+        crate::app::runtime_stack::test_support::active_session_in_room("+room:ABCDEF123456");
+    assert!(!session.playlist_control_available());
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(session));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
 
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -3205,11 +3153,9 @@ fn gui_persisted_config_runtime_owner_blocks_local_media_open_when_room_playlist
         "blocked non-controller media drops must not open a local file in the attached player",
     );
     assert!(
-        session_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .replace_playlist_calls
-            == 0,
+        owner.session.as_ref().unwrap().runtime.pending_protocol_messages().iter().all(|message| {
+            !matches!(message, sorotte_protocol::ProtocolMessage::Set(set) if set.set.playlist_change.is_some())
+        }),
         "blocked non-controller media drops must not attempt a session playlist mutation",
     );
     let _ = std::fs::remove_dir_all(media_root);

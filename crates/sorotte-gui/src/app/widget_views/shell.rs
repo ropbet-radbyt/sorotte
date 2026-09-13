@@ -181,6 +181,7 @@ impl SorotteGuiShellAppState {
         )
     }
 
+    #[cfg(any(test, feature = "gui-semantic-smoke"))]
     pub(crate) fn shell_widget_tree(&self) -> GuiWidgetNode {
         self.shell_widget_tree_with_surfaces([
             self.main_window_widget_tree(),
@@ -355,6 +356,7 @@ impl SorotteGuiShellAppState {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn render_shell_widgets(&self, renderer: &mut impl GuiWidgetRenderer) {
         self.shell_widget_tree().render_with(renderer);
     }

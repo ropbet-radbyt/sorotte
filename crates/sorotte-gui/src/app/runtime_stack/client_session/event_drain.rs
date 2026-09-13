@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::runtime_state::GuiRuntimeState;
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     pub(super) fn drain_gui_actions_impl(
         &mut self,
         state: &GuiRuntimeState,

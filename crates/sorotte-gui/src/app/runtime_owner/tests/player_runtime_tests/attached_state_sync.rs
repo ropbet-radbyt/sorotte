@@ -3,7 +3,6 @@ use crate::app::GuiMediaSourceProviderId;
 use crate::app::runtime_owner::GuiPendingAttachedRoomUnpauseObservation;
 use crate::app::runtime_owner::GuiUpdateRuntime;
 use crate::app::runtime_owner::player::PlaylistResolutionAttemptState;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use sorotte_plex::{

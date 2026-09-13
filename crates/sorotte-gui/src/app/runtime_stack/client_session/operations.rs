@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+use crate::app::runtime_stack::test_support::{SessionFailurePoint, SessionObservation};
 use crate::app::runtime_state::GuiRuntimeState;
 
 fn gui_actions_from_playback_coordinator(
@@ -23,12 +25,15 @@ fn gui_actions_from_playback_coordinator(
         .collect()
 }
 
-impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
-    fn drain_gui_actions(&mut self, state: &GuiRuntimeState) -> Vec<GuiShellAction> {
+impl GuiClientSession {
+    pub(in crate::app) fn drain_gui_actions(
+        &mut self,
+        state: &GuiRuntimeState,
+    ) -> Vec<GuiShellAction> {
         self.drain_gui_actions_impl(state)
     }
 
-    fn adjust_command_availability(
+    pub(in crate::app) fn adjust_command_availability(
         &self,
         state: &GuiRuntimeState,
         mut command_availability: GuiCommandAvailabilityState,
@@ -56,44 +61,22 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         command_availability
     }
 
-    fn playlist_control_available(&self) -> bool {
+    pub(in crate::app) fn playlist_control_available(&self) -> bool {
         self.shared_playlist_control_available()
     }
 
-    fn current_room_playlist_revision(&self) -> Option<u64> {
+    pub(in crate::app) fn current_room_playlist_revision(&self) -> Option<u64> {
         self.projected_current_room_playlist()
             .map(|playlist| playlist.revision)
     }
 
-    fn current_room_playlist_remote_revision(&self) -> u64 {
+    pub(in crate::app) fn current_room_playlist_remote_revision(&self) -> u64 {
         self.runtime
             .session()
             .current_room_playlist_remote_revision()
     }
 
-    fn begin_outbound_protocol_delivery(
-        &mut self,
-    ) -> Result<Option<GuiOutboundProtocolDelivery>, String> {
-        GuiClientCoreChatSessionRuntimeAdapter::begin_outbound_protocol_delivery(self)
-    }
-
-    fn acknowledge_outbound_protocol_delivery(
-        &mut self,
-        token: u64,
-    ) -> Result<Option<String>, String> {
-        GuiClientCoreChatSessionRuntimeAdapter::acknowledge_outbound_protocol_delivery(self, token)
-            .map(Some)
-    }
-
-    fn fail_outbound_protocol_delivery(&mut self, token: u64) -> Result<(), String> {
-        GuiClientCoreChatSessionRuntimeAdapter::fail_outbound_protocol_delivery(self, token)
-    }
-
-    fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
-        GuiClientCoreChatSessionRuntimeAdapter::apply_message_json(self, json_line)
-    }
-
-    fn apply_message_json_at(
+    pub(in crate::app) fn apply_message_json_at(
         &mut self,
         json_line: &str,
         received_at_seconds: f64,
@@ -133,11 +116,8 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
                 },
             );
         }
-        let result = GuiClientCoreChatSessionRuntimeAdapter::apply_message_json_at(
-            self,
-            json_line,
-            received_at_seconds,
-        );
+        let result =
+            GuiClientSession::apply_inbound_message_json_at(self, json_line, received_at_seconds);
         if let Some(target_paused) = inbound_paused {
             let after = self.runtime.playback_coordination_snapshot();
             crate::app::test_lifecycle::record_playback_control(
@@ -167,7 +147,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         result
     }
 
-    fn set_room(&mut self, room: String) -> Result<(), String> {
+    pub(in crate::app) fn set_room(&mut self, room: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room,
             default_room_fallback: false,
@@ -196,7 +176,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn set_room_with_default_fallback(&mut self, default_room: String) -> Result<(), String> {
+    pub(in crate::app) fn set_room_with_default_fallback(
+        &mut self,
+        default_room: String,
+    ) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetRoom {
             room: default_room,
             default_room_fallback: true,
@@ -225,7 +208,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn send_chat_message(&mut self, message: String) -> Result<(), String> {
+    pub(in crate::app) fn send_chat_message(&mut self, message: String) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SendChat(message)) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -254,18 +237,18 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     #[cfg(test)]
-    fn queue_user_list_for_test(&mut self) -> Result<bool, String> {
+    pub(in crate::app) fn queue_user_list_for_test(&mut self) -> Result<bool, String> {
         self.dispatch_application_command(ClientCommand::RequestUserList)
             .map_err(|error| {
                 format!("Client-core session runtime user-list dispatch failed: {error}")
             })
     }
 
-    fn attached_player_chat_input_ready(&self) -> bool {
+    pub(in crate::app) fn attached_player_chat_input_ready(&self) -> bool {
         self.runtime.session().server_chat_supported()
     }
 
-    fn attached_player_chat_input_unavailable_message(&self) -> String {
+    pub(in crate::app) fn attached_player_chat_input_unavailable_message(&self) -> String {
         let session = self.runtime.session();
         if !session.is_active() {
             "Chat input from the attached player cannot be sent until the server Hello enables chat."
@@ -279,7 +262,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
+    pub(in crate::app) fn set_local_ready(&mut self, ready: bool) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: None,
             ready: Some(ready),
@@ -312,7 +295,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn set_user_ready(&mut self, username: String, ready: bool) -> Result<(), String> {
+    pub(in crate::app) fn set_user_ready(
+        &mut self,
+        username: String,
+        ready: bool,
+    ) -> Result<(), String> {
         match self.dispatch_application_command(ClientCommand::SetReadyFrom {
             username: Some(username),
             ready: Some(ready),
@@ -350,7 +337,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn request_controller_auth(&mut self, room: String, password: String) -> Result<(), String> {
+    pub(in crate::app) fn request_controller_auth(
+        &mut self,
+        room: String,
+        password: String,
+    ) -> Result<(), String> {
         match self
             .dispatch_application_command(ClientCommand::request_controller_auth(room, password))
         {
@@ -379,7 +370,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn queue_playlist_entry(
+    pub(in crate::app) fn queue_playlist_entry(
         &mut self,
         entry: String,
         select_after_queue: bool,
@@ -414,7 +405,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn queue_playlist_entry_with_delivery_fence(
+    pub(in crate::app) fn queue_playlist_entry_with_delivery_fence(
         &mut self,
         entry: String,
         select_after_queue: bool,
@@ -423,7 +414,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn set_playlist_index(&mut self, index: usize) -> Result<(), String> {
+    pub(in crate::app) fn set_playlist_index(&mut self, index: usize) -> Result<(), String> {
         let Ok(index) = i64::try_from(index) else {
             return Err("Requested shared playlist index exceeds the supported range.".to_owned());
         };
@@ -448,7 +439,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn set_playlist_index_with_delivery_fence(
+    pub(in crate::app) fn set_playlist_index_with_delivery_fence(
         &mut self,
         index: usize,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
@@ -456,7 +447,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn advance_playlist_index(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn advance_playlist_index(&mut self) -> Result<(), String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PlaylistAdvance);
         match self.runtime.run_advance_playlist_index() {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -478,14 +471,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn advance_playlist_index_with_delivery_fence(
+    pub(in crate::app) fn advance_playlist_index_with_delivery_fence(
         &mut self,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
         self.advance_playlist_index()?;
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn advance_playlist_index_attached_player_actions(
+    pub(in crate::app) fn advance_playlist_index_attached_player_actions(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         let actions = self
@@ -518,7 +511,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .collect())
     }
 
-    fn delete_playlist_index(&mut self, index: usize) -> Result<(), String> {
+    pub(in crate::app) fn delete_playlist_index(&mut self, index: usize) -> Result<(), String> {
         let Ok(index) = i64::try_from(index) else {
             return Err("Requested shared playlist index exceeds the supported range.".to_owned());
         };
@@ -543,7 +536,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn delete_playlist_index_with_delivery_fence(
+    pub(in crate::app) fn delete_playlist_index_with_delivery_fence(
         &mut self,
         index: usize,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
@@ -551,7 +544,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn replace_playlist(
+    pub(in crate::app) fn replace_playlist(
         &mut self,
         files: Vec<String>,
         selected_index: Option<usize>,
@@ -591,7 +584,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn replace_playlist_with_delivery_fence(
+    pub(in crate::app) fn replace_playlist_with_delivery_fence(
         &mut self,
         files: Vec<String>,
         selected_index: Option<usize>,
@@ -600,7 +593,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn undo_playlist_change(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn undo_playlist_change(&mut self) -> Result<(), String> {
         match self.runtime.run_undo_playlist_change() {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -622,14 +615,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn undo_playlist_change_with_delivery_fence(
+    pub(in crate::app) fn undo_playlist_change_with_delivery_fence(
         &mut self,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
         self.undo_playlist_change()?;
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn shuffle_remaining_playlist(&mut self) -> Result<(), String> {
         match self.runtime.run_shuffle_remaining_playlist() {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -651,14 +644,14 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn shuffle_remaining_playlist_with_delivery_fence(
+    pub(in crate::app) fn shuffle_remaining_playlist_with_delivery_fence(
         &mut self,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
         self.shuffle_remaining_playlist()?;
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn shuffle_entire_playlist(&mut self) -> Result<(), String> {
         match self.runtime.run_shuffle_entire_playlist() {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -680,18 +673,27 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn shuffle_entire_playlist_with_delivery_fence(
+    pub(in crate::app) fn shuffle_entire_playlist_with_delivery_fence(
         &mut self,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {
         self.shuffle_entire_playlist()?;
         self.pending_playlist_protocol_delivery_fence()
     }
 
-    fn sync_local_playback_telemetry(
+    pub(in crate::app) fn sync_local_playback_telemetry(
         &mut self,
         paused: Option<bool>,
         position_seconds: Option<f64>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.take_test_failure(SessionFailurePoint::Telemetry) {
+            return Err("synthetic telemetry housekeeping failure".to_owned());
+        }
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PlaybackObserved {
+            paused,
+            position: position_seconds,
+        });
         self.dispatch_application_command(ClientCommand::PlayerPlaybackObserved(
             PlayerPlaybackTelemetryUpdate {
                 paused,
@@ -704,7 +706,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         .map(|_| ())
     }
 
-    fn sync_local_playback_cache_state(
+    pub(in crate::app) fn sync_local_playback_cache_state(
         &mut self,
         paused_for_cache: Option<bool>,
         cache_buffering_percent: Option<f64>,
@@ -721,11 +723,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         .map(|_| ())
     }
 
-    fn set_external_player_availability(
+    pub(in crate::app) fn set_external_player_availability(
         &mut self,
         availability: ExternalPlayerAvailability,
         now_seconds: f64,
     ) -> Result<bool, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::Availability(availability));
         self.runtime
             .set_external_player_availability(availability, now_seconds)
             .map_err(|error| {
@@ -733,13 +737,15 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn prepare_attached_playback_media(
+    pub(in crate::app) fn prepare_attached_playback_media(
         &mut self,
         logical_id: LogicalMediaId,
         kind: MediaTransportKind,
         intent: MediaLoadIntent,
         now_seconds: f64,
     ) -> Result<Option<MediaLoadPlan>, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::MediaPrepared(intent));
         let plan = if intent == MediaLoadIntent::TransportRefresh {
             self.runtime.prepare_playback_media_for_room_participation(
                 logical_id,
@@ -753,11 +759,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(Some(plan))
     }
 
-    fn sync_attached_player_transport_telemetry(
+    pub(in crate::app) fn sync_attached_player_transport_telemetry(
         &mut self,
         update: PlayerTransportTelemetryUpdate,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::TransportObserved(&update));
         Ok(gui_actions_from_playback_coordinator(
             self.runtime.observe_external_player_transport_at_epoch(
                 update,
@@ -767,13 +775,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn observe_external_player_end_of_file(&mut self, now_seconds: f64) -> Result<(), String> {
+    pub(in crate::app) fn observe_external_player_end_of_file(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::EndOfFile);
         self.runtime
             .observe_external_player_end_of_file(now_seconds)
             .map_err(|error| format!("Client-core attached-player EOF observation failed: {error}"))
     }
 
-    fn report_attached_coordinator_command_dispatch(
+    #[cfg(test)]
+    pub(in crate::app) fn report_attached_coordinator_command_dispatch(
         &mut self,
         command_id: CoordinatorCommandId,
         accepted: bool,
@@ -790,7 +804,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .report_external_coordinator_command_dispatch(command_id, result, now_seconds);
     }
 
-    fn begin_attached_coordinator_command_dispatch(
+    pub(in crate::app) fn begin_attached_coordinator_command_dispatch(
         &mut self,
         command_id: CoordinatorCommandId,
         now_seconds: f64,
@@ -799,7 +813,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .begin_external_coordinator_command_dispatch(command_id, now_seconds)
     }
 
-    fn finish_attached_coordinator_command_dispatch(
+    pub(in crate::app) fn finish_attached_coordinator_command_dispatch(
         &mut self,
         command_id: CoordinatorCommandId,
         player_command_id: Option<PlayerCommandId>,
@@ -821,11 +835,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         );
     }
 
-    fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
+    pub(in crate::app) fn playback_coordination_snapshot(
+        &self,
+    ) -> Option<PlaybackCoordinationSnapshot> {
         Some(self.runtime.playback_coordination_snapshot())
     }
 
-    fn logical_generation_for_adapter_generation(
+    pub(in crate::app) fn logical_generation_for_adapter_generation(
         &self,
         adapter_generation: PlayerMediaGeneration,
     ) -> Option<u64> {
@@ -833,17 +849,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .logical_generation_for_adapter_generation(adapter_generation)
     }
 
-    fn keep_waiting_for_seek_preparation(
+    pub(in crate::app) fn keep_waiting_for_seek_preparation(
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::SeekWaitRenewed);
         Ok(gui_actions_from_playback_coordinator(
             self.runtime
                 .keep_waiting_for_external_seek_preparation(now_seconds),
         ))
     }
 
-    fn cancel_seek_preparation(
+    pub(in crate::app) fn cancel_seek_preparation(
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -852,7 +870,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn join_nearest_buffered_seek_preparation(
+    pub(in crate::app) fn join_nearest_buffered_seek_preparation(
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -862,18 +880,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn stage_attached_player_pause_intent(
+    pub(in crate::app) fn stage_attached_player_pause_intent(
         &mut self,
         paused: bool,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PauseIntentStaged(paused));
         Ok(gui_actions_from_playback_coordinator(
             self.runtime
                 .stage_external_player_pause_intent(paused, now_seconds),
         ))
     }
 
-    fn rollback_attached_player_pause_intent(
+    pub(in crate::app) fn rollback_attached_player_pause_intent(
         &mut self,
         paused: bool,
         now_seconds: f64,
@@ -884,7 +904,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn take_streaming_quality_downgrade_suggestion(
+    pub(in crate::app) fn take_streaming_quality_downgrade_suggestion(
         &mut self,
     ) -> Option<StreamingQualityDowngradeSuggestion> {
         let suggestion = self.runtime.streaming_quality_downgrade_suggestion(None);
@@ -895,25 +915,33 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         suggestion
     }
 
-    fn take_playback_barrier_timeout_action(&mut self) -> Option<PlaybackBarrierTimeoutAction> {
+    pub(in crate::app) fn take_playback_barrier_timeout_action(
+        &mut self,
+    ) -> Option<PlaybackBarrierTimeoutAction> {
         self.runtime.take_playback_barrier_timeout_action()
     }
 
-    fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) {
+    pub(in crate::app) fn reset_playback_transport_adapter_epoch(&mut self, now_seconds: f64) {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::AttachmentReset);
         self.playback_transport_adapter_epoch = self
             .runtime
             .reset_playback_transport_adapter_epoch(now_seconds);
     }
 
-    fn interrupt_attached_playback_recovery(
+    pub(in crate::app) fn interrupt_attached_playback_recovery(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::RecoveryInterrupted);
         Ok(gui_actions_from_playback_coordinator(
             self.runtime.interrupt_external_playback_recovery(),
         ))
     }
 
-    fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
+    pub(in crate::app) fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PauseRequested(paused));
         match self.runtime.run_set_paused(paused) {
             Ok(sent) => Ok(sent),
             Err(error) => Err(format!(
@@ -922,7 +950,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
+    pub(in crate::app) fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PlaybackStatePublication);
         let before = self.runtime.playback_coordination_snapshot();
         crate::app::test_lifecycle::record_playback_control(
             "playback-control-state-publication-before",
@@ -977,27 +1007,44 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(queued)
     }
 
-    fn supports_playback_pause_changes(&self) -> bool {
-        true
-    }
-
-    fn manual_seek_to_position_allowed(&self, position_seconds: f64) -> Result<bool, String> {
+    pub(in crate::app) fn manual_seek_to_position_allowed(
+        &self,
+        position_seconds: f64,
+    ) -> Result<bool, String> {
         Ok(self
             .runtime
             .session()
             .local_seek_target_allowed(position_seconds, system_time_seconds()))
     }
 
-    fn record_manual_seek_to_position(&mut self, position_seconds: f64) -> Result<bool, String> {
+    pub(in crate::app) fn record_manual_seek_to_position(
+        &mut self,
+        position_seconds: f64,
+    ) -> Result<bool, String> {
+        #[cfg(test)]
+        if self.take_test_failure(SessionFailurePoint::SeekPublication) {
+            self.observe_for_test(SessionObservation::SeekRequested {
+                position: position_seconds,
+                published: false,
+            });
+            return Ok(false);
+        }
         match self.runtime.run_seek_to_position(position_seconds) {
-            Ok(sent) => Ok(sent),
+            Ok(sent) => {
+                #[cfg(test)]
+                self.observe_for_test(SessionObservation::SeekRequested {
+                    position: position_seconds,
+                    published: sent,
+                });
+                Ok(sent)
+            }
             Err(error) => Err(format!(
                 "Client-core session runtime seek dispatch failed: {error}"
             )),
         }
     }
 
-    fn undo_seek(&mut self) -> Result<bool, String> {
+    pub(in crate::app) fn undo_seek(&mut self) -> Result<bool, String> {
         match self.runtime.run_undo_seek() {
             Ok(sent) => Ok(sent),
             Err(error) => Err(format!(
@@ -1006,37 +1053,33 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn pending_undo_seek_target_position(&self) -> Option<f64> {
+    pub(in crate::app) fn pending_undo_seek_target_position(&self) -> Option<f64> {
         self.runtime
             .session()
             .last_seek_position_before_manual_seek()
     }
 
-    fn commit_undo_seek(&mut self) -> Result<bool, String> {
-        self.undo_seek()
-    }
-
-    fn local_position_seconds(&self) -> Option<f64> {
+    pub(in crate::app) fn local_position_seconds(&self) -> Option<f64> {
         self.runtime.session().local_position_seconds()
     }
 
-    fn local_pause_state(&self) -> Option<bool> {
+    pub(in crate::app) fn local_pause_state(&self) -> Option<bool> {
         self.runtime.session().local_paused()
     }
 
-    fn local_username(&self) -> Option<&str> {
+    pub(in crate::app) fn local_username(&self) -> Option<&str> {
         self.runtime.session().username()
     }
 
-    fn current_room_name(&self) -> Option<&str> {
+    pub(in crate::app) fn current_room_name(&self) -> Option<&str> {
         self.runtime.session().room()
     }
 
-    fn server_handshake_completed(&self) -> bool {
+    pub(in crate::app) fn server_handshake_completed(&self) -> bool {
         self.runtime.session().is_active()
     }
 
-    fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
+    pub(in crate::app) fn current_room_playstate(&self) -> Option<GuiSessionRoomPlaystate> {
         self.runtime
             .session()
             .current_room_playstate()
@@ -1048,7 +1091,9 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
+    pub(in crate::app) fn current_room_playstate_for_attached_player_sync(
+        &self,
+    ) -> Option<GuiSessionRoomPlaystate> {
         if !self
             .runtime
             .session()
@@ -1066,13 +1111,13 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn current_room_playlist_index(&self) -> Option<usize> {
+    pub(in crate::app) fn current_room_playlist_index(&self) -> Option<usize> {
         self.projected_current_room_playlist()
             .and_then(|playlist| playlist.index)
             .and_then(|index| usize::try_from(index).ok())
     }
 
-    fn current_room_selected_playlist_entry(&self) -> Option<String> {
+    pub(in crate::app) fn current_room_selected_playlist_entry(&self) -> Option<String> {
         let playlist = self.projected_current_room_playlist()?;
         let index = playlist
             .index
@@ -1080,22 +1125,22 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         playlist.files.get(index).cloned()
     }
 
-    fn server_media_match_supported(&self) -> bool {
+    pub(in crate::app) fn server_media_match_supported(&self) -> bool {
         self.runtime.session().server_media_match_supported()
     }
 
     #[cfg(test)]
-    fn seed_playlist_reset_intent_for_test(&mut self, pause_before_sync: bool) {
+    pub(in crate::app) fn seed_playlist_reset_intent_for_test(&mut self, pause_before_sync: bool) {
         self.runtime
             .session_mut()
             .begin_local_playlist_index_reset_intent(pause_before_sync, system_time_seconds());
     }
 
-    fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
+    pub(in crate::app) fn pending_playlist_index_reset_intent(&self) -> Option<bool> {
         self.runtime.session().pending_playlist_index_reset_intent()
     }
 
-    fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
+    pub(in crate::app) fn pending_playlist_index_reset_physical_effect_applied_for_attachment(
         &self,
         player_attachment_epoch: u64,
     ) -> bool {
@@ -1106,7 +1151,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             )
     }
 
-    fn mark_pending_playlist_index_reset_physical_effect_applied(
+    pub(in crate::app) fn mark_pending_playlist_index_reset_physical_effect_applied(
         &mut self,
         player_attachment_epoch: u64,
     ) -> bool {
@@ -1115,7 +1160,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .mark_pending_playlist_index_reset_physical_effect_applied(player_attachment_epoch)
     }
 
-    fn complete_pending_playlist_index_reset_for_attachment(
+    pub(in crate::app) fn complete_pending_playlist_index_reset_for_attachment(
         &mut self,
         player_attachment_epoch: u64,
     ) -> Option<bool> {
@@ -1124,19 +1169,19 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .complete_pending_playlist_index_reset_for_attachment(player_attachment_epoch)
     }
 
-    fn has_pending_playlist_index_reset_intent(&self) -> bool {
+    pub(in crate::app) fn has_pending_playlist_index_reset_intent(&self) -> bool {
         self.runtime
             .session()
             .has_pending_playlist_index_reset_intent()
     }
 
-    fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
+    pub(in crate::app) fn pending_playlist_index_reset_has_post_selection_playstate(&self) -> bool {
         self.runtime
             .session()
             .pending_playlist_index_reset_has_post_selection_playstate()
     }
 
-    fn can_auto_advance_to_next_playlist_item(&self) -> bool {
+    pub(in crate::app) fn can_auto_advance_to_next_playlist_item(&self) -> bool {
         !self
             .runtime
             .session()
@@ -1144,7 +1189,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .is_empty()
     }
 
-    fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
+    pub(in crate::app) fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {
         let mut config = self.runtime_settings.config.clone();
         config.readiness.autoplay_initial_state = enabled;
         let active_room = self
@@ -1165,7 +1210,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn set_autoplay_threshold(&mut self, threshold: usize) -> Result<(), String> {
+    pub(in crate::app) fn set_autoplay_threshold(
+        &mut self,
+        threshold: usize,
+    ) -> Result<(), String> {
         let mut config = self.runtime_settings.config.clone();
         config.readiness.autoplay_min_users = AutoplayThresholdOverride::Set(threshold);
         let active_room = self
@@ -1186,7 +1234,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn set_media_match_peer_tiers(
+    pub(in crate::app) fn set_media_match_peer_tiers(
         &mut self,
         tiers: BTreeMap<String, MediaMatchTier>,
     ) -> Result<(), String> {
@@ -1202,20 +1250,22 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn current_room_media_match_peer_file_states(&self) -> Vec<ClientMediaMatchPeerFileState> {
+    pub(in crate::app) fn current_room_media_match_peer_file_states(
+        &self,
+    ) -> Vec<ClientMediaMatchPeerFileState> {
         self.runtime
             .session()
             .current_room_media_match_peer_file_states()
     }
 
-    fn sync_runtime_settings(
+    pub(in crate::app) fn sync_runtime_settings(
         &mut self,
         runtime_settings: &StoredClientSettingsRuntimeSnapshot,
     ) -> Result<(), String> {
         self.apply_runtime_settings_snapshot(runtime_settings)
     }
 
-    fn handle_local_player_unpause_attempt(
+    pub(in crate::app) fn handle_local_player_unpause_attempt(
         &mut self,
     ) -> Result<GuiLocalPlayerUnpauseDecision, String> {
         if self
@@ -1279,7 +1329,11 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(GuiLocalPlayerUnpauseDecision::Block)
     }
 
-    fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
+        #[cfg(test)]
+        if self.take_test_failure(SessionFailurePoint::UnpauseFinalization) {
+            return Err("synthetic readiness finalization failure".to_owned());
+        }
         if self
             .current_room_playstate_for_attached_player_sync()
             .and_then(|playstate| playstate.paused)
@@ -1307,7 +1361,10 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn record_intentional_player_pause_action(&mut self, paused: bool) -> Result<(), String> {
+    pub(in crate::app) fn record_intentional_player_pause_action(
+        &mut self,
+        paused: bool,
+    ) -> Result<(), String> {
         self.runtime
             .run_direct_player_readiness_intent(
                 paused,
@@ -1319,7 +1376,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn begin_external_player_pause_command(
+    pub(in crate::app) fn begin_external_player_pause_command(
         &mut self,
         paused: bool,
         cause: PlayerCommandCause,
@@ -1330,7 +1387,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .begin_external_player_pause_command(paused, cause, now_seconds))
     }
 
-    fn finish_external_player_pause_command(
+    pub(in crate::app) fn finish_external_player_pause_command(
         &mut self,
         command_id: Option<PlayerCommandId>,
         succeeded: bool,
@@ -1341,7 +1398,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| format!("Client-core player command completion failed: {error}"))
     }
 
-    fn take_attached_player_local_runtime_actions(
+    pub(in crate::app) fn take_attached_player_local_runtime_actions(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
         Ok(std::mem::take(
@@ -1349,7 +1406,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         ))
     }
 
-    fn attached_player_runtime_actions(
+    pub(in crate::app) fn attached_player_runtime_actions(
         &mut self,
         now_seconds: f64,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -1412,7 +1469,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(actions)
     }
 
-    fn restore_desync_correction_dispatch_snapshot(
+    pub(in crate::app) fn restore_desync_correction_dispatch_snapshot(
         &mut self,
         snapshot: DesyncCorrectionDispatchSnapshot,
     ) -> Result<(), String> {
@@ -1422,7 +1479,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         Ok(())
     }
 
-    fn publish_local_file(
+    pub(in crate::app) fn publish_local_file(
         &mut self,
         file_payload: &Value,
         filename_privacy_mode: PrivacyMode,
@@ -1435,7 +1492,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             })
     }
 
-    fn connect_public_server(
+    pub(in crate::app) fn connect_public_server(
         &mut self,
         selected_server: Option<(String, String)>,
     ) -> Result<(), String> {
@@ -1455,7 +1512,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         self.reset_session_for_reconnect()
     }
 
-    fn refresh_public_servers(
+    pub(in crate::app) fn refresh_public_servers(
         &mut self,
         _current_servers: Vec<(String, String)>,
         _language: Option<&str>,
@@ -1474,11 +1531,7 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
         }
     }
 
-    fn missing_media_search_target_file_name(&self) -> Result<String, String> {
-        GuiClientCoreChatSessionRuntimeAdapter::missing_media_search_target_file_name(self)
-    }
-
-    fn handle_transport_disconnect(
+    pub(in crate::app) fn handle_transport_disconnect(
         &mut self,
         now_seconds: f64,
         retries: u32,
@@ -1491,20 +1544,20 @@ impl GuiSessionRuntimeAdapter for GuiClientCoreChatSessionRuntimeAdapter {
             .map_err(|error| format!("Client-core session runtime reconnect retry failed: {error}"))
     }
 
-    fn drain_reconnect_delays(&mut self) -> Vec<f64> {
+    pub(in crate::app) fn drain_reconnect_delays(&mut self) -> Vec<f64> {
         self.runtime.drain_reconnect_requests()
     }
 
-    fn take_stop_reconnect_requested(&mut self) -> bool {
+    pub(in crate::app) fn take_stop_reconnect_requested(&mut self) -> bool {
         self.runtime.take_stop_reconnect_requested()
     }
 
-    fn prepare_for_transport_reconnect(&mut self) -> Result<(), String> {
+    pub(in crate::app) fn prepare_for_transport_reconnect(&mut self) -> Result<(), String> {
         self.prepare_transport_reconnect();
         Ok(())
     }
 
-    fn disconnect_session(&mut self, now_seconds: f64) -> Result<(), String> {
+    pub(in crate::app) fn disconnect_session(&mut self, now_seconds: f64) -> Result<(), String> {
         self.runtime
             .run_disconnect(now_seconds)
             .map_err(|error| format!("Client-core session runtime disconnect failed: {error}"))

@@ -8,7 +8,7 @@ pub(super) struct GuiRoomClockSample {
     sampled_at: Option<Instant>,
 }
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     pub(in crate::app::runtime_stack) fn room_clock_position(
         &mut self,
     ) -> (Option<f64>, Option<Instant>) {

@@ -3,10 +3,10 @@ use sorotte_secret::SecretValue;
 
 mod delivery_fence;
 mod event_drain;
+mod operations;
 mod room_clock;
-mod runtime_adapter_impl;
 
-pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
+pub(in crate::app) struct GuiClientSession {
     pub(super) username: String,
     pub(super) baseline_room: String,
     pub(super) pending_room_for_next_hello: Option<String>,
@@ -25,6 +25,10 @@ pub(in crate::app) struct GuiClientCoreChatSessionRuntimeAdapter {
     pub(super) last_streaming_quality_suggestion: Option<StreamingQualityDowngradeSuggestion>,
     pub(super) tracked_remote_usernames: BTreeSet<String>,
     room_clock: Option<room_clock::GuiRoomClockSample>,
+    #[cfg(test)]
+    pub(super) test_observer: Option<super::test_support::SessionObserver>,
+    #[cfg(test)]
+    pub(super) test_failure: Option<super::test_support::SessionFailure>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +44,19 @@ pub(super) struct GuiStagedClientCoreProtocolDelivery {
     pub(super) core_lease: Option<ProtocolLineLease>,
 }
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
+    #[cfg(test)]
+    pub(in crate::app) fn force_autoplay_tick_for_test(&mut self) {
+        self.next_autoplay_tick_at = Some(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn configured_settings_for_test(
+        &self,
+    ) -> &sorotte_client_app::app_boundary::state::StoredClientSettings {
+        &self.runtime_settings.settings
+    }
+
     const STATE_SYNC_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 
     fn startup_protocol_delivery_is_staged(&self) -> bool {
@@ -139,6 +155,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
             last_streaming_quality_suggestion: None,
             tracked_remote_usernames: BTreeSet::new(),
             room_clock: None,
+            #[cfg(test)]
+            test_observer: None,
+            #[cfg(test)]
+            test_failure: None,
         })
     }
 
@@ -294,7 +314,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     fn current_room_for_next_hello(&self) -> String {
         self.pending_room_for_next_hello
             .as_deref()
-            .or_else(|| self.current_room_name())
+            .or_else(|| self.nonempty_current_room_name())
             .map(str::to_owned)
             .unwrap_or_else(|| self.baseline_room.clone())
     }
@@ -397,7 +417,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         self.tracked_remote_usernames.clear();
     }
 
-    fn current_room_name(&self) -> Option<&str> {
+    fn nonempty_current_room_name(&self) -> Option<&str> {
         self.runtime
             .session()
             .room()
@@ -476,7 +496,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         message_updates_authoritative_local_room: bool,
     ) {
         if message_updates_authoritative_local_room
-            || self.pending_room_for_next_hello.as_deref() == self.current_room_name()
+            || self.pending_room_for_next_hello.as_deref() == self.nonempty_current_room_name()
         {
             self.pending_room_for_next_hello = None;
         }
@@ -779,11 +799,12 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         result
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn apply_message_json(&mut self, json_line: &str) -> Result<(), String> {
         self.apply_message_json_at(json_line, system_time_seconds())
     }
 
-    pub(in crate::app) fn apply_message_json_at(
+    fn apply_inbound_message_json_at(
         &mut self,
         json_line: &str,
         received_at_seconds: f64,

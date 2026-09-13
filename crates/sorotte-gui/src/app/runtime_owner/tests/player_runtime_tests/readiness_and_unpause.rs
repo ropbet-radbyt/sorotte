@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 const V2_GATE_MEDIA_GENERATION: u64 = 7;
@@ -1800,85 +1799,36 @@ struct PlaybackPublicationProbeState {
     player_pause_commands: Vec<bool>,
 }
 
-struct PlaybackPublicationProbeSession {
+struct PlaybackPublicationProbe {
     state: std::sync::Arc<std::sync::Mutex<PlaybackPublicationProbeState>>,
     failure: PlaybackPublicationProbeFailure,
 }
 
-impl GuiSessionRuntimeAdapter for PlaybackPublicationProbeSession {
-    fn sync_local_playback_telemetry(
-        &mut self,
-        _paused: Option<bool>,
-        _position_seconds: Option<f64>,
-    ) -> Result<(), String> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.telemetry_sync_calls += 1;
-        if self.failure == PlaybackPublicationProbeFailure::FourthTelemetrySync
-            && state.telemetry_sync_calls == 4
-        {
-            return Err("synthetic telemetry housekeeping failure".to_owned());
-        }
-        Ok(())
-    }
-
-    fn handle_local_player_unpause_attempt(
-        &mut self,
-    ) -> Result<crate::app::runtime_stack::GuiLocalPlayerUnpauseDecision, String> {
-        Ok(crate::app::runtime_stack::GuiLocalPlayerUnpauseDecision::Allow)
-    }
-
-    fn finalize_local_player_unpause_attempt(&mut self) -> Result<(), String> {
-        if self.failure == PlaybackPublicationProbeFailure::FinalizeUnpause {
-            return Err("synthetic readiness finalization failure".to_owned());
-        }
-        Ok(())
-    }
-
-    fn stage_attached_player_pause_intent(
-        &mut self,
-        paused: bool,
-        _now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .staged_pause_targets
-            .push(paused);
-        Ok(Vec::new())
-    }
-
-    fn set_playback_paused(&mut self, _paused: bool) -> Result<bool, String> {
-        Ok(true)
-    }
-
-    fn emit_immediate_playback_state_update(&mut self) -> Result<bool, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .immediate_publication_attempts += 1;
-        Ok(true)
-    }
-
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        _current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(Vec::new())
+impl PlaybackPublicationProbe {
+    fn into_session(self) -> crate::app::GuiClientSession {
+        use crate::app::runtime_stack::test_support::SessionFailure;
+        let failure = match self.failure {
+            PlaybackPublicationProbeFailure::FinalizeUnpause => SessionFailure::UnpauseFinalization,
+            PlaybackPublicationProbeFailure::FourthTelemetrySync => {
+                SessionFailure::TelemetryOnCall(4)
+            }
+        };
+        let mut session = crate::app::runtime_stack::test_support::active_session();
+        session
+            .apply_message_json(
+                r#"{"State":{"playstate":{"position":10.0,"paused":true,"setBy":"bob"}}}"#,
+            )
+            .unwrap();
+        session.with_failure(failure).with_observer(move |event| {
+            use crate::app::runtime_stack::test_support::SessionObservation::*;
+            let mut state = self.state.lock().unwrap();
+            match event {
+                PlaybackObserved { .. } => state.telemetry_sync_calls += 1,
+                PauseIntentStaged(paused) => state.staged_pause_targets.push(paused),
+                PlaybackStatePublication => state.immediate_publication_attempts += 1,
+                _ => {}
+            }
+        })
     }
 }
 
@@ -1910,12 +1860,14 @@ fn assert_housekeeping_failure_does_not_suppress_playback_publication(
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(
         PlaybackPublicationProbeState::default(),
     ));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(PlaybackPublicationProbeSession {
-            state: recorded.clone(),
-            failure,
-        }),
-    );
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(Box::new(
+            PlaybackPublicationProbe {
+                state: recorded.clone(),
+                failure,
+            }
+            .into_session(),
+        ));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PlaybackPublicationProbePlayer {
             state: recorded.clone(),
@@ -1938,7 +1890,7 @@ fn assert_housekeeping_failure_does_not_suppress_playback_publication(
         sync_error
             .as_deref()
             .is_some_and(|error| error.contains(expected_error)),
-        "the independent housekeeping failure should remain observable"
+        "the independent {failure:?} failure should remain observable: {sync_error:?}"
     );
     let recorded = recorded
         .lock()

@@ -37,8 +37,8 @@ use super::super::media_search_cache::{
 use super::super::runtime_bridge::{GuiSharedPlaylistOpenDispatch, GuiSharedPlaylistOpenItem};
 use super::super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::super::runtime_stack::{
-    GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
-    GuiLocalPlayerUnpauseDecision, GuiOwnedPlayer, local_file_update_for_player_path,
+    GuiAttachedPlayerRuntimeAction, GuiClientSession, GuiLocalPlayerUnpauseDecision,
+    GuiOwnedPlayer, local_file_update_for_player_path,
 };
 use super::super::shell_state::{
     GuiMediaIndexRuntimeSnapshot, GuiMediaSourceProviderId, GuiPlaylistEntryId,

@@ -1,7 +1,4 @@
-use super::{
-    GuiAttachedPlayerRuntimeAction, GuiClientCoreChatSessionRuntimeAdapter,
-    GuiSessionRuntimeAdapter,
-};
+use super::{GuiAttachedPlayerRuntimeAction, GuiClientSession};
 
 use crate::app::testing::support::browser_runtime_user;
 use crate::app::{
@@ -23,11 +20,11 @@ use sorotte_player_api::{
 };
 
 fn sync_adapter_to_saved_session_settings(
-    adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
+    adapter: &mut GuiClientSession,
     state: &SorotteGuiShellAppState,
 ) {
     let runtime_settings = stored_client_settings_runtime_snapshot(&state.saved_configuration);
-    GuiSessionRuntimeAdapter::sync_runtime_settings(adapter, &runtime_settings)
+    GuiClientSession::sync_runtime_settings(adapter, &runtime_settings)
         .expect("saved settings should initialize the active test session");
 }
 
@@ -67,7 +64,7 @@ fn missing_media_index_does_not_follow_descendant_junctions() {
     let cancel = AtomicBool::new(false);
     let mut progress = |_: usize, _: usize| {};
     let index =
-        GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path_with_progress_and_workers(
+        GuiClientSession::build_missing_media_file_name_index_for_path_with_progress_and_workers(
             &configured_root,
             None,
             &cancel,
@@ -109,7 +106,7 @@ fn missing_media_index_accepts_an_explicit_root_junction() {
     let cancel = AtomicBool::new(false);
     let mut progress = |_: usize, _: usize| {};
     let index =
-        GuiClientCoreChatSessionRuntimeAdapter::build_missing_media_file_name_index_for_path_with_progress_and_workers(
+        GuiClientSession::build_missing_media_file_name_index_for_path_with_progress_and_workers(
             &configured_root,
             None,
             &cancel,

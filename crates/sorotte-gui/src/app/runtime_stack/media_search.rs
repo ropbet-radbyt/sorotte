@@ -9,9 +9,9 @@ use std::{
     time::Instant,
 };
 
-use super::GuiClientCoreChatSessionRuntimeAdapter;
+use super::GuiClientSession;
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     fn session_media_search_target(&self) -> Option<String> {
         if let Some(file_name) =
             self.runtime
@@ -52,7 +52,7 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         })
     }
 
-    pub(super) fn missing_media_search_target_file_name(&self) -> Result<String, String> {
+    pub(in crate::app) fn missing_media_search_target_file_name(&self) -> Result<String, String> {
         let Some(target) = self.session_media_search_target() else {
             return Err(
                 "Client-core session runtime cannot search missing media because the current session does not expose a target file."
