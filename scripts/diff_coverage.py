@@ -9,12 +9,6 @@ every other missing line is unmapped and fails. This applies both to represented
 source files and to wholly missing files, preventing cfg-gated code and omitted
 crates from disappearing from the denominator.
 
-LCOV ingestion remains available as a diagnostic compatibility mode. It uses
-only unique ``DA`` source-line records for changed-line decisions, preserves
-the producer's ``LF``/``LH`` summaries as a separate audit model, and reports
-every disagreement without allowing either summary to invent or erase a
-physical line. It is not used by the required changed-line gate.
-
 Obvious test-only Rust paths are reported but excluded from the production
 percentage. The classification is path-based (tests/src/tests, tests.rs,
 *_tests.rs, test_support.rs, benches, examples, and repository-owned smoke,
@@ -67,7 +61,6 @@ import artifact_input
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-diff-coverage"
-MAX_LCOV_BYTES = 512 * 1024 * 1024
 MAX_COVERAGE_MAP_BYTES = 128 * 1024 * 1024
 MAX_COVERAGE_MAP_INPUTS = 8
 MAX_COVERAGE_SOURCE_BYTES = 16 * 1024 * 1024
@@ -77,7 +70,6 @@ LLVM_LINE_MODEL = "unique-physical-source-lines"
 LLVM_EXPORT_TYPE = "llvm.coverage.json.export"
 LLVM_EXPORT_VERSION = "3.1.0"
 CARGO_LLVM_COV_VERSION = "0.9.1"
-LCOV_LINE_MODEL = "unique-da-source-lines"
 MAX_DIFF_BYTES = 64 * 1024 * 1024
 MAX_CRITICAL_POLICY_BYTES = 256 * 1024
 DEFAULT_CRITICAL_POLICY_PATH = "coverage/diff-coverage-policy.toml"
@@ -164,29 +156,6 @@ class ChangedFile:
 class SourceCoverage:
     path: str
     lines: Mapping[int, int]
-
-
-@dataclasses.dataclass(frozen=True)
-class LcovRecordAudit:
-    source: str | None
-    declared_lines_found: int
-    declared_lines_hit: int
-    unique_da_lines_found: int
-    unique_da_lines_hit: int
-
-    @property
-    def lf_mismatch(self) -> bool:
-        return self.declared_lines_found != self.unique_da_lines_found
-
-    @property
-    def lh_mismatch(self) -> bool:
-        return self.declared_lines_hit != self.unique_da_lines_hit
-
-
-@dataclasses.dataclass(frozen=True)
-class ParsedLcov:
-    sources: Mapping[str, SourceCoverage]
-    summary_audit: Mapping[str, Any]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1388,247 +1357,6 @@ def validate_source_bindings(
                 )
 
 
-def resolve_lcov_source(raw: str, *, repo_root: pathlib.Path) -> str | None:
-    if not raw or raw != raw.strip() or "\x00" in raw:
-        raise DiffCoverageError("LCOV SF must contain a non-empty trimmed path")
-    root = repo_root.resolve()
-    candidate_raw = raw.replace("\\", os.sep)
-    candidate = pathlib.Path(candidate_raw)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve()
-    try:
-        relative = resolved.relative_to(root)
-    except ValueError:
-        return None
-    if not resolved.is_file():
-        raise DiffCoverageError(f"LCOV source inside the repository does not exist: {raw}")
-    return relative.as_posix()
-
-
-def parse_lcov_record(
-    directives: Sequence[tuple[str, str, int]],
-    *,
-    repo_root: pathlib.Path,
-) -> tuple[SourceCoverage | None, LcovRecordAudit]:
-    source_values = [
-        (value, line_number)
-        for key, value, line_number in directives
-        if key == "SF"
-    ]
-    if len(source_values) != 1:
-        raise DiffCoverageError("each LCOV record must contain exactly one SF directive")
-    source = resolve_lcov_source(source_values[0][0], repo_root=repo_root)
-    data: dict[int, int] = {}
-    lf: int | None = None
-    lh: int | None = None
-
-    for key, value, line_number in directives:
-        context = f"LCOV line {line_number} ({key})"
-        if key in {"TN", "SF", "VER"}:
-            continue
-        if key == "DA":
-            fields = value.split(",")
-            if len(fields) not in {2, 3}:
-                raise DiffCoverageError(f"{context} must have line,count[,checksum]")
-            source_line = parse_nonnegative_int(fields[0], context=f"{context} line")
-            hits = parse_nonnegative_int(fields[1], context=f"{context} count")
-            if source_line == 0:
-                raise DiffCoverageError(f"{context} source line must be positive")
-            if source_line in data:
-                raise DiffCoverageError(
-                    f"{context} duplicates source line {source_line} in one record"
-                )
-            if len(fields) == 3 and (
-                not re.fullmatch(r"[0-9A-Fa-f]{32}", fields[2])
-            ):
-                raise DiffCoverageError(f"{context} checksum must be a 32-digit MD5")
-            data[source_line] = hits
-        elif key in {"LF", "LH"}:
-            parsed = parse_nonnegative_int(value, context=context)
-            if key == "LF":
-                if lf is not None:
-                    raise DiffCoverageError(f"{context} duplicates LF")
-                lf = parsed
-            else:
-                if lh is not None:
-                    raise DiffCoverageError(f"{context} duplicates LH")
-                lh = parsed
-        elif key == "FN":
-            fields = value.split(",", 1)
-            if len(fields) != 2 or not fields[1]:
-                raise DiffCoverageError(f"{context} must have line,name")
-            if parse_nonnegative_int(fields[0], context=f"{context} line") == 0:
-                raise DiffCoverageError(f"{context} function line must be positive")
-        elif key == "FNDA":
-            fields = value.split(",", 1)
-            if len(fields) != 2 or not fields[1]:
-                raise DiffCoverageError(f"{context} must have count,name")
-            parse_nonnegative_int(fields[0], context=f"{context} count")
-        elif key in {"FNF", "FNH", "BRF", "BRH"}:
-            parse_nonnegative_int(value, context=context)
-        elif key == "BRDA":
-            fields = value.split(",")
-            if len(fields) != 4:
-                raise DiffCoverageError(f"{context} must have line,block,branch,taken")
-            if parse_nonnegative_int(fields[0], context=f"{context} line") == 0:
-                raise DiffCoverageError(f"{context} branch line must be positive")
-            parse_nonnegative_int(fields[1], context=f"{context} block")
-            parse_nonnegative_int(fields[2], context=f"{context} branch")
-            if fields[3] != "-":
-                parse_nonnegative_int(fields[3], context=f"{context} taken")
-        else:
-            raise DiffCoverageError(f"{context} is unsupported")
-
-    if lf is None or lh is None:
-        raise DiffCoverageError("each LCOV record must contain LF and LH summaries")
-    if lh > lf:
-        raise DiffCoverageError(
-            f"LCOV LH cannot exceed LF: declared {lf}/{lh}"
-        )
-    expected_lf = len(data)
-    expected_lh = sum(hits > 0 for hits in data.values())
-    audit = LcovRecordAudit(
-        source=source,
-        declared_lines_found=lf,
-        declared_lines_hit=lh,
-        unique_da_lines_found=expected_lf,
-        unique_da_lines_hit=expected_lh,
-    )
-    if source is None:
-        return None, audit
-    source_path = repo_root.joinpath(*pathlib.PurePosixPath(source).parts)
-    try:
-        source_line_count = len(source_path.read_text(encoding="utf-8").splitlines())
-    except (OSError, UnicodeDecodeError) as error:
-        raise DiffCoverageError(f"cannot validate LCOV source {source}: {error}") from error
-    out_of_range = sorted(line for line in data if line > source_line_count)
-    if out_of_range:
-        raise DiffCoverageError(
-            f"LCOV source {source!r} maps line(s) beyond its current "
-            f"{source_line_count}-line file: {out_of_range[:5]}"
-        )
-    return SourceCoverage(source, data), audit
-
-
-def summarize_lcov_records(records: Sequence[LcovRecordAudit]) -> dict[str, Any]:
-    mismatch_reports: list[dict[str, Any]] = []
-    lf_mismatches = 0
-    lh_mismatches = 0
-    repository_records = 0
-    declared_found = 0
-    declared_hit = 0
-    unique_da_found = 0
-    unique_da_hit = 0
-    for index, record in enumerate(records, start=1):
-        if record.source is not None:
-            repository_records += 1
-        declared_found += record.declared_lines_found
-        declared_hit += record.declared_lines_hit
-        unique_da_found += record.unique_da_lines_found
-        unique_da_hit += record.unique_da_lines_hit
-        if record.lf_mismatch:
-            lf_mismatches += 1
-        if record.lh_mismatch:
-            lh_mismatches += 1
-        fields: list[str] = []
-        if record.lf_mismatch:
-            fields.append("LF")
-        if record.lh_mismatch:
-            fields.append("LH")
-        if fields:
-            mismatch_reports.append(
-                {
-                    "record": index,
-                    "source": record.source,
-                    "fields": fields,
-                    "declared": {
-                        "lines_found": record.declared_lines_found,
-                        "lines_hit": record.declared_lines_hit,
-                    },
-                    "unique_da": {
-                        "lines_found": record.unique_da_lines_found,
-                        "lines_hit": record.unique_da_lines_hit,
-                    },
-                }
-            )
-    return {
-        "status": "consistent" if not mismatch_reports else "producer-summary-mismatch",
-        "policy_line_model": LCOV_LINE_MODEL,
-        "records": {
-            "total": len(records),
-            "repository": repository_records,
-            "ignored_external": len(records) - repository_records,
-            "summary_mismatched": len(mismatch_reports),
-            "lf_mismatched": lf_mismatches,
-            "lh_mismatched": lh_mismatches,
-        },
-        "declared_summary": {
-            "lines_found": declared_found,
-            "lines_hit": declared_hit,
-        },
-        "unique_da_summary": {
-            "lines_found": unique_da_found,
-            "lines_hit": unique_da_hit,
-        },
-        "mismatches": mismatch_reports,
-    }
-
-
-def parse_lcov(text: str, *, repo_root: pathlib.Path) -> ParsedLcov:
-    if "\x00" in text:
-        raise DiffCoverageError("LCOV contains a NUL byte")
-    records: list[list[tuple[str, str, int]]] = []
-    current: list[tuple[str, str, int]] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line:
-            continue
-        if line == "end_of_record":
-            if not current:
-                raise DiffCoverageError(
-                    f"LCOV line {line_number} ends an empty record"
-                )
-            records.append(current)
-            current = []
-            continue
-        if ":" not in line:
-            raise DiffCoverageError(
-                f"LCOV line {line_number} is not a directive or end_of_record"
-            )
-        key, value = line.split(":", 1)
-        if not re.fullmatch(r"[A-Z]+", key):
-            raise DiffCoverageError(f"LCOV line {line_number} has an invalid directive")
-        if key == "SF" and any(existing[0] == "SF" for existing in current):
-            raise DiffCoverageError(
-                f"LCOV line {line_number} starts a second source without end_of_record"
-            )
-        current.append((key, value, line_number))
-    if current:
-        raise DiffCoverageError("LCOV final record is missing end_of_record")
-    if not records:
-        raise DiffCoverageError("LCOV contains no source records")
-
-    sources: dict[str, SourceCoverage] = {}
-    identity: dict[str, str] = {}
-    audits: list[LcovRecordAudit] = []
-    for directives in records:
-        coverage, audit = parse_lcov_record(directives, repo_root=repo_root)
-        audits.append(audit)
-        if coverage is None:
-            continue
-        key = coverage.path.casefold() if os.name == "nt" else coverage.path
-        if key in identity:
-            raise DiffCoverageError(
-                f"LCOV contains duplicate source records for {coverage.path!r}"
-            )
-        identity[key] = coverage.path
-        sources[coverage.path] = coverage
-    return ParsedLcov(
-        sources=sources,
-        summary_audit=summarize_lcov_records(audits),
-    )
-
-
 def require_exact_json_keys(
     value: Mapping[str, Any],
     expected: set[str] | frozenset[str],
@@ -2299,7 +2027,7 @@ def lexical_non_coverable_lines(
     This is intentionally not a Rust parser. It exempts only whitespace,
     comments, attributes, imports, item/function signatures, punctuation, and
     literal-only struct fields that LLVM cannot represent as independent line
-    regions. Everything else remains unmapped when LCOV has no DA entry,
+    regions. Everything else remains unmapped when the coverage map has no source-line entry,
     including statements inside cfg-gated bodies. Multi-line attributes,
     imports, function signatures, patterns, and struct-literal openings are
     tracked so ordinary formatting does not create false failures.
@@ -2688,7 +2416,7 @@ def analyze_coverage(
     repo_root: pathlib.Path,
     minimum: decimal.Decimal,
     critical_policy: CriticalPathPolicy,
-    coverage_map_label: str = "lcov",
+    coverage_map_label: str = "canonical-coverage",
 ) -> dict[str, Any]:
     file_reports: list[dict[str, Any]] = []
     totals = {
@@ -2904,7 +2632,7 @@ def analyze_coverage(
         if class_totals["unmapped_lines"]:
             class_errors.append(
                 f"{name} coverage has {class_totals['unmapped_lines']} changed "
-                "Rust line(s) with no LCOV source mapping"
+                "Rust line(s) with no coverage source mapping"
             )
         if class_percent is not None and class_percent < class_minimum:
             class_errors.append(
@@ -3143,7 +2871,6 @@ def union_source_coverage_maps(
 def build_report(
     *,
     repo_root: pathlib.Path,
-    lcov_path: pathlib.Path | None,
     diff_path: pathlib.Path | None,
     base: str | None,
     head: str | None,
@@ -3170,79 +2897,58 @@ def build_report(
             "canonical coverage map count exceeds the "
             f"{MAX_COVERAGE_MAP_INPUTS}-input safety limit"
         )
-    if (lcov_path is None) == (not canonical_paths):
-        raise DiffCoverageError(
-            "exactly one of LCOV or the canonical coverage map must be supplied"
-        )
-    if canonical_paths:
-        parsed_maps: list[Mapping[str, SourceCoverage]] = []
-        map_inputs: list[dict[str, Any]] = []
-        seen_digests: set[str] = set()
-        for index, path in enumerate(canonical_paths, start=1):
-            coverage_bytes = read_bounded(
-                path,
-                limit=MAX_COVERAGE_MAP_BYTES,
-                description=f"coverage map {index}",
-            )
-            digest = sha256_bytes(coverage_bytes)
-            if digest in seen_digests:
-                raise DiffCoverageError(
-                    "canonical coverage maps contain duplicate content"
-                )
-            seen_digests.add(digest)
-            parsed_sources, coverage_document = parse_coverage_map(
-                coverage_bytes,
-                repo_root=root,
-            )
-            parsed_maps.append(parsed_sources)
-            map_inputs.append(
-                {
-                    "path": str(path),
-                    "sha256": digest,
-                    "line_model": coverage_document["line_model"],
-                    "producer": coverage_document["producer"],
-                    "producer_inputs": coverage_document["inputs"],
-                }
-            )
-        sources = union_source_coverage_maps(parsed_maps)
-        coverage_map_label = (
-            "canonical-coverage"
-            if len(map_inputs) == 1
-            else "canonical-coverage-union"
-        )
-        if len(map_inputs) == 1:
-            only = map_inputs[0]
-            coverage_inputs = {
-                "coverage_kind": "llvm-physical-line-map",
-                "coverage_map": only["path"],
-                "coverage_map_sha256": only["sha256"],
-                "coverage_line_model": only["line_model"],
-                "coverage_producer": only["producer"],
-                "coverage_producer_inputs": only["producer_inputs"],
-            }
-        else:
-            coverage_inputs = {
-                "coverage_kind": "llvm-physical-line-map-union",
-                "coverage_line_model": LLVM_LINE_MODEL,
-                "coverage_maps": map_inputs,
-            }
-    else:
-        assert lcov_path is not None
+    if not canonical_paths:
+        raise DiffCoverageError("at least one canonical coverage map must be supplied")
+    parsed_maps: list[Mapping[str, SourceCoverage]] = []
+    map_inputs: list[dict[str, Any]] = []
+    seen_digests: set[str] = set()
+    for index, path in enumerate(canonical_paths, start=1):
         coverage_bytes = read_bounded(
-            lcov_path,
-            limit=MAX_LCOV_BYTES,
-            description="LCOV",
+            path,
+            limit=MAX_COVERAGE_MAP_BYTES,
+            description=f"coverage map {index}",
         )
-        lcov_text = decode_utf8(coverage_bytes, description="LCOV")
-        parsed_lcov = parse_lcov(lcov_text, repo_root=root)
-        sources = parsed_lcov.sources
-        coverage_map_label = "lcov-unique-da"
+        digest = sha256_bytes(coverage_bytes)
+        if digest in seen_digests:
+            raise DiffCoverageError(
+                "canonical coverage maps contain duplicate content"
+            )
+        seen_digests.add(digest)
+        parsed_sources, coverage_document = parse_coverage_map(
+            coverage_bytes,
+            repo_root=root,
+        )
+        parsed_maps.append(parsed_sources)
+        map_inputs.append(
+            {
+                "path": str(path),
+                "sha256": digest,
+                "line_model": coverage_document["line_model"],
+                "producer": coverage_document["producer"],
+                "producer_inputs": coverage_document["inputs"],
+            }
+        )
+    sources = union_source_coverage_maps(parsed_maps)
+    coverage_map_label = (
+        "canonical-coverage"
+        if len(map_inputs) == 1
+        else "canonical-coverage-union"
+    )
+    if len(map_inputs) == 1:
+        only = map_inputs[0]
         coverage_inputs = {
-            "coverage_kind": "legacy-lcov-da-diagnostic",
-            "coverage_line_model": LCOV_LINE_MODEL,
-            "lcov": str(lcov_path),
-            "lcov_sha256": sha256_bytes(coverage_bytes),
-            "lcov_summary_audit": parsed_lcov.summary_audit,
+            "coverage_kind": "llvm-physical-line-map",
+            "coverage_map": only["path"],
+            "coverage_map_sha256": only["sha256"],
+            "coverage_line_model": only["line_model"],
+            "coverage_producer": only["producer"],
+            "coverage_producer_inputs": only["producer_inputs"],
+        }
+    else:
+        coverage_inputs = {
+            "coverage_kind": "llvm-physical-line-map-union",
+            "coverage_line_model": LLVM_LINE_MODEL,
+            "coverage_maps": map_inputs,
         }
     diff_input = load_diff_input(
         repo_root=root,
@@ -3334,23 +3040,15 @@ def build_report(
 def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path("."))
-    coverage = parser.add_mutually_exclusive_group(required=True)
-    coverage.add_argument(
+    parser.add_argument(
         "--coverage-map",
+        required=True,
         action="append",
         dest="coverage_maps",
         type=pathlib.Path,
         help=(
             "source-bound Sorotte LLVM physical-line map; repeat to union "
             "compatible platform maps"
-        ),
-    )
-    coverage.add_argument(
-        "--lcov",
-        type=pathlib.Path,
-        help=(
-            "legacy LCOV diagnostic input; changed-line decisions use unique "
-            "DA source lines and retain LF/LH contradictions as audit evidence"
         ),
     )
     parser.add_argument("--diff", type=pathlib.Path)
@@ -3391,7 +3089,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         report = build_report(
             repo_root=args.repo_root,
-            lcov_path=args.lcov,
             coverage_map_paths=args.coverage_maps,
             diff_path=args.diff,
             base=args.base,
@@ -3411,19 +3108,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"ordinary={report['coverage_classes']['ordinary']['status']}, "
             f"critical={report['coverage_classes']['critical']['status']})"
         )
-        lcov_audit = report["inputs"].get("lcov_summary_audit")
-        if (
-            isinstance(lcov_audit, dict)
-            and lcov_audit.get("status") == "producer-summary-mismatch"
-        ):
-            records = lcov_audit["records"]
-            print(
-                "warning: LCOV producer LF/LH summaries contradict unique DA "
-                f"records in {records['summary_mismatched']}/"
-                f"{records['total']} source record(s); changed-line policy used "
-                f"{lcov_audit['policy_line_model']}",
-                file=sys.stderr,
-            )
         for error in report["errors"]:
             print(f"error: {error}", file=sys.stderr)
         return 0 if report["status"] == "passed" else 1

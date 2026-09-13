@@ -75,10 +75,10 @@ Protocol normalizers return accepted commands directly. Malformed additive input
 must leave unrelated valid fields usable; test the retained state and the next
 valid update instead of introducing unconsumed diagnostic queues.
 
-The CLI owns its outer connection/retry loop and startup inputs. Keep failed
-connection outcomes together with their original errors; shared connected-session
-behavior remains in `sorotte-client-app`. Test retry timing, cleanup and socket
-behavior at the execution boundary.
+The CLI owns connection/retry timing, startup inputs and connected-session event
+execution. Keep failed connection outcomes together with their original errors.
+Shared application operations remain in `sorotte-client-app`; test event ordering,
+retry timing, cleanup and socket behavior at the CLI execution boundary.
 
 Outbound protocol messages remain session-owned until their exact completed-write
 receipt is acknowledged. Inspect `control().outbound_messages()` to observe

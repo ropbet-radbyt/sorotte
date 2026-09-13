@@ -1,7 +1,7 @@
 use sorotte_client_app::app_boundary::commands::{
     LocalInputCommandPlanningContext, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
-    local_input_error_output_line, parse_local_input_command, plan_local_input_command,
-    plan_local_input_dispatch, render_local_input_display_lines,
+    local_input_error_output_line, parse_local_input_command, plan_local_input_dispatch,
+    render_local_input_display_lines,
 };
 use sorotte_client_core::ClientSession;
 
@@ -438,9 +438,11 @@ fn plan_chat_submit(state: &SorotteGuiShellAppState, message: String) -> GuiShel
         current_room: current_room.as_deref(),
         configured_room: &configured_room,
     };
-    let planned_command = plan_local_input_command(command, &planning_context);
-    let dispatch =
-        plan_local_input_dispatch(planned_command, state.shared_playlist_events_enabled());
+    let dispatch = plan_local_input_dispatch(
+        command,
+        &planning_context,
+        state.shared_playlist_events_enabled(),
+    );
     extend_plan_for_dispatch(&mut plan, state, dispatch);
     plan
 }

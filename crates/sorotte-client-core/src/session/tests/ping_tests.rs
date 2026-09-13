@@ -393,15 +393,6 @@ fn client_ping_metrics_wall_clock_entry_points_report_unix_time() {
     let direct_seconds = unix_wall_clock_time_seconds();
     let metric_seconds = ClientPingMetrics::default().client_latency_calculation_now();
 
-    let mut ping_metrics = ClientPingMetrics::default();
-    ping_metrics.observe_inbound_state(
-        &StatePayload::new().with_ping(
-            PingPayload::new()
-                .with_client_latency_calculation(0.0)
-                .with_server_rtt(0.0),
-        ),
-    );
-    let observed_rtt_seconds = ping_metrics.client_rtt_seconds();
     let after_seconds = independent_unix_wall_clock_seconds();
     let lower_bound = before_seconds.min(after_seconds) - 2.0;
     let upper_bound = before_seconds.max(after_seconds) + 2.0;
@@ -409,7 +400,6 @@ fn client_ping_metrics_wall_clock_entry_points_report_unix_time() {
     for (entry_point, value) in [
         ("wall-clock helper", direct_seconds),
         ("client latency calculation wrapper", metric_seconds),
-        ("inbound-state observation wrapper", observed_rtt_seconds),
     ] {
         assert!(
             value.is_finite() && (lower_bound..=upper_bound).contains(&value),

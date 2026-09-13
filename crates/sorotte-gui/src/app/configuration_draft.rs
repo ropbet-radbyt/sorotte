@@ -6,7 +6,7 @@ use sorotte_client_core::PrivacyMode;
 
 use super::shell_state::{
     GuiConfigurationDraft, GuiConfigurationState, GuiDialogControl, GuiDialogControlKind,
-    GuiSettingApplyRequirement, SecretDraft, SettingId,
+    SecretDraft, SettingId,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -82,37 +82,6 @@ impl GuiConfigurationDraft {
         changed.sort_unstable();
         changed.dedup();
         changed
-    }
-
-    pub(super) fn merge_apply_requirement_from_settings(
-        baseline: &StoredClientSettings,
-        source: &StoredClientSettings,
-        requirement: GuiSettingApplyRequirement,
-    ) -> StoredClientSettings {
-        let mut merged = Self::from_stored_settings(baseline);
-        let source = Self::from_stored_settings(source);
-        for id in SettingId::ALL
-            .iter()
-            .copied()
-            .filter(|id| id.apply_requirement() == requirement)
-        {
-            let Some(control) = source.control(id) else {
-                continue;
-            };
-            match control.kind {
-                GuiDialogControlKind::Checkbox => {
-                    let _ = merged.apply_bool_value(id, control.value == "yes");
-                }
-                kind if kind.is_editable() => {
-                    let _ = merged.apply_text_value(id, &control.value);
-                }
-                _ => {}
-            }
-        }
-        if requirement == GuiSettingApplyRequirement::Reconnect {
-            merged.settings.server_password = source.settings.server_password.clone();
-        }
-        merged.to_stored_settings()
     }
 
     pub(super) fn control(&self, id: SettingId) -> Option<&GuiDialogControl> {

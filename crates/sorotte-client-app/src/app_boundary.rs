@@ -8,16 +8,15 @@ pub mod application {
 pub mod commands {
     pub use crate::local_commands::{
         LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,
-        LocalOffsetCommand, PlannedLocalInputCommand, PlannedLocalInputDispatch,
-        PlannedLocalRuntimeAction, PlannedLocalRuntimeDispatch, controlled_room_base_name,
-        generate_room_password, local_input_error_output_line, localized_current_offset_message,
+        LocalOffsetCommand, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
+        PlannedLocalRuntimeDispatch, controlled_room_base_name, generate_room_password,
+        local_input_error_output_line, localized_current_offset_message,
         localized_local_input_error_message, parse_local_input_chat_message,
-        parse_local_input_command, parse_seek_time_seconds, plan_local_input_command,
-        plan_local_input_dispatch, plan_local_offset_runtime_dispatch,
-        plan_local_playlist_delete_runtime_dispatch, plan_local_playlist_select_runtime_dispatch,
-        plan_local_runtime_dispatch, playlist_index_in_bounds, playlist_listing_message,
-        playlist_listing_message_localized, render_local_input_display_lines,
-        resolved_local_user_offset_seconds,
+        parse_local_input_command, parse_seek_time_seconds, plan_local_input_dispatch,
+        plan_local_offset_runtime_dispatch, plan_local_playlist_delete_runtime_dispatch,
+        plan_local_playlist_select_runtime_dispatch, plan_local_runtime_dispatch,
+        playlist_index_in_bounds, playlist_listing_message, playlist_listing_message_localized,
+        render_local_input_display_lines, resolved_local_user_offset_seconds,
     };
 }
 
@@ -117,23 +116,6 @@ pub mod storage {
         sorotte_client_install_locator_path, sorotte_client_install_root_from_lookup,
         try_resolve_sorotte_client_storage_paths,
         try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
-    };
-}
-
-pub mod session {
-    pub use crate::session_loop::{
-        ConnectedSessionBranchPlan, ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction,
-        ConnectedSessionDrainPlan, ConnectedSessionEventExecutionPlan,
-        ConnectedSessionInboundApplyPlan, ConnectedSessionInboundPostApplyAction,
-        ConnectedSessionInboundPostApplyPlan, ConnectedSessionProtocolPlan,
-        ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
-        ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        connected_session_autoplay_tick_event_execution_plan, connected_session_drain_actions,
-        connected_session_inbound_message_event_execution_plan,
-        connected_session_inbound_post_apply_actions,
-        connected_session_local_input_event_execution_plan,
-        connected_session_player_coordination_tick_event_execution_plan,
-        connected_session_runtime_step_actions,
     };
 }
 

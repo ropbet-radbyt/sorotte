@@ -9,9 +9,9 @@ use std::{
 };
 
 use self::execution::{
-    ConnectedSessionBranchExecutionContext, ConnectedSessionEventExecutionContext,
+    ConnectedSessionEvent, ConnectedSessionExecutionContext,
     planned_local_runtime_action_is_player_bound,
-    report_contained_connected_session_player_failure, run_connected_session_event_plan,
+    report_contained_connected_session_player_failure, run_connected_session_event,
     run_contained_planned_local_runtime_action,
 };
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
@@ -776,12 +776,6 @@ where
     let initial_hello_deadline = tokio::time::sleep_until(initial_hello_deadline);
     tokio::pin!(initial_hello_deadline);
     let mut outbound_state_sync_enabled = false;
-    let branch_diagnostics_plan = ConnectedSessionDiagnosticsPlan {
-        log_player_telemetry: diagnostics_config.log_player_telemetry,
-        log_player_drift: diagnostics_config.log_player_drift,
-        reconnect_correction_diagnostics_format: diagnostics_config
-            .reconnect_correction_diagnostics_format,
-    };
     let shared_playlists_enabled = shared_playlists_enabled_cli(config);
     let dont_slow_down_with_me = config.dont_slow_down_with_me_override.unwrap_or(false);
     let mut bridge_health_reporter =
@@ -824,60 +818,32 @@ where
             ) => {
                 match line? {
                     Some(line) => {
-                        let (decoded_inbound_messages, predecoded_inbound_error) =
-                            decode_inbound_message_prefix(&line);
-                        let inbound_is_server_hello = pending_ready_at_start_on_server_hello.is_some()
-                            && (decoded_inbound_messages
-                                .iter()
-                                .any(|message| matches!(message, ProtocolMessage::Hello(_)))
-                                || runtime.session().server_readiness_v2_supported());
                         let now_seconds = client_runtime_now_seconds();
-                        let event_execution_plan =
-                            connected_session_inbound_message_event_execution_plan(
-                                inbound_is_server_hello,
-                                pending_chat_message_on_connect.is_some(),
-                                decoded_inbound_messages
-                                    .iter()
-                                    .any(|message| matches!(message, ProtocolMessage::State(_))),
-                                ConnectedSessionSharedExecutionInputs {
-                                    shared_playlists_enabled,
-                                    diagnostics: branch_diagnostics_plan,
-                                    outbound_state_sync_enabled,
-                                },
-                            );
-                        let event_result = run_connected_session_event_plan(
+                        let event_result = run_connected_session_event(
                             runtime,
-                            Some(&line),
+                            ConnectedSessionEvent::InboundMessage(&line),
                             now_seconds,
-                            dont_slow_down_with_me,
-                            event_execution_plan,
-                            ConnectedSessionEventExecutionContext {
+                            ConnectedSessionExecutionContext {
                                 pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
                                 pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
                                 outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
-                                branch: ConnectedSessionBranchExecutionContext {
-                                    config,
-                                    writer: &mut writer,
-                                    startup_playlist_file_on_connect,
-                                    diagnostics_config: &diagnostics_config,
-                                    reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
-                                    seek_preparation_notification_state: &mut seek_preparation_notification_state,
-                                    readiness_notification_state: &mut readiness_notification_state,
-                                    file_difference_state: &mut file_difference_state,
-                                    network_options_health_reporter,
-                                    notification_sink,
-                                    file_difference_sink,
-                                },
+                                config,
+                                writer: &mut writer,
+                                startup_playlist_file_on_connect,
+                                diagnostics_config: &diagnostics_config,
+                                reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                                seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                                readiness_notification_state: &mut readiness_notification_state,
+                                file_difference_state: &mut file_difference_state,
+                                network_options_health_reporter,
+                                notification_sink,
+                                file_difference_sink,
                             },
                         )
                         .await;
                         if let Err(error) = event_result {
                             emit_application_service_events(runtime.shutdown_plex_service().await);
                             return Err(error);
-                        }
-                        if let Some(error) = predecoded_inbound_error {
-                            emit_application_service_events(runtime.shutdown_plex_service().await);
-                            return Err(error.into());
                         }
                         emit_application_service_events(runtime.pump_plex_service().await);
                     }
@@ -889,37 +855,25 @@ where
             }
             _ = autoplay_tick.tick() => {
                 let now_seconds = client_runtime_now_seconds();
-                let event_execution_plan =
-                    connected_session_autoplay_tick_event_execution_plan(
-                        ConnectedSessionSharedExecutionInputs {
-                            shared_playlists_enabled,
-                            diagnostics: branch_diagnostics_plan,
-                            outbound_state_sync_enabled,
-                        },
-                    );
-                run_connected_session_event_plan(
+                run_connected_session_event(
                     runtime,
-                    None,
+                    ConnectedSessionEvent::AutoplayTick,
                     now_seconds,
-                    dont_slow_down_with_me,
-                    event_execution_plan,
-                    ConnectedSessionEventExecutionContext {
+                    ConnectedSessionExecutionContext {
                         pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
                         pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
                         outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
-                        branch: ConnectedSessionBranchExecutionContext {
-                            config,
-                            writer: &mut writer,
-                            startup_playlist_file_on_connect,
-                            diagnostics_config: &diagnostics_config,
-                            reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
-                            seek_preparation_notification_state: &mut seek_preparation_notification_state,
-                            readiness_notification_state: &mut readiness_notification_state,
-                            file_difference_state: &mut file_difference_state,
-                            network_options_health_reporter,
-                            notification_sink,
-                            file_difference_sink,
-                        },
+                        config,
+                        writer: &mut writer,
+                        startup_playlist_file_on_connect,
+                        diagnostics_config: &diagnostics_config,
+                        reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                        seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                        readiness_notification_state: &mut readiness_notification_state,
+                        file_difference_state: &mut file_difference_state,
+                        network_options_health_reporter,
+                        notification_sink,
+                        file_difference_sink,
                     },
                 )
                 .await?;
@@ -940,37 +894,25 @@ where
                 );
                 let _ = drain_player_chat_input(runtime)?;
                 let now_seconds = client_runtime_now_seconds();
-                let event_execution_plan =
-                    connected_session_player_coordination_tick_event_execution_plan(
-                        ConnectedSessionSharedExecutionInputs {
-                            shared_playlists_enabled,
-                            diagnostics: branch_diagnostics_plan,
-                            outbound_state_sync_enabled,
-                        },
-                    );
-                run_connected_session_event_plan(
+                run_connected_session_event(
                     runtime,
-                    None,
+                    ConnectedSessionEvent::PlayerCoordinationTick,
                     now_seconds,
-                    dont_slow_down_with_me,
-                    event_execution_plan,
-                    ConnectedSessionEventExecutionContext {
+                    ConnectedSessionExecutionContext {
                         pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
                         pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
                         outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
-                        branch: ConnectedSessionBranchExecutionContext {
-                            config,
-                            writer: &mut writer,
-                            startup_playlist_file_on_connect,
-                            diagnostics_config: &diagnostics_config,
-                            reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
-                            seek_preparation_notification_state: &mut seek_preparation_notification_state,
-                            readiness_notification_state: &mut readiness_notification_state,
-                            file_difference_state: &mut file_difference_state,
-                            network_options_health_reporter,
-                            notification_sink,
-                            file_difference_sink,
-                        },
+                        config,
+                        writer: &mut writer,
+                        startup_playlist_file_on_connect,
+                        diagnostics_config: &diagnostics_config,
+                        reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                        seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                        readiness_notification_state: &mut readiness_notification_state,
+                        file_difference_state: &mut file_difference_state,
+                        network_options_health_reporter,
+                        notification_sink,
+                        file_difference_sink,
                     },
                 )
                 .await?;
@@ -989,15 +931,14 @@ where
                 };
 
                 if let Some(command) = parse_local_input_command(&local_line) {
-                    let command = plan_local_input_command(
+                    let dispatch = plan_local_input_dispatch(
                         command,
                         &LocalInputCommandPlanningContext {
                             current_room: runtime.session().room(),
                             configured_room: &config.room,
                         },
+                        shared_playlists_enabled,
                     );
-                    let dispatch =
-                        plan_local_input_dispatch(command, shared_playlists_enabled);
                     if player_input_fence_active
                         && matches!(
                             &dispatch,
@@ -1060,38 +1001,25 @@ where
                             }
                         }
                     };
-                    let event_execution_plan =
-                        connected_session_local_input_event_execution_plan(
-                            emitted,
-                            ConnectedSessionSharedExecutionInputs {
-                                shared_playlists_enabled,
-                                diagnostics: branch_diagnostics_plan,
-                                outbound_state_sync_enabled,
-                            },
-                        );
-                    run_connected_session_event_plan(
+                        run_connected_session_event(
                         runtime,
-                        None,
+                        ConnectedSessionEvent::LocalInput { emitted },
                         client_runtime_now_seconds(),
-                        dont_slow_down_with_me,
-                        event_execution_plan,
-                        ConnectedSessionEventExecutionContext {
+                        ConnectedSessionExecutionContext {
                             pending_ready_at_start_on_server_hello: &mut pending_ready_at_start_on_server_hello,
                             pending_chat_message_on_connect: &mut pending_chat_message_on_connect,
                             outbound_state_sync_enabled: &mut outbound_state_sync_enabled,
-                            branch: ConnectedSessionBranchExecutionContext {
-                                config,
-                                writer: &mut writer,
-                                startup_playlist_file_on_connect,
-                                diagnostics_config: &diagnostics_config,
-                                reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
-                                seek_preparation_notification_state: &mut seek_preparation_notification_state,
-                                readiness_notification_state: &mut readiness_notification_state,
-                                file_difference_state: &mut file_difference_state,
-                                network_options_health_reporter,
-                                notification_sink,
-                                file_difference_sink,
-                            },
+                            config,
+                            writer: &mut writer,
+                            startup_playlist_file_on_connect,
+                            diagnostics_config: &diagnostics_config,
+                            reconnect_correction_diagnostics_state: &mut reconnect_correction_diagnostics_state,
+                            seek_preparation_notification_state: &mut seek_preparation_notification_state,
+                            readiness_notification_state: &mut readiness_notification_state,
+                            file_difference_state: &mut file_difference_state,
+                            network_options_health_reporter,
+                            notification_sink,
+                            file_difference_sink,
                         },
                     )
                     .await?;

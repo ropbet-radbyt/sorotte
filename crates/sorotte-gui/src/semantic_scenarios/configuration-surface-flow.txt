@@ -49,7 +49,7 @@ enter-text	settings.connection.username	false	smoke-user
 enter-text	settings.connection.room	false	smoke-room
 enter-text	settings.player.executable	false	C:/Windows/System32/notepad.exe
 assert-enabled	settings.player.arguments	true
-enter-text	settings.player.arguments	false	--profile=fast --no-border
+enter-text	settings.player.arguments	false	--profile=fast '--title=Watch party' --no-border
 enter-text	settings.connection.room_history	false	smoke-backup\nsmoke-room
 activate	configuration:tab:overview
 activate	settings.playback.ready_at_start
@@ -180,7 +180,7 @@ assert-value	shell:validation:status	clean
 assert-value	shell:command:save	enabled
 assert-value	settings.connection.host	syncplay.example
 assert-value	settings.player.executable	C:/Windows/System32/notepad.exe
-assert-value	settings.player.arguments	--profile=fast --no-border
+assert-value	settings.player.arguments	--profile=fast '--title=Watch party' --no-border
 assert-value	settings.connection.room_history	smoke-backup\nsmoke-room
 assert-value	settings.playback.unpause_action	Always
 assert-value	settings.playback.autoplay_min_users	3

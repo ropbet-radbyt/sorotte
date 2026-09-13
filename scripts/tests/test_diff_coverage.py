@@ -10,17 +10,15 @@ import tempfile
 import unittest
 from unittest import mock
 
-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import diff_coverage as coverage  # noqa: E402
-
 
 class DiffCoverageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.repo = pathlib.Path(self.temporary.name)
-        (self.repo / "src").mkdir()
-        self.source = self.repo / "src" / "lib.rs"
+        (self.repo / "crates" / "example" / "src").mkdir(parents=True)
+        self.source = self.repo / "crates" / "example" / "src" / "lib.rs"
         self.source.write_text(
             "pub fn answer(flag: bool) -> u32 {\n"
             "    if flag {\n"
@@ -81,29 +79,67 @@ class DiffCoverageTests(unittest.TestCase):
         self.policy_path.parent.mkdir(parents=True, exist_ok=True)
         self.policy_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def lcov(
+    def coverage_sources(
         self,
         lines: dict[int, int] | None = None,
         *,
-        source: str = "src/lib.rs",
-    ) -> str:
-        line_hits = lines if lines is not None else {1: 1, 2: 1, 3: 1, 5: 0}
-        directives = [f"SF:{source}"]
-        directives.extend(f"DA:{line},{hits}" for line, hits in line_hits.items())
-        directives.extend(
-            [
-                f"LF:{len(line_hits)}",
-                f"LH:{sum(hits > 0 for hits in line_hits.values())}",
-                "end_of_record",
-            ]
-        )
-        return "\n".join(directives) + "\n"
+        source: str = "crates/example/src/lib.rs",
+    ) -> list[dict]:
+        hits = lines if lines is not None else {1: 1, 2: 1, 3: 1, 5: 0}
+        raw = (self.repo / source).read_bytes()
+        mapped = [[number, int(count > 0)] for number, count in sorted(hits.items())]
+        return [{
+            "path": source,
+            "source_sha256": coverage.sha256_bytes(raw),
+            "source_line_count": len(raw.decode("utf-8").splitlines()),
+            "instrumented_line_count": len(mapped),
+            "covered_line_count": sum(row[1] for row in mapped),
+            "lines": mapped,
+        }]
+
+    def write_coverage_map(self, sources: list[dict]) -> pathlib.Path:
+        count = sum(source["instrumented_line_count"] for source in sources)
+        covered = sum(source["covered_line_count"] for source in sources)
+        document = {
+            "schema_version": coverage.LLVM_LINE_MAP_SCHEMA_VERSION,
+            "kind": coverage.LLVM_LINE_MAP_KIND,
+            "status": "passed",
+            "line_model": coverage.LLVM_LINE_MODEL,
+            "inputs": {
+                "llvm_json": {"path": "target/coverage.json", "size_bytes": 100, "sha256": "sha256:" + "1" * 64},
+                "llvm_text": {"path": "target/coverage.txt", "size_bytes": 200, "sha256": "sha256:" + "2" * 64},
+            },
+            "producer": {
+                "llvm_export_type": coverage.LLVM_EXPORT_TYPE,
+                "llvm_export_version": coverage.LLVM_EXPORT_VERSION,
+                "cargo_llvm_cov_version": coverage.CARGO_LLVM_COV_VERSION,
+                "manifest_path": "Cargo.toml",
+            },
+            "summary": {
+                "file_count": len(sources),
+                "source_line_count": sum(source["source_line_count"] for source in sources),
+                "instrumented_line_count": count,
+                "covered_line_count": covered,
+                "uncovered_line_count": count - covered,
+                "physical_line_percent": coverage.coverage_percent_text(covered, count),
+                "llvm_summary_line_count": count,
+                "llvm_summary_covered_line_count": covered,
+                "llvm_summary_line_percent": coverage.coverage_percent_text(covered, count),
+                "llvm_minus_physical_line_count": 0,
+                "llvm_minus_physical_covered_line_count": 0,
+            },
+            "files": sorted(sources, key=lambda source: source["path"]),
+            "errors": [],
+        }
+        path = self.repo / "coverage-map.json"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        return path
 
     def patch(
         self,
         *,
-        old_path: str = "src/lib.rs",
-        new_path: str = "src/lib.rs",
+        old_path: str = "crates/example/src/lib.rs",
+        new_path: str = "crates/example/src/lib.rs",
         old_range: str = "1",
         new_range: str = "1",
         body: list[str] | None = None,
@@ -131,48 +167,44 @@ class DiffCoverageTests(unittest.TestCase):
             + "".join(f"+{line}\n" for line in lines)
         )
 
-    def write_inputs(self, lcov: str, diff: str) -> tuple[pathlib.Path, pathlib.Path]:
-        lcov_path = self.repo / "coverage.info"
+    def write_inputs(self, sources: list[dict], diff: str) -> tuple[pathlib.Path, pathlib.Path]:
+        map_path = self.write_coverage_map(sources)
         diff_path = self.repo / "changes.diff"
-        lcov_path.write_text(lcov, encoding="utf-8")
         diff_path.write_text(diff, encoding="utf-8")
-        return lcov_path, diff_path
+        return map_path, diff_path
 
     def build(
         self,
-        lcov: str,
+        sources: list[dict],
         diff: str,
         *,
         minimum: str = "100",
     ) -> dict:
-        lcov_path, diff_path = self.write_inputs(lcov, diff)
+        coverage_map_path, diff_path = self.write_inputs(sources, diff)
         return coverage.build_report(
             repo_root=self.repo,
-            lcov_path=lcov_path,
+            coverage_map_path=coverage_map_path,
             diff_path=diff_path,
             base=None,
             head=None,
             minimum_text=minimum,
         )
 
-    def assert_input_error(self, lcov: str, diff: str, message: str) -> None:
+    def assert_input_error(self, sources: list[dict], diff: str, message: str) -> None:
         with self.assertRaisesRegex(coverage.DiffCoverageError, message):
-            self.build(lcov, diff)
+            self.build(sources, diff)
 
     def test_covered_line_passes_at_default_policy(self) -> None:
-        report = self.build(self.lcov(), self.patch())
+        report = self.build(self.coverage_sources(), self.patch())
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["covered_lines"], 1)
         self.assertEqual(report["summary"]["percent"], "100.00")
         self.assertEqual(
             report["inputs"]["coverage_line_model"],
-            coverage.LCOV_LINE_MODEL,
+            coverage.LLVM_LINE_MODEL,
         )
-        self.assertEqual(
-            report["inputs"]["lcov_summary_audit"]["status"],
-            "consistent",
-        )
-        self.assertRegex(report["inputs"]["lcov_sha256"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(report["inputs"]["coverage_kind"], "llvm-physical-line-map")
+        self.assertRegex(report["inputs"]["coverage_map_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(report["inputs"]["diff_sha256"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(
             report["inputs"]["critical_path_policy"],
@@ -190,7 +222,7 @@ class DiffCoverageTests(unittest.TestCase):
 
     def test_uncovered_line_fails_threshold_without_becoming_input_error(self) -> None:
         report = self.build(
-            self.lcov(),
+            self.coverage_sources(),
             self.patch(
                 old_range="5",
                 new_range="5",
@@ -209,15 +241,15 @@ class DiffCoverageTests(unittest.TestCase):
             new_range="1,3",
             body=["+a();", "+b();", "+c();"],
         )
-        passed = self.build(self.lcov({1: 1, 2: 1, 3: 0}), diff, minimum="66.66")
-        failed = self.build(self.lcov({1: 1, 2: 1, 3: 0}), diff, minimum="66.67")
+        passed = self.build(self.coverage_sources({1: 1, 2: 1, 3: 0}), diff, minimum="66.66")
+        failed = self.build(self.coverage_sources({1: 1, 2: 1, 3: 0}), diff, minimum="66.67")
         self.assertEqual(passed["status"], "passed")
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(passed["summary"]["percent"], "66.66")
 
-    def test_line_absent_from_present_lcov_source_is_non_coverable(self) -> None:
+    def test_line_absent_from_present_coverage_source_is_non_coverable(self) -> None:
         report = self.build(
-            self.lcov(),
+            self.coverage_sources(),
             self.patch(
                 old_range="7",
                 new_range="7",
@@ -230,7 +262,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertIsNone(report["summary"]["percent"])
         self.assertEqual(
             report["files"][0]["lines"][0]["reason"],
-            "lexical-structure-absent-from-lcov-unique-da-map",
+            "lexical-structure-absent-from-canonical-coverage-map",
         )
 
     def test_platform_gated_statement_missing_from_mapped_file_fails_closed(self) -> None:
@@ -250,16 +282,16 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         diff = (
-            "diff --git a/src/lib.rs b/src/lib.rs\n"
-            "--- a/src/lib.rs\n"
-            "+++ b/src/lib.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/lib.rs\n"
+            "--- a/crates/example/src/lib.rs\n"
+            "+++ b/crates/example/src/lib.rs\n"
             "@@ -8,0 +9,4 @@\n"
             "+#[cfg(windows)]\n"
             "+pub fn windows_only() {\n"
             "+    launch_windows_player();\n"
             "+}\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["summary"]["unmapped_lines"], 1)
         self.assertEqual(report["summary"]["non_coverable_lines"], 3)
@@ -269,7 +301,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(lines[2]["status"], "unmapped")
         self.assertEqual(
             lines[2]["reason"],
-            "executable-looking-line-absent-from-lcov-unique-da-map",
+            "executable-looking-line-absent-from-canonical-coverage-map",
         )
         self.assertEqual(lines[3]["status"], "non-coverable")
 
@@ -321,9 +353,9 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         diff = (
-            "diff --git a/src/lib.rs b/src/lib.rs\n"
-            "--- a/src/lib.rs\n"
-            "+++ b/src/lib.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/lib.rs\n"
+            "--- a/crates/example/src/lib.rs\n"
+            "+++ b/crates/example/src/lib.rs\n"
             "@@ -1,0 +2 @@\n"
             "+    production_side_effect();\n"
             "@@ -7,0 +9,4 @@\n"
@@ -333,7 +365,7 @@ class DiffCoverageTests(unittest.TestCase):
             "+        test_assertion();\n"
         )
         report = self.build(
-            self.lcov({2: 0, 9: 1, 10: 1, 11: 1, 12: 1}),
+            self.coverage_sources({2: 0, 9: 1, 10: 1, 11: 1, 12: 1}),
             diff,
             minimum="80",
         )
@@ -392,7 +424,7 @@ class DiffCoverageTests(unittest.TestCase):
 
         inline_test = coverage.inline_cfg_test_module_lines(
             source_lines,
-            source="src/lib.rs",
+            source="crates/example/src/lib.rs",
         )
 
         after_line = source_lines.index("pub fn after() {}") + 1
@@ -414,7 +446,7 @@ class DiffCoverageTests(unittest.TestCase):
 
         inline_test = coverage.inline_cfg_test_module_lines(
             source_lines,
-            source="src/lib.rs",
+            source="crates/example/src/lib.rs",
         )
 
         self.assertEqual(inline_test, set(range(1, len(source_lines) + 1)))
@@ -429,7 +461,7 @@ class DiffCoverageTests(unittest.TestCase):
 
         inline_test = coverage.inline_cfg_test_module_lines(
             source_lines,
-            source="src/lib.rs",
+            source="crates/example/src/lib.rs",
         )
 
         self.assertEqual(inline_test, set())
@@ -437,21 +469,21 @@ class DiffCoverageTests(unittest.TestCase):
     def test_inline_cfg_test_scanner_fails_closed_on_ambiguous_module(self) -> None:
         with self.assertRaisesRegex(
             coverage.DiffCoverageError,
-            r"src/lib\.rs:1 has an ambiguous inline #\[cfg\(test\)\] module",
+            r"crates/example/src/lib\.rs:1 has an ambiguous inline #\[cfg\(test\)\] module",
         ):
             coverage.inline_cfg_test_module_lines(
                 ["#[cfg(test)]", "mod tests = generated!();"],
-                source="src/lib.rs",
+                source="crates/example/src/lib.rs",
             )
 
     def test_inline_cfg_test_scanner_fails_closed_on_unclosed_module(self) -> None:
         with self.assertRaisesRegex(
             coverage.DiffCoverageError,
-            r"src/lib\.rs:1 has an unclosed inline test-support item",
+            r"crates/example/src/lib\.rs:1 has an unclosed inline test-support item",
         ):
             coverage.inline_cfg_test_module_lines(
                 ["#[cfg(test)]", "mod tests {", "    fn behavior() {}"],
-                source="src/lib.rs",
+                source="crates/example/src/lib.rs",
             )
 
     def test_changed_production_file_fails_closed_on_unsafe_inline_test_syntax(
@@ -479,12 +511,12 @@ class DiffCoverageTests(unittest.TestCase):
                     body=[f"+{line}" for line in source_lines],
                 )
                 with self.assertRaisesRegex(coverage.DiffCoverageError, message):
-                    self.build(self.lcov({len(source_lines): 1}), diff)
+                    self.build(self.coverage_sources({len(source_lines): 1}), diff)
 
     def test_external_cfg_test_module_is_not_excluded(self) -> None:
         inline_test = coverage.inline_cfg_test_module_lines(
             ["#[cfg(test)]", "mod tests;"],
-            source="src/lib.rs",
+            source="crates/example/src/lib.rs",
         )
 
         self.assertEqual(inline_test, set())
@@ -516,7 +548,7 @@ class DiffCoverageTests(unittest.TestCase):
 
         inline_test = coverage.inline_cfg_test_module_lines(
             source_lines,
-            source="src/lib.rs",
+            source="crates/example/src/lib.rs",
         )
 
         self.assertEqual(
@@ -696,7 +728,7 @@ class DiffCoverageTests(unittest.TestCase):
         line = "reason: StartGateDegradedReason::UnsupportedParticipant,"
         self.source.write_text(line + "\n", encoding="utf-8")
         report = self.build(
-            self.lcov({1: 0}),
+            self.coverage_sources({1: 0}),
             self.patch(old_range="1", new_range="1", body=["-old", "+" + line]),
         )
         self.assertEqual(report["status"], "failed")
@@ -768,13 +800,13 @@ class DiffCoverageTests(unittest.TestCase):
             with self.subTest(tuple_pattern=tuple_pattern):
                 path, lines, mapped, structural, executable = self.let_else_report_fixture(tuple_pattern=tuple_pattern)
                 diff = self.new_file_patch(path, lines)
-                passed = self.build(self.lcov(mapped, source=path), diff)
+                passed = self.build(self.coverage_sources(mapped, source=path), diff)
                 self.assertEqual(passed["status"], "passed")
                 self.assertEqual(passed["summary"]["unmapped_lines"], 0)
                 self.assertEqual(passed["files"][0]["lines"][structural - 1]["status"], "non-coverable")
 
                 del mapped[executable]
-                failed = self.build(self.lcov(mapped, source=path), diff)
+                failed = self.build(self.coverage_sources(mapped, source=path), diff)
                 self.assertEqual(failed["status"], "failed")
                 self.assertEqual(failed["summary"]["unmapped_lines"], 1)
                 self.assertEqual(failed["files"][0]["lines"][executable - 1]["status"], "unmapped")
@@ -784,7 +816,7 @@ class DiffCoverageTests(unittest.TestCase):
             with self.subTest(tuple_pattern=tuple_pattern):
                 path, lines, mapped, structural, _ = self.let_else_report_fixture(tuple_pattern=tuple_pattern)
                 mapped[structural] = 0
-                report = self.build(self.lcov(mapped, source=path), self.new_file_patch(path, lines))
+                report = self.build(self.coverage_sources(mapped, source=path), self.new_file_patch(path, lines))
                 self.assertEqual(report["status"], "failed")
                 self.assertEqual(report["summary"]["uncovered_lines"], 1)
                 self.assertEqual(report["files"][0]["lines"][structural - 1]["status"], "uncovered")
@@ -867,67 +899,67 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertTrue({1, 5, 10, 11, 13}.isdisjoint(structural))
 
     def test_wholly_unmapped_executable_new_file_fails_closed(self) -> None:
-        new_source = self.repo / "src" / "new.rs"
+        new_source = self.repo / "crates" / "example" / "src" / "new.rs"
         new_source.write_text("pub fn new_behavior() -> bool {\n    true\n}\n", encoding="utf-8")
         diff = (
-            "diff --git a/src/new.rs b/src/new.rs\n"
+            "diff --git a/crates/example/src/new.rs b/crates/example/src/new.rs\n"
             "new file mode 100644\n"
             "--- /dev/null\n"
-            "+++ b/src/new.rs\n"
+            "+++ b/crates/example/src/new.rs\n"
             "@@ -0,0 +1,3 @@\n"
             "+pub fn new_behavior() -> bool {\n"
             "+    true\n"
             "+}\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["summary"]["unmapped_lines"], 1)
         self.assertEqual(report["summary"]["non_coverable_lines"], 2)
 
-    def test_comment_only_new_file_without_lcov_is_non_coverable(self) -> None:
-        new_source = self.repo / "src" / "notes.rs"
+    def test_comment_only_new_file_without_coverage_is_non_coverable(self) -> None:
+        new_source = self.repo / "crates" / "example" / "src" / "notes.rs"
         new_source.write_text("// documentation only\n\n", encoding="utf-8")
         diff = (
-            "diff --git a/src/notes.rs b/src/notes.rs\n"
+            "diff --git a/crates/example/src/notes.rs b/crates/example/src/notes.rs\n"
             "new file mode 100644\n"
             "--- /dev/null\n"
-            "+++ b/src/notes.rs\n"
+            "+++ b/crates/example/src/notes.rs\n"
             "@@ -0,0 +1,2 @@\n"
             "+// documentation only\n"
             "+\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["non_coverable_lines"], 2)
         self.assertEqual(report["summary"]["unmapped_lines"], 0)
 
     def test_renamed_file_uses_new_path_coverage_and_source(self) -> None:
-        renamed = self.repo / "src" / "renamed.rs"
+        renamed = self.repo / "crates" / "example" / "src" / "renamed.rs"
         renamed.write_text(self.source.read_text(encoding="utf-8"), encoding="utf-8")
         diff = self.patch(
-            old_path="src/old.rs",
-            new_path="src/renamed.rs",
+            old_path="crates/example/src/old.rs",
+            new_path="crates/example/src/renamed.rs",
             metadata=[
                 "similarity index 90%",
-                "rename from src/old.rs",
-                "rename to src/renamed.rs",
+                "rename from crates/example/src/old.rs",
+                "rename to crates/example/src/renamed.rs",
             ],
         )
-        report = self.build(self.lcov(source="src/renamed.rs"), diff)
+        report = self.build(self.coverage_sources(source="crates/example/src/renamed.rs"), diff)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["files"][0]["change_kind"], "renamed")
-        self.assertEqual(report["files"][0]["old_path"], "src/old.rs")
+        self.assertEqual(report["files"][0]["old_path"], "crates/example/src/old.rs")
 
     def test_pure_rename_without_content_headers_is_supported(self) -> None:
-        renamed = self.repo / "src" / "renamed.rs"
+        renamed = self.repo / "crates" / "example" / "src" / "renamed.rs"
         renamed.write_text(self.source.read_text(encoding="utf-8"), encoding="utf-8")
         diff = (
-            "diff --git a/src/lib.rs b/src/renamed.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/renamed.rs\n"
             "similarity index 100%\n"
-            "rename from src/lib.rs\n"
-            "rename to src/renamed.rs\n"
+            "rename from crates/example/src/lib.rs\n"
+            "rename to crates/example/src/renamed.rs\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["changed_rust_lines"], 0)
         self.assertEqual(report["files"][0]["change_kind"], "renamed")
@@ -943,7 +975,7 @@ class DiffCoverageTests(unittest.TestCase):
             "-old\n"
             "+new\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["changed_files"], 0)
 
@@ -983,7 +1015,7 @@ class DiffCoverageTests(unittest.TestCase):
         )
 
     def test_covered_test_addition_cannot_rescue_uncovered_production_line(self) -> None:
-        test_source = self.repo / "tests" / "coverage.rs"
+        test_source = self.repo / "crates" / "example" / "tests" / "coverage.rs"
         test_source.parent.mkdir()
         test_source.write_text("assert!(true);\n", encoding="utf-8")
         production_diff = self.patch(
@@ -992,15 +1024,15 @@ class DiffCoverageTests(unittest.TestCase):
             body=["-        other", "+        0"],
         )
         test_diff = (
-            "diff --git a/tests/coverage.rs b/tests/coverage.rs\n"
+            "diff --git a/crates/example/tests/coverage.rs b/crates/example/tests/coverage.rs\n"
             "new file mode 100644\n"
             "--- /dev/null\n"
-            "+++ b/tests/coverage.rs\n"
+            "+++ b/crates/example/tests/coverage.rs\n"
             "@@ -0,0 +1 @@\n"
             "+assert!(true);\n"
         )
-        lcov = self.lcov() + self.lcov({1: 1}, source="tests/coverage.rs")
-        report = self.build(lcov, production_diff + test_diff)
+        sources = self.coverage_sources() + self.coverage_sources({1: 1}, source="crates/example/tests/coverage.rs")
+        report = self.build(sources, production_diff + test_diff)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["summary"]["production_changed_lines"], 1)
         self.assertEqual(report["summary"]["excluded_test_lines"], 1)
@@ -1009,46 +1041,46 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(report["summary"]["percent"], "0.00")
         self.assertEqual(report["summary"]["excluded_test_files"], 1)
         test_report = next(
-            item for item in report["files"] if item["path"] == "tests/coverage.rs"
+            item for item in report["files"] if item["path"] == "crates/example/tests/coverage.rs"
         )
         self.assertEqual(test_report["scope"], "test-only")
         self.assertEqual(test_report["lines"][0]["status"], "excluded-test")
 
     def test_test_to_production_pure_rename_materializes_full_target(self) -> None:
-        production = self.repo / "src" / "promoted.rs"
+        production = self.repo / "crates" / "example" / "src" / "promoted.rs"
         production.write_text(
             "pub fn promoted() -> bool {\n    true\n}\n",
             encoding="utf-8",
         )
         diff = (
-            "diff --git a/tests/promoted.rs b/src/promoted.rs\n"
+            "diff --git a/tests/promoted.rs b/crates/example/src/promoted.rs\n"
             "similarity index 100%\n"
             "rename from tests/promoted.rs\n"
-            "rename to src/promoted.rs\n"
+            "rename to crates/example/src/promoted.rs\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["summary"]["production_changed_lines"], 3)
         self.assertEqual(report["summary"]["excluded_test_lines"], 0)
         self.assertEqual(report["summary"]["unmapped_lines"], 1)
 
     def test_non_rust_to_rust_pure_rename_cannot_bypass_changed_lines(self) -> None:
-        introduced = self.repo / "src" / "introduced.rs"
+        introduced = self.repo / "crates" / "example" / "src" / "introduced.rs"
         introduced.write_text("pub fn introduced() -> bool {\n    true\n}\n", encoding="utf-8")
         diff = (
-            "diff --git a/src/introduced.txt b/src/introduced.rs\n"
+            "diff --git a/crates/example/src/introduced.txt b/crates/example/src/introduced.rs\n"
             "similarity index 100%\n"
-            "rename from src/introduced.txt\n"
-            "rename to src/introduced.rs\n"
+            "rename from crates/example/src/introduced.txt\n"
+            "rename to crates/example/src/introduced.rs\n"
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["summary"]["changed_rust_lines"], 3)
         self.assertEqual(report["summary"]["unmapped_lines"], 1)
         self.assertEqual(report["summary"]["non_coverable_lines"], 2)
 
     def test_ordinary_and_critical_ratchets_are_separate_results(self) -> None:
-        ordinary_path = "src/ordinary.rs"
+        ordinary_path = "crates/example/src/ordinary.rs"
         critical_path = "crates/critical/src/core.rs"
         ordinary_lines = ["ordinary_behavior();"]
         critical_lines = [f"critical_behavior_{index}();" for index in range(1, 11)]
@@ -1064,14 +1096,14 @@ class DiffCoverageTests(unittest.TestCase):
             ordinary_path,
             ordinary_lines,
         ) + self.new_file_patch(critical_path, critical_lines)
-        ordinary_lcov = self.lcov({1: 1}, source=ordinary_path)
-        critical_at_ninety = self.lcov(
+        ordinary_sources = self.coverage_sources({1: 1}, source=ordinary_path)
+        critical_at_ninety = self.coverage_sources(
             {line: 1 if line <= 9 else 0 for line in range(1, 11)},
             source=critical_path,
         )
 
         exact = self.build(
-            ordinary_lcov + critical_at_ninety,
+            ordinary_sources + critical_at_ninety,
             diff,
             minimum="80",
         )
@@ -1083,12 +1115,12 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(exact["policy"]["ordinary_minimum_percent"], "80.00")
         self.assertEqual(exact["policy"]["critical_minimum_percent"], "90.00")
 
-        critical_at_eighty = self.lcov(
+        critical_at_eighty = self.coverage_sources(
             {line: 1 if line <= 8 else 0 for line in range(1, 11)},
             source=critical_path,
         )
         failed = self.build(
-            ordinary_lcov + critical_at_eighty,
+            ordinary_sources + critical_at_eighty,
             diff,
             minimum="80",
         )
@@ -1107,7 +1139,7 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(critical_report["critical_path"]["id"], "critical-core")
 
     def test_ordinary_failure_does_not_change_passing_critical_result(self) -> None:
-        ordinary_path = "src/ordinary_four.rs"
+        ordinary_path = "crates/example/src/ordinary_four.rs"
         critical_path = "crates/critical/src/perfect.rs"
         ordinary_lines = [f"ordinary_{index}();" for index in range(1, 5)]
         critical_lines = [f"critical_{index}();" for index in range(1, 11)]
@@ -1120,11 +1152,11 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         report = self.build(
-            self.lcov(
+            self.coverage_sources(
                 {line: 1 if line <= 3 else 0 for line in range(1, 5)},
                 source=ordinary_path,
             )
-            + self.lcov(
+            + self.coverage_sources(
                 {line: 1 for line in range(1, 11)},
                 source=critical_path,
             ),
@@ -1152,7 +1184,7 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         report = self.build(
-            self.lcov(),
+            self.coverage_sources(),
             self.new_file_patch(critical_path, critical_lines),
             minimum="80",
         )
@@ -1167,7 +1199,7 @@ class DiffCoverageTests(unittest.TestCase):
             1,
         )
         self.assertIn(
-            "critical coverage has 1 changed Rust line(s) with no LCOV source mapping",
+            "critical coverage has 1 changed Rust line(s) with no coverage source mapping",
             report["coverage_classes"]["critical"]["errors"],
         )
 
@@ -1178,7 +1210,7 @@ class DiffCoverageTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         target.write_text("\n".join(lines) + "\n", encoding="utf-8")
         report = self.build(
-            self.lcov({1: 1}, source=path),
+            self.coverage_sources({1: 1}, source=path),
             self.new_file_patch(path, lines),
             minimum="100",
         )
@@ -1198,13 +1230,13 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         diff = (
-            f"diff --git a/src/promoted.rs b/{path}\n"
+            f"diff --git a/crates/example/src/promoted.rs b/{path}\n"
             "similarity index 100%\n"
-            "rename from src/promoted.rs\n"
+            "rename from crates/example/src/promoted.rs\n"
             f"rename to {path}\n"
         )
         report = self.build(
-            self.lcov(
+            self.coverage_sources(
                 {line: 1 if line <= 8 else 0 for line in range(1, 11)},
                 source=path,
             ),
@@ -1221,7 +1253,7 @@ class DiffCoverageTests(unittest.TestCase):
         )
 
     def test_critical_to_ordinary_pure_rename_keeps_critical_threshold(self) -> None:
-        path = "src/demoted.rs"
+        path = "crates/example/src/demoted.rs"
         lines = [f"demoted_{index}();" for index in range(1, 11)]
         (self.repo / path).write_text(
             "\n".join(lines) + "\n",
@@ -1234,7 +1266,7 @@ class DiffCoverageTests(unittest.TestCase):
             f"rename to {path}\n"
         )
         report = self.build(
-            self.lcov(
+            self.coverage_sources(
                 {line: 1 if line <= 8 else 0 for line in range(1, 11)},
                 source=path,
             ),
@@ -1306,7 +1338,7 @@ class DiffCoverageTests(unittest.TestCase):
                     coverage.DiffCoverageError,
                     "rules overlap",
                 ):
-                    self.build(self.lcov(), "")
+                    self.build(self.coverage_sources(), "")
 
     def test_missing_and_globbed_critical_targets_fail_closed(self) -> None:
         cases = {
@@ -1333,7 +1365,7 @@ class DiffCoverageTests(unittest.TestCase):
                     ]
                 )
                 with self.assertRaisesRegex(coverage.DiffCoverageError, message):
-                    self.build(self.lcov(), "")
+                    self.build(self.coverage_sources(), "")
 
     def test_critical_threshold_cannot_be_lowered_or_reformatted(self) -> None:
         for value in ("89.99", "90", "090.00", "100.00"):
@@ -1343,7 +1375,7 @@ class DiffCoverageTests(unittest.TestCase):
                     coverage.DiffCoverageError,
                     "must be exactly 90.00",
                 ):
-                    self.build(self.lcov(), "")
+                    self.build(self.coverage_sources(), "")
 
     def test_policy_has_no_blanket_exclusion_escape_hatch(self) -> None:
         policy = self.policy_path.read_text(encoding="utf-8")
@@ -1354,7 +1386,7 @@ class DiffCoverageTests(unittest.TestCase):
         )
         self.policy_path.write_text(policy, encoding="utf-8")
         with self.assertRaisesRegex(coverage.DiffCoverageError, "unexpected"):
-            self.build(self.lcov(), "")
+            self.build(self.coverage_sources(), "")
 
     def test_explicit_diff_cannot_change_the_critical_policy(self) -> None:
         policy_patch = self.patch(
@@ -1371,10 +1403,10 @@ class DiffCoverageTests(unittest.TestCase):
             coverage.DiffCoverageError,
             "changes the critical path policy",
         ):
-            self.build(self.lcov(), policy_patch, minimum="80")
+            self.build(self.coverage_sources(), policy_patch, minimum="80")
 
     def test_missing_default_policy_produces_fail_closed_cli_artifact(self) -> None:
-        lcov_path, diff_path = self.write_inputs(self.lcov(), self.patch())
+        coverage_map_path, diff_path = self.write_inputs(self.coverage_sources(), self.patch())
         report_path = self.repo / "missing-policy.json"
         self.policy_path.unlink()
         stdout = io.StringIO()
@@ -1384,8 +1416,8 @@ class DiffCoverageTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(self.repo),
-                    "--lcov",
-                    str(lcov_path),
+                    "--coverage-map",
+                    str(coverage_map_path),
                     "--diff",
                     str(diff_path),
                     "--json-out",
@@ -1398,13 +1430,13 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertIn("io: cannot read critical path policy", report["errors"][0])
 
     def test_empty_diff_is_a_valid_no_rust_change_result(self) -> None:
-        report = self.build(self.lcov(), "")
+        report = self.build(self.coverage_sources(), "")
         self.assertEqual(report["status"], "passed")
         self.assertEqual(report["summary"]["changed_rust_lines"], 0)
 
     def test_diff_is_bound_to_current_source_content(self) -> None:
         self.assert_input_error(
-            self.lcov(),
+            self.coverage_sources(),
             self.patch(body=["-pub fn old() {}", "+pub fn stale() {}"]),
             "does not match current source",
         )
@@ -1419,17 +1451,17 @@ class DiffCoverageTests(unittest.TestCase):
                 "+    if flag {",
             ],
         )
-        report = self.build(self.lcov(), diff)
+        report = self.build(self.coverage_sources(), diff)
         self.assertEqual(report["status"], "passed")
         stale = diff.replace(" pub fn answer", " pub fn different")
-        self.assert_input_error(self.lcov(), stale, "does not match current source")
+        self.assert_input_error(self.coverage_sources(), stale, "does not match current source")
 
     def test_no_newline_marker_is_accepted_only_after_content(self) -> None:
         valid = self.patch() + "\\ No newline at end of file\n"
         # A marker appended after the complete segment is still after content.
-        self.assertEqual(self.build(self.lcov(), valid)["status"], "passed")
+        self.assertEqual(self.build(self.coverage_sources(), valid)["status"], "passed")
         invalid = self.patch(body=[r"\ No newline at end of file", "-old", "+pub fn answer(flag: bool) -> u32 {"])
-        self.assert_input_error(self.lcov(), invalid, "misplaced no-newline")
+        self.assert_input_error(self.coverage_sources(), invalid, "misplaced no-newline")
 
     def test_malformed_hunk_counts_fail_closed(self) -> None:
         malformed = self.patch(
@@ -1437,7 +1469,7 @@ class DiffCoverageTests(unittest.TestCase):
             new_range="1,2",
             body=["-old", "+pub fn answer(flag: bool) -> u32 {"],
         )
-        self.assert_input_error(self.lcov(), malformed, "hunk count mismatch")
+        self.assert_input_error(self.coverage_sources(), malformed, "hunk count mismatch")
 
     def test_overlapping_hunks_fail_closed(self) -> None:
         diff = (
@@ -1446,11 +1478,11 @@ class DiffCoverageTests(unittest.TestCase):
             + "-old again\n"
             + "+pub fn answer(flag: bool) -> u32 {\n"
         )
-        self.assert_input_error(self.lcov(), diff, "overlapping or out-of-order")
+        self.assert_input_error(self.coverage_sources(), diff, "overlapping or out-of-order")
 
     def test_duplicate_diff_target_fails_closed(self) -> None:
         self.assert_input_error(
-            self.lcov(),
+            self.coverage_sources(),
             self.patch() + self.patch(),
             "duplicate target path",
         )
@@ -1459,226 +1491,107 @@ class DiffCoverageTests(unittest.TestCase):
         cases = {
             "parent": self.patch(old_path="../lib.rs", new_path="../lib.rs"),
             "backslash": self.patch(old_path=r"src\lib.rs", new_path=r"src\lib.rs"),
-            "non_git": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            "non_git": "--- a/crates/example/src/lib.rs\n+++ b/crates/example/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
         }
         for name, diff in cases.items():
             with self.subTest(name=name):
-                self.assert_input_error(self.lcov(), diff, "path|Git unified")
+                self.assert_input_error(self.coverage_sources(), diff, "path|Git unified")
 
     def test_diff_and_content_headers_must_agree_and_be_ordered(self) -> None:
-        disagree = self.patch().replace("+++ b/src/lib.rs", "+++ b/src/other.rs")
-        self.assert_input_error(self.lcov(), disagree, "disagrees")
+        disagree = self.patch().replace("+++ b/crates/example/src/lib.rs", "+++ b/crates/example/src/other.rs")
+        self.assert_input_error(self.coverage_sources(), disagree, "disagrees")
         reversed_headers = self.patch().replace(
-            "--- a/src/lib.rs\n+++ b/src/lib.rs",
-            "+++ b/src/lib.rs\n--- a/src/lib.rs",
+            "--- a/crates/example/src/lib.rs\n+++ b/crates/example/src/lib.rs",
+            "+++ b/crates/example/src/lib.rs\n--- a/crates/example/src/lib.rs",
         )
-        self.assert_input_error(self.lcov(), reversed_headers, "immediately after")
+        self.assert_input_error(self.coverage_sources(), reversed_headers, "immediately after")
 
     def test_binary_rust_diff_fails_but_non_rust_binary_is_ignored(self) -> None:
         rust = (
-            "diff --git a/src/lib.rs b/src/lib.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/lib.rs\n"
             "index 123..456 100644\n"
             "GIT binary patch\n"
         )
-        self.assert_input_error(self.lcov(), rust, "binary content")
+        self.assert_input_error(self.coverage_sources(), rust, "binary content")
         non_rust = (
             "diff --git a/image.png b/image.png\n"
             "index 123..456 100644\n"
             "GIT binary patch\n"
         )
-        report = self.build(self.lcov(), non_rust)
+        report = self.build(self.coverage_sources(), non_rust)
         self.assertEqual(report["status"], "passed")
 
     def test_incomplete_rename_metadata_fails_closed(self) -> None:
         diff = (
-            "diff --git a/src/lib.rs b/src/renamed.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/renamed.rs\n"
             "similarity index 100%\n"
-            "rename from src/lib.rs\n"
+            "rename from crates/example/src/lib.rs\n"
         )
-        self.assert_input_error(self.lcov(), diff, "incomplete")
+        self.assert_input_error(self.coverage_sources(), diff, "incomplete")
 
     def test_copy_metadata_is_rejected_to_prevent_zero_line_new_file_bypass(self) -> None:
         diff = (
-            "diff --git a/src/lib.rs b/src/copied.rs\n"
+            "diff --git a/crates/example/src/lib.rs b/crates/example/src/copied.rs\n"
             "similarity index 100%\n"
-            "copy from src/lib.rs\n"
-            "copy to src/copied.rs\n"
+            "copy from crates/example/src/lib.rs\n"
+            "copy to crates/example/src/copied.rs\n"
         )
-        self.assert_input_error(self.lcov(), diff, "copy metadata")
+        self.assert_input_error(self.coverage_sources(), diff, "copy metadata")
 
     def test_added_content_resembling_a_file_header_is_not_misparsed(self) -> None:
         self.source.write_text("++ token\n", encoding="utf-8")
         diff = self.patch(body=["-old", "+++ token"])
-        report = self.build(self.lcov({1: 1}), diff)
+        report = self.build(self.coverage_sources({1: 1}), diff)
         self.assertEqual(report["status"], "passed")
 
     def test_quoted_git_paths_with_octal_utf8_are_decoded(self) -> None:
-        unicode_source = self.repo / "src" / "café.rs"
+        unicode_source = self.repo / "crates" / "example" / "src" / "café.rs"
         unicode_source.write_text("pub fn café() {}\n", encoding="utf-8")
         diff = (
-            'diff --git "a/src/caf\\303\\251.rs" "b/src/caf\\303\\251.rs"\n'
-            '--- "a/src/caf\\303\\251.rs"\n'
-            '+++ "b/src/caf\\303\\251.rs"\n'
+            'diff --git "a/crates/example/src/caf\\303\\251.rs" "b/crates/example/src/caf\\303\\251.rs"\n'
+            '--- "a/crates/example/src/caf\\303\\251.rs"\n'
+            '+++ "b/crates/example/src/caf\\303\\251.rs"\n'
             "@@ -1 +1 @@\n"
             "-pub fn old() {}\n"
             "+pub fn café() {}\n"
         )
-        report = self.build(self.lcov({1: 1}, source="src/café.rs"), diff)
+        report = self.build(self.coverage_sources({1: 1}, source="crates/example/src/café.rs"), diff)
         self.assertEqual(report["status"], "passed")
-        self.assertEqual(report["files"][0]["path"], "src/café.rs")
+        self.assertEqual(report["files"][0]["path"], "crates/example/src/café.rs")
 
-    def test_lcov_absolute_path_inside_repository_is_normalized(self) -> None:
-        report = self.build(self.lcov(source=str(self.source)), self.patch())
-        self.assertEqual(report["status"], "passed")
-        self.assertEqual(report["files"][0]["path"], "src/lib.rs")
-
-    def test_external_lcov_sources_are_ignored(self) -> None:
-        with tempfile.TemporaryDirectory() as external:
-            external_source = pathlib.Path(external) / "dependency.rs"
-            external_source.write_text("fn dependency() {}\n", encoding="utf-8")
-            external_record = self.lcov({1: 1}, source=str(external_source))
-            report = self.build(external_record + self.lcov(), self.patch())
-        self.assertEqual(report["status"], "passed")
-
-    def test_duplicate_lcov_source_records_fail_closed(self) -> None:
+    def test_duplicate_coverage_source_records_fail_closed(self) -> None:
         self.assert_input_error(
-            self.lcov() + self.lcov(),
+            self.coverage_sources() + self.coverage_sources(),
             self.patch(),
-            "duplicate source records",
+            "duplicate",
         )
 
-    def test_duplicate_da_line_fails_closed(self) -> None:
-        lcov = (
-            "SF:src/lib.rs\n"
-            "DA:1,1\n"
-            "DA:1,0\n"
-            "LF:2\n"
-            "LH:1\n"
-            "end_of_record\n"
-        )
-        self.assert_input_error(lcov, self.patch(), "duplicates source line")
+    def test_duplicate_coverage_line_fails_closed(self) -> None:
+        sources = self.coverage_sources()
+        sources[0]["lines"][1] = [1, 1]
+        self.assert_input_error(sources, self.patch(), "duplicate")
 
-    def test_lcov_summary_mismatch_preserves_both_models_without_changing_da_policy(self) -> None:
-        contradictory = self.lcov().replace("LF:4", "LF:6").replace("LH:3", "LH:2")
+    def test_coverage_map_rejects_missing_repository_source_as_stale(self) -> None:
+        sources = self.coverage_sources()
+        sources[0]["path"] = "crates/example/src/missing.rs"
+        self.assert_input_error(sources, self.patch(), "missing|cannot read|does not exist")
 
-        report = self.build(contradictory, self.patch())
-
-        self.assertEqual(report["status"], "passed")
-        audit = report["inputs"]["lcov_summary_audit"]
-        self.assertEqual(audit["status"], "producer-summary-mismatch")
-        self.assertEqual(
-            audit["records"],
-            {
-                "total": 1,
-                "repository": 1,
-                "ignored_external": 0,
-                "summary_mismatched": 1,
-                "lf_mismatched": 1,
-                "lh_mismatched": 1,
-            },
-        )
-        self.assertEqual(
-            audit["declared_summary"],
-            {"lines_found": 6, "lines_hit": 2},
-        )
-        self.assertEqual(
-            audit["unique_da_summary"],
-            {"lines_found": 4, "lines_hit": 3},
-        )
-        self.assertEqual(
-            audit["mismatches"],
-            [
-                {
-                    "record": 1,
-                    "source": "src/lib.rs",
-                    "fields": ["LF", "LH"],
-                    "declared": {"lines_found": 6, "lines_hit": 2},
-                    "unique_da": {"lines_found": 4, "lines_hit": 3},
-                }
-            ],
-        )
-
-    def test_lcov_summary_mismatch_cannot_invent_an_absent_executable_da_line(self) -> None:
-        contradictory = self.lcov({1: 1, 2: 1, 3: 1}).replace("LF:3", "LF:4")
-        diff = self.patch(
-            old_range="5",
-            new_range="5",
-            body=["-        other", "+        0"],
-        )
-
-        report = self.build(contradictory, diff)
-
-        self.assertEqual(report["status"], "failed")
-        self.assertEqual(report["summary"]["coverable_lines"], 0)
-        self.assertEqual(report["summary"]["unmapped_lines"], 1)
-        self.assertEqual(
-            report["files"][0]["lines"][0]["reason"],
-            "executable-looking-line-absent-from-lcov-unique-da-map",
-        )
-
-    def test_lcov_rejects_an_internally_impossible_declared_summary(self) -> None:
-        malformed = self.lcov().replace("LH:3", "LH:5")
-        self.assert_input_error(malformed, self.patch(), "LH cannot exceed LF")
-
-    def test_lcov_cli_prints_the_preserved_summary_contradiction(self) -> None:
-        contradictory = self.lcov().replace("LF:4", "LF:6")
-        lcov_path, diff_path = self.write_inputs(contradictory, self.patch())
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            status = coverage.main(
-                [
-                    "--repo-root",
-                    str(self.repo),
-                    "--lcov",
-                    str(lcov_path),
-                    "--diff",
-                    str(diff_path),
-                ]
-            )
-
-        self.assertEqual(status, 0)
-        self.assertIn("diff coverage: passed", stdout.getvalue())
-        self.assertIn(
-            "LF/LH summaries contradict unique DA records in 1/1 source record(s)",
-            stderr.getvalue(),
-        )
-        self.assertIn(coverage.LCOV_LINE_MODEL, stderr.getvalue())
-
-    def test_lcov_requires_final_record_terminator(self) -> None:
-        malformed = self.lcov().replace("end_of_record\n", "")
-        self.assert_input_error(malformed, self.patch(), "missing end_of_record")
-
-    def test_lcov_rejects_unknown_directive_and_negative_hit_count(self) -> None:
-        unknown = self.lcov().replace("LF:4", "SURPRISE:value\nLF:4")
-        self.assert_input_error(unknown, self.patch(), "unsupported")
-        negative = self.lcov().replace("DA:1,1", "DA:1,-1")
-        self.assert_input_error(negative, self.patch(), "non-negative")
-
-    def test_lcov_rejects_missing_repository_source_as_stale(self) -> None:
+    def test_coverage_map_cannot_extend_beyond_current_source(self) -> None:
         self.assert_input_error(
-            self.lcov(source="src/missing.rs"),
+            self.coverage_sources({999: 1}),
             self.patch(),
-            "does not exist",
-        )
-
-    def test_lcov_line_map_cannot_extend_beyond_current_source(self) -> None:
-        self.assert_input_error(
-            self.lcov({999: 1}),
-            self.patch(),
-            "beyond its current",
+            "out of range",
         )
 
     def test_minimum_rejects_nan_negative_and_over_100(self) -> None:
         for value in ("NaN", "-1", "100.01", " 90", "1e2", "66.666"):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(coverage.DiffCoverageError, "minimum"):
-                    self.build(self.lcov(), self.patch(), minimum=value)
+                    self.build(self.coverage_sources(), self.patch(), minimum=value)
 
     def test_cli_returns_distinct_policy_and_input_exit_codes_and_writes_json(self) -> None:
-        lcov_path, diff_path = self.write_inputs(
-            self.lcov(),
+        coverage_map_path, diff_path = self.write_inputs(
+            self.coverage_sources(),
             self.patch(
                 old_range="5",
                 new_range="5",
@@ -1693,8 +1606,8 @@ class DiffCoverageTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(self.repo),
-                    "--lcov",
-                    str(lcov_path),
+                    "--coverage-map",
+                    str(coverage_map_path),
                     "--diff",
                     str(diff_path),
                     "--json-out",
@@ -1710,8 +1623,8 @@ class DiffCoverageTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(self.repo),
-                    "--lcov",
-                    str(lcov_path),
+                    "--coverage-map",
+                    str(coverage_map_path),
                     "--diff",
                     str(diff_path),
                     "--json-out",
@@ -1722,11 +1635,11 @@ class DiffCoverageTests(unittest.TestCase):
         self.assertEqual(json.loads(report_path.read_text())["status"], "error")
 
     def test_explicit_diff_and_base_head_are_mutually_exclusive(self) -> None:
-        lcov_path, diff_path = self.write_inputs(self.lcov(), self.patch())
+        coverage_map_path, diff_path = self.write_inputs(self.coverage_sources(), self.patch())
         with self.assertRaisesRegex(coverage.DiffCoverageError, "cannot be combined"):
             coverage.build_report(
                 repo_root=self.repo,
-                lcov_path=lcov_path,
+                coverage_map_path=coverage_map_path,
                 diff_path=diff_path,
                 base="main",
                 head="HEAD",
@@ -1734,7 +1647,7 @@ class DiffCoverageTests(unittest.TestCase):
             )
 
     def test_unexpected_cli_failure_still_fails_closed_with_json_artifact(self) -> None:
-        lcov_path, diff_path = self.write_inputs(self.lcov(), self.patch())
+        coverage_map_path, diff_path = self.write_inputs(self.coverage_sources(), self.patch())
         report_path = self.repo / "unexpected.json"
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -1747,8 +1660,8 @@ class DiffCoverageTests(unittest.TestCase):
                 [
                     "--repo-root",
                     str(self.repo),
-                    "--lcov",
-                    str(lcov_path),
+                    "--coverage-map",
+                    str(coverage_map_path),
                     "--diff",
                     str(diff_path),
                     "--json-out",
@@ -1777,15 +1690,15 @@ class DiffCoverageTests(unittest.TestCase):
             "}\n",
             encoding="utf-8",
         )
-        self.run_git("add", "src/lib.rs")
+        self.run_git("add", "crates/example/src/lib.rs")
         self.run_git("commit", "-qm", "head")
         head = self.run_git("rev-parse", "HEAD").strip()
-        lcov_path = self.repo / "coverage.info"
-        lcov_path.write_text(self.lcov({3: 1}), encoding="utf-8")
+        coverage_map_path = self.repo / "coverage-map.json"
+        self.write_coverage_map(self.coverage_sources({3: 1}))
 
         report = coverage.build_report(
             repo_root=self.repo,
-            lcov_path=lcov_path,
+            coverage_map_path=coverage_map_path,
             diff_path=None,
             base=base,
             head=head,
@@ -1840,21 +1753,18 @@ class DiffCoverageTests(unittest.TestCase):
         self.run_git("add", "crates", coverage.DEFAULT_CRITICAL_POLICY_PATH)
         self.run_git("commit", "-qm", "head weakens policy")
         head = self.run_git("rev-parse", "HEAD").strip()
-        lcov_path = self.repo / "coverage.info"
-        lcov_path.write_text(
-            self.lcov(
+        coverage_map_path = self.repo / "coverage-map.json"
+        self.write_coverage_map(self.coverage_sources(
                 {
                     line: 1 if line <= 8 else 0
                     for line in range(1, len(changed_lines) + 1)
                 },
                 source=target_path,
-            ),
-            encoding="utf-8",
-        )
+            ))
 
         report = coverage.build_report(
             repo_root=self.repo,
-            lcov_path=lcov_path,
+            coverage_map_path=coverage_map_path,
             diff_path=None,
             base=base,
             head=head,
@@ -1899,12 +1809,12 @@ class DiffCoverageTests(unittest.TestCase):
         self.run_git("add", ".")
         self.run_git("commit", "-qm", "introduce policy")
         head = self.run_git("rev-parse", "HEAD").strip()
-        lcov_path = self.repo / "coverage.info"
-        lcov_path.write_text(self.lcov({3: 1}), encoding="utf-8")
+        coverage_map_path = self.repo / "coverage-map.json"
+        self.write_coverage_map(self.coverage_sources({3: 1}))
 
         report = coverage.build_report(
             repo_root=self.repo,
-            lcov_path=lcov_path,
+            coverage_map_path=coverage_map_path,
             diff_path=None,
             base=base,
             head=head,
@@ -1942,8 +1852,8 @@ class DiffCoverageTests(unittest.TestCase):
         self.run_git("add", coverage.DEFAULT_CRITICAL_POLICY_PATH)
         self.run_git("commit", "-qm", "head overlapping file rule")
         head = self.run_git("rev-parse", "HEAD").strip()
-        lcov_path = self.repo / "coverage.info"
-        lcov_path.write_text(self.lcov(), encoding="utf-8")
+        coverage_map_path = self.repo / "coverage-map.json"
+        self.write_coverage_map(self.coverage_sources())
 
         with self.assertRaisesRegex(
             coverage.DiffCoverageError,
@@ -1951,7 +1861,7 @@ class DiffCoverageTests(unittest.TestCase):
         ):
             coverage.build_report(
                 repo_root=self.repo,
-                lcov_path=lcov_path,
+                coverage_map_path=coverage_map_path,
                 diff_path=None,
                 base=base,
                 head=head,
@@ -1959,7 +1869,7 @@ class DiffCoverageTests(unittest.TestCase):
             )
 
     def test_base_head_mode_rejects_wrong_checkout_and_dirty_rust(self) -> None:
-        lcov_path, _ = self.write_inputs(self.lcov(), self.patch())
+        coverage_map_path, _ = self.write_inputs(self.coverage_sources(), self.patch())
         sha = "a" * 40
         with mock.patch.object(
             coverage,
@@ -1981,7 +1891,7 @@ class DiffCoverageTests(unittest.TestCase):
         ), mock.patch.object(
             coverage,
             "run_git",
-            return_value=" M src/lib.rs\n",
+            return_value=" M crates/example/src/lib.rs\n",
         ):
             with self.assertRaisesRegex(coverage.DiffCoverageError, "clean Rust"):
                 coverage.load_diff_input(
@@ -1990,7 +1900,7 @@ class DiffCoverageTests(unittest.TestCase):
                     base="base",
                     head="head",
                 )
-        self.assertTrue(lcov_path.exists())
+        self.assertTrue(coverage_map_path.exists())
 
     def run_git(self, *args: str) -> str:
         process = subprocess.run(
@@ -2001,7 +1911,6 @@ class DiffCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
         return process.stdout
-
 
 if __name__ == "__main__":
     unittest.main()

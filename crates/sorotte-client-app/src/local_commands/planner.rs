@@ -5,12 +5,12 @@ use super::display::{local_input_error_output_line, localized_current_offset_mes
 use super::playlist::playlist_index_in_bounds;
 use super::types::{
     LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,
-    LocalOffsetCommand, PlannedLocalInputCommand, PlannedLocalInputDispatch,
-    PlannedLocalRuntimeAction, PlannedLocalRuntimeDispatch,
+    LocalOffsetCommand, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
+    PlannedLocalRuntimeDispatch,
 };
 
-impl PlannedLocalInputCommand {
-    pub fn uses_shared_playlists(&self) -> bool {
+impl LocalInputCommand {
+    fn uses_shared_playlists(&self) -> bool {
         matches!(
             self,
             Self::ShowPlaylist
@@ -26,7 +26,8 @@ impl PlannedLocalInputCommand {
 }
 
 pub fn plan_local_input_dispatch(
-    command: PlannedLocalInputCommand,
+    command: LocalInputCommand,
+    context: &LocalInputCommandPlanningContext<'_>,
     shared_playlists_enabled: bool,
 ) -> PlannedLocalInputDispatch {
     if !shared_playlists_enabled && command.uses_shared_playlists() {
@@ -34,163 +35,84 @@ pub fn plan_local_input_dispatch(
     }
 
     match command {
-        PlannedLocalInputCommand::SendChat(chat_message) => {
+        LocalInputCommand::Chat(chat_message) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SendChat(chat_message))
         }
-        PlannedLocalInputCommand::RequestUserList => {
+        LocalInputCommand::RequestUserList => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestUserList)
         }
-        PlannedLocalInputCommand::ShowUnknownCommandHelp => {
+        LocalInputCommand::ShowUnknownCommandHelp => {
             PlannedLocalInputDispatch::EmitUnknownCommandHelp
         }
-        PlannedLocalInputCommand::ShowHelp => PlannedLocalInputDispatch::EmitHelp,
-        PlannedLocalInputCommand::ShowError(error_kind) => {
-            PlannedLocalInputDispatch::EmitError(error_kind)
+        LocalInputCommand::ShowHelp => PlannedLocalInputDispatch::EmitHelp,
+        LocalInputCommand::ShowPlaylistInvalidIndexError => {
+            PlannedLocalInputDispatch::EmitError(LocalInputCommandErrorKind::PlaylistInvalidIndex)
         }
-        PlannedLocalInputCommand::ShowPlaylist => PlannedLocalInputDispatch::EmitPlaylist,
-        PlannedLocalInputCommand::SelectPlaylistIndex(index) => {
+        LocalInputCommand::ShowQueueMissingFileError => {
+            PlannedLocalInputDispatch::EmitError(LocalInputCommandErrorKind::QueueMissingFile)
+        }
+        LocalInputCommand::ShowPlaylist => PlannedLocalInputDispatch::EmitPlaylist,
+        LocalInputCommand::SelectPlaylistIndex(index) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetPlaylistIndex(index))
         }
-        PlannedLocalInputCommand::NextPlaylistItem => {
+        LocalInputCommand::NextPlaylistItem => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::AdvancePlaylistIndex)
         }
-        PlannedLocalInputCommand::QueuePlaylistItem {
+        LocalInputCommand::QueuePlaylistItem {
             file_name,
             select_after_queue,
         } => PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::QueuePlaylistItem {
             file_name,
             select_after_queue,
         }),
-        PlannedLocalInputCommand::DeletePlaylistIndex(index) => {
+        LocalInputCommand::DeletePlaylistIndex(index) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::DeletePlaylistIndex(index))
         }
-        PlannedLocalInputCommand::UndoPlaylistChange => {
+        LocalInputCommand::UndoPlaylistChange => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::UndoPlaylistChange)
         }
-        PlannedLocalInputCommand::ShuffleRemainingPlaylist => {
+        LocalInputCommand::ShuffleRemainingPlaylist => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::ShuffleRemainingPlaylist)
         }
-        PlannedLocalInputCommand::ShuffleEntirePlaylist => {
+        LocalInputCommand::ShuffleEntirePlaylist => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::ShuffleEntirePlaylist)
         }
-        PlannedLocalInputCommand::UndoSeek => {
+        LocalInputCommand::UndoSeek => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::UndoSeek)
         }
-        PlannedLocalInputCommand::KeepWaitingForSeekPreparation => {
+        LocalInputCommand::KeepWaitingForSeekPreparation => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation)
         }
-        PlannedLocalInputCommand::JoinNearestBufferedSeekPreparation => {
-            PlannedLocalInputDispatch::Run(
-                PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation,
-            )
-        }
-        PlannedLocalInputCommand::CancelSeekPreparation => {
+        LocalInputCommand::JoinNearestBufferedSeekPreparation => PlannedLocalInputDispatch::Run(
+            PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation,
+        ),
+        LocalInputCommand::CancelSeekPreparation => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::CancelSeekPreparation)
         }
-        PlannedLocalInputCommand::SetUserOffset(command) => {
+        LocalInputCommand::SetUserOffset(command) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetUserOffset(command))
         }
-        PlannedLocalInputCommand::SeekAbsolute(position_seconds) => PlannedLocalInputDispatch::Run(
+        LocalInputCommand::SeekAbsolute(position_seconds) => PlannedLocalInputDispatch::Run(
             PlannedLocalRuntimeAction::SeekToPosition(position_seconds),
         ),
-        PlannedLocalInputCommand::SeekRelative(offset_seconds) => {
+        LocalInputCommand::SeekRelative(offset_seconds) => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SeekByOffset(offset_seconds))
         }
-        PlannedLocalInputCommand::Play => {
-            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::Play)
-        }
-        PlannedLocalInputCommand::Pause => {
+        LocalInputCommand::Play => PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::Play),
+        LocalInputCommand::Pause => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::Pause)
         }
-        PlannedLocalInputCommand::TogglePause => {
+        LocalInputCommand::TogglePause => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::TogglePause)
         }
-        PlannedLocalInputCommand::ToggleReady => {
+        LocalInputCommand::ToggleReady => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::ToggleReady)
         }
-        PlannedLocalInputCommand::SetUserReady { username, ready } => {
+        LocalInputCommand::SetUserReady { username, ready } => {
             PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetUserReady {
                 username,
                 ready,
             })
-        }
-        PlannedLocalInputCommand::RequestControllerAuth { room, password } => {
-            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
-                room,
-                password,
-            })
-        }
-        PlannedLocalInputCommand::SetRoomWithDefaultFallback(room) => {
-            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(
-                room,
-            ))
-        }
-        PlannedLocalInputCommand::SetRoom(room) => {
-            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoom(room))
-        }
-    }
-}
-
-pub fn plan_local_input_command(
-    command: LocalInputCommand,
-    context: &LocalInputCommandPlanningContext<'_>,
-) -> PlannedLocalInputCommand {
-    match command {
-        LocalInputCommand::Chat(chat_message) => PlannedLocalInputCommand::SendChat(chat_message),
-        LocalInputCommand::RequestUserList => PlannedLocalInputCommand::RequestUserList,
-        LocalInputCommand::ShowUnknownCommandHelp => {
-            PlannedLocalInputCommand::ShowUnknownCommandHelp
-        }
-        LocalInputCommand::ShowHelp => PlannedLocalInputCommand::ShowHelp,
-        LocalInputCommand::ShowPlaylistInvalidIndexError => {
-            PlannedLocalInputCommand::ShowError(LocalInputCommandErrorKind::PlaylistInvalidIndex)
-        }
-        LocalInputCommand::ShowQueueMissingFileError => {
-            PlannedLocalInputCommand::ShowError(LocalInputCommandErrorKind::QueueMissingFile)
-        }
-        LocalInputCommand::ShowPlaylist => PlannedLocalInputCommand::ShowPlaylist,
-        LocalInputCommand::SelectPlaylistIndex(index) => {
-            PlannedLocalInputCommand::SelectPlaylistIndex(index)
-        }
-        LocalInputCommand::NextPlaylistItem => PlannedLocalInputCommand::NextPlaylistItem,
-        LocalInputCommand::QueuePlaylistItem {
-            file_name,
-            select_after_queue,
-        } => PlannedLocalInputCommand::QueuePlaylistItem {
-            file_name,
-            select_after_queue,
-        },
-        LocalInputCommand::DeletePlaylistIndex(index) => {
-            PlannedLocalInputCommand::DeletePlaylistIndex(index)
-        }
-        LocalInputCommand::UndoPlaylistChange => PlannedLocalInputCommand::UndoPlaylistChange,
-        LocalInputCommand::ShuffleRemainingPlaylist => {
-            PlannedLocalInputCommand::ShuffleRemainingPlaylist
-        }
-        LocalInputCommand::ShuffleEntirePlaylist => PlannedLocalInputCommand::ShuffleEntirePlaylist,
-        LocalInputCommand::UndoSeek => PlannedLocalInputCommand::UndoSeek,
-        LocalInputCommand::KeepWaitingForSeekPreparation => {
-            PlannedLocalInputCommand::KeepWaitingForSeekPreparation
-        }
-        LocalInputCommand::JoinNearestBufferedSeekPreparation => {
-            PlannedLocalInputCommand::JoinNearestBufferedSeekPreparation
-        }
-        LocalInputCommand::CancelSeekPreparation => PlannedLocalInputCommand::CancelSeekPreparation,
-        LocalInputCommand::SetUserOffset(command) => {
-            PlannedLocalInputCommand::SetUserOffset(command)
-        }
-        LocalInputCommand::SeekAbsolute(position_seconds) => {
-            PlannedLocalInputCommand::SeekAbsolute(position_seconds)
-        }
-        LocalInputCommand::SeekRelative(offset_seconds) => {
-            PlannedLocalInputCommand::SeekRelative(offset_seconds)
-        }
-        LocalInputCommand::Play => PlannedLocalInputCommand::Play,
-        LocalInputCommand::Pause => PlannedLocalInputCommand::Pause,
-        LocalInputCommand::TogglePause => PlannedLocalInputCommand::TogglePause,
-        LocalInputCommand::ToggleReady => PlannedLocalInputCommand::ToggleReady,
-        LocalInputCommand::SetUserReady { username, ready } => {
-            PlannedLocalInputCommand::SetUserReady { username, ready }
         }
         LocalInputCommand::CreateControlledRoom(room_name) => {
             let room = room_name.unwrap_or_else(|| {
@@ -199,24 +121,28 @@ pub fn plan_local_input_command(
                     .unwrap_or(context.configured_room)
                     .to_owned()
             });
-            PlannedLocalInputCommand::RequestControllerAuth {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
                 room: controlled_room_base_name(&room),
                 password: generate_room_password().into(),
-            }
+            })
         }
         LocalInputCommand::AuthController(password) => {
-            PlannedLocalInputCommand::RequestControllerAuth {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
                 room: context
                     .current_room
                     .unwrap_or(context.configured_room)
                     .to_owned(),
                 password,
-            }
+            })
         }
         LocalInputCommand::SetRoomWithDefaultFallback => {
-            PlannedLocalInputCommand::SetRoomWithDefaultFallback(context.configured_room.to_owned())
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(
+                context.configured_room.to_owned(),
+            ))
         }
-        LocalInputCommand::SetRoom(room) => PlannedLocalInputCommand::SetRoom(room),
+        LocalInputCommand::SetRoom(room) => {
+            PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoom(room))
+        }
     }
 }
 

@@ -1,15 +1,14 @@
 use super::{
     LocalInputCommand, LocalInputCommandErrorKind, LocalInputCommandPlanningContext,
-    LocalOffsetCommand, PlannedLocalInputCommand, PlannedLocalInputDispatch,
-    PlannedLocalRuntimeAction, controlled_room_base_name, local_command_help_footer_lines,
-    local_command_help_lines, local_input_error_output_line, localized_current_offset_message,
+    LocalOffsetCommand, PlannedLocalInputDispatch, PlannedLocalRuntimeAction,
+    controlled_room_base_name, local_command_help_footer_lines, local_command_help_lines,
+    local_input_error_output_line, localized_current_offset_message,
     localized_local_input_error_message, localized_unknown_command_message,
-    parse_local_input_chat_message, parse_local_input_command, plan_local_input_command,
-    plan_local_input_dispatch, plan_local_offset_runtime_dispatch,
-    plan_local_playlist_delete_runtime_dispatch, plan_local_playlist_select_runtime_dispatch,
-    plan_local_runtime_dispatch, playlist_index_in_bounds, playlist_listing_message,
-    playlist_listing_message_localized, render_local_input_display_lines,
-    resolved_local_user_offset_seconds,
+    parse_local_input_chat_message, parse_local_input_command, plan_local_input_dispatch,
+    plan_local_offset_runtime_dispatch, plan_local_playlist_delete_runtime_dispatch,
+    plan_local_playlist_select_runtime_dispatch, plan_local_runtime_dispatch,
+    playlist_index_in_bounds, playlist_listing_message, playlist_listing_message_localized,
+    render_local_input_display_lines, resolved_local_user_offset_seconds,
 };
 
 #[test]
@@ -61,17 +60,15 @@ fn seek_preparation_controls_parse_and_plan_as_runtime_actions() {
 
     for (input, parsed, action) in cases {
         assert_eq!(parse_local_input_command(input), Some(parsed.clone()));
-        let planned = plan_local_input_command(
+        let planned = plan_local_input_dispatch(
             parsed,
             &LocalInputCommandPlanningContext {
                 current_room: Some("room1"),
                 configured_room: "room1",
             },
+            true,
         );
-        assert_eq!(
-            plan_local_input_dispatch(planned, true),
-            PlannedLocalInputDispatch::Run(action)
-        );
+        assert_eq!(planned, PlannedLocalInputDispatch::Run(action));
     }
 }
 
@@ -119,38 +116,68 @@ fn controlled_room_base_name_strips_managed_suffix() {
 }
 
 #[test]
-fn plan_local_input_command_resolves_special_room_flows() {
+fn plan_local_input_dispatch_resolves_special_room_flows() {
     let context = LocalInputCommandPlanningContext {
         current_room: Some("+watch-party:ABCDEF123456"),
         configured_room: "fallback-room",
     };
-
-    let created = plan_local_input_command(LocalInputCommand::CreateControlledRoom(None), &context);
-    let PlannedLocalInputCommand::RequestControllerAuth { room, password } = created else {
+    let created = plan_local_input_dispatch(
+        LocalInputCommand::CreateControlledRoom(None),
+        &context,
+        true,
+    );
+    let PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
+        room,
+        password,
+    }) = created
+    else {
         panic!("expected controller auth request");
     };
     assert_eq!(room, "watch-party");
     assert_eq!(password.expose_secret().len(), 10);
-
-    let auth = plan_local_input_command(LocalInputCommand::AuthController("pw".into()), &context);
     assert_eq!(
-        auth,
-        PlannedLocalInputCommand::RequestControllerAuth {
+        plan_local_input_dispatch(
+            LocalInputCommand::AuthController("pw".into()),
+            &context,
+            true
+        ),
+        PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
             room: "+watch-party:ABCDEF123456".to_owned(),
             password: "pw".into(),
-        }
+        })
     );
-
+    let fallback = LocalInputCommandPlanningContext {
+        current_room: None,
+        configured_room: "fallback-room",
+    };
     assert_eq!(
-        plan_local_input_command(
+        plan_local_input_dispatch(
             LocalInputCommand::SetRoomWithDefaultFallback,
-            &LocalInputCommandPlanningContext {
-                current_room: None,
-                configured_room: "fallback-room",
-            },
+            &fallback,
+            true
         ),
-        PlannedLocalInputCommand::SetRoomWithDefaultFallback("fallback-room".to_owned())
+        PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(
+            "fallback-room".to_owned()
+        ))
     );
+    for (requested, expected) in [
+        (None, "fallback-room"),
+        (Some("+explicit:ABCDEF123456".to_owned()), "explicit"),
+    ] {
+        let PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::RequestControllerAuth {
+            room,
+            password,
+        }) = plan_local_input_dispatch(
+            LocalInputCommand::CreateControlledRoom(requested),
+            &fallback,
+            true,
+        )
+        else {
+            panic!("expected controller auth request");
+        };
+        assert_eq!(room, expected);
+        assert_eq!(password.expose_secret().len(), 10);
+    }
 }
 
 #[test]
@@ -169,19 +196,51 @@ fn local_controller_auth_command_debug_redacts_password() {
 }
 
 #[test]
-fn planned_local_input_command_uses_shared_playlists_matches_playlist_commands() {
-    assert!(PlannedLocalInputCommand::ShowPlaylist.uses_shared_playlists());
-    assert!(PlannedLocalInputCommand::SelectPlaylistIndex(1).uses_shared_playlists());
-    assert!(!PlannedLocalInputCommand::ToggleReady.uses_shared_playlists());
-    assert_eq!(
-        plan_local_input_command(
+fn disabled_shared_playlists_suppress_valid_playlist_actions_but_retain_errors() {
+    let context = LocalInputCommandPlanningContext {
+        current_room: None,
+        configured_room: "room",
+    };
+    for command in [
+        LocalInputCommand::ShowPlaylist,
+        LocalInputCommand::SelectPlaylistIndex(1),
+        LocalInputCommand::NextPlaylistItem,
+        LocalInputCommand::QueuePlaylistItem {
+            file_name: "episode.mkv".to_owned(),
+            select_after_queue: true,
+        },
+        LocalInputCommand::DeletePlaylistIndex(1),
+        LocalInputCommand::UndoPlaylistChange,
+        LocalInputCommand::ShuffleRemainingPlaylist,
+        LocalInputCommand::ShuffleEntirePlaylist,
+    ] {
+        assert_eq!(
+            plan_local_input_dispatch(command.clone(), &context, false),
+            PlannedLocalInputDispatch::Suppressed
+        );
+        assert_ne!(
+            plan_local_input_dispatch(command, &context, true),
+            PlannedLocalInputDispatch::Suppressed
+        );
+    }
+    for (command, error) in [
+        (
             LocalInputCommand::ShowQueueMissingFileError,
-            &LocalInputCommandPlanningContext {
-                current_room: None,
-                configured_room: "fallback-room",
-            },
+            LocalInputCommandErrorKind::QueueMissingFile,
         ),
-        PlannedLocalInputCommand::ShowError(LocalInputCommandErrorKind::QueueMissingFile)
+        (
+            LocalInputCommand::ShowPlaylistInvalidIndexError,
+            LocalInputCommandErrorKind::PlaylistInvalidIndex,
+        ),
+    ] {
+        assert_eq!(
+            plan_local_input_dispatch(command, &context, false),
+            PlannedLocalInputDispatch::EmitError(error)
+        );
+    }
+    assert_eq!(
+        plan_local_input_dispatch(LocalInputCommand::ToggleReady, &context, false),
+        PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::ToggleReady)
     );
 }
 
@@ -402,27 +461,22 @@ fn plan_local_offset_runtime_dispatch_emits_seek_and_status_line() {
 }
 
 #[test]
-fn plan_local_input_dispatch_maps_and_suppresses_commands() {
+fn plan_local_input_dispatch_retains_help_and_chat() {
+    let context = LocalInputCommandPlanningContext {
+        current_room: None,
+        configured_room: "room",
+    };
     assert_eq!(
-        plan_local_input_dispatch(PlannedLocalInputCommand::ShowHelp, true,),
+        plan_local_input_dispatch(LocalInputCommand::ShowHelp, &context, false),
         PlannedLocalInputDispatch::EmitHelp
     );
     assert_eq!(
-        plan_local_input_dispatch(PlannedLocalInputCommand::ShowPlaylist, false,),
-        PlannedLocalInputDispatch::Suppressed
+        plan_local_input_dispatch(LocalInputCommand::ShowUnknownCommandHelp, &context, false),
+        PlannedLocalInputDispatch::EmitUnknownCommandHelp
     );
     assert_eq!(
-        plan_local_input_dispatch(PlannedLocalInputCommand::SendChat("hello".to_owned()), true,),
+        plan_local_input_dispatch(LocalInputCommand::Chat("hello".to_owned()), &context, false),
         PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SendChat("hello".to_owned()))
-    );
-    assert_eq!(
-        plan_local_input_dispatch(
-            PlannedLocalInputCommand::SetRoomWithDefaultFallback("room2".to_owned()),
-            true,
-        ),
-        PlannedLocalInputDispatch::Run(PlannedLocalRuntimeAction::SetRoomWithDefaultFallback(
-            "room2".to_owned()
-        ))
     );
 }
 
@@ -555,30 +609,26 @@ fn explicit_play_pause_commands_remain_distinct_through_planning() {
         configured_room: "room1",
     };
 
-    for (input, command, planned, action) in [
+    for (input, command, action) in [
         (
             "play",
             LocalInputCommand::Play,
-            PlannedLocalInputCommand::Play,
             PlannedLocalRuntimeAction::Play,
         ),
         (
             "pause",
             LocalInputCommand::Pause,
-            PlannedLocalInputCommand::Pause,
             PlannedLocalRuntimeAction::Pause,
         ),
         (
             "p",
             LocalInputCommand::TogglePause,
-            PlannedLocalInputCommand::TogglePause,
             PlannedLocalRuntimeAction::TogglePause,
         ),
     ] {
         assert_eq!(parse_local_input_command(input), Some(command.clone()));
-        assert_eq!(plan_local_input_command(command, &context), planned.clone());
         assert_eq!(
-            plan_local_input_dispatch(planned, true),
+            plan_local_input_dispatch(command, &context, true),
             PlannedLocalInputDispatch::Run(action)
         );
     }

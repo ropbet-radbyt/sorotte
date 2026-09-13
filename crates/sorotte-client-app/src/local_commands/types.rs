@@ -107,47 +107,6 @@ pub enum PlannedLocalInputDispatch {
     Run(PlannedLocalRuntimeAction),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PlannedLocalInputCommand {
-    SendChat(String),
-    RequestUserList,
-    ShowUnknownCommandHelp,
-    ShowHelp,
-    ShowError(LocalInputCommandErrorKind),
-    ShowPlaylist,
-    SelectPlaylistIndex(i64),
-    NextPlaylistItem,
-    QueuePlaylistItem {
-        file_name: String,
-        select_after_queue: bool,
-    },
-    DeletePlaylistIndex(i64),
-    UndoPlaylistChange,
-    ShuffleRemainingPlaylist,
-    ShuffleEntirePlaylist,
-    UndoSeek,
-    KeepWaitingForSeekPreparation,
-    JoinNearestBufferedSeekPreparation,
-    CancelSeekPreparation,
-    SetUserOffset(LocalOffsetCommand),
-    SeekAbsolute(f64),
-    SeekRelative(f64),
-    Play,
-    Pause,
-    TogglePause,
-    ToggleReady,
-    SetUserReady {
-        username: String,
-        ready: bool,
-    },
-    RequestControllerAuth {
-        room: String,
-        password: SecretValue,
-    },
-    SetRoomWithDefaultFallback(String),
-    SetRoom(String),
-}
-
 pub struct LocalInputCommandPlanningContext<'a> {
     pub current_room: Option<&'a str>,
     pub configured_room: &'a str,

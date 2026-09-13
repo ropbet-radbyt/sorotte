@@ -449,19 +449,16 @@ unmapped lines; its required aggregate also passed.
 Exact local replay and artifact identities are retained in
 [`platform-coverage-map-union-20260731.md`](../docs/evidence/test-coverage/platform-coverage-map-union-20260731.md).
 
-`scripts/diff_coverage.py --lcov` remains a diagnostic
-compatibility mode. It now declares `unique-da-source-lines` as the only
-changed-line model and retains contradictory `LF`/`LH` summaries as a separate
-structured audit. Malformed or duplicate `DA`, impossible summaries, stale
-records, and missing executable mappings still fail closed. `TC-HARNESS-005`
-is therefore resolved for Sorotte's consumer without rewriting the
-contradictory producer artifact or choosing a favorable aggregate. The
-required gate continues to use the stronger source-bound dual-native contract.
+The changed-line checker accepts only source-bound LLVM physical-line maps through
+`--coverage-map`; repeat the option to combine compatible platform maps. The
+optional LCOV diagnostic input has been retired. External LCOV export remains
+available through `cargo cov-lcov` for tools that consume it. Historical producer
+contradictions and their consumer investigation remain recorded below.
 
 The fresh local producer experiment, exact artifact hashes, adversarial cases,
 and six-phase result are retained in
 [`llvm-native-line-map-20260728.md`](../docs/evidence/test-coverage/llvm-native-line-map-20260728.md).
-The LCOV consumer resolution and current-source cross-audit are retained in
+The historical LCOV consumer resolution and source cross-audit are retained in
 [`lcov-dual-model-20260729.md`](../docs/evidence/test-coverage/lcov-dual-model-20260729.md).
 
 ## Merged behavioral coverage profiles

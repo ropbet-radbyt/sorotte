@@ -5,8 +5,6 @@
 //! These views carry feature state between the shell and runtime.
 
 use super::remote_services;
-#[cfg(test)]
-use super::runtime_bridge::GuiPlexPlaylistJobCancellationReason;
 use super::runtime_bridge::GuiRuntimeRequest;
 use super::runtime_state::GuiRuntimeState;
 use super::shell_state::{
@@ -23,29 +21,15 @@ use super::shell_state::{
 use super::ui_state::GuiUpdateCheckState;
 use sorotte_client_app::app_boundary::{commands::LocalOffsetCommand, state::StoredClientSettings};
 
-/// Feature routing for commands sent from the shell to the application layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::app) enum GuiFeature {
-    Session,
-    Playlist,
-    MediaResolution,
-    MediaMatch,
-    Plex,
-    Settings,
-}
-
 /// Typed application command used by the runtime queue.
 ///
 /// `GuiRuntimeRequest` remains the shell action façade at call sites;
-/// requests are classified once when they cross into the application layer.
+/// player and update requests are converted to their typed handler commands.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiClientCommand {
     Player(player::Command),
     Updates(Box<updates::Command>),
-    Routed {
-        feature: GuiFeature,
-        request: Box<GuiRuntimeRequest>,
-    },
+    Request(Box<GuiRuntimeRequest>),
 }
 
 impl GuiClientCommand {
@@ -99,90 +83,7 @@ impl GuiClientCommand {
             Request::ApplyStagedUpdate(staged_update) => {
                 Self::Updates(Box::new(updates::Command::ApplyStaged(staged_update)))
             }
-            request => Self::Routed {
-                feature: Self::request_feature(&request),
-                request: Box::new(request),
-            },
-        }
-    }
-
-    fn request_feature(request: &GuiRuntimeRequest) -> GuiFeature {
-        use GuiRuntimeRequest as Request;
-
-        match request {
-            Request::CheckForUpdates { .. }
-            | Request::DownloadUpdate(_)
-            | Request::DownloadAndInstallUpdate(_)
-            | Request::ApplyStagedUpdate(_) => {
-                unreachable!("update requests are converted to typed update commands")
-            }
-            Request::SetRoom(_)
-            | Request::ReturnToDefaultRoom
-            | Request::SetLocalReady(_)
-            | Request::SetReadyForUser { .. }
-            | Request::RequestControllerAuth { .. }
-            | Request::SendChatMessage(_)
-            | Request::CompletePendingOperation(_)
-            | Request::CancelPendingOperation(_) => GuiFeature::Session,
-            Request::OpenMediaFiles { .. }
-            | Request::ImportSharedPlaylistFile { .. }
-            | Request::OpenMainWindowUserMedia(_)
-            | Request::OpenMainWindowUserContainingFolder(_)
-            | Request::RetryPendingStreamMediaOpen => GuiFeature::MediaResolution,
-            Request::UndoSeek
-            | Request::SetOffset(_)
-            | Request::SetAutoplayEnabled(_)
-            | Request::SetAutoplayThreshold(_)
-            | Request::RetryPlayerLaunch
-            | Request::RetryPlayerSettings
-            | Request::RetryChatOsdIntegration
-            | Request::SeekOffset(_)
-            | Request::SeekToPosition(_)
-            | Request::KeepWaitingForSeekPreparation
-            | Request::CancelSeekPreparation
-            | Request::JoinNearestBufferedSeekPreparation
-            | Request::SetPlaybackPaused(_)
-            | Request::TogglePlaybackPause => {
-                unreachable!("player requests are converted to typed player commands")
-            }
-            Request::QueuePlaylistEntry { .. }
-            | Request::SetPlaylistIndex(_)
-            | Request::DeletePlaylistIndex(_)
-            | Request::UndoPlaylistChange
-            | Request::ShuffleRemainingPlaylist
-            | Request::ShuffleEntirePlaylist
-            | Request::ReplacePlaylist { .. }
-            | Request::ResolvePlaylistSource { .. }
-            | Request::AdvancePlaylistIndex => GuiFeature::Playlist,
-            Request::InstallMediaMatchTools
-            | Request::ImportMediaMatchFfmpeg(_)
-            | Request::ImportMediaMatchFfprobe(_)
-            | Request::OpenMediaMatchInstallLocation
-            | Request::RecheckMediaMatchTools
-            | Request::RebuildMediaMatchIndex
-            | Request::CancelMediaMatchRebuild
-            | Request::ClearMediaMatchCache
-            | Request::SetMediaMatchFingerprintingEnabled(_)
-            | Request::SetMediaMatchBackgroundWarmupEnabled(_)
-            | Request::SetMediaMatchWireSharingEnabled(_)
-            | Request::SetMediaMatchRuntimeToleranceEnabled(_)
-            | Request::SetMediaMatchAutoplayPolicy(_) => GuiFeature::MediaMatch,
-            Request::StartPlexAuth
-            | Request::PollPlexAuth
-            | Request::RefreshPlexServers
-            | Request::SelectPlexServer { .. }
-            | Request::TogglePlexSync(_)
-            | Request::TogglePlexStreaming(_)
-            | Request::DisconnectPlex
-            | Request::SearchSelectedPlexServerMedia { .. }
-            | Request::ResolvePlexPlaylistItem { .. }
-            | Request::CancelPlexPlaylistJobs { .. } => GuiFeature::Plex,
-            Request::SetPluginEnabled { .. }
-            | Request::InstallStreamHelper
-            | Request::IntegrateStreamHelperDownloader(_)
-            | Request::IntegrateStreamHelperJsRuntime(_)
-            | Request::OpenStreamHelperInstallLocation
-            | Request::RecheckStreamHelper => GuiFeature::Settings,
+            request => Self::Request(Box::new(request)),
         }
     }
 
@@ -190,7 +91,7 @@ impl GuiClientCommand {
         match self {
             Self::Player(command) => command.into_runtime_request(),
             Self::Updates(command) => (*command).into_runtime_request(),
-            Self::Routed { request, .. } => *request,
+            Self::Request(request) => *request,
         }
     }
 }
@@ -598,53 +499,6 @@ mod tests {
             projected.media_resolution.last_dialog_directory.as_deref(),
             Some("C:/media")
         );
-    }
-
-    #[test]
-    fn runtime_commands_are_routed_to_feature_owners() {
-        assert!(matches!(
-            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::SetRoom("room".to_owned(),)),
-            GuiClientCommand::Routed {
-                feature: GuiFeature::Session,
-                ..
-            }
-        ));
-        assert!(matches!(
-            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::ShuffleEntirePlaylist,),
-            GuiClientCommand::Routed {
-                feature: GuiFeature::Playlist,
-                ..
-            }
-        ));
-        assert!(matches!(
-            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::StartPlexAuth),
-            GuiClientCommand::Routed {
-                feature: GuiFeature::Plex,
-                ..
-            }
-        ));
-        assert!(matches!(
-            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::CancelPlexPlaylistJobs {
-                reason: GuiPlexPlaylistJobCancellationReason::PickerClosed,
-            },),
-            GuiClientCommand::Routed {
-                feature: GuiFeature::Plex,
-                ..
-            }
-        ));
-        assert!(matches!(
-            GuiClientCommand::from_runtime_request(GuiRuntimeRequest::CheckForUpdates {
-                language: "en".to_owned(),
-                update_channel: None,
-                user_initiated: true,
-            }),
-            GuiClientCommand::Updates(command)
-                if matches!(command.as_ref(), updates::Command::CheckForUpdates {
-                language,
-                update_channel: None,
-                user_initiated: true,
-            } if language == "en")
-        ));
     }
 
     #[test]

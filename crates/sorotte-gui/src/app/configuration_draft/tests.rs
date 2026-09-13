@@ -276,3 +276,30 @@ fn changed_setting_ids_include_secret_intent_and_same_length_server_replacement(
         GuiSettingApplyRequirement::OnSave
     );
 }
+
+#[test]
+fn configuration_draft_preserves_player_argument_boundaries_across_edit_and_reload() {
+    let arguments = vec![
+        "--title=Watch party".to_owned(),
+        r"--script=C:\My Scripts\custom.lua".to_owned(),
+        "--title=Alice's \"watch party\"".to_owned(),
+        String::new(),
+        " \t ".to_owned(),
+        "--no-border".to_owned(),
+    ];
+    let settings = StoredClientSettings {
+        player_path: Some("mpv".to_owned()),
+        per_player_arguments: Some(BTreeMap::from([("mpv".to_owned(), arguments)])),
+        ..StoredClientSettings::default()
+    };
+    let mut draft = GuiConfigurationDraft::from_stored_settings(&settings);
+    for _ in 0..2 {
+        let text = draft
+            .control_value(SettingId::PlayerArguments)
+            .unwrap()
+            .to_owned();
+        assert!(draft.apply_text_value(SettingId::PlayerArguments, &text));
+        assert_eq!(draft.to_stored_settings(), settings);
+        draft = GuiConfigurationDraft::from_stored_settings(&draft.to_stored_settings());
+    }
+}

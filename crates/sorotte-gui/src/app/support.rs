@@ -175,7 +175,25 @@ pub(super) fn player_arguments_text_for_path(
     };
     arguments
         .and_then(|arguments| arguments.get(&player_path))
-        .map(|arguments| arguments.join(" "))
+        .map(|arguments| {
+            arguments
+                .iter()
+                .map(|argument| {
+                    if argument.is_empty()
+                        || argument.chars().any(|character| {
+                            character.is_whitespace() || matches!(character, '\'' | '"')
+                        })
+                    {
+                        // Adjacent quoted segments preserve literal quotes without treating
+                        // Windows path separators as shell escapes.
+                        format!("'{}'", argument.replace('\'', "'\"'\"'"))
+                    } else {
+                        argument.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .unwrap_or_default()
 }
 
@@ -234,9 +252,7 @@ fn parse_command_line_like_text(value: &str) -> Vec<String> {
             characters.next();
         }
 
-        if !token.is_empty() {
-            parsed.push(token);
-        }
+        parsed.push(token);
     }
 
     parsed
