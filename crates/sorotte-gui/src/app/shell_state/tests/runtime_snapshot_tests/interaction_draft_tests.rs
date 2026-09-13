@@ -332,8 +332,6 @@ fn gui_shell_app_state_normalizes_disabled_menu_selection_in_gui_interaction_run
                 id: MenuActionId::Seek,
                 enabled: false,
             }],
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         },
     )));

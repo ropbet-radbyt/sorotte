@@ -129,16 +129,16 @@ use self::mpv_startup::{
 use self::notifications::{
     autoplay_countdown_notification_message_localized, chat_notification_message,
     controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
-    controller_auth_transition_notification_message_localized,
-    flush_autoplay_notifications_to_sink, flush_chat_notifications_to_sink,
-    flush_controller_auth_notifications_to_sink, flush_file_difference_notifications_to_sink,
-    flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications_to_sink,
-    flush_user_change_notifications_to_sink, format_duration, format_file_difference_summary,
-    localized_file_difference_summary, player_playback_drift_diagnostic_messages_localized,
-    player_playback_telemetry_update_message, player_playback_telemetry_update_message_localized,
-    reconnect_transition_notification_message, reconnect_transition_notification_message_localized,
-    seek_preparation_diagnostic_messages, user_change_notification_hidden_from_osd,
-    user_change_notification_message, user_change_notification_message_localized,
+    controller_auth_transition_notification_message_localized, flush_autoplay_notifications,
+    flush_chat_notifications, flush_controller_auth_notifications,
+    flush_file_difference_notifications, flush_reconnect_correction_diagnostics_to_sink,
+    flush_reconnect_notifications, flush_user_change_notifications, format_duration,
+    format_file_difference_summary, localized_file_difference_summary,
+    player_playback_drift_diagnostic_messages_localized, player_playback_telemetry_update_message,
+    player_playback_telemetry_update_message_localized, reconnect_transition_notification_message,
+    reconnect_transition_notification_message_localized, seek_preparation_diagnostic_messages,
+    user_change_notification_hidden_from_osd, user_change_notification_message,
+    user_change_notification_message_localized,
 };
 use self::session_runner::run_client_network_loop_with_startup_overrides_and_stored_settings;
 #[cfg(test)]

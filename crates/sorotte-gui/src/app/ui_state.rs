@@ -10,10 +10,7 @@ use sorotte_client_app::app_boundary::{
 
 use super::SYNCPLAY_QSETTINGS_STORE_NAMES;
 use super::remote_services;
-use super::runtime_localization::{
-    localized_update_checked_at_line, localized_update_dismiss_hint_line,
-    localized_update_notice_available_message,
-};
+use super::runtime_localization::localized_update_checked_at_line;
 use super::shell_state::{
     GuiConfigurationTab, GuiShellView, GuiTransientNotificationLevel, MenuActionId,
     SorotteGuiShellAppState,
@@ -84,21 +81,6 @@ pub(super) struct GuiUpdateIndicatorModel {
 }
 
 impl GuiUpdateCheckState {
-    pub(super) fn body_lines(&self, language: Option<&str>) -> Vec<String> {
-        let mut lines = Vec::new();
-        if let Some(message) = self.message.as_deref() {
-            lines.push(message.to_owned());
-        } else {
-            lines.push(localized_update_notice_available_message(language).to_owned());
-        }
-        if let Some(timestamp) = self.last_checked_for_updates.as_deref() {
-            lines.push(localized_update_checked_at_line(language, timestamp));
-        } else {
-            lines.push(localized_update_dismiss_hint_line(language).to_owned());
-        }
-        lines
-    }
-
     pub(super) fn status_level(&self) -> GuiTransientNotificationLevel {
         match self.status.as_ref() {
             Some(remote_services::UpdateCheckStatus::UpToDate) => {

@@ -68,7 +68,7 @@ where
             diagnostics.log_player_drift,
         )?;
     }
-    flush_reconnect_notifications(runtime)?;
+    flush_reconnect_notifications(runtime, &mut emit_reconnect_transition_notification)?;
     if let Some(format) = diagnostics.reconnect_correction_diagnostics_format {
         flush_reconnect_correction_diagnostics_to_sink(
             runtime,
@@ -79,9 +79,12 @@ where
         )?;
     }
     if matches!(event, ConnectedSessionEvent::InboundMessage(_)) {
-        flush_controller_auth_notifications(runtime)?;
-        flush_chat_notifications(runtime)?;
-        flush_user_change_notifications(runtime)?;
+        flush_controller_auth_notifications(
+            runtime,
+            &mut emit_controller_auth_transition_notification,
+        )?;
+        flush_chat_notifications(runtime, &mut emit_chat_notification)?;
+        flush_user_change_notifications(runtime, &mut emit_user_change_notification)?;
     }
     if matches!(
         event,

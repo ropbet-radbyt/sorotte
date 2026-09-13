@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use crate::{MediaExtractionSettings, MediaMatchToolPaths, fingerprint_media_file_cancellable};
+use crate::{MediaExtractionSettings, MediaMatchToolPaths, fingerprint_media_file_with_report};
 
 #[cfg(unix)]
 mod unix_busy_tests;
@@ -413,11 +413,11 @@ fn pre_cancel_starts_no_process_and_precedes_filesystem_work() {
     ));
     assert!(!root.marker("launched").exists());
     let tools = root.tools("silent", "silent");
-    let result = fingerprint_media_file_cancellable(
+    let result = fingerprint_media_file_with_report(
         root.marker("missing media"),
         &tools,
         &MediaExtractionSettings::default(),
-        &cancelled,
+        Some(&cancelled),
     );
     assert!(matches!(
         result,
@@ -605,11 +605,11 @@ fn cancellation_after_probe_launch_prevents_audio_and_returns_no_fingerprint() {
     let tools = root.tools("silent", "duration");
     let cancelled = Arc::new(AtomicBool::new(false));
     let controller = cancel_after_handshake(root.marker("ffprobe"), Arc::clone(&cancelled));
-    let result = fingerprint_media_file_cancellable(
+    let result = fingerprint_media_file_with_report(
         root.media(),
         &tools,
         &MediaExtractionSettings::default(),
-        &cancelled,
+        Some(&cancelled),
     );
     let cancelled_at = controller.join().unwrap();
     assert!(
@@ -630,11 +630,11 @@ fn cancellation_after_audio_launch_is_not_a_degraded_fingerprint() {
     let tools = root.tools("duration", "silent");
     let cancelled = Arc::new(AtomicBool::new(false));
     let controller = cancel_after_handshake(root.marker("ffmpeg"), Arc::clone(&cancelled));
-    let result = fingerprint_media_file_cancellable(
+    let result = fingerprint_media_file_with_report(
         root.media(),
         &tools,
         &MediaExtractionSettings::default(),
-        &cancelled,
+        Some(&cancelled),
     );
     let cancelled_at = controller.join().unwrap_or_else(|_| {
         panic!("audio fixture never reached cancellation; extraction result: {result:?}")
@@ -685,11 +685,11 @@ fn pcm_output_limit_is_derived_from_the_requested_window() {
     let root = FixtureRoot::new();
     let tools = root.tools("duration", "stdout");
     let cancelled = AtomicBool::new(false);
-    let result = fingerprint_media_file_cancellable(
+    let result = fingerprint_media_file_with_report(
         root.media(),
         &tools,
         &MediaExtractionSettings::default(),
-        &cancelled,
+        Some(&cancelled),
     );
     let error = result.unwrap_err().to_string();
     assert!(

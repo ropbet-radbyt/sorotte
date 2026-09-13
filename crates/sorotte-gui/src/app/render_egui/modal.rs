@@ -5,8 +5,6 @@ use super::GuiWidgetEguiRenderer;
 impl GuiWidgetEguiRenderer {
     pub(in crate::app) fn modal_window_title(modal: GuiShellModal) -> &'static str {
         match modal {
-            GuiShellModal::TlsCertificatePrompt => "TLS Certificate Prompt",
-            GuiShellModal::UpdateNotice => "Update Notice",
             GuiShellModal::About => "About Sorotte",
             GuiShellModal::PlayerSetup => "mpv Setup Required",
             GuiShellModal::StreamSupport => "Stream Support",
@@ -18,14 +16,6 @@ impl GuiWidgetEguiRenderer {
         state: &SorotteGuiShellAppState,
     ) -> Vec<String> {
         match modal {
-            GuiShellModal::TlsCertificatePrompt => vec![
-                "A TLS certificate prompt is active for the current connection.".to_owned(),
-                "Trust the certificate for this session or reject it to keep the warning visible."
-                    .to_owned(),
-            ],
-            GuiShellModal::UpdateNotice => state
-                .update_check
-                .body_lines(Some(state.runtime_language_tag())),
             GuiShellModal::About => vec![
                 "The reducer reports that the About dialog is open.".to_owned(),
                 "This modal now routes into the existing help and update actions.".to_owned(),
@@ -92,12 +82,6 @@ impl GuiWidgetEguiRenderer {
 
     pub(in crate::app) fn modal_actions(modal: GuiShellModal) -> Vec<(&'static str, &'static str)> {
         match modal {
-            GuiShellModal::TlsCertificatePrompt => vec![
-                ("shell:modal:tls:trust", "Trust Certificate"),
-                ("shell:modal:tls:reject", "Reject Certificate"),
-                ("shell:modal:tls:help", "Open Help"),
-            ],
-            GuiShellModal::UpdateNotice => Vec::new(),
             GuiShellModal::About => vec![
                 ("shell:modal:about:help", "Open Help"),
                 ("shell:modal:about:update", "Check for Updates"),
@@ -202,10 +186,7 @@ impl GuiWidgetEguiRenderer {
     ) -> bool {
         match modal {
             GuiShellModal::PlayerSetup => !state.connect_blocked_by_player_setup_issue(),
-            GuiShellModal::TlsCertificatePrompt
-            | GuiShellModal::UpdateNotice
-            | GuiShellModal::About
-            | GuiShellModal::StreamSupport => true,
+            GuiShellModal::About | GuiShellModal::StreamSupport => true,
         }
     }
 

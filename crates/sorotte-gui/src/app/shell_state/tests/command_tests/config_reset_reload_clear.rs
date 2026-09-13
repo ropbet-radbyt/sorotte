@@ -165,8 +165,6 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: Vec::new(),
-            tls_prompt_expected: true,
-            update_notice_expected: true,
             about_dialog_available: false,
         },
     )));
@@ -180,8 +178,6 @@ fn gui_shell_app_state_handles_configuration_reload_command_actions() {
     assert!(!state.commands.can_reset_configuration);
     assert_chat_pane_ready(&state.main_window.chat);
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert!(state.menus.tls_prompt_expected);
-    assert!(state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
     let help = state
         .menus

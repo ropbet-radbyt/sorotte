@@ -1,30 +1,10 @@
 use super::*;
 
 #[test]
-fn gui_shell_app_state_updates_dialog_expectations_from_configuration_edits_without_runtime_overrides()
- {
+fn gui_shell_app_state_preserves_open_modal_across_configuration_runtime_snapshots() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
-    assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        id: SettingId::PrivacyTrustedDomainsOnly,
-        value: true,
-    }));
-    assert!(state.apply(GuiShellAction::EditConfigurationBool {
-        id: SettingId::GeneralCheckForUpdatesAutomatically,
-        value: true,
-    }));
-
-    assert!(state.menus.tls_prompt_expected);
-    assert!(!state.menus.update_notice_expected);
-}
-
-#[test]
-fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuration_runtime_snapshots()
- {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-
-    assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
-    assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
+    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
 
     let mut draft = state.configuration.to_stored_settings();
     draft.host = Some("draft.example".to_owned());
@@ -42,12 +22,11 @@ fn gui_shell_app_state_preserves_runtime_dialog_expectations_across_configuratio
 
     assert_eq!(state.configuration.to_stored_settings(), draft);
     assert_eq!(state.saved_configuration, saved);
-    assert!(state.menus.tls_prompt_expected);
-    assert!(!state.menus.update_notice_expected);
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
 }
 
 #[test]
-fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_trip() {
+fn gui_shell_app_state_tracks_media_trust_policy_without_opening_a_modal() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
 
     assert_eq!(
@@ -56,14 +35,26 @@ fn gui_shell_app_state_tracks_explicit_tls_policy_after_resolved_default_round_t
             .control_value(SettingId::PrivacyTrustedDomainsOnly),
         Some("yes")
     );
-    assert!(!state.menus.tls_prompt_expected);
 
     for value in [false, true] {
         assert!(state.apply(GuiShellAction::EditConfigurationBool {
             id: SettingId::PrivacyTrustedDomainsOnly,
             value,
         }));
-        assert_eq!(state.menus.tls_prompt_expected, value);
+        assert_eq!(
+            state
+                .configuration
+                .to_stored_settings()
+                .only_switch_to_trusted_domains,
+            Some(value)
+        );
+        assert_eq!(state.open_modal, None);
+        assert!(
+            state
+                .menu_dialog_widget_tree()
+                .find("menu.tls_certificates")
+                .is_none()
+        );
     }
 
     assert_eq!(

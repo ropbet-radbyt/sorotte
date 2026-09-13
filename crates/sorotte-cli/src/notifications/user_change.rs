@@ -23,7 +23,9 @@ pub(crate) fn user_change_notification_hidden_from_osd(
     shared_user_change_notification_hidden_from_osd(notification)
 }
 
-fn emit_user_change_notification(notification: &UserChangeNotification) -> anyhow::Result<()> {
+pub(crate) fn emit_user_change_notification(
+    notification: &UserChangeNotification,
+) -> anyhow::Result<()> {
     if user_change_notification_hidden_from_osd(notification) {
         return Ok(());
     }
@@ -53,27 +55,20 @@ fn emit_user_change_notification_to_player(
     );
 }
 
-pub(crate) fn flush_user_change_notifications(
-    runtime: &mut ClientApplication<MpvAdapter>,
-) -> anyhow::Result<()> {
-    while let Some(notification) = runtime.pending_user_change_notification().cloned() {
-        runtime.with_player_io(|player| {
-            emit_user_change_notification_to_player(player, &notification);
-        });
-        emit_user_change_notification(&notification)?;
-        let acknowledged = runtime.acknowledge_user_change_notification();
-        debug_assert!(acknowledged.is_some());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-pub(crate) fn flush_user_change_notifications_to_sink<F>(
+pub(crate) fn flush_user_change_notifications<F>(
     runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&UserChangeNotification) -> anyhow::Result<()>,
 {
-    runtime.drain_user_change_notifications_to_sink(|notification| notify(notification))
+    while let Some(notification) = runtime.pending_user_change_notification().cloned() {
+        runtime.with_player_io(|player| {
+            emit_user_change_notification_to_player(player, &notification);
+        });
+        notify(&notification)?;
+        let acknowledged = runtime.acknowledge_user_change_notification();
+        debug_assert!(acknowledged.is_some());
+    }
+    Ok(())
 }

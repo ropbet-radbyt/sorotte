@@ -595,15 +595,8 @@ fn main_window_shell_state_uses_legacy_chat_output_default() {
 }
 
 #[test]
-fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
-    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettings {
-        player_path: Some("C:/Program Files/mpv/mpv.exe".to_owned()),
-        shared_playlist_enabled: Some(true),
-        chat_output_enabled: Some(true),
-        only_switch_to_trusted_domains: Some(true),
-        check_for_updates_automatically: Some(true),
-        ..StoredClientSettings::default()
-    });
+fn menu_dialog_shell_state_starts_with_playback_disabled() {
+    let state = MenuDialogShellState::default();
 
     let file = state
         .sections
@@ -632,14 +625,12 @@ fn menu_dialog_shell_state_uses_settings_for_enabled_actions_and_prompts() {
     assert_eq!(window.actions.len(), 3);
     assert!(window.actions.iter().all(|item| item.enabled));
 
-    assert!(state.tls_prompt_expected);
-    assert!(!state.update_notice_expected);
     assert!(state.about_dialog_available);
 }
 
 #[test]
 fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() {
-    let state = MenuDialogShellState::from_stored_settings(&StoredClientSettings::default());
+    let state = MenuDialogShellState::default();
     assert!(state.action(MenuActionId::TogglePlaybackButtons).is_some());
     assert!(state.action(MenuActionId::ToggleAutoplayControls).is_some());
     assert!(state.action(MenuActionId::ToggleHideEmptyRooms).is_some());
@@ -650,13 +641,6 @@ fn menu_dialog_shell_state_does_not_expose_chat_visibility_without_view_state() 
             .flat_map(|section| &section.actions)
             .all(|action| action.label != "Show Chat")
     );
-
-    let explicit_false = MenuDialogShellState::from_stored_settings(&StoredClientSettings {
-        chat_input_enabled: Some(false),
-        chat_output_enabled: Some(false),
-        ..StoredClientSettings::default()
-    });
-    assert_eq!(state.sections, explicit_false.sections);
 }
 
 #[test]

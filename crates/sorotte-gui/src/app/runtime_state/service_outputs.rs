@@ -177,7 +177,6 @@ impl GuiRuntimeState {
                     last_checked_for_updates: Some(result.checked_at_utc),
                     user_initiated: result.user_initiated,
                 };
-                self.session.menus.update_notice_expected = false;
             }
             GuiShellAction::BeginUpdateDownload | GuiShellAction::BeginUpdateInstall => {
                 if self.updates.model.candidate.is_none() {

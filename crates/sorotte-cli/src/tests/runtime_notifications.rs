@@ -4,7 +4,7 @@ use crate::notifications::{
 };
 
 #[test]
-fn flush_autoplay_notifications_to_sink_dispatches_notifications() {
+fn flush_autoplay_notifications_dispatches_notifications() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -77,12 +77,32 @@ fn flush_autoplay_notifications_to_sink_dispatches_notifications() {
         .tick_autoplay(true, true, false, false)
         .expect("autoplay tick should emit countdown notification");
 
+    let pending = runtime
+        .pending_autoplay_notification()
+        .cloned()
+        .expect("notification should be queued");
+    assert!(
+        flush_autoplay_notifications(&mut runtime, &mut |_| anyhow::bail!("output unavailable"))
+            .is_err()
+    );
+    assert_eq!(runtime.pending_autoplay_notification(), Some(&pending));
     let mut captured = Vec::new();
-    flush_autoplay_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_autoplay_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
     .expect("notification sink dispatch should succeed");
+    assert!(runtime.pending_autoplay_notification().is_none());
+    assert_eq!(
+        runtime.player().last_simulated_syncplay_osd_message(),
+        Some(&(
+            crate::autoplay_countdown_notification_message_localized(
+                captured.last().unwrap(),
+                crate::language_support::current_runtime_language_tag().as_deref()
+            ),
+            sorotte_player_mpv::SyncplayOsdKind::Alert,
+        ))
+    );
 
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].ready_user_count, 2);

@@ -590,9 +590,6 @@ impl GuiWidgetEguiRenderer {
                 GuiShellAction::CloseModal,
                 GuiShellAction::SwitchView(GuiShellView::Plugins),
             ],
-            "shell:modal:tls:trust" => vec![GuiShellAction::TrustTlsCertificatePrompt],
-            "shell:modal:tls:reject" => vec![GuiShellAction::RejectTlsCertificatePrompt],
-            "shell:modal:tls:help" => vec![GuiShellAction::AnnounceHelpRequested],
             "shell:modal:about:help" => vec![GuiShellAction::AnnounceHelpRequested],
             "shell:modal:about:update" => {
                 vec![GuiShellAction::BeginUpdateCheck {

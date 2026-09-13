@@ -52,24 +52,6 @@ impl SorotteGuiShellAppState {
     }
 }
 
-pub(super) fn localized_update_notice_available_message(language: Option<&str>) -> &'static str {
-    localized_literal(
-        language,
-        "An update notice is available for this client build.",
-        "Ein Update-Hinweis ist fuer diesen Client-Build verfuegbar.",
-        "Hay un aviso de actualizacion disponible para esta compilacion del cliente.",
-        "Ghisdiga avizo haveblas por ci tiu klienta konstruo.",
-        "Talle asiakasversiolle on saatavilla paivityshuomautus.",
-        "Un avis de mise a jour est disponible pour cette version du client.",
-        "E disponibile un avviso di aggiornamento per questa build del client.",
-        "Ha um aviso de atualizacao disponivel para esta compilacao do cliente.",
-        "Bu istemci derlemesi icin bir guncelleme bildirimi mevcut.",
-        "Dlia etoi sborki klienta dostupno uvedomlenie ob obnovlenii.",
-        "Ci kehu duan goujian you ke yong de gengxin tongzhi.",
-        "I keullaieonteu deobeureul wihan eobdeiteu annae-ga isseumnida.",
-    )
-}
-
 pub(super) fn localized_sorotte_uptodate_message(language: Option<&str>) -> &'static str {
     localized_literal(
         language,
@@ -104,29 +86,6 @@ pub(super) fn localized_sorotte_update_available_message(language: Option<&str>)
         "You xin de Sorotte banben ke yong. Yao fangwen fabu yemian ma?",
         "Sorotte-ui saeroun beojeoni isseumnida. baepo peijireul bangmunhasigesseumnikka?",
     )
-}
-
-#[cfg(test)]
-pub(super) fn localized_update_check_failed_message(
-    language: Option<&str>,
-    version: &str,
-) -> String {
-    localized_literal(
-        language,
-        "Could not automatically check whether Sorotte {} is up to date. Want to visit https://syncplay.pl/ to manually check for updates?",
-        "Es konnte nicht automatisch geprueft werden, ob Sorotte {} aktuell ist. Moechten Sie https://syncplay.pl/ besuchen, um manuell nach Updates zu suchen?",
-        "No se pudo comprobar automaticamente si Sorotte {} esta actualizado. Desea visitar https://syncplay.pl/ para comprobar manualmente si hay actualizaciones?",
-        "Ne eblis auxtomate kontroli chu Sorotte {} estas gxisdata. Chu vi volas viziti https://syncplay.pl/ por mane kontroli gxisdatigojn?",
-        "Ei voitu tarkistaa automaattisesti, onko Sorotte {} ajan tasalla. Haluatko kayda osoitteessa https://syncplay.pl/ tarkistaaksesi paivitykset manuaalisesti?",
-        "Impossible de verifier automatiquement si Sorotte {} est a jour. Voulez-vous visiter https://syncplay.pl/ pour verifier manuellement les mises a jour?",
-        "Impossibile verificare automaticamente se Sorotte {} e aggiornato. Vuoi visitare https://syncplay.pl/ per controllare manualmente gli aggiornamenti?",
-        "Nao foi possivel verificar automaticamente se o Sorotte {} esta atualizado. Deseja visitar https://syncplay.pl/ para verificar atualizacoes manualmente?",
-        "Sorotte {}'nin guncel olup olmadigi otomatik olarak denetlenemedi. Guncellemeleri elle kontrol etmek icin https://syncplay.pl/ adresini ziyaret etmek ister misiniz?",
-        "Ne udalos avtomaticheski proverit, obnovlen li Sorotte {}. Hotite pereiti na https://syncplay.pl/ dlia ruchnoi proverki obnovlenii?",
-        "Wu fa zidong jiancha Sorotte {} shifou wei zuixin banben. Yao fangwen https://syncplay.pl/ shoudong jiancha gengxin ma?",
-        "Sorotte {}ga choesin beojeoninji jadongeuro hwaginhal su eopseotseumnida. susdong-euro eobdeiteureul hwaginhagi wihae https://syncplay.pl/ reul bangmunhasigesseumnikka?",
-    )
-    .replace("{}", version)
 }
 
 #[cfg(test)]
@@ -166,24 +125,6 @@ pub(super) fn localized_update_checked_at_line(language: Option<&str>, timestamp
             "Jiancha shijian:",
             "hwagin sigan:",
         )
-    )
-}
-
-pub(super) fn localized_update_dismiss_hint_line(language: Option<&str>) -> &'static str {
-    localized_literal(
-        language,
-        "Dismiss it here or trigger another update check from the same modal.",
-        "Schliessen Sie den Hinweis hier oder starten Sie aus demselben Dialog eine neue Update-Pruefung.",
-        "Descartelo aqui o inicie otra comprobacion de actualizaciones desde el mismo cuadro.",
-        "Fermu gxin cxi tie au lanccu alian gxisdatigan kontrolon el la sama dialogo.",
-        "Sulje ilmoitus taalta tai kaynnista uusi paivitystarkistus samasta ikkunasta.",
-        "Fermez cet avis ici ou lancez une nouvelle verification depuis la meme fenetre.",
-        "Chiudi questo avviso qui oppure avvia un nuovo controllo aggiornamenti dalla stessa finestra.",
-        "Feche este aviso aqui ou inicie outra verificacao de atualizacoes na mesma janela.",
-        "Bu bildirimi burada kapatin ya da ayni pencereden yeni bir guncelleme denetimi baslatin.",
-        "Zakroite eto uvedomlenie zdes ili zapustite novuio proverku obnovlenii iz etogo zhe okna.",
-        "Zai ci chuguan ci tongzhi huo cong tongyi chuangkou chufa ling yi ci gengxin jiancha.",
-        "yeogieseo i annae-reul datgeona gateun chang-eseo dasi eobdeiteu geomsareul silhaenghasipsio.",
     )
 }
 

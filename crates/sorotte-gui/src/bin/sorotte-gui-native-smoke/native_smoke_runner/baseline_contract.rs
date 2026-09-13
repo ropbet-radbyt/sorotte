@@ -69,29 +69,6 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
         wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
         steps.push("player-setup-existing-config-modal".to_owned());
     }
-    invoke_menu_action_by_id_with_wait(
-        driver,
-        window,
-        ADVANCED_MENU_AUTOMATION_ID,
-        TLS_CERTIFICATES_MENU_AUTOMATION_ID,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(driver, window, "TLS Certificate Prompt", step_timeout)?;
-    wait_for_accessible_name(
-        driver,
-        window,
-        "modal: tls-certificate-prompt",
-        step_timeout,
-    )?;
-    invoke_named_control_with_wait(
-        driver,
-        window,
-        MODAL_TLS_TRUST_AUTOMATION_ID,
-        NativeControlKind::Button,
-        step_timeout,
-    )?;
-    wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-    steps.push("tls-certificate-prompt-completed".to_owned());
 
     navigate_to_view_with_wait(
         driver,

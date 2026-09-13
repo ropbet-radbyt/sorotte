@@ -148,34 +148,7 @@ pub(super) fn verify_transport_reconnect_contract<D: NativeGuiDriver>(
         let step_timeout = timeout.min(Duration::from_millis(8_000));
         let mut steps = Vec::new();
 
-        wait_for_any_accessible_name(
-            driver,
-            window,
-            &[
-                "modal: tls-certificate-prompt",
-                "view: setup",
-                "view: setup",
-                "view: room",
-            ],
-            step_timeout,
-        )?;
-        if wait_for_accessible_name(
-            driver,
-            window,
-            "modal: tls-certificate-prompt",
-            step_timeout.min(Duration::from_millis(800)),
-        )
-        .is_ok()
-        {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                MODAL_TLS_TRUST_AUTOMATION_ID,
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-        }
+        wait_for_any_accessible_name(driver, window, &["view: setup", "view: room"], step_timeout)?;
         if dismiss_existing_config_player_setup_modal(driver, window, step_timeout)? {
             steps.push("transport-player-setup-modal".to_owned());
         }

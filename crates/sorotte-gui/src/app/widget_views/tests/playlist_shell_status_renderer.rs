@@ -172,7 +172,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
     });
 
     assert!(state.apply(GuiShellAction::SwitchView(GuiShellView::Setup)));
-    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::UpdateNotice)));
+    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
     assert!(state.apply(GuiShellAction::PushTransientNotification {
         level: GuiTransientNotificationLevel::Info,
         message: "Widget tree ready".to_owned(),
@@ -189,7 +189,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
     let open_modal = tree
         .find("shell:open-modal")
         .expect("open modal status should exist");
-    assert_eq!(open_modal.value.as_deref(), Some("update-notice"));
+    assert_eq!(open_modal.value.as_deref(), Some("about"));
 
     let media_index_active = tree
         .find("shell:media-index-active")
@@ -203,7 +203,7 @@ fn gui_shell_app_state_projects_shell_widget_trees() {
     let modal_kind = tree
         .find("shell:modal:kind")
         .expect("modal kind status should exist");
-    assert_eq!(modal_kind.value.as_deref(), Some("update-notice"));
+    assert_eq!(modal_kind.value.as_deref(), Some("about"));
     assert!(tree.find("shell:modal:update:dismiss").is_none());
     assert!(tree.find("shell:modal:update:help").is_none());
     assert!(tree.find("shell:modal:update:check-again").is_none());

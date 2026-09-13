@@ -187,7 +187,7 @@ fn user_change_playing_message_includes_formatted_duration_when_available() {
         .expect("user-change notification dispatch should succeed");
 
     let mut captured = Vec::new();
-    flush_user_change_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_user_change_notifications(&mut runtime, &mut |notification| {
         captured.push(user_change_notification_message(notification));
         Ok(())
     })

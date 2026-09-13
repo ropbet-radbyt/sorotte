@@ -8,12 +8,9 @@ use super::support::{NO_ROOM_JOINED_LABEL, joined_room_name_text, nonempty_room_
 
 impl SorotteGuiShellAppState {
     pub(super) fn close_modal_window(&mut self) -> bool {
-        let Some(modal) = self.open_modal.take() else {
+        let Some(_) = self.open_modal.take() else {
             return false;
         };
-        if modal == GuiShellModal::UpdateNotice {
-            self.menus.update_notice_expected = false;
-        }
         self.clear_action_error_and_refresh();
         true
     }
@@ -108,7 +105,6 @@ impl SorotteGuiShellAppState {
             }
             MenuActionId::CreateControlledRoom => self.begin_create_controlled_room_edit(),
             MenuActionId::IdentifyAsController => self.begin_controller_auth_edit(),
-            MenuActionId::TlsCertificates => self.announce_tls_certificate_prompt_required(),
             MenuActionId::TogglePlaybackButtons => self.toggle_main_window_playback_buttons(),
             MenuActionId::ToggleAutoplayControls => self.toggle_main_window_autoplay_controls(),
             MenuActionId::ToggleHideEmptyRooms => self.toggle_main_window_hide_empty_rooms(),
@@ -334,8 +330,6 @@ impl SorotteGuiShellAppState {
 
         self.active_view = snapshot.active_view;
         self.open_modal = snapshot.open_modal;
-        self.menus.tls_prompt_expected = snapshot.tls_prompt_expected;
-        self.menus.update_notice_expected = snapshot.update_notice_expected;
         self.menus.about_dialog_available = snapshot.about_dialog_available;
         self.sync_dialog_menu_actions_from_runtime_state();
 

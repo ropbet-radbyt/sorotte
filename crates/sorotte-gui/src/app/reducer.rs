@@ -23,7 +23,6 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::SelectConfigurationTab(_)
             | GuiShellAction::OpenModal(_)
             | GuiShellAction::CloseModal
-            | GuiShellAction::DismissUpdateNotice
             | GuiShellAction::BeginUpdateCheck { .. }
             | GuiShellAction::ApplyUpdateCheckResult(_)
             | GuiShellAction::ActivateUpdateIndicator
@@ -33,12 +32,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::BeginStagedUpdateApply
             | GuiShellAction::ApplyStagedUpdateLaunchResult(_)
             | GuiShellAction::ApplyStartupPublicServerCache(_)
-            | GuiShellAction::TrustTlsCertificatePrompt
-            | GuiShellAction::RejectTlsCertificatePrompt
             | GuiShellAction::TriggerSelectedMenuAction
             | GuiShellAction::InvokeMenuAction(_)
-            | GuiShellAction::AnnounceTlsCertificatePromptRequired
-            | GuiShellAction::AnnounceUpdateNoticeAvailable
             | GuiShellAction::AnnounceAboutDialogRequested
             | GuiShellAction::AnnounceHelpRequested
             | GuiShellAction::ApplyMenuDialogRuntimeSnapshot(_)

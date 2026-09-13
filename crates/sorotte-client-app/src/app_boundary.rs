@@ -110,8 +110,6 @@ pub mod storage {
         load_sorotte_client_config_root_pointer_from_path, normalize_path,
         parse_sorotte_client_install_locator_config_root, paths_equivalent,
         persist_sorotte_client_config_root_pointer, persist_sorotte_client_install_locator,
-        resolve_sorotte_client_storage_paths_from_lookup,
-        resolve_sorotte_client_storage_paths_from_lookup_with_install_root,
         sorotte_client_config_root_pointer_path, sorotte_client_install_locator_contents,
         sorotte_client_install_locator_path, sorotte_client_install_root_from_lookup,
         try_resolve_sorotte_client_storage_paths,

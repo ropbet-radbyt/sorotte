@@ -4,14 +4,6 @@ impl SorotteGuiShellAppState {
     pub(crate) fn menu_dialog_widget_tree(&self) -> GuiWidgetNode {
         let mut dialog_children = vec![
             GuiWidgetNode::leaf(
-                "menus:dialog:tls",
-                "TLS Certificate Prompt",
-                GuiWidgetKind::Status,
-                Some(bool_label(self.menus.tls_prompt_expected).to_owned()),
-                true,
-                self.open_modal == Some(GuiShellModal::TlsCertificatePrompt),
-            ),
-            GuiWidgetNode::leaf(
                 "menus:dialog:about",
                 "About Dialog",
                 GuiWidgetKind::Status,
@@ -76,10 +68,7 @@ impl SorotteGuiShellAppState {
             "menus:about:details",
             "About Details",
             GuiWidgetKind::Status,
-            Some(
-                "Help opens the client guide; About and TLS open dialogs from this surface."
-                    .to_owned(),
-            ),
+            Some("Help opens the client guide; About opens information about Sorotte.".to_owned()),
             self.menus.about_dialog_available,
             false,
         ));

@@ -7,26 +7,6 @@ use crate::{AlignedSegmentV3, MatchClassV3, MediaTimelineMapV3, TimelinePosition
 // The runtime should expose this mapping as debug evidence before using it for
 // automatic seek/sync behavior.
 
-pub fn classify_timeline_at_query_ms(map: &MediaTimelineMapV3, query_t_ms: u32) -> MatchClassV3 {
-    if map
-        .segments
-        .iter()
-        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
-    {
-        map.global_class
-    } else if map.segments.is_empty() {
-        MatchClassV3::Unknown
-    } else {
-        MatchClassV3::PartialOverlap
-    }
-}
-
-pub fn timeline_map_contains_query_position(map: &MediaTimelineMapV3, query_t_ms: u32) -> bool {
-    map.segments
-        .iter()
-        .any(|segment| segment.query_start_ms <= query_t_ms && query_t_ms <= segment.query_end_ms)
-}
-
 pub fn map_query_position_to_candidate_ms(
     map: &MediaTimelineMapV3,
     query_t_ms: u32,

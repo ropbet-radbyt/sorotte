@@ -20,7 +20,7 @@ use sorotte_media_match::{
     MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
     MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
-    fingerprint_media_file_cancellable_with_report, map_query_position_to_candidate_ms,
+    fingerprint_media_file_with_report, map_query_position_to_candidate_ms,
     media_extraction_settings_hash, media_match_wire_value_from_records, normalize_media_path,
     rank_media_match_candidates, summarize_record_v3_diagnostics,
 };
@@ -2236,13 +2236,8 @@ fn cached_or_fresh_media_fingerprint(
     ) {
         return Ok((record.clone(), true, None));
     }
-    fingerprint_media_file_cancellable_with_report(
-        path,
-        tools,
-        extraction_settings,
-        cancel_flag.unwrap_or(&AtomicBool::new(false)),
-    )
-    .map(|fingerprint| (fingerprint.record, false, Some(fingerprint.report)))
+    fingerprint_media_file_with_report(path, tools, extraction_settings, cancel_flag)
+        .map(|fingerprint| (fingerprint.record, false, Some(fingerprint.report)))
 }
 
 fn parallel_fresh_media_fingerprints<F>(
@@ -2297,11 +2292,11 @@ where
                     };
                     let queue_wait_millis = queued_at.elapsed().as_millis();
                     let worker_started_at = Instant::now();
-                    let result = fingerprint_media_file_cancellable_with_report(
+                    let result = fingerprint_media_file_with_report(
                         &path,
                         &tools,
                         &extraction_settings,
-                        cancel_flag,
+                        Some(cancel_flag),
                     )
                     .map(|fingerprint| (fingerprint.record, fingerprint.report));
                     let output = MediaMatchParallelExtractionOutput {

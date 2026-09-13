@@ -133,8 +133,6 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.check_for_updates_automatically, Some(true));
     assert_eq!(saved.autosave_joins_to_list, Some(true));
     assert_eq!(saved.force_gui_prompt, Some(true));
-    assert!(driver.state().menus.tls_prompt_expected);
-    assert!(!driver.state().menus.update_notice_expected);
     assert_eq!(stored.public_servers, Some(Vec::new()));
     assert_eq!(driver.state().selected_public_server_index(), None);
     assert_eq!(

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn flush_controller_auth_notifications_to_sink_dispatches_attempt_notification() {
+fn flush_controller_auth_notifications_dispatches_attempt_notification() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -54,17 +54,39 @@ fn flush_controller_auth_notifications_to_sink_dispatches_attempt_notification()
         .run_controller_reidentify_if_needed()
         .expect("controller reidentify should dispatch");
 
+    let pending = runtime
+        .pending_controller_auth_notification()
+        .cloned()
+        .expect("notification should be queued");
+    assert!(
+        flush_controller_auth_notifications(&mut runtime, &mut |_| anyhow::bail!(
+            "output unavailable"
+        ))
+        .is_err()
+    );
+    assert_eq!(
+        runtime.pending_controller_auth_notification(),
+        Some(&pending)
+    );
     let mut captured = Vec::new();
-    flush_controller_auth_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_controller_auth_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
     .expect("controller auth notifications should dispatch");
-    flush_controller_auth_notifications_to_sink(
-        &mut runtime,
-        &mut ignore_controller_auth_notification,
-    )
-    .expect("drained controller auth notification queue should be empty");
+    assert!(runtime.pending_controller_auth_notification().is_none());
+    assert_eq!(
+        runtime.player().last_simulated_syncplay_osd_message(),
+        Some(&(
+            crate::controller_auth_transition_notification_message_localized(
+                captured.last().unwrap(),
+                crate::language_support::current_runtime_language_tag().as_deref()
+            ),
+            sorotte_player_mpv::SyncplayOsdKind::Notification,
+        ))
+    );
+    flush_controller_auth_notifications(&mut runtime, &mut ignore_controller_auth_notification)
+        .expect("drained controller auth notification queue should be empty");
 
     assert_eq!(
         captured,
@@ -75,7 +97,7 @@ fn flush_controller_auth_notifications_to_sink_dispatches_attempt_notification()
 }
 
 #[test]
-fn flush_controller_auth_notifications_to_sink_dispatches_outcome_notifications() {
+fn flush_controller_auth_notifications_dispatches_outcome_notifications() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -142,7 +164,7 @@ fn flush_controller_auth_notifications_to_sink_dispatches_outcome_notifications(
         .expect("controller auth notifications should dispatch");
 
     let mut captured = Vec::new();
-    flush_controller_auth_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_controller_auth_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
@@ -166,7 +188,7 @@ fn flush_controller_auth_notifications_to_sink_dispatches_outcome_notifications(
 }
 
 #[test]
-fn flush_chat_notifications_to_sink_dispatches_chat_messages() {
+fn flush_chat_notifications_dispatches_chat_messages() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -218,12 +240,12 @@ fn flush_chat_notifications_to_sink_dispatches_chat_messages() {
         .expect("chat notifications should dispatch");
 
     let mut captured = Vec::new();
-    flush_chat_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_chat_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
     .expect("chat notifications should dispatch");
-    flush_chat_notifications_to_sink(&mut runtime, &mut ignore_chat_notification)
+    flush_chat_notifications(&mut runtime, &mut ignore_chat_notification)
         .expect("drained chat notification queue should be empty");
 
     assert_eq!(
@@ -236,7 +258,7 @@ fn flush_chat_notifications_to_sink_dispatches_chat_messages() {
 }
 
 #[test]
-fn flush_user_change_notifications_to_sink_dispatches_visibility_metadata() {
+fn flush_user_change_notifications_dispatches_visibility_metadata() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -293,15 +315,27 @@ fn flush_user_change_notifications_to_sink_dispatches_visibility_metadata() {
         .run_user_change_notifications_if_needed()
         .expect("user change notifications should dispatch");
 
+    let pending = runtime.pending_user_change_notification().cloned().unwrap();
+    assert!(
+        flush_user_change_notifications(&mut runtime, &mut |_| anyhow::bail!("output unavailable"))
+            .is_err()
+    );
+    assert_eq!(runtime.pending_user_change_notification(), Some(&pending));
     let mut captured = Vec::new();
-    flush_user_change_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_user_change_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
     .expect("user change notifications should dispatch");
-    flush_user_change_notifications_to_sink(&mut runtime, &mut ignore_user_change_notification)
+    flush_user_change_notifications(&mut runtime, &mut ignore_user_change_notification)
         .expect("drained user change notification queue should be empty");
 
+    assert!(runtime.pending_user_change_notification().is_none());
+    assert_eq!(
+        runtime.player().last_simulated_syncplay_osd_message(),
+        None,
+        "hidden user changes must not reach OSD"
+    );
     assert_eq!(
         captured,
         vec![UserChangeNotification::Joined {
@@ -310,4 +344,51 @@ fn flush_user_change_notifications_to_sink_dispatches_visibility_metadata() {
             hide_from_osd: true,
         }]
     );
+}
+
+#[test]
+fn chat_output_failure_preserves_queue_order_after_player_delivery_failure() {
+    let (player, commands) = MpvAdapter::with_cleanup_recording_sorotte_bridge_test_ipc(
+        sorotte_player_mpv::SyncplayUiSettings::default(),
+        None,
+    );
+    // The recording transport accepts writes but returns EOF when awaiting a reply.
+    let mut runtime = ClientApplication::with_default_session(player);
+    for message in ["first", "second"] {
+        runtime
+            .session_mut()
+            .apply_message_json(
+                &serde_json::json!({
+                    "Chat": {"username": "bob", "message": message}
+                })
+                .to_string(),
+            )
+            .unwrap();
+    }
+    runtime.run_chat_notifications_if_needed().unwrap();
+    let first = runtime.pending_chat_notification().cloned().unwrap();
+    assert!(
+        flush_chat_notifications(&mut runtime, &mut |_| anyhow::bail!("output unavailable"))
+            .is_err()
+    );
+    assert_eq!(runtime.pending_chat_notification(), Some(&first));
+    assert!(
+        commands.lock().unwrap().iter().any(|command| {
+            command[0] == "script-message-to" && command[2] == "chat" && command[3] == "<bob> first"
+        }),
+        "the production flush must attempt player chat delivery before acknowledging output"
+    );
+
+    let mut delivered = Vec::new();
+    flush_chat_notifications(&mut runtime, &mut |notification| {
+        delivered.push(chat_notification_message(notification));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(delivered, ["<bob> first", "<bob> second"]);
+    assert!(runtime.pending_chat_notification().is_none());
+    flush_chat_notifications(&mut runtime, &mut |_| {
+        panic!("successful output must be drained once")
+    })
+    .unwrap();
 }

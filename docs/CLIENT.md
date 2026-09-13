@@ -65,6 +65,8 @@ tlsPolicy = RequireTls
 
 Accepted values are `RequireTls`, `PreferTls`, and `Plaintext`. `RequireTls` rejects a declined, malformed, interrupted, or certificate-invalid STARTTLS upgrade before sending the client Hello or credentials. `PreferTls` allows an explicit plaintext fallback and displays a security warning. `Plaintext` skips STARTTLS. When `tlsPolicy` is absent, saved server or controlled-room credentials default to `RequireTls`; connections without credentials default to `PreferTls`. The CLI environment override is `SOROTTE_CLIENT_TLS_POLICY` with the same values.
 
+TLS connections validate the server certificate against the client's built-in certificate roots. The GUI offers no certificate exception prompt. The `Trusted Domains` settings control automatic switching to media URLs; they do not change TLS certificate verification.
+
 The CLI accepts these positive, seconds-based deadline overrides (decimal values are allowed):
 
 - `SOROTTE_CLIENT_CONNECT_TIMEOUT_SECONDS` (default `8`): TCP connect

@@ -1,7 +1,6 @@
 use super::remote_services;
-use super::runtime_localization::localized_update_notice_available_message;
 use super::shell_state::{
-    GuiPendingOperationKind, GuiShellModal, GuiTransientNotificationLevel, MainWindowChatRow,
+    GuiPendingOperationKind, GuiTransientNotificationLevel, MainWindowChatRow,
     SorotteGuiShellAppState,
 };
 use super::support::normalized_editable_text;
@@ -102,24 +101,6 @@ impl SorotteGuiShellAppState {
         true
     }
 
-    pub(super) fn announce_tls_certificate_prompt_required(&mut self) -> bool {
-        self.menus.tls_prompt_expected = true;
-        self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
-        self.clear_action_error_and_refresh();
-        true
-    }
-
-    pub(super) fn announce_update_notice_available(&mut self) -> bool {
-        if self.update_check.message.is_none() {
-            self.update_check.message = Some(
-                localized_update_notice_available_message(Some(self.runtime_language_tag()))
-                    .to_owned(),
-            );
-        }
-        self.clear_action_error_and_refresh();
-        true
-    }
-
     pub(super) fn update_check_language(&self) -> String {
         self.runtime_language_tag().to_owned()
     }
@@ -163,7 +144,6 @@ impl SorotteGuiShellAppState {
             last_checked_for_updates: Some(result.checked_at_utc.clone()),
             user_initiated: result.user_initiated,
         };
-        self.menus.update_notice_expected = false;
         if matches!(
             self.update_check.status_level(),
             GuiTransientNotificationLevel::Warning | GuiTransientNotificationLevel::Error
@@ -248,36 +228,6 @@ impl SorotteGuiShellAppState {
         let mut settings = self.configuration.to_stored_settings();
         settings.public_servers = Some(servers);
         self.resync_from_settings(settings);
-        self.clear_action_error_and_refresh();
-        true
-    }
-
-    pub(super) fn dismiss_update_notice(&mut self) -> bool {
-        let had_notice = self.menus.update_notice_expected
-            || self.open_modal == Some(GuiShellModal::UpdateNotice);
-        if !had_notice {
-            return self.record_action_error("No update notice is currently active.");
-        }
-
-        self.menus.update_notice_expected = false;
-        if self.open_modal == Some(GuiShellModal::UpdateNotice) {
-            self.open_modal = None;
-        }
-        self.clear_action_error_and_refresh();
-        true
-    }
-
-    pub(super) fn complete_tls_certificate_prompt(&mut self, _trusted: bool) -> bool {
-        let had_prompt = self.menus.tls_prompt_expected
-            || self.open_modal == Some(GuiShellModal::TlsCertificatePrompt);
-        if !had_prompt {
-            return self.record_action_error("No TLS certificate prompt is currently active.");
-        }
-
-        self.menus.tls_prompt_expected = false;
-        if self.open_modal == Some(GuiShellModal::TlsCertificatePrompt) {
-            self.open_modal = None;
-        }
         self.clear_action_error_and_refresh();
         true
     }

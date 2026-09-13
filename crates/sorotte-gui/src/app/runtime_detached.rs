@@ -639,8 +639,6 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         Some(MenuDialogRuntimeSnapshot {
             action_overrides,
-            tls_prompt_expected: state.session.menus.tls_prompt_expected,
-            update_notice_expected: state.session.menus.update_notice_expected,
             about_dialog_available: state.session.menus.about_dialog_available,
         })
     }

@@ -219,8 +219,6 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
         "C:/ReloadMedia"
     );
     assert!(persisted_state.main_window.shared_playlist_enabled);
-    assert!(persisted_state.menus.tls_prompt_expected);
-    assert!(!persisted_state.menus.update_notice_expected);
     assert!(
         persisted_state
             .menus

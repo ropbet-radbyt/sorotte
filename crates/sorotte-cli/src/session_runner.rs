@@ -48,8 +48,10 @@ use crate::mpv_startup::{
 };
 use crate::notifications::{
     ReadinessNotificationState, SeekPreparationNotificationState,
-    emit_autoplay_countdown_notification, emit_file_difference_notification,
-    emit_reconnect_correction_diagnostic, flush_autoplay_notifications, flush_chat_notifications,
+    emit_autoplay_countdown_notification, emit_chat_notification,
+    emit_controller_auth_transition_notification, emit_file_difference_notification,
+    emit_reconnect_correction_diagnostic, emit_reconnect_transition_notification,
+    emit_user_change_notification, flush_autoplay_notifications, flush_chat_notifications,
     flush_controller_auth_notifications, flush_file_difference_notifications,
     flush_player_playback_telemetry_diagnostics, flush_readiness_status_notifications,
     flush_reconnect_correction_diagnostics_to_sink, flush_reconnect_notifications,

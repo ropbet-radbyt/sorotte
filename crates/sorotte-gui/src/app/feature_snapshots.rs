@@ -436,10 +436,9 @@ pub(super) fn complete_plex_playlist_item_resolve(
 pub(super) fn apply_menu_dialog_snapshot(
     menus: &mut MenuDialogShellState,
     overrides: &mut Vec<MenuActionRuntimeOverride>,
-    settings: &sorotte_client_app::app_boundary::state::StoredClientSettings,
     snapshot: MenuDialogRuntimeSnapshot,
 ) -> Result<(), String> {
-    let baseline = MenuDialogShellState::from_stored_settings(settings);
+    let baseline = MenuDialogShellState::default();
     for action_override in snapshot.action_overrides {
         if let Some(action) = baseline.action(action_override.id) {
             if action.enabled == action_override.enabled {
@@ -461,8 +460,6 @@ pub(super) fn apply_menu_dialog_snapshot(
         };
         action.enabled = action_override.enabled;
     }
-    menus.tls_prompt_expected = snapshot.tls_prompt_expected;
-    menus.update_notice_expected = snapshot.update_notice_expected;
     menus.about_dialog_available = snapshot.about_dialog_available;
     Ok(())
 }

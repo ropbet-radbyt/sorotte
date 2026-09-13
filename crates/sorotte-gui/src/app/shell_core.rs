@@ -4,8 +4,8 @@ use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 use super::shell_state::{
     GuiCommandAvailabilityState, GuiConfigurationTab, GuiPlayerSetupIssueKind, GuiPluginSelection,
-    GuiSavedSessionConnectTarget, GuiShellAction, GuiShellModal, GuiShellView, MenuActionId,
-    SettingId, SorotteGuiShellAppState,
+    GuiSavedSessionConnectTarget, GuiShellAction, GuiShellView, MenuActionId, SettingId,
+    SorotteGuiShellAppState,
 };
 use super::support::normalized_editable_text;
 use super::ui_state::GuiPersistedUiState;
@@ -496,13 +496,9 @@ impl SorotteGuiShellAppState {
         action.is_checked = checked;
     }
 
-    pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
-        &mut self,
-        settings: &StoredClientSettings,
-    ) {
-        super::configuration_model::normalize_runtime_menu_action_overrides_for_settings(
+    pub(super) fn normalize_runtime_menu_action_overrides(&mut self) {
+        super::configuration_model::normalize_runtime_menu_action_overrides(
             &mut self.runtime_menu_action_overrides,
-            settings,
         );
     }
 
@@ -544,19 +540,6 @@ impl SorotteGuiShellAppState {
             self.set_menu_action_enabled(action_override.id, action_override.enabled);
         }
         self.set_menu_action_enabled(MenuActionId::About, self.menus.about_dialog_available);
-    }
-
-    pub(super) fn open_newly_expected_modal_if_needed(
-        &mut self,
-        previous_tls_prompt_expected: bool,
-        _previous_update_notice_expected: bool,
-    ) {
-        if self.open_modal.is_some() {
-            return;
-        }
-        if self.menus.tls_prompt_expected && !previous_tls_prompt_expected {
-            self.open_modal = Some(GuiShellModal::TlsCertificatePrompt);
-        }
     }
 
     pub(super) fn apply_selection_to_surfaces(&mut self) {

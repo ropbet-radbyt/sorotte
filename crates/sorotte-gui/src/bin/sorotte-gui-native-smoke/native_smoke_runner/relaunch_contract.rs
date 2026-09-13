@@ -32,30 +32,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let step_timeout = timeout.min(Duration::from_millis(4_000));
         let mut steps = Vec::new();
 
-        let _initial_state = wait_for_any_accessible_name(
-            driver,
-            window,
-            &["modal: tls-certificate-prompt", "view: setup", "view: room"],
-            step_timeout,
-        )?;
-        if wait_for_accessible_name(
-            driver,
-            window,
-            "modal: tls-certificate-prompt",
-            step_timeout.min(Duration::from_millis(800)),
-        )
-        .is_ok()
-        {
-            invoke_named_control_with_wait(
-                driver,
-                window,
-                MODAL_TLS_TRUST_AUTOMATION_ID,
-                NativeControlKind::Button,
-                step_timeout,
-            )?;
-            wait_for_accessible_name(driver, window, "modal: (none)", step_timeout)?;
-        }
-
         let initial_view = wait_for_any_accessible_name(
             driver,
             window,
@@ -256,35 +232,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let (mut first_run_child, first_run_window) =
             launch_sorotte_gui_with_retry(driver, binary_path, first_run_launch, timeout)?;
         let first_run_outcome = (|| -> Result<(), String> {
-            let _initial_state = wait_for_any_accessible_name(
-                driver,
-                first_run_window,
-                &["modal: tls-certificate-prompt", "view: setup", "view: room"],
-                step_timeout,
-            )?;
-            if wait_for_accessible_name(
-                driver,
-                first_run_window,
-                "modal: tls-certificate-prompt",
-                step_timeout.min(Duration::from_millis(800)),
-            )
-            .is_ok()
-            {
-                invoke_named_control_with_wait(
-                    driver,
-                    first_run_window,
-                    MODAL_TLS_TRUST_AUTOMATION_ID,
-                    NativeControlKind::Button,
-                    step_timeout,
-                )?;
-                let _ = wait_for_any_accessible_name(
-                    driver,
-                    first_run_window,
-                    &["modal: (none)", "modal: player-setup"],
-                    step_timeout,
-                )?;
-            }
-
             let first_run_view = wait_for_any_accessible_name(
                 driver,
                 first_run_window,
@@ -377,30 +324,6 @@ pub(super) fn verify_relaunch_config_reload_contract<D: NativeGuiDriver>(
         let (mut migration_child, migration_window) =
             launch_sorotte_gui_with_retry(driver, binary_path, migration_launch, timeout)?;
         let migration_outcome = (|| -> Result<(), String> {
-            let _migration_initial_state = wait_for_any_accessible_name(
-                driver,
-                migration_window,
-                &["modal: tls-certificate-prompt", "view: setup", "view: room"],
-                step_timeout,
-            )?;
-            if wait_for_accessible_name(
-                driver,
-                migration_window,
-                "modal: tls-certificate-prompt",
-                step_timeout.min(Duration::from_millis(800)),
-            )
-            .is_ok()
-            {
-                invoke_named_control_with_wait(
-                    driver,
-                    migration_window,
-                    MODAL_TLS_TRUST_AUTOMATION_ID,
-                    NativeControlKind::Button,
-                    step_timeout,
-                )?;
-                wait_for_accessible_name(driver, migration_window, "modal: (none)", step_timeout)?;
-            }
-
             let migration_view = wait_for_any_accessible_name(
                 driver,
                 migration_window,

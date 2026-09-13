@@ -28,14 +28,17 @@ assert-value	shell:open-modal	(none)
 activate	menu.check_for_updates
 assert-value	shell:open-modal	(none)
 assert-value	shell:update-indicator:title	Checking for updates
-activate	menu.tls_certificates
-assert-value	shell:open-modal	tls-certificate-prompt
-assert-value	shell:modal:kind	tls-certificate-prompt
-activate	shell:modal:tls:trust
+activate	configuration:tab:privacy-chat
+assert-value	settings.privacy.trusted_domains_only	yes
+activate	settings.privacy.trusted_domains_only
+assert-value	settings.privacy.trusted_domains_only	no
 assert-value	shell:open-modal	(none)
-assert-value	menus:dialog:tls	no
+activate	settings.privacy.trusted_domains_only
+assert-value	settings.privacy.trusted_domains_only	yes
+assert-value	shell:open-modal	(none)
 clear-notifications
 activate	configuration-root
+activate	configuration:tab:connection
 enter-text	settings.connection.host	false	syncplay.example
 enter-text	settings.connection.port	false	8999
 enter-text	settings.connection.username	false	smoke-user

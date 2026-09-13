@@ -36,15 +36,6 @@ impl GuiRuntimeState {
             current_snapshot,
         );
     }
-    fn preserves_runtime_dialog_expectations(
-        &self,
-        previous_settings: &StoredClientSettings,
-    ) -> (bool, bool) {
-        crate::app::configuration_model::preserves_runtime_dialog_expectations(
-            &self.session.menus,
-            previous_settings,
-        )
-    }
     fn preserves_runtime_public_server_surface(
         &self,
         previous_settings: &StoredClientSettings,
@@ -94,15 +85,11 @@ impl GuiRuntimeState {
         let player_setup_issue = self.player.setup_issue.clone();
         let plex = self.plex.model.clone();
         let saved_configuration = self.settings.saved.clone();
-        let tls_prompt_expected = self.session.menus.tls_prompt_expected;
-        let update_notice_expected = self.session.menus.update_notice_expected;
         let about_dialog_available = self.session.menus.about_dialog_available;
         let selected_public_server_address =
             self.selected_public_server_address().map(str::to_owned);
         let preserved_main_window_runtime_snapshot =
             MainWindowRuntimeSnapshot::from_shell_state(&self.playlist.main_window);
-        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
-            self.preserves_runtime_dialog_expectations(&previous_settings);
         let preserved_public_server_rows = (previous_settings.public_servers
             == settings.public_servers)
             .then(|| self.session.public_servers.servers.clone());
@@ -148,12 +135,6 @@ impl GuiRuntimeState {
         self.player.setup_issue = player_setup_issue;
         self.plex.model = plex;
         self.settings.saved = saved_configuration;
-        if preserve_tls_prompt_expected {
-            self.session.menus.tls_prompt_expected = tls_prompt_expected;
-        }
-        if preserve_update_notice_expected {
-            self.session.menus.update_notice_expected = update_notice_expected;
-        }
         self.session.menus.about_dialog_available = about_dialog_available;
         if let Some(servers) = preserved_public_server_rows {
             self.session.public_servers.servers = servers;
@@ -172,7 +153,7 @@ impl GuiRuntimeState {
                 .search
                 .apply_runtime_flags(runtime_flags);
         }
-        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.normalize_runtime_menu_action_overrides();
         self.reapply_runtime_main_window_surface_from_snapshot(
             &previous_settings,
             &preserved_main_window_runtime_snapshot,
@@ -189,13 +170,9 @@ impl GuiRuntimeState {
         self.sync_playback_menu_actions_from_runtime_state(self.session.commands.can_toggle_pause);
     }
 
-    pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
-        &mut self,
-        settings: &StoredClientSettings,
-    ) {
-        crate::app::configuration_model::normalize_runtime_menu_action_overrides_for_settings(
+    pub(super) fn normalize_runtime_menu_action_overrides(&mut self) {
+        crate::app::configuration_model::normalize_runtime_menu_action_overrides(
             &mut self.session.menu_overrides,
-            settings,
         );
     }
 
@@ -259,8 +236,6 @@ impl GuiRuntimeState {
         let preserved_media_search_directories = (previous_settings.media_search_directories
             == settings.media_search_directories)
             .then(|| self.media_resolution.search.directories.clone());
-        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
-            self.preserves_runtime_dialog_expectations(previous_settings);
         let preserve_public_servers =
             self.preserves_runtime_public_server_surface(previous_settings);
         let preserved_public_server_flags = preserve_public_servers.then(|| {
@@ -272,21 +247,13 @@ impl GuiRuntimeState {
         });
         let selected_public_server_address =
             self.selected_public_server_address().map(str::to_owned);
-        let tls_prompt_expected = self.session.menus.tls_prompt_expected;
-        let update_notice_expected = self.session.menus.update_notice_expected;
         let about_dialog_available = self.session.menus.about_dialog_available;
         self.playlist.main_window = MainWindowShellState::from_stored_settings(&settings);
         self.reapply_runtime_main_window_surface_from_snapshot(
             previous_settings,
             &preserved_main_window_runtime_snapshot,
         );
-        self.session.menus = MenuDialogShellState::from_stored_settings(&settings);
-        if preserve_tls_prompt_expected {
-            self.session.menus.tls_prompt_expected = tls_prompt_expected;
-        }
-        if preserve_update_notice_expected {
-            self.session.menus.update_notice_expected = update_notice_expected;
-        }
+        self.session.menus = MenuDialogShellState::default();
         self.session.menus.about_dialog_available = about_dialog_available;
         self.session.public_servers =
             PublicServerBrowserShellState::from_stored_settings(&settings);
@@ -310,7 +277,7 @@ impl GuiRuntimeState {
                 .apply_runtime_flags(runtime_flags);
         }
         self.media_resolution.index_status = preserved_media_index_status;
-        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.normalize_runtime_menu_action_overrides();
         self.sync_dialog_menu_actions_from_runtime_state();
         self.normalize_selection();
         self.normalize_selected_menu_action_after_runtime_update();

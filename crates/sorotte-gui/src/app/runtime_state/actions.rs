@@ -32,7 +32,6 @@ impl GuiRuntimeState {
                 if let Err(message) = feature_snapshots::apply_menu_dialog_snapshot(
                     &mut self.session.menus,
                     &mut self.session.menu_overrides,
-                    &self.settings.draft.to_stored_settings(),
                     snapshot,
                 ) {
                     return self.record_action_error(message);
