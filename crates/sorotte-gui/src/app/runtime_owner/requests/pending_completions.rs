@@ -64,32 +64,19 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|room| room.as_str().to_owned());
         let connect_result = if replace_owned_transport {
             let connection = &runtime_settings.config.connection;
-            let mut session =
-                match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
-                    connection
-                        .username
-                        .as_ref()
-                        .map(|username| username.as_str().to_owned())
-                        .unwrap_or_default(),
-                    connection
-                        .room
-                        .as_ref()
-                        .map(|room| room.as_str().to_owned())
-                        .unwrap_or_default(),
-                    connection.controlled_room_password.clone(),
-                ) {
-                    Ok(session) => session,
-                    Err(error) => {
-                        self.clear_pending_operation_with_runtime_error(
-                        handle,
-                        projected_state,
-                        format!(
-                            "Public server connect through the attached session runtime failed: {error}"
-                        ),
-                    );
-                        return false;
-                    }
-                };
+            let mut session = GuiClientSession::new_with_control_password(
+                connection
+                    .username
+                    .as_ref()
+                    .map(|username| username.as_str().to_owned())
+                    .unwrap_or_default(),
+                connection
+                    .room
+                    .as_ref()
+                    .map(|room| room.as_str().to_owned())
+                    .unwrap_or_default(),
+                connection.controlled_room_password.clone(),
+            );
             session
                 .apply_runtime_settings_snapshot(&runtime_settings)
                 .and_then(|()| session.connect_public_server(Some(selected_server.clone())))

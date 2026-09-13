@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::runtime_stack::test_support::session_with_peer_files;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 
@@ -54,47 +55,25 @@ use crate::app::runtime_owner::{
     GuiUserMediaTargetResolutionSource,
 };
 use crate::app::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
+    GuiClientSession, GuiMediaSourceProviderId, GuiPlaylistDefaultSourceId,
     GuiPlaylistSourcePolicy, GuiPlaylistSourceSelectionOrigin, GuiPlaylistSourceState,
     GuiPlaylistSourceStatus,
 };
 
-struct RecordingMediaLoadIntentSession {
+struct MediaLoadIntentProbe {
     intents: std::sync::Arc<std::sync::Mutex<Vec<sorotte_client_core::MediaLoadIntent>>>,
 }
 
-impl GuiSessionRuntimeAdapter for RecordingMediaLoadIntentSession {
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
-    }
-
-    fn prepare_attached_playback_media(
-        &mut self,
-        _logical_id: sorotte_client_core::LogicalMediaId,
-        _kind: sorotte_client_core::MediaTransportKind,
-        intent: sorotte_client_core::MediaLoadIntent,
-        _now_seconds: f64,
-    ) -> Result<Option<sorotte_client_core::MediaLoadPlan>, String> {
-        self.intents
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(intent);
-        Ok(None)
+impl MediaLoadIntentProbe {
+    fn into_session(self) -> crate::app::GuiClientSession {
+        crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+            if let crate::app::runtime_stack::test_support::SessionObservation::MediaPrepared(
+                intent,
+            ) = event
+            {
+                self.intents.lock().unwrap().push(intent);
+            }
+        })
     }
 }
 
@@ -560,38 +539,6 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct MediaMatchPeerSessionRuntimeAdapter {
-        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
-        fn current_room_media_match_peer_file_states(
-            &self,
-        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
-            self.peer_files.clone()
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     fn media_match_record_for_file(
         path: &std::path::Path,
     ) -> sorotte_media_match::MediaFingerprintRecord {
@@ -695,8 +642,8 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
 
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-        .with_session_runtime(Box::new(MediaMatchPeerSessionRuntimeAdapter {
-            peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+        .with_session_runtime(Box::new(session_with_peer_files(vec![
+            sorotte_client_core::ClientMediaMatchPeerFileState {
                 username: "remote".to_owned(),
                 has_file: true,
                 file_name: Some(remote_file_name.to_owned()),
@@ -706,8 +653,8 @@ fn gui_persisted_config_runtime_owner_opens_probable_media_match_candidate_for_s
                     sorotte_media_match::media_match_wire_signature_from_value(&remote_signature)
                         .expect("remote signature should validate"),
                 ),
-            }],
-        }));
+            },
+        ])));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -1115,14 +1062,12 @@ fn gui_persisted_config_runtime_owner_prefers_unique_plex_filename_over_ambiguou
     let root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
     let candidates_by_name = std::collections::HashMap::from([
         (
-            GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                "Show.S01E01.mkv",
-            )
-            .expect("exact Plex filename key should be available"),
+            GuiClientSession::missing_media_file_name_lookup_key("Show.S01E01.mkv")
+                .expect("exact Plex filename key should be available"),
             vec!["show-a/Show.S01E01.mkv".to_owned()],
         ),
         (
-            GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key("Pilot")
+            GuiClientSession::missing_media_file_name_lookup_key("Pilot")
                 .expect("Plex title key should be available"),
             vec!["show-a/Pilot".to_owned(), "show-b/Pilot".to_owned()],
         ),
@@ -1202,10 +1147,8 @@ fn gui_persisted_config_runtime_owner_exhausts_indexed_filename_before_quick_tit
                     root_path: first_root.clone(),
                     built_at_unix_ms,
                     candidates_by_name: std::collections::HashMap::from([(
-                        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                            "Show.S01E01.mkv",
-                        )
-                        .expect("exact Plex filename key should be available"),
+                        GuiClientSession::missing_media_file_name_lookup_key("Show.S01E01.mkv")
+                            .expect("exact Plex filename key should be available"),
                         vec!["nested-show/Show.S01E01.mkv".to_owned()],
                     )]),
                 },
@@ -1353,10 +1296,8 @@ fn gui_persisted_config_runtime_owner_exhausts_inventory_filename_before_indexed
                 // Deliberately model a stale attached index that knows the title but
                 // not the stronger filename already present in exact inventory.
                 candidates_by_name: std::collections::HashMap::from([(
-                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                        "Pilot.mkv",
-                    )
-                    .expect("Plex title key should be available"),
+                    GuiClientSession::missing_media_file_name_lookup_key("Pilot.mkv")
+                        .expect("Plex title key should be available"),
                     vec!["indexed-title/Pilot.mkv".to_owned()],
                 )]),
             },
@@ -1495,10 +1436,8 @@ fn gui_persisted_config_runtime_owner_prefers_exact_case_indexed_file_over_folde
                     .expect("system time should be after unix epoch")
                     .as_millis() as u64,
                 candidates_by_name: std::collections::HashMap::from([(
-                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                        "pilot.mkv",
-                    )
-                    .expect("exact-case lookup key should be available"),
+                    GuiClientSession::missing_media_file_name_lookup_key("pilot.mkv")
+                        .expect("exact-case lookup key should be available"),
                     vec!["nested/pilot.mkv".to_owned()],
                 )]),
             },
@@ -1662,10 +1601,8 @@ fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded
                     root_path: media_root,
                     built_at_unix_ms: 1,
                     candidates_by_name: std::collections::HashMap::from([(
-                        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                            "pilot.mkv",
-                        )
-                        .expect("exact-case lookup key should be available"),
+                        GuiClientSession::missing_media_file_name_lookup_key("pilot.mkv")
+                            .expect("exact-case lookup key should be available"),
                         vec!["season/pilot.mkv".to_owned()],
                     )]),
                 }),
@@ -1760,10 +1697,8 @@ fn gui_persisted_config_runtime_owner_rejects_uncorroborated_current_player_plex
                     .expect("system time should be after unix epoch")
                     .as_millis() as u64,
                 candidates_by_name: std::collections::HashMap::from([(
-                    GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-                        "Pilot",
-                    )
-                    .expect("current-player title key should be available"),
+                    GuiClientSession::missing_media_file_name_lookup_key("Pilot")
+                        .expect("current-player title key should be available"),
                     vec!["Pilot".to_owned()],
                 )]),
             },
@@ -2128,10 +2063,8 @@ fn gui_persisted_config_runtime_owner_uses_indexed_nested_local_media_for_plex_p
     let media_root_key = crate::app::media_search_cache::normalized_media_search_root_key(&root);
     let mut candidates_by_name = std::collections::HashMap::new();
     candidates_by_name.insert(
-        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key(
-            "[group] episode 01.mkv",
-        )
-        .expect("Plex file name lookup key should be available"),
+        GuiClientSession::missing_media_file_name_lookup_key("[group] episode 01.mkv")
+            .expect("Plex file name lookup key should be available"),
         vec![indexed_relative_path],
     );
     let mut root_indexes_by_key = std::collections::HashMap::new();
@@ -2999,38 +2932,6 @@ fn gui_persisted_config_runtime_owner_does_not_starve_folded_current_for_ready_p
 
 #[test]
 fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misses() {
-    #[derive(Debug, Clone)]
-    struct MediaMatchPeerSessionRuntimeAdapter {
-        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
-        fn current_room_media_match_peer_file_states(
-            &self,
-        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
-            self.peer_files.clone()
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     let root = test_temp_root("plex-stream-while-media-match-misses");
     let config_path = root.join("sorotte.ini");
     let media_root = root.join("library");
@@ -3038,21 +2939,19 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misse
         .expect("Plex stream Media Match miss fixture root should be created");
 
     let plex_uri = "plex://machine-1/metadata/123?title=Episode%201&file=Episode%201.mkv";
-    let mut owner =
-        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
-            Box::new(MediaMatchPeerSessionRuntimeAdapter {
-                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                    username: "remote".to_owned(),
-                    has_file: true,
-                    file_name: None,
-                    file_size: None,
-                    file_duration: None,
-                    media_match_signature: Some(
-                        sorotte_media_match::MediaMatchWireSignature::default(),
-                    ),
-                }],
-            }),
-        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(session_with_peer_files(vec![
+            sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: None,
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(
+                    crate::app::runtime_stack::test_support::empty_media_signature(),
+                ),
+            },
+        ])));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
@@ -4102,7 +4001,7 @@ fn gui_persisted_config_runtime_owner_retries_playlist_open_when_media_index_com
         .to_string_lossy()
         .into_owned();
     candidates_by_name.insert(
-        GuiClientCoreChatSessionRuntimeAdapter::missing_media_file_name_lookup_key("episode2.mkv")
+        GuiClientSession::missing_media_file_name_lookup_key("episode2.mkv")
             .expect("episode2 lookup key should be available"),
         vec![relative_path],
     );
@@ -4198,9 +4097,12 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     let load_intents = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    owner.session = Some(Box::new(RecordingMediaLoadIntentSession {
-        intents: load_intents.clone(),
-    }));
+    owner.session = Some(Box::new(
+        MediaLoadIntentProbe {
+            intents: load_intents.clone(),
+        }
+        .into_session(),
+    ));
     owner.active_shared_playlist_index = Some(0);
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
@@ -4381,59 +4283,25 @@ fn gui_persisted_config_runtime_owner_prefers_media_search_casing_over_media_mat
 #[test]
 fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_media_search_indexes()
 {
-    #[derive(Debug, Clone)]
-    struct MediaMatchPeerSessionRuntimeAdapter {
-        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
-        fn current_room_media_match_peer_file_states(
-            &self,
-        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
-            self.peer_files.clone()
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     let root = test_temp_root("media-match-remote-queued-during-index");
     let config_path = root.join("sorotte.ini");
     let media_root = root.join("library");
     std::fs::create_dir_all(&media_root)
         .expect("Media Match remote lookup scheduling fixture directory should be created");
     let playlist_target = "peer-only-episode.mkv";
-    let mut owner =
-        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
-            Box::new(MediaMatchPeerSessionRuntimeAdapter {
-                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                    username: "remote".to_owned(),
-                    has_file: true,
-                    file_name: Some(playlist_target.to_owned()),
-                    file_size: None,
-                    file_duration: None,
-                    media_match_signature: Some(
-                        sorotte_media_match::MediaMatchWireSignature::default(),
-                    ),
-                }],
-            }),
-        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(session_with_peer_files(vec![
+            sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: Some(playlist_target.to_owned()),
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(
+                    crate::app::runtime_stack::test_support::empty_media_signature(),
+                ),
+            },
+        ])));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(0);
 
@@ -4466,38 +4334,6 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
 
 #[test]
 fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist_lookup() {
-    #[derive(Debug, Clone)]
-    struct MediaMatchPeerSessionRuntimeAdapter {
-        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchPeerSessionRuntimeAdapter {
-        fn current_room_media_match_peer_file_states(
-            &self,
-        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
-            self.peer_files.clone()
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     let root = test_temp_root("media-match-manual-selected-target-replaces-stale");
     let config_path = root.join("sorotte.ini");
     let media_root = root.join("library");
@@ -4505,21 +4341,19 @@ fn gui_persisted_config_runtime_owner_manual_media_match_replaces_stale_playlist
         .expect("Media Match manual selection fixture directory should be created");
     let item_a = "Item A.mkv";
     let item_b = "Item B.mkv";
-    let mut owner =
-        GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path)).with_session_runtime(
-            Box::new(MediaMatchPeerSessionRuntimeAdapter {
-                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
-                    username: "remote".to_owned(),
-                    has_file: true,
-                    file_name: Some(item_a.to_owned()),
-                    file_size: None,
-                    file_duration: None,
-                    media_match_signature: Some(
-                        sorotte_media_match::MediaMatchWireSignature::default(),
-                    ),
-                }],
-            }),
-        );
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
+        .with_session_runtime(Box::new(session_with_peer_files(vec![
+            sorotte_client_core::ClientMediaMatchPeerFileState {
+                username: "remote".to_owned(),
+                has_file: true,
+                file_name: Some(item_a.to_owned()),
+                file_size: None,
+                file_duration: None,
+                media_match_signature: Some(
+                    crate::app::runtime_stack::test_support::empty_media_signature(),
+                ),
+            },
+        ])));
     owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
     owner.active_shared_playlist_index = Some(1);
     let (_stale_tx, stale_rx) = mpsc::channel();

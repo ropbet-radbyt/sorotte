@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::GuiClientSession;
 use crate::app::runtime_owner::GuiStreamingDegradationOrigin;
 use crate::app::testing::support::runtime_state_for_shell;
 
@@ -1085,8 +1085,7 @@ fn live_autoplay_overrides_do_not_create_reconnect_guidance_on_unrelated_save() 
     };
     let (root, mut owner, handle, mut state) =
         persisted_owner_and_state("pending-apply-live-autoplay", &initial);
-    let session = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room-a")
-        .expect("autoplay requirement fixture should create a session");
+    let session = GuiClientSession::new("alice", "room-a");
     owner.install_active_session_runtime(
         Box::new(session),
         sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(&initial),

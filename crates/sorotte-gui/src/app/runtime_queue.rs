@@ -26,9 +26,15 @@ use super::support::{nonempty_room_name_text, normalized_editable_text};
 
 type GuiRepaintNotifier = Arc<dyn Fn() + Send + Sync>;
 
+#[derive(Default)]
+struct GuiRuntimeHandoff {
+    actions: VecDeque<GuiShellAction>,
+    pending_input: Option<Arc<GuiRuntimeInput>>,
+}
+
 #[derive(Clone, Default)]
 pub(super) struct GuiQueuedRuntimeBridgeHandle {
-    queued_actions: Arc<Mutex<VecDeque<GuiShellAction>>>,
+    handoff: Arc<Mutex<GuiRuntimeHandoff>>,
     queued_commands: Arc<Mutex<VecDeque<GuiClientCommand>>>,
     repaint_notifier: Arc<Mutex<Option<GuiRepaintNotifier>>>,
     threaded_runtime_owner: Arc<Mutex<Option<Weak<GuiThreadedRuntimeOwnerShared>>>>,
@@ -111,25 +117,53 @@ impl GuiQueuedRuntimeBridgeHandle {
     where
         I: IntoIterator<Item = GuiShellAction>,
     {
-        let mut queue = self
-            .queued_actions
+        let mut handoff = self
+            .handoff
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous_len = queue.len();
-        queue.extend(actions);
-        let queued_actions = queue.len().saturating_sub(previous_len);
-        drop(queue);
+        let previous_len = handoff.actions.len();
+        for action in actions {
+            // A UI snapshot can arrive while its command is still executing.
+            // Keep that pending input at least as current as the worker output.
+            if let Some(input) = handoff.pending_input.as_mut() {
+                Arc::make_mut(input).apply_output(action.clone());
+            }
+            handoff.actions.push_back(action);
+        }
+        let queued_actions = handoff.actions.len().saturating_sub(previous_len);
+        drop(handoff);
         if queued_actions != 0 {
             self.notify_repaint();
         }
     }
 
     pub(super) fn drain_actions(&self) -> Vec<GuiShellAction> {
-        let mut queue = self
-            .queued_actions
+        let mut handoff = self
+            .handoff
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.drain(..).collect()
+        handoff.actions.drain(..).collect()
+    }
+
+    fn submit_runtime_input(&self, mut input: Arc<GuiRuntimeInput>) {
+        let mut handoff = self
+            .handoff
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Output not yet consumed by the UI is newer than its snapshot. Reapply
+        // its feature effects before it can replace the worker's current state.
+        for action in &handoff.actions {
+            Arc::make_mut(&mut input).apply_output(action.clone());
+        }
+        handoff.pending_input = Some(input);
+    }
+
+    fn take_runtime_input(&self) -> Option<Arc<GuiRuntimeInput>> {
+        self.handoff
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_input
+            .take()
     }
 
     pub(super) fn push_request(&self, request: GuiRuntimeRequest) {
@@ -575,7 +609,9 @@ where
             .is_some_and(|input| input.matches_shell(state))
         {
             let input = GuiRuntimeInput::from_shell(state);
-            self.owner.input_changed(&self.handle, &input);
+            self.handle.submit_runtime_input(Arc::new(input.clone()));
+            let submitted = self.handle.take_runtime_input().unwrap();
+            self.owner.input_changed(&self.handle, &submitted);
             self.last_input = Some(input);
         }
         self.owner.poll(&self.handle);
@@ -584,7 +620,6 @@ where
 
 #[derive(Default)]
 struct GuiThreadedRuntimeOwnerSharedState {
-    latest_input: Option<Arc<GuiRuntimeInput>>,
     latest_input_revision: u64,
     runtime_wake_revision: u64,
 }
@@ -597,6 +632,7 @@ struct GuiThreadedRuntimeOwnerShared {
 }
 
 pub(super) struct GuiThreadedRuntimeOwnerPump {
+    handle: GuiQueuedRuntimeBridgeHandle,
     last_submitted_input: Option<Arc<GuiRuntimeInput>>,
     shared: Arc<GuiThreadedRuntimeOwnerShared>,
     worker: Option<JoinHandle<()>>,
@@ -659,6 +695,7 @@ impl GuiThreadedRuntimeOwnerPump {
             .map_err(|error| format!("failed to spawn syncplay GUI runtime thread: {error}"))?;
         handle.set_threaded_runtime_owner(&shared);
         Ok(Self {
+            handle,
             last_submitted_input: None,
             shared,
             worker: Some(worker),
@@ -675,13 +712,13 @@ impl GuiThreadedRuntimeOwnerPump {
     ) where
         TOwner: GuiQueuedRuntimeOwner,
     {
-        let mut latest_input = None;
+        let mut has_input = false;
         let mut latest_revision = 0_u64;
         let mut latest_runtime_wake_revision = 0_u64;
 
         loop {
             let mut timed_out = false;
-            let mut changed_input = None;
+            let mut input_changed = false;
             let mut shared_state = shared
                 .state
                 .lock()
@@ -693,17 +730,16 @@ impl GuiThreadedRuntimeOwnerPump {
                 }
                 if shared_state.latest_input_revision != latest_revision {
                     latest_revision = shared_state.latest_input_revision;
-                    latest_input = shared_state.latest_input.clone();
-                    changed_input = latest_input.clone();
+                    input_changed = true;
                 }
                 if shared_state.runtime_wake_revision != latest_runtime_wake_revision
                     || timed_out
-                    || changed_input.is_some()
+                    || input_changed
                 {
                     latest_runtime_wake_revision = shared_state.runtime_wake_revision;
                     break;
                 }
-                if latest_input.is_some() {
+                if has_input {
                     let (next_shared_state, timeout) = shared
                         .wake
                         .wait_timeout(shared_state, poll_interval)
@@ -720,10 +756,11 @@ impl GuiThreadedRuntimeOwnerPump {
 
             drop(shared_state);
 
-            if let Some(input) = changed_input.as_ref() {
-                owner.input_changed(&handle, input);
+            if input_changed && let Some(input) = handle.take_runtime_input() {
+                owner.input_changed(&handle, &input);
+                has_input = true;
             }
-            if latest_input.is_some() {
+            if has_input {
                 owner.poll(&handle);
             }
         }
@@ -852,15 +889,14 @@ impl GuiNativeRuntimePump for GuiThreadedRuntimeOwnerPump {
         {
             return;
         }
-        let input = GuiRuntimeInput::from_shell(state);
+        let snapshot = Arc::new(GuiRuntimeInput::from_shell(state));
+        self.handle.submit_runtime_input(snapshot.clone());
+        self.last_submitted_input = Some(snapshot);
         let mut shared_state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = Arc::new(input);
-        self.last_submitted_input = Some(snapshot.clone());
-        shared_state.latest_input = Some(snapshot);
         shared_state.latest_input_revision = shared_state.latest_input_revision.wrapping_add(1);
         shared_state.runtime_wake_revision = shared_state.runtime_wake_revision.wrapping_add(1);
         drop(shared_state);

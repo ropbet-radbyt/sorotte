@@ -1,18 +1,16 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_operations() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_dispatches_shared_playlist_operations() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
     assert_eq!(startup_lines.len(), 1);
     assert!(
-        !GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+        !GuiClientSession::playlist_control_available(&adapter),
         "playlist controls should remain unavailable before server hello"
     );
 
@@ -22,11 +20,11 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
         )
         .expect("inbound server hello should apply");
     assert!(
-        GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+        GuiClientSession::playlist_control_available(&adapter),
         "playlist controls should become available after a successful room hello"
     );
 
-    GuiSessionRuntimeAdapter::queue_playlist_entry(&mut adapter, "episode1.mkv".to_owned(), true)
+    GuiClientSession::queue_playlist_entry(&mut adapter, "episode1.mkv".to_owned(), true)
         .expect("queueing the first playlist entry should dispatch");
     let first_queue_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -51,7 +49,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .expect("first queue echo should apply");
     }
 
-    GuiSessionRuntimeAdapter::queue_playlist_entry(&mut adapter, "episode2.mkv".to_owned(), true)
+    GuiClientSession::queue_playlist_entry(&mut adapter, "episode2.mkv".to_owned(), true)
         .expect("queueing the second playlist entry should dispatch");
     let second_queue_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -75,7 +73,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .expect("second queue echo should apply");
     }
 
-    GuiSessionRuntimeAdapter::set_playlist_index(&mut adapter, 0)
+    GuiClientSession::set_playlist_index(&mut adapter, 0)
         .expect("playlist selection should dispatch");
     let selection_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -97,7 +95,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
         )
         .expect("local file update should apply");
 
-    GuiSessionRuntimeAdapter::advance_playlist_index(&mut adapter)
+    GuiClientSession::advance_playlist_index(&mut adapter)
         .expect("playlist advancement should dispatch");
     let advance_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -122,7 +120,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .expect("advance echo should apply");
     }
 
-    GuiSessionRuntimeAdapter::delete_playlist_index(&mut adapter, 0)
+    GuiClientSession::delete_playlist_index(&mut adapter, 0)
         .expect("playlist removal should dispatch");
     let delete_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -151,7 +149,7 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
             .expect("delete echo should apply");
     }
 
-    GuiSessionRuntimeAdapter::replace_playlist(
+    GuiClientSession::replace_playlist(
         &mut adapter,
         vec!["episode3.mkv".to_owned(), "episode2.mkv".to_owned()],
         Some(1),
@@ -196,10 +194,8 @@ fn gui_client_core_chat_session_runtime_adapter_dispatches_shared_playlist_opera
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_as_auto_advanceable()
- {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_marks_single_item_loop_playlist_as_auto_advanceable() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -229,16 +225,14 @@ fn gui_client_core_chat_session_runtime_adapter_marks_single_item_loop_playlist_
         .expect("local file update should apply");
 
     assert!(
-        GuiSessionRuntimeAdapter::can_auto_advance_to_next_playlist_item(&adapter),
+        GuiClientSession::can_auto_advance_to_next_playlist_item(&adapter),
         "single-item loop playlists should be eligible for EOF auto-advance when the local player is on the selected item"
     );
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explicit_index_preserves_active_target()
- {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_replace_playlist_without_explicit_index_preserves_active_target() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -259,7 +253,7 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#)
         .expect("initial playlist index should apply");
 
-    GuiSessionRuntimeAdapter::replace_playlist(
+    GuiClientSession::replace_playlist(
         &mut adapter,
         vec![
             "episodeD.mkv".to_owned(),
@@ -272,7 +266,7 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
     .expect("playlist reorder should dispatch");
 
     assert_eq!(
-        GuiSessionRuntimeAdapter::current_room_playlist_index(&adapter),
+        GuiClientSession::current_room_playlist_index(&adapter),
         Some(2),
         "optimistic playlist replacement should preserve the active room target when no explicit index is requested"
     );
@@ -297,8 +291,7 @@ fn gui_client_core_chat_session_runtime_adapter_replace_playlist_without_explici
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_server_feature_is_false()
- {
+fn gui_client_session_disables_shared_playlist_when_server_feature_is_false() {
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -307,8 +300,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
     });
     assert!(state.main_window.shared_playlist_enabled);
 
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -322,11 +314,11 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
         .expect("inbound server hello should apply");
 
     assert!(
-        !GuiSessionRuntimeAdapter::playlist_control_available(&adapter),
+        !GuiClientSession::playlist_control_available(&adapter),
         "playlist controls should remain unavailable when the server disables shared playlists"
     );
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let snapshot = actions
         .iter()
         .find_map(|action| match action {
@@ -350,8 +342,7 @@ fn gui_client_core_chat_session_runtime_adapter_disables_shared_playlist_when_se
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_when_session_has_none()
-{
+fn gui_client_session_clears_stale_shared_playlist_when_session_has_none() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -387,8 +378,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         },
     )));
 
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -402,7 +392,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
         .expect("inbound server hello should apply");
 
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("stale shared-playlist state should be corrected through a main-window snapshot");
@@ -449,22 +439,20 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_shared_playlist_whe
             .is_some_and(|action| !action.enabled)
     );
     assert!(
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
             .is_empty()
     );
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_before_server_echo()
-{
+fn gui_client_session_projects_local_playlist_replace_before_server_echo() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         shared_playlist_enabled: Some(false),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -477,20 +465,16 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
         )
         .expect("inbound server hello should apply");
     for action in
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
     {
         assert!(state.apply(action));
     }
 
-    GuiSessionRuntimeAdapter::replace_playlist(
-        &mut adapter,
-        vec!["episode1.mkv".to_owned()],
-        Some(0),
-    )
-    .expect("playlist replace should dispatch");
+    GuiClientSession::replace_playlist(&mut adapter, vec!["episode1.mkv".to_owned()], Some(0))
+        .expect("playlist replace should dispatch");
 
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(actions.len(), 2);
     let GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) = &actions[0] else {
         panic!("local playlist replace should project a main-window runtime snapshot");
@@ -510,15 +494,14 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_over_existing_room_playlist_before_server_echo()
+fn gui_client_session_projects_local_playlist_replace_over_existing_room_playlist_before_server_echo()
  {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -539,12 +522,12 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#)
         .expect("existing playlist index should apply");
     for action in
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
     {
         assert!(state.apply(action));
     }
 
-    GuiSessionRuntimeAdapter::replace_playlist(
+    GuiClientSession::replace_playlist(
         &mut adapter,
         vec!["episode3.mkv".to_owned(), "episode4.mkv".to_owned()],
         Some(1),
@@ -552,7 +535,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
     .expect("playlist replace should dispatch");
 
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     let main_snapshot = actions.iter().find_map(|action| match action {
         GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot) => Some(snapshot),
         _ => None,
@@ -575,8 +558,7 @@ fn gui_client_core_chat_session_runtime_adapter_projects_local_playlist_replace_
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when_session_has_no_playstate()
- {
+fn gui_client_session_clears_stale_playback_pause_when_session_has_no_playstate() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -590,8 +572,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     )));
     assert!(state.main_window.playback_paused);
 
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -611,7 +592,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(
         actions,
         vec![
@@ -630,14 +611,13 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_playback_pause_when
     }
     assert!(!state.main_window.playback_paused);
     assert!(
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
             .is_empty()
     );
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when_session_has_no_override()
- {
+fn gui_client_session_clears_stale_autoplay_state_when_session_has_no_override() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -651,8 +631,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     )));
     assert!(state.main_window.autoplay_active);
 
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -672,7 +651,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     expected_snapshot.room_control_status =
         "Not required: current room is not controlled.".to_owned();
     let actions =
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state));
     assert_eq!(
         actions,
         vec![
@@ -691,7 +670,7 @@ fn gui_client_core_chat_session_runtime_adapter_clears_stale_autoplay_state_when
     }
     assert!(!state.main_window.autoplay_active);
     assert!(
-        GuiSessionRuntimeAdapter::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
+        GuiClientSession::drain_gui_actions(&mut adapter, &runtime_state_for_shell(&state))
             .is_empty()
     );
 }

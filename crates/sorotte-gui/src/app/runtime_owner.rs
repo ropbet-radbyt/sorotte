@@ -72,11 +72,10 @@ use super::mpv_launch::{
 use super::runtime_bridge::GuiPendingRoomChangeRequest;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiLoopbackSessionTransportDriver,
-    GuiOutboundProtocolDeliveryResult, GuiOwnedPlayer, GuiPlayerLaunchRuntimeState,
-    GuiPlaylistProtocolDeliveryFence, GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter, GuiSessionTransportDriver, GuiTestPlayerAdapter,
-    GuiThreadedTcpSessionTransportDriver,
+    GuiClientSession, GuiLoopbackSessionTransportDriver, GuiOutboundProtocolDeliveryResult,
+    GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiPlaylistProtocolDeliveryFence,
+    GuiQueuedSessionTransportHandle, GuiSessionRoomPlaystate, GuiSessionTransportDriver,
+    GuiTestPlayerAdapter, GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiConfigurationDraft, GuiMediaMatchRemediationRuntimeSnapshot, GuiMediaMatchRuntimeSnapshot,
@@ -385,7 +384,7 @@ impl GuiPlayerApplyState {
 pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) config_path: Option<PathBuf>,
     pub(super) runtime_state: Option<GuiRuntimeState>,
-    pub(super) session: Option<Box<dyn GuiSessionRuntimeAdapter + Send>>,
+    pub(super) session: Option<Box<GuiClientSession>>,
     pub(super) active_session_settings: Option<StoredClientSettingsRuntimeSnapshot>,
     pub(super) active_session_configured_settings: Option<StoredClientSettingsRuntimeSnapshot>,
     pub(super) session_generation: u64,

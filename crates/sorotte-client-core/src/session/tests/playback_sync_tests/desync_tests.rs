@@ -28,6 +28,10 @@ fn current_room_playstate_at_advances_unpaused_position() {
         .current_room_playstate_at(103.25)
         .expect("effective room playstate should be available");
     assert_eq!(
+        session.current_room_playstate_updated_at_seconds(),
+        Some(100.0)
+    );
+    assert_eq!(
         advanced_playstate.position,
         Some(13.25),
         "effective room playstate should advance while the room is playing"

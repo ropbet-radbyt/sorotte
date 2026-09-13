@@ -1,6 +1,5 @@
 use super::*;
 use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot;
 
@@ -50,81 +49,30 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         eof_observations: usize,
     }
 
-    struct RecordingSessionRuntimeAdapter {
+    struct SessionObservationProbe {
         state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
     }
 
-    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
-        fn playlist_control_available(&self) -> bool {
-            true
-        }
-
-        fn can_auto_advance_to_next_playlist_item(&self) -> bool {
-            true
-        }
-
-        fn advance_playlist_index(&mut self) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .advance_calls += 1;
-            Ok(())
-        }
-
-        fn observe_external_player_end_of_file(&mut self, _now_seconds: f64) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .eof_observations += 1;
-            Ok(())
-        }
-
-        fn stage_attached_player_pause_intent(
-            &mut self,
-            _paused: bool,
-            _now_seconds: f64,
-        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pause_intent_stages += 1;
-            Ok(Vec::new())
-        }
-
-        fn supports_playback_pause_changes(&self) -> bool {
-            true
-        }
-
-        fn local_pause_state(&self) -> Option<bool> {
-            Some(false)
-        }
-
-        fn set_playback_paused(&mut self, paused: bool) -> Result<bool, String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pause_dispatches
-                .push(paused);
-            Ok(true)
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
+    impl SessionObservationProbe {
+        fn into_session(self) -> crate::app::GuiClientSession {
+            let mut session = crate::app::runtime_stack::test_support::active_session();
+            session.apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv"],"user":"bob"},"playlistIndex":{"index":0,"user":"bob"}}}"#).unwrap();
+            session
+                .apply_message_json(
+                    r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"bob"}}}"#,
+                )
+                .unwrap();
+            session.with_observer(move |event| {
+                use crate::app::runtime_stack::test_support::SessionObservation::*;
+                let mut state = self.state.lock().unwrap();
+                match event {
+                    PlaylistAdvance => state.advance_calls += 1,
+                    EndOfFile => state.eof_observations += 1,
+                    PauseIntentStaged(_) => state.pause_intent_stages += 1,
+                    PauseRequested(paused) => state.pause_dispatches.push(paused),
+                    _ => {}
+                }
+            })
         }
     }
 
@@ -148,11 +96,13 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
     }
 
     let recorded = std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(RecordingSessionRuntimeAdapter {
-            state: recorded.clone(),
-        }),
-    );
+    let mut owner =
+        GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(Box::new(
+            SessionObservationProbe {
+                state: recorded.clone(),
+            }
+            .into_session(),
+        ));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(TelemetryPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -186,7 +136,7 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
         "runtime command availability must follow the active session rather than the draft"
     );
     assert!(
-        state.main_window.playlist.is_empty(),
+        state.main_window.playlist.len() == 2,
         "an unsaved disable must not replace the session playlist with player-local media"
     );
     player_state
@@ -323,8 +273,7 @@ fn gui_persisted_config_runtime_owner_preserves_ready_when_opening_auto_advanced
         message.get("Set")?.get("ready")?.get("isReady")?.as_bool()
     }
 
-    let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let _ = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -419,68 +368,38 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
         }
     }
 
-    #[derive(Debug, Default)]
-    struct RecordingSessionState {
-        telemetry_updates: Vec<(Option<bool>, Option<f64>)>,
-    }
-
-    struct RecordingSessionRuntimeAdapter {
-        state: std::sync::Arc<std::sync::Mutex<RecordingSessionState>>,
-        local_actions: Vec<GuiAttachedPlayerRuntimeAction>,
-    }
-
-    impl GuiSessionRuntimeAdapter for RecordingSessionRuntimeAdapter {
-        fn take_attached_player_local_runtime_actions(
-            &mut self,
-        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-            Ok(std::mem::take(&mut self.local_actions))
-        }
-
-        fn sync_local_playback_telemetry(
-            &mut self,
-            paused: Option<bool>,
-            position_seconds: Option<f64>,
-        ) -> Result<(), String> {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .telemetry_updates
-                .push((paused, position_seconds));
-            Ok(())
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     let player_state = std::sync::Arc::new(std::sync::Mutex::new(RecordingPlayerState::default()));
-    let session_state =
-        std::sync::Arc::new(std::sync::Mutex::new(RecordingSessionState::default()));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(RecordingSessionRuntimeAdapter {
-            state: session_state.clone(),
-            local_actions: vec![GuiAttachedPlayerRuntimeAction::Paused {
-                paused: false,
-                cause: sorotte_client_core::PlayerCommandCause::AutomaticReadinessStart,
-            }],
-        }),
-    );
+    let mut session = crate::app::runtime_stack::test_support::active_session();
+    session
+        .sync_local_playback_telemetry(Some(true), Some(0.0))
+        .unwrap();
+    session
+        .sync_runtime_settings(&stored_client_settings_runtime_snapshot(
+            &StoredClientSettings {
+                username: Some("alice".to_owned()),
+                room: Some("room1".to_owned()),
+                autoplay_initial_state: Some(true),
+                autoplay_min_users: Some(
+                    sorotte_client_app::app_boundary::state::AutoplayThresholdOverride::Set(1),
+                ),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    let mut config = session
+        .runtime
+        .session()
+        .readiness_autoplay_config()
+        .clone();
+    config.autoplay_delay_seconds = 0.0;
+    session
+        .runtime
+        .session_mut()
+        .set_readiness_autoplay_config(config);
+    session.apply_message_json(r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"file":{"name":"episode2.mkv"},"isReady":true}}}}"#).unwrap();
+    session.force_autoplay_tick_for_test();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(session));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayerAdapter {
         state: player_state.clone(),
     })));
@@ -496,6 +415,11 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
         shared_playlist_enabled: Some(true),
         ..StoredClientSettings::default()
     });
+    let _ = owner
+        .session
+        .as_mut()
+        .unwrap()
+        .drain_gui_actions(&runtime_state_for_shell(&state));
     owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&state), false);
 
     assert_eq!(
@@ -507,11 +431,11 @@ fn gui_persisted_config_runtime_owner_applies_autoplay_unpause_to_attached_playe
         "client-core autoplay unpause must be applied to the attached player even before a remote room playstate exists"
     );
     assert_eq!(
-        session_state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .telemetry_updates,
-        vec![(Some(false), Some(0.0))],
+        (
+            owner.session.as_ref().unwrap().local_pause_state(),
+            owner.session.as_ref().unwrap().local_position_seconds()
+        ),
+        (Some(false), Some(0.0)),
         "the applied local autoplay unpause should be mirrored back into session telemetry"
     );
 }
@@ -607,8 +531,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             ));
     }
 
-    let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let startup_lines = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");
@@ -768,8 +691,7 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             ));
     }
 
-    let mut session = crate::app::GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut session = crate::app::GuiClientSession::new("alice", "room1");
     let startup_lines = session
         .deliver_outbound_protocol_lines()
         .expect("startup protocol lines should encode");

@@ -1,6 +1,6 @@
 use super::*;
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     pub(super) fn pending_playlist_protocol_delivery_fence(
         &self,
     ) -> Result<GuiPlaylistProtocolDeliveryFence, String> {

@@ -1,10 +1,6 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
-fn exchange(
-    adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
-    server: &mut sorotte_server::ServerRuntime,
-) {
+fn exchange(adapter: &mut GuiClientSession, server: &mut sorotte_server::ServerRuntime) {
     for _ in 0..64 {
         let lines = adapter.deliver_outbound_protocol_lines().unwrap();
         if lines.is_empty() {
@@ -19,7 +15,7 @@ fn exchange(
     panic!("playlist exchange failed to settle");
 }
 
-fn assert_playlist(adapter: &GuiClientCoreChatSessionRuntimeAdapter, files: &[&str], index: i64) {
+fn assert_playlist(adapter: &GuiClientSession, files: &[&str], index: i64) {
     let canonical = adapter.runtime.session().current_room_playlist().unwrap();
     let projected = adapter.projected_current_room_playlist().unwrap();
     assert_eq!(canonical.files, files, "client session contents");
@@ -36,7 +32,7 @@ fn assert_playlist(adapter: &GuiClientCoreChatSessionRuntimeAdapter, files: &[&s
 
 #[test]
 fn current_server_append_select_edit_playlist_remains_authoritative() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1").unwrap();
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".into()),
         room: Some("room1".into()),
@@ -78,7 +74,7 @@ fn current_server_append_select_edit_playlist_remains_authoritative() {
 
 #[test]
 fn current_server_pending_append_cannot_mask_newer_selection() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1").unwrap();
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let mut server = sorotte_server::ServerRuntime::new();
     exchange(&mut adapter, &mut server);
     adapter

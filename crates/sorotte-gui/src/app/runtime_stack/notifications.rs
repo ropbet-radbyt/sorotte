@@ -5,9 +5,9 @@ use sorotte_client_core::{
 };
 
 use super::super::shell_state::{GuiShellAction, GuiTransientNotificationLevel};
-use super::GuiClientCoreChatSessionRuntimeAdapter;
+use super::GuiClientSession;
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     pub(super) fn note_user_change(&mut self, notification: UserChangeNotification) {
         match notification {
             UserChangeNotification::Joined { username, .. }

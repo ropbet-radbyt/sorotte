@@ -1,167 +1,18 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
-use sorotte_client_core::{
-    PlaybackBarrierStartConfig, PlaybackBarrierTimeoutAction, RoomPlaystateAuthority,
-};
-use sorotte_player_api::{
-    PlayerMediaGeneration, PlayerObservationTimestamp, PlayerPlayIntent, PlayerTransportPhase,
-    PlayerTransportTelemetryUpdate,
-};
+use sorotte_client_core::RoomPlaystateAuthority;
+use sorotte_player_api::{PlayerPlayIntent, PlayerTransportPhase};
 use sorotte_protocol::{
     CommitStartPayload, PlaybackBarrierPhase, PlaybackBarrierPolicy,
-    PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
-    PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaystatePayload,
+    PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension, PlaystatePayload,
     PrepareMediaPayload, ProtocolMessage, RoomBufferingPhase, RoomBufferingPolicy,
     RoomBufferingPolicyPayload, RoomBufferingStatusPayload, SetPayload, StatePayload,
-    decode_message_line_items, encode_message_line,
 };
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
+use std::collections::BTreeSet;
 
-const LOGICAL_MEDIA_ID: &str = "sha256:gui-barrier-integration";
-const ROOM_MEDIA_GENERATION: u64 = 41;
-const ROOM_STATE_REVISION: u64 = 7;
-
-fn apply_protocol_message(
-    adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
-    message: ProtocolMessage,
-) {
-    let line = encode_message_line(&message).expect("test protocol message should encode");
-    adapter
-        .apply_message_json(&line)
-        .expect("test protocol message should apply through the real GUI adapter");
-}
-
-fn barrier_status(
-    policy: PlaybackBarrierPolicy,
-    phase: PlaybackBarrierPhase,
-    state_revision: Option<u64>,
-) -> PlaybackBarrierStatusPayload {
-    PlaybackBarrierStatusPayload {
-        media_generation: ROOM_MEDIA_GENERATION,
-        state_revision,
-        phase,
-        policy,
-        quorum: None,
-        deadline: 120.0,
-        participants: BTreeMap::new(),
-        excluded_unsupported_clients: BTreeSet::new(),
-    }
-}
-
-fn transport(
-    observed_at_seconds: f64,
-    phase: PlayerTransportPhase,
-    position_seconds: f64,
-    logical_pause: bool,
-    playback_restart_sequence: u64,
-) -> PlayerTransportTelemetryUpdate {
-    let mut update = PlayerTransportTelemetryUpdate::new(
-        PlayerMediaGeneration::new(1),
-        PlayerObservationTimestamp::from_adapter_start(Duration::from_secs_f64(
-            observed_at_seconds,
-        )),
-    )
-    .with_phase(phase)
-    .with_position_seconds(position_seconds)
-    .with_logical_pause(logical_pause);
-    update.paused_for_cache = Some(phase == PlayerTransportPhase::Rebuffering);
-    update.seeking = Some(phase == PlayerTransportPhase::Seeking);
-    update.seekable = Some(true);
-    update.core_idle = Some(phase == PlayerTransportPhase::ReadyPaused);
-    update.playback_restart_sequence = Some(playback_restart_sequence);
-    update
-}
-
-fn accept_coordinator_commands(
-    adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
-    actions: &[GuiAttachedPlayerRuntimeAction],
-    now_seconds: f64,
-) {
-    for action in actions {
-        if let GuiAttachedPlayerRuntimeAction::Coordinator { command_id, .. } = action {
-            adapter.report_attached_coordinator_command_dispatch(*command_id, true, now_seconds);
-        }
-    }
-}
-
-fn drain_barrier_state_extensions(
-    adapter: &mut GuiClientCoreChatSessionRuntimeAdapter,
-) -> Vec<PlaybackBarrierStateExtension> {
-    adapter
-        .deliver_outbound_protocol_lines()
-        .expect("GUI adapter outbox should encode")
-        .into_iter()
-        .flat_map(|line| {
-            decode_message_line_items(&line)
-                .expect("GUI adapter outbox line should decode")
-                .into_iter()
-        })
-        .filter_map(|item| item.message.ok())
-        .filter_map(|message| match message {
-            ProtocolMessage::State(state) => state
-                .state
-                .playback_barrier_v1()
-                .expect("GUI barrier State extension should decode"),
-            _ => None,
-        })
-        .collect()
-}
-
-fn barrier_request(adapter: &mut GuiClientCoreChatSessionRuntimeAdapter) -> PrepareMediaPayload {
-    adapter
-        .deliver_outbound_protocol_lines()
-        .expect("GUI adapter outbox should encode")
-        .into_iter()
-        .flat_map(|line| {
-            decode_message_line_items(&line)
-                .expect("GUI adapter outbox line should decode")
-                .into_iter()
-        })
-        .filter_map(|item| item.message.ok())
-        .find_map(|message| match message {
-            ProtocolMessage::Set(set) => set
-                .set
-                .playback_barrier_v1()
-                .expect("GUI barrier Set extension should decode")
-                .and_then(|extension| extension.prepare),
-            _ => None,
-        })
-        .expect("controller media preparation should emit a PrepareMedia request")
-}
-
-fn barrier_aware_controller(
-    policy: PlaybackBarrierPolicy,
-) -> GuiClientCoreChatSessionRuntimeAdapter {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
-    let startup = adapter
-        .deliver_outbound_protocol_lines()
-        .expect("startup Hello should encode");
-    assert_eq!(startup.len(), 1);
-    adapter
-        .apply_message_json(
-            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sorottePlaybackBarrierV1":true}}}"#,
-        )
-        .expect("barrier-aware server Hello should apply");
-    adapter
-        .apply_message_json(
-            r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"controller":true}}}}"#,
-        )
-        .expect("local controller projection should apply");
-    assert_eq!(adapter.runtime.session().local_can_control(), Some(true));
-    adapter
-        .runtime
-        .set_playback_barrier_start_config(PlaybackBarrierStartConfig {
-            policy: Some(policy),
-            timeout_action: PlaybackBarrierTimeoutAction::Continue,
-            ..PlaybackBarrierStartConfig::default()
-        });
-    adapter
-}
+use crate::app::runtime_stack::test_support::barrier::*;
 
 fn exercise_gui_barrier_lifecycle(policy: PlaybackBarrierPolicy) {
     let mut adapter = barrier_aware_controller(policy);
@@ -417,8 +268,7 @@ fn real_gui_adapter_keeps_retry_later_nonfatal_and_retries_the_same_attempt_once
 
 #[test]
 fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echoes() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
@@ -634,8 +484,7 @@ fn real_gui_adapter_obeys_self_attributed_server_buffering_and_adopts_local_echo
 
 #[test]
 fn room_summary_drops_retained_buffering_names_when_a_member_leaves() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let _ = adapter.deliver_outbound_protocol_lines().unwrap();
     adapter
         .apply_message_json(

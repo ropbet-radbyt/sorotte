@@ -19,8 +19,8 @@ use super::remote_services;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiLocalPlayerUnpauseDecision,
-    GuiQueuedSessionTransportHandle, GuiThreadedTcpSessionTransportDriver,
+    GuiClientSession, GuiLocalPlayerUnpauseDecision, GuiQueuedSessionTransportHandle,
+    GuiThreadedTcpSessionTransportDriver,
 };
 use super::shell_state::{
     GuiSavedConfigurationRuntimeSnapshot, GuiSavedServerConnectIntent,
@@ -97,7 +97,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .room
                 .as_ref()
                 .map(|room| room.as_str().to_owned());
-            let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+            let mut session = GuiClientSession::new_with_control_password(
                 runtime_settings
                     .config
                     .connection
@@ -117,7 +117,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     .connection
                     .controlled_room_password
                     .clone(),
-            )?;
+            );
             session.apply_runtime_settings_snapshot(&runtime_settings)?;
             self.install_session_runtime(Box::new(session));
             self.session_projects_to_shell = false;
@@ -251,7 +251,7 @@ impl GuiPersistedConfigRuntimeOwner {
             can_auto_advance_to_next_playlist_item,
         );
         let player_observation_is_end_of_file = self.attached_player_observation_is_end_of_file();
-        let (previous_session_paused, supports_playback_pause_changes) = {
+        let previous_session_paused = {
             let Some(session) = self.session.as_mut() else {
                 return Ok(());
             };
@@ -260,18 +260,14 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.player_paused_for_cache,
                 self.player_cache_buffering_percent,
             )?;
-            (
-                session.local_pause_state(),
-                session.supports_playback_pause_changes(),
-            )
+            session.local_pause_state()
         };
         let player_paused = self.player_paused;
         let player_paused_for_cache = self.player_paused_for_cache == Some(true);
         let pending_local_attached_pause_override_update = {
             let mut pending_local_attached_pause_override_update = None;
 
-            if supports_playback_pause_changes
-                && !player_paused_for_cache
+            if !player_paused_for_cache
                 && !player_observation_is_end_of_file
                 && let Some(target_paused) = player_paused
                 && previous_session_paused != Some(target_paused)
@@ -489,8 +485,7 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn refresh_public_servers_without_session(
         language: Option<&str>,
     ) -> Result<Vec<(String, String)>, String> {
-        if let Some(refreshed_servers) =
-            GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_env()?
+        if let Some(refreshed_servers) = GuiClientSession::refreshed_public_server_rows_from_env()?
         {
             return Ok(refreshed_servers);
         }
@@ -505,11 +500,9 @@ impl GuiPersistedConfigRuntimeOwner {
         #[cfg(not(test))]
         {
             let refreshed_servers = remote_services::fetch_public_servers(language)?;
-            Ok(
-                GuiClientCoreChatSessionRuntimeAdapter::normalize_public_server_rows(
-                    refreshed_servers,
-                ),
-            )
+            Ok(GuiClientSession::normalize_public_server_rows(
+                refreshed_servers,
+            ))
         }
     }
 
@@ -828,28 +821,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
             };
         let default_room = target.room.clone();
-        let mut session = match GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+        let mut session = GuiClientSession::new_with_control_password(
             target.username,
             target.room,
             target.controlled_room_password_override,
-        ) {
-            Ok(session) => session,
-            Err(error) => {
-                let message = format!(
-                    "Configured server connect through the detached session runtime failed: {error}"
-                );
-                if clear_pending {
-                    self.clear_pending_operation_with_runtime_error(
-                        handle,
-                        projected_state,
-                        message,
-                    );
-                } else {
-                    Self::push_runtime_error_notification(handle, projected_state, message);
-                }
-                return;
-            }
-        };
+        );
         if let Err(error) = session.apply_runtime_settings_snapshot(&runtime_settings) {
             let message = format!(
                 "Configured server connect through the detached session runtime failed: {error}"

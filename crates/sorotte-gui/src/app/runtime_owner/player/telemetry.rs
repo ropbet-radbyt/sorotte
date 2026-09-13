@@ -2813,7 +2813,6 @@ mod transport_timeline_tests {
 #[cfg(test)]
 mod ordered_delivery_tests {
     use super::*;
-    use crate::app::runtime_stack::GuiSessionRuntimeAdapter;
     use sorotte_player_api::PlayerPhysicalLoadOutcome;
     use sorotte_player_mpv::lifecycle::{
         AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput,
@@ -2921,96 +2920,49 @@ mod ordered_delivery_tests {
     }
 
     #[derive(Default)]
-    struct CountingSession {
+    struct TelemetryIngressProbe {
         transport_updates: Arc<AtomicUsize>,
         attachment_resets: Arc<AtomicUsize>,
         availability: Arc<Mutex<Vec<ExternalPlayerAvailability>>>,
     }
 
-    impl GuiSessionRuntimeAdapter for CountingSession {
-        fn reset_playback_transport_adapter_epoch(&mut self, _now_seconds: f64) {
-            self.attachment_resets.fetch_add(1, Ordering::SeqCst);
-        }
-
-        fn set_external_player_availability(
-            &mut self,
-            availability: ExternalPlayerAvailability,
-            _now_seconds: f64,
-        ) -> Result<bool, String> {
-            self.availability.lock().unwrap().push(availability);
-            Ok(true)
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(current_servers)
-        }
-
-        fn sync_attached_player_transport_telemetry(
-            &mut self,
-            _update: sorotte_player_api::PlayerTransportTelemetryUpdate,
-            _now_seconds: f64,
-        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-            self.transport_updates.fetch_add(1, Ordering::SeqCst);
-            Ok(Vec::new())
+    impl TelemetryIngressProbe {
+        fn into_session(self) -> crate::app::GuiClientSession {
+            crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+                use crate::app::runtime_stack::test_support::SessionObservation::*;
+                match event {
+                    AttachmentReset => {
+                        self.attachment_resets.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Availability(value) => self.availability.lock().unwrap().push(value),
+                    TransportObserved(_) => {
+                        self.transport_updates.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            })
         }
     }
 
-    struct MediaBoundaryRecordingSession {
+    struct MediaBoundaryProbe {
         prepared_media: Arc<AtomicUsize>,
         interrupted_recovery: Arc<AtomicUsize>,
     }
 
-    impl GuiSessionRuntimeAdapter for MediaBoundaryRecordingSession {
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(current_servers)
-        }
-
-        fn prepare_attached_playback_media(
-            &mut self,
-            _logical_id: sorotte_client_core::LogicalMediaId,
-            _kind: MediaTransportKind,
-            _intent: MediaLoadIntent,
-            _now_seconds: f64,
-        ) -> Result<Option<sorotte_client_core::MediaLoadPlan>, String> {
-            self.prepared_media.fetch_add(1, Ordering::SeqCst);
-            Ok(None)
-        }
-
-        fn interrupt_attached_playback_recovery(
-            &mut self,
-        ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-            self.interrupted_recovery.fetch_add(1, Ordering::SeqCst);
-            Ok(Vec::new())
+    impl MediaBoundaryProbe {
+        fn into_session(self) -> crate::app::GuiClientSession {
+            crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+                use crate::app::runtime_stack::test_support::SessionObservation::*;
+                match event {
+                    MediaPrepared(_) => {
+                        self.prepared_media.fetch_add(1, Ordering::SeqCst);
+                    }
+                    RecoveryInterrupted => {
+                        self.interrupted_recovery.fetch_add(1, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            })
         }
     }
 
@@ -3106,10 +3058,13 @@ mod ordered_delivery_tests {
             fail_next_ack,
             acknowledgement_calls,
         })));
-        owner.session = Some(Box::new(CountingSession {
-            transport_updates,
-            ..Default::default()
-        }));
+        owner.session = Some(Box::new(
+            TelemetryIngressProbe {
+                transport_updates,
+                ..Default::default()
+            }
+            .into_session(),
+        ));
         owner
     }
 
@@ -3137,11 +3092,14 @@ mod ordered_delivery_tests {
             Arc::new(AtomicUsize::new(0)),
             updates.clone(),
         );
-        owner.session = Some(Box::new(CountingSession {
-            transport_updates: updates.clone(),
-            attachment_resets: resets.clone(),
-            availability: availability.clone(),
-        }));
+        owner.session = Some(Box::new(
+            TelemetryIngressProbe {
+                transport_updates: updates.clone(),
+                attachment_resets: resets.clone(),
+                availability: availability.clone(),
+            }
+            .into_session(),
+        ));
         owner.ordered_player_events.attachment_epoch = Some(epoch());
         owner.attached_native_seek_tracker.media_generation = Some(99);
         owner.attached_native_seek_tracker.last_observed_at_seconds = Some(100.0);
@@ -3202,10 +3160,13 @@ mod ordered_delivery_tests {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player_local_file =
             Some(LocalFileUpdate::new("old.mkv").with_path("C:\\media\\old.mkv"));
-        owner.session = Some(Box::new(MediaBoundaryRecordingSession {
-            prepared_media: prepared_media.clone(),
-            interrupted_recovery: interrupted_recovery.clone(),
-        }));
+        owner.session = Some(Box::new(
+            MediaBoundaryProbe {
+                prepared_media: prepared_media.clone(),
+                interrupted_recovery: interrupted_recovery.clone(),
+            }
+            .into_session(),
+        ));
         let event_batch = batch(
             2,
             1,
@@ -3281,10 +3242,13 @@ mod ordered_delivery_tests {
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player_local_file =
             Some(LocalFileUpdate::new("old.mkv").with_path("C:\\media\\old.mkv"));
-        owner.session = Some(Box::new(MediaBoundaryRecordingSession {
-            prepared_media: prepared_media.clone(),
-            interrupted_recovery: interrupted_recovery.clone(),
-        }));
+        owner.session = Some(Box::new(
+            MediaBoundaryProbe {
+                prepared_media: prepared_media.clone(),
+                interrupted_recovery: interrupted_recovery.clone(),
+            }
+            .into_session(),
+        ));
         let mut snapshot = active_snapshot(2, attempt_id, media_generation, 0.0);
         snapshot.current_path = SnapshotField::Known("C:\\media\\new.mkv".to_owned());
 
@@ -3732,10 +3696,13 @@ mod ordered_delivery_tests {
             state,
             acknowledged_epochs: acknowledged_epochs.clone(),
         })));
-        owner.session = Some(Box::new(CountingSession {
-            transport_updates: Arc::new(AtomicUsize::new(0)),
-            ..Default::default()
-        }));
+        owner.session = Some(Box::new(
+            TelemetryIngressProbe {
+                transport_updates: Arc::new(AtomicUsize::new(0)),
+                ..Default::default()
+            }
+            .into_session(),
+        ));
 
         owner.refresh_player_state_impl();
         assert_eq!(
@@ -3993,10 +3960,13 @@ mod ordered_delivery_tests {
             state,
             acknowledged_epochs: acknowledged_epochs.clone(),
         })));
-        owner.session = Some(Box::new(CountingSession {
-            transport_updates: Arc::new(AtomicUsize::new(0)),
-            ..Default::default()
-        }));
+        owner.session = Some(Box::new(
+            TelemetryIngressProbe {
+                transport_updates: Arc::new(AtomicUsize::new(0)),
+                ..Default::default()
+            }
+            .into_session(),
+        ));
 
         owner.refresh_player_state_impl();
 

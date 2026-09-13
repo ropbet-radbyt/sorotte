@@ -195,8 +195,8 @@ files = [
     "crates/sorotte-gui/src/app/runtime_owner/session_transport.rs",
     "crates/sorotte-gui/src/app/runtime_owner/startup_player.rs",
     "crates/sorotte-gui/src/app/runtime_stack/playlist_delivery_fence.rs",
-    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/delivery_fence.rs",
-    "crates/sorotte-gui/src/app/runtime_stack/client_core_adapter/runtime_adapter_impl.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_session/delivery_fence.rs",
+    "crates/sorotte-gui/src/app/runtime_stack/client_session/operations.rs",
 ]
 mutant_filter = "(Gui(PendingSharedPlaylistOpen|PlaylistProtocolDeliveryFence)|playlist.*delivery_fence|clear_session_causal_player_effect_state|finish_shared_playlist_open_after_delivery|resume_pending_shared_playlist_open_if_ready|delete field (username|room).*StoredClientSettings\\b|delete field direct_target.*GuiLocalMediaSearchAliases)"
 test_target = "lib"

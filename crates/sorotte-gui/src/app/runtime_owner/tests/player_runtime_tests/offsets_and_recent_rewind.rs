@@ -1,6 +1,6 @@
 use super::*;
+use crate::app::GuiClientSession;
 use crate::app::runtime_owner::GuiUpdateRuntime;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
 use sorotte_player_api::{
@@ -99,10 +99,7 @@ fn offset_transport(
     update
 }
 
-fn apply_offset_test_protocol(
-    session: &mut dyn GuiSessionRuntimeAdapter,
-    message: ProtocolMessage,
-) {
+fn apply_offset_test_protocol(session: &mut GuiClientSession, message: ProtocolMessage) {
     let line = encode_message_line(&message).expect("offset test protocol frame should encode");
     session
         .apply_message_json(&line)

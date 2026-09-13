@@ -13,6 +13,107 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
+fn queued_native_app() -> (GuiNativeApp, super::GuiQueuedRuntimeBridgeHandle) {
+    let (runtime, handle) = super::GuiQueuedRuntimeBridge::new();
+    let app = GuiNativeApp {
+        state: SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default()),
+        runtime: Box::new(runtime),
+        runtime_pump: Box::new(super::GuiNoopRuntimePump),
+        runtime_repaint_handle: None,
+        gui_state_root: None,
+        test_drop_request: None,
+        playback_prompt: None,
+        playback_prompt_buffer: String::new(),
+        playback_prompt_error: None,
+    };
+    (app, handle)
+}
+
+#[test]
+fn minimized_native_app_drains_runtime_actions_without_rendering() {
+    let (mut app, handle) = queued_native_app();
+    let context = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let initial_messages = app.state.main_window.chat.len();
+    for i in 0..32 {
+        handle.push_action(GuiShellAction::AnnounceSystemChatEvent(format!(
+            "event {i}"
+        )));
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    }
+    assert!(
+        handle.drain_actions().is_empty(),
+        "minimized windows must consume runtime output instead of accumulating a restore backlog"
+    );
+    assert_eq!(app.state.main_window.chat.len(), initial_messages + 32);
+}
+
+#[test]
+fn minimized_native_app_dispatches_pending_work_once_and_accepts_completion() {
+    let (mut app, handle) = queued_native_app();
+    app.state.pending_operation = Some(crate::app::GuiPendingOperationState {
+        kind: crate::app::GuiPendingOperationKind::SetPlaybackPause(true),
+    });
+    let context = egui::Context::default();
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput::default();
+    input
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .minimized = Some(true);
+    for _ in 0..4 {
+        let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    }
+    assert_eq!(
+        handle.drain_requests(),
+        vec![GuiRuntimeRequest::CompletePendingOperation(
+            crate::app::GuiPendingCompletionRequest::SetPlaybackPause(true),
+        )]
+    );
+    handle.push_action(GuiShellAction::CompletePlaybackPauseState(true));
+    let _ = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+    assert!(app.state.pending_operation.is_none());
+    assert!(handle.drain_requests().is_empty());
+}
+
+#[test]
+fn minimized_native_app_closes_only_after_successful_update_launch() {
+    for success in [false, true] {
+        let (mut app, handle) = queued_native_app();
+        handle.push_action(GuiShellAction::ApplyStagedUpdateLaunchResult(
+            UpdateApplyLaunchResult {
+                success,
+                message: "update launch result".to_owned(),
+            },
+        ));
+        let context = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut input = egui::RawInput::default();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .minimized = Some(true);
+        let output = context.run_logic(&input, |ctx| eframe::App::logic(&mut app, ctx, &mut frame));
+        assert_eq!(
+            output
+                .viewport_commands
+                .values()
+                .flatten()
+                .any(|command| { matches!(command, egui::ViewportCommand::Close) }),
+            success
+        );
+        assert!(handle.drain_actions().is_empty());
+    }
+}
+
 #[test]
 fn display_fixture_theme_selects_the_matching_global_palette() {
     let context = egui::Context::default();
@@ -329,5 +430,100 @@ fn gui_native_app_preserves_active_playlist_index_for_replace_requests_when_sele
         GuiNativeApp::preserve_active_playlist_request_index(&state),
         None,
         "playlist replace/reorder requests should preserve the synced room index when the UI row highlight is local-only"
+    );
+}
+
+#[test]
+fn visible_native_app_keeps_dropped_media_through_runtime_round_trips() {
+    assert_visible_dropped_media(false);
+}
+
+#[test]
+fn threaded_visible_native_app_keeps_dropped_media_through_runtime_round_trips() {
+    assert_visible_dropped_media(true);
+}
+
+fn assert_visible_dropped_media(threaded: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("drag-window-target.mkv");
+    std::fs::write(&path, b"drag-window-target").unwrap();
+    let (mut app, handle) = queued_native_app();
+    let mut owner =
+        super::GuiPersistedConfigRuntimeOwner::with_config_path_and_startup_player_lookup(
+            Some(directory.path().join("sorotte.ini")),
+            &|name| (name == "SOROTTE_GUI_ENABLE_TEST_PLAYER").then(|| "true".to_owned()),
+        );
+    owner.startup_saved_connect_attempted = true;
+    app.runtime_pump = if threaded {
+        Box::new(
+            crate::app::runtime_queue::GuiThreadedRuntimeOwnerPump::new(handle.clone(), owner)
+                .unwrap(),
+        )
+    } else {
+        Box::new(crate::app::runtime_queue::GuiQueuedRuntimeOwnerPump::new(
+            handle.clone(),
+            owner,
+        ))
+    };
+    app.test_drop_request = Some(GuiDroppedFilesRequest {
+        paths: vec![path.to_string_lossy().into_owned()],
+        target: GuiDroppedFilesTarget::Window,
+        playlist_insert_slot: None,
+    });
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| options.max_passes = 1.try_into().unwrap());
+    let repaint_context = context.clone();
+    handle.set_repaint_notifier(move || repaint_context.request_repaint());
+    app.runtime_repaint_handle = Some(handle);
+    let mut labels = std::collections::BTreeSet::new();
+    let mut frame = eframe::Frame::_new_kittest();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut frames_after_visible = 0;
+    for frame_index in 0.. {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            eframe::App::logic(&mut app, ui.ctx(), &mut frame);
+            eframe::App::ui(&mut app, ui, &mut frame);
+        });
+        output.textures_delta.clear();
+        if !threaded && frame_index == 0 {
+            assert_eq!(
+                app.state.current_shared_playlist_entries(),
+                vec!["drag-window-target.mkv".to_owned()],
+                "visible input must consume output produced by its runtime pump before yielding"
+            );
+        }
+        if let Some(update) = output.platform_output.accesskit_update {
+            for (_, node) in update.nodes {
+                if let Some(label) = node.label() {
+                    labels.insert(label.to_owned());
+                }
+            }
+        }
+        if labels.contains("drag-window-target.mkv") {
+            frames_after_visible += 1;
+        }
+        if frames_after_visible >= 16 || std::time::Instant::now() >= deadline {
+            break;
+        }
+        if threaded {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(
+        labels.contains("drag-window-target.mkv"),
+        "dropped media must be accessible: {labels:?}"
+    );
+    assert_eq!(app.state.active_view, GuiShellView::Room);
+    assert_eq!(
+        app.state.current_shared_playlist_entries(),
+        vec!["drag-window-target.mkv".to_owned()]
     );
 }

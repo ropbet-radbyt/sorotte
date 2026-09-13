@@ -121,10 +121,7 @@ impl SorotteGuiShellAppState {
             overview_children,
         );
 
-        GuiWidgetNode::layout(
-            "main-window-root",
-            "Room",
-            GuiLayoutMode::Stack,
+        GuiShellView::Room.widget_tree_root(
             player_setup_panel
                 .into_iter()
                 .chain([overview_content])

@@ -1,9 +1,7 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_session_and_reconnects_with_them()
- {
+fn gui_client_session_syncs_runtime_settings_into_session_and_reconnects_with_them() {
     let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
@@ -30,14 +28,10 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
         show_different_room_osd: Some(true),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
-        "alice",
-        "room1",
-        Some("ab-123-456".into()),
-    )
-    .expect("client-core chat adapter should bootstrap");
+    let mut adapter =
+        GuiClientSession::new_with_control_password("alice", "room1", Some("ab-123-456".into()));
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the session");
 
     assert!(adapter.dont_slow_down_with_me);
@@ -132,7 +126,7 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
             .show_duration_notification
     );
 
-    GuiSessionRuntimeAdapter::connect_public_server(
+    GuiClientSession::connect_public_server(
         &mut adapter,
         Some(("Primary".to_owned(), "syncplay.pl:8999".to_owned())),
     )
@@ -167,9 +161,8 @@ fn gui_client_core_chat_session_runtime_adapter_syncs_runtime_settings_into_sess
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_sets_media_match_peer_tiers() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
     assert!(
         adapter
@@ -179,7 +172,7 @@ fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
             .is_empty()
     );
 
-    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
+    GuiClientSession::set_media_match_peer_tiers(
         &mut adapter,
         std::collections::BTreeMap::from([(
             "bob".to_owned(),
@@ -196,11 +189,8 @@ fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
         Some(&sorotte_media_match::MediaMatchTier::Strong)
     );
 
-    GuiSessionRuntimeAdapter::set_media_match_peer_tiers(
-        &mut adapter,
-        std::collections::BTreeMap::new(),
-    )
-    .expect("media-match peer tiers should clear");
+    GuiClientSession::set_media_match_peer_tiers(&mut adapter, std::collections::BTreeMap::new())
+        .expect("media-match peer tiers should clear");
     assert!(
         adapter
             .runtime
@@ -211,16 +201,14 @@ fn gui_client_core_chat_session_runtime_adapter_sets_media_match_peer_tiers() {
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runtime_settings_blank()
-{
+fn gui_client_session_clears_cached_username_when_runtime_settings_blank() {
     let runtime_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &runtime_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &runtime_settings)
         .expect("runtime settings should sync into the startup hello");
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
@@ -237,9 +225,8 @@ fn gui_client_core_chat_session_runtime_adapter_clears_cached_username_when_runt
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_without_reconnect() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_updates_dont_slow_down_with_me_without_reconnect() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let disabled_settings = stored_client_settings_runtime_snapshot(&StoredClientSettings {
         dont_slow_down_with_me: Some(false),
         ..StoredClientSettings::default()
@@ -249,14 +236,14 @@ fn gui_client_core_chat_session_runtime_adapter_updates_dont_slow_down_with_me_w
         ..StoredClientSettings::default()
     });
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &disabled_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &disabled_settings)
         .expect("initial runtime settings should sync");
     assert!(
         !adapter.dont_slow_down_with_me,
         "initial sync should keep dontSlowDownWithMe disabled"
     );
 
-    GuiSessionRuntimeAdapter::sync_runtime_settings(&mut adapter, &enabled_settings)
+    GuiClientSession::sync_runtime_settings(&mut adapter, &enabled_settings)
         .expect("steady-state runtime sync should update dontSlowDownWithMe");
     assert!(
         adapter.dont_slow_down_with_me,

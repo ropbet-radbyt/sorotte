@@ -459,6 +459,10 @@ impl GuiRuntimeInput {
         self.state.clone()
     }
 
+    pub(in crate::app) fn apply_output(&mut self, action: super::shell_state::GuiShellAction) {
+        self.state.apply(action);
+    }
+
     pub(in crate::app) fn updates(&self) -> &updates::RuntimeView {
         &self.state.updates
     }

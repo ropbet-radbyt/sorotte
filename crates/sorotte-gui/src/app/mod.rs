@@ -77,9 +77,7 @@ use self::runtime_owner::{
 #[cfg(any(test, feature = "gui-semantic-smoke"))]
 use self::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 #[cfg(test)]
-use self::runtime_stack::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiPlayerLaunchRuntimeState, GuiSessionRuntimeAdapter,
-};
+use self::runtime_stack::{GuiClientSession, GuiPlayerLaunchRuntimeState};
 #[cfg(test)]
 use self::runtime_stack::{GuiOwnedPlayer, GuiTestPlayerAdapter};
 use self::shell_state::*;

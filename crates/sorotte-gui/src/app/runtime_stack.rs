@@ -3,14 +3,14 @@ pub(in crate::app) mod test_support;
 #[cfg(test)]
 mod tests;
 
-mod client_core_adapter;
+mod client_session;
 mod media_search;
 mod notifications;
 mod player;
+mod player_sync_types;
 mod playlist_delivery_fence;
 mod public_servers;
 mod runtime_snapshots;
-mod session_adapter;
 mod transport;
 
 use std::{
@@ -53,16 +53,15 @@ use super::shell_state::{
 };
 use super::support::{chat_input_enabled, system_time_seconds};
 
-pub(super) use self::client_core_adapter::GuiClientCoreChatSessionRuntimeAdapter;
+pub(super) use self::client_session::GuiClientSession;
 pub(super) use self::player::{
     GuiOwnedPlayer, GuiPlayerLaunchRuntimeState, GuiTestPlayerAdapter,
     local_file_update_for_player_path,
 };
-pub(super) use self::playlist_delivery_fence::GuiPlaylistProtocolDeliveryFence;
-pub(super) use self::session_adapter::{
+pub(super) use self::player_sync_types::{
     GuiAttachedPlayerRuntimeAction, GuiLocalPlayerUnpauseDecision, GuiSessionRoomPlaystate,
-    GuiSessionRuntimeAdapter,
 };
+pub(super) use self::playlist_delivery_fence::GuiPlaylistProtocolDeliveryFence;
 #[cfg(test)]
 pub(super) use self::transport::GuiTcpSessionTransportDriver;
 pub(super) use self::transport::{

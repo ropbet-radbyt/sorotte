@@ -450,7 +450,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        if !session.commit_undo_seek()? {
+        if !session.undo_seek()? {
             return Err(
                 "Playback undo seek is unavailable because no earlier seek target is recorded."
                     .to_owned(),

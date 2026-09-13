@@ -2,19 +2,13 @@ use super::*;
 use crate::app::runtime_state::GuiRuntimeState;
 
 impl GuiPersistedConfigRuntimeOwner {
-    pub(in crate::app) fn with_session_runtime(
-        mut self,
-        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
-    ) -> Self {
+    pub(in crate::app) fn with_session_runtime(mut self, session: Box<GuiClientSession>) -> Self {
         self.install_session_runtime(session);
         self.session_projects_to_shell = true;
         self
     }
 
-    pub(in crate::app) fn install_session_runtime(
-        &mut self,
-        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
-    ) {
+    pub(in crate::app) fn install_session_runtime(&mut self, session: Box<GuiClientSession>) {
         self.clear_session_causal_player_effect_state();
         self.session_generation = self.session_generation.wrapping_add(1);
         self.active_session_settings = None;
@@ -25,7 +19,7 @@ impl GuiPersistedConfigRuntimeOwner {
 
     pub(in crate::app) fn install_active_session_runtime(
         &mut self,
-        session: Box<dyn GuiSessionRuntimeAdapter + Send>,
+        session: Box<GuiClientSession>,
         runtime_settings: StoredClientSettingsRuntimeSnapshot,
     ) {
         self.install_session_runtime(session);
@@ -391,7 +385,7 @@ impl GuiPersistedConfigRuntimeOwner {
             room: Some(room.clone()),
             ..StoredClientSettings::default()
         });
-        let mut session = GuiClientCoreChatSessionRuntimeAdapter::new_with_control_password(
+        let mut session = GuiClientSession::new_with_control_password(
             runtime_settings
                 .config
                 .connection
@@ -411,7 +405,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 .connection
                 .controlled_room_password
                 .clone(),
-        )?;
+        );
         session.apply_runtime_settings_snapshot(&runtime_settings)?;
         let session = Box::new(session);
         let session_transport = GuiQueuedSessionTransportHandle::default();
@@ -611,7 +605,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     frame_written = true;
                     let acknowledged_line = if let Some(session) = self.session.as_mut() {
                         match session.acknowledge_outbound_protocol_delivery(token) {
-                            Ok(line) => line,
+                            Ok(line) => Some(line),
                             Err(error) => {
                                 actions.push(GuiShellAction::PushTransientNotification {
                                     level: GuiTransientNotificationLevel::Error,

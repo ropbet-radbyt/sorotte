@@ -1,10 +1,8 @@
 use super::*;
-use crate::app::GuiClientCoreChatSessionRuntimeAdapter;
+use crate::app::GuiClientSession;
 use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::application::ClientCommand;
-use sorotte_client_core::{CoordinatorPlayerCommand, PlaybackCoordinationSnapshot};
 
 #[derive(Debug, Default)]
 struct CoordinatorAuthorityPlayerState {
@@ -56,101 +54,165 @@ impl PlayerAdapter for CoordinatorAuthorityPlayer {
     }
 }
 
-struct CoordinatorAuthoritySession {
-    actions: Vec<GuiAttachedPlayerRuntimeAction>,
-    recovery_cleanup_actions: Vec<GuiAttachedPlayerRuntimeAction>,
-}
-
-impl GuiSessionRuntimeAdapter for CoordinatorAuthoritySession {
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
-    }
-
-    fn playback_coordination_snapshot(&self) -> Option<PlaybackCoordinationSnapshot> {
-        Some(PlaybackCoordinationSnapshot {
-            media_generation: Some(1),
-            pending_local_pause_intent: None,
-            pending_local_pause_intent_dormant: false,
-            last_local_pause_intent_stage_accepted: None,
-            diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
-            recovery_episode: None,
-            seek_preparation: None,
-            last_seek_preparation_terminal_outcome: None,
-            last_seek_preparation_terminal: None,
-            metrics: Default::default(),
-            transport_telemetry_observed: true,
-            ordinary_correction_blocked: false,
-            last_applied_revision: None,
-            last_started_revision: None,
-            last_degraded_reason: None,
-        })
-    }
-
-    fn attached_player_runtime_actions(
-        &mut self,
-        _now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        Ok(std::mem::take(&mut self.actions))
-    }
-
-    fn interrupt_attached_playback_recovery(
-        &mut self,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        Ok(std::mem::take(&mut self.recovery_cleanup_actions))
-    }
-
-    // Model the old GUI adapter's self-origin filter. Coordinator authority
-    // must be checked before this legacy accessor is consulted.
-    fn current_room_playstate_for_attached_player_sync(&self) -> Option<GuiSessionRoomPlaystate> {
-        None
-    }
-}
-
-fn run_self_attributed_coordinator_actions(
-    actions: Vec<GuiAttachedPlayerRuntimeAction>,
-) -> std::sync::Arc<std::sync::Mutex<CoordinatorAuthorityPlayerState>> {
-    let state = std::sync::Arc::new(std::sync::Mutex::new(
+fn prepared_barrier_owner(
+    policy: sorotte_protocol::PlaybackBarrierPolicy,
+) -> (
+    GuiPersistedConfigRuntimeOwner,
+    std::sync::Arc<std::sync::Mutex<CoordinatorAuthorityPlayerState>>,
+    SorotteGuiShellAppState,
+) {
+    use crate::app::runtime_stack::test_support::barrier::*;
+    use sorotte_client_core::{LogicalMediaId, MediaLoadIntent, MediaTransportKind};
+    use sorotte_protocol::*;
+    let mut session = barrier_aware_controller(policy);
+    let now = crate::app::support::system_time_seconds();
+    session
+        .prepare_attached_playback_media(
+            LogicalMediaId::new(LOGICAL_MEDIA_ID).unwrap(),
+            MediaTransportKind::NetworkVod,
+            MediaLoadIntent::NewPlayback,
+            now,
+        )
+        .unwrap();
+    let request = barrier_request(&mut session);
+    apply_protocol_message(
+        &mut session,
+        ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(12.0)
+                    .with_paused(true)
+                    .with_do_seek(true)
+                    .with_set_by("alice"),
+            ),
+        ),
+    );
+    apply_protocol_message(
+        &mut session,
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_prepare(
+                        PrepareMediaPayload::new(
+                            ROOM_MEDIA_GENERATION,
+                            LOGICAL_MEDIA_ID,
+                            12.0,
+                            policy,
+                        )
+                        .with_request_nonce(request.request_nonce),
+                    )
+                    .with_status(barrier_status(
+                        policy,
+                        PlaybackBarrierPhase::Preparing,
+                        None,
+                    )),
+            ),
+        ),
+    );
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(
         CoordinatorAuthorityPlayerState::default(),
     ));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    owner.session = Some(Box::new(CoordinatorAuthoritySession {
-        actions,
-        recovery_cleanup_actions: Vec::new(),
-    }));
+    owner.session = Some(Box::new(session));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         CoordinatorAuthorityPlayer {
-            state: state.clone(),
+            state: recorded.clone(),
         },
     )));
     owner.player_local_file = Some(
-        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
-            .with_path("C:/Media/episode1.mkv".to_owned()),
+        sorotte_player_api::LocalFileUpdate::new("episode.mkv")
+            .with_path("C:/Media/episode.mkv".to_owned()),
     );
-    let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        ..Default::default()
+    });
     owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&shell), false);
-    state
+    let actions = owner
+        .session
+        .as_mut()
+        .unwrap()
+        .sync_attached_player_transport_telemetry(
+            transport(
+                1.0,
+                sorotte_player_api::PlayerTransportPhase::ReadyPaused,
+                0.0,
+                true,
+                0,
+            ),
+            now,
+        )
+        .unwrap();
+    owner.apply_attached_player_runtime_actions_impl(actions, "test ready observation");
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(&shell), false);
+    (owner, recorded, shell)
+}
+
+fn commit_barrier(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    shell: &SorotteGuiShellAppState,
+    policy: sorotte_protocol::PlaybackBarrierPolicy,
+) {
+    use crate::app::runtime_stack::test_support::barrier::*;
+    use sorotte_protocol::*;
+    let now = crate::app::support::system_time_seconds();
+    let actions = owner
+        .session
+        .as_mut()
+        .unwrap()
+        .sync_attached_player_transport_telemetry(
+            transport(
+                2.0,
+                sorotte_player_api::PlayerTransportPhase::ReadyPaused,
+                12.0,
+                true,
+                0,
+            ),
+            now,
+        )
+        .unwrap();
+    owner.apply_attached_player_runtime_actions_impl(actions, "test seek completion");
+    let session = owner.session.as_mut().unwrap();
+    apply_protocol_message(
+        session,
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_commit(CommitStartPayload::new(
+                        ROOM_MEDIA_GENERATION,
+                        ROOM_STATE_REVISION,
+                        12.0,
+                        now,
+                        now + 10.0,
+                    ))
+                    .with_status(barrier_status(
+                        policy,
+                        PlaybackBarrierPhase::Committed,
+                        Some(ROOM_STATE_REVISION),
+                    )),
+            ),
+        ),
+    );
+    apply_protocol_message(
+        session,
+        ProtocolMessage::state(
+            StatePayload::new().with_playstate(
+                PlaystatePayload::new()
+                    .with_position(12.0)
+                    .with_paused(false)
+                    .with_do_seek(true)
+                    .with_set_by("alice"),
+            ),
+        ),
+    );
+    owner.sync_session_playstate_to_attached_player_impl(&runtime_state_for_shell(shell), false);
 }
 
 #[test]
 fn gui_controlled_reconnect_toggle_stays_dormant_before_transport_telemetry() {
     const ROOM: &str = "+room:ABCDEF123456";
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", ROOM)
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", ROOM);
     let startup = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should encode");
@@ -237,87 +299,207 @@ fn gui_controlled_reconnect_toggle_stays_dormant_before_transport_telemetry() {
 }
 
 #[test]
-fn gui_controller_barrier_reconciles_before_legacy_self_origin_filter() {
-    let state = run_self_attributed_coordinator_actions(vec![
-        GuiAttachedPlayerRuntimeAction::Coordinator {
-            command_id: sorotte_client_core::CoordinatorCommandId::new(1),
-            command: CoordinatorPlayerCommand::SetPosition(12.0),
-        },
-    ]);
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .positions,
-        vec![12.0]
-    );
+fn gui_controller_barrier_reconciles_self_attributed_seek_through_the_player() {
+    let (_owner, recorded, _shell) =
+        prepared_barrier_owner(sorotte_protocol::PlaybackBarrierPolicy::Controller);
+    assert!(recorded.lock().unwrap().positions.contains(&12.0));
 }
 
 #[test]
 fn gui_all_eligible_controller_participation_obeys_server_commit() {
-    let state = run_self_attributed_coordinator_actions(vec![
-        GuiAttachedPlayerRuntimeAction::Coordinator {
-            command_id: sorotte_client_core::CoordinatorCommandId::new(2),
-            command: CoordinatorPlayerCommand::Play(sorotte_player_api::PlayerPlayIntent::Resume),
-        },
-    ]);
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .paused,
-        vec![false]
-    );
+    for policy in [
+        sorotte_protocol::PlaybackBarrierPolicy::Controller,
+        sorotte_protocol::PlaybackBarrierPolicy::AllEligible,
+    ] {
+        let (mut owner, recorded, shell) = prepared_barrier_owner(policy);
+        recorded.lock().unwrap().paused.clear();
+        commit_barrier(&mut owner, &shell, policy);
+        assert_eq!(recorded.lock().unwrap().paused, vec![false]);
+    }
 }
 
 #[test]
 fn gui_controller_obeys_server_owned_room_buffering_pause_and_resume() {
-    let state = run_self_attributed_coordinator_actions(vec![
-        GuiAttachedPlayerRuntimeAction::Coordinator {
-            command_id: sorotte_client_core::CoordinatorCommandId::new(3),
-            command: CoordinatorPlayerCommand::SetPaused(true),
-        },
-        GuiAttachedPlayerRuntimeAction::Coordinator {
-            command_id: sorotte_client_core::CoordinatorCommandId::new(4),
-            command: CoordinatorPlayerCommand::Play(sorotte_player_api::PlayerPlayIntent::Resume),
-        },
-    ]);
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .paused,
-        vec![true, false]
+    use crate::app::runtime_stack::test_support::barrier::*;
+    use sorotte_protocol::*;
+    let (mut owner, recorded, shell) = prepared_barrier_owner(PlaybackBarrierPolicy::Controller);
+    commit_barrier(&mut owner, &shell, PlaybackBarrierPolicy::Controller);
+    let now = crate::app::support::system_time_seconds();
+    let actions = owner
+        .session
+        .as_mut()
+        .unwrap()
+        .sync_attached_player_transport_telemetry(
+            transport(
+                3.0,
+                sorotte_player_api::PlayerTransportPhase::Playing,
+                12.25,
+                false,
+                1,
+            ),
+            now,
+        )
+        .unwrap();
+    owner.apply_attached_player_runtime_actions_impl(actions, "test playing observation");
+    let actions = owner
+        .session
+        .as_mut()
+        .unwrap()
+        .sync_attached_player_transport_telemetry(
+            transport(
+                3.5,
+                sorotte_player_api::PlayerTransportPhase::Playing,
+                12.5,
+                false,
+                1,
+            ),
+            now,
+        )
+        .unwrap();
+    owner.apply_attached_player_runtime_actions_impl(actions, "test advancing observation");
+    assert!(
+        drain_barrier_state_extensions(owner.session.as_mut().unwrap())
+            .iter()
+            .any(|extension| extension.started.is_some()),
+        "the client must acknowledge actual playback before the server completes the barrier"
     );
+    apply_protocol_message(
+        owner.session.as_mut().unwrap(),
+        ProtocolMessage::set(SetPayload::new().with_playback_barrier_v1(
+            PlaybackBarrierSetExtension::new().with_status(barrier_status(
+                PlaybackBarrierPolicy::Controller,
+                PlaybackBarrierPhase::Complete,
+                Some(ROOM_STATE_REVISION),
+            )),
+        )),
+    );
+    recorded.lock().unwrap().paused.clear();
+    let policy = RoomBufferingPolicyPayload::new(
+        ROOM_MEDIA_GENERATION,
+        RoomBufferingPolicy::PauseAnyEligible,
+    )
+    .with_debounce_ms(1)
+    .with_resume_hysteresis_ms(1)
+    .with_max_pause_ms(30_000);
+    apply_protocol_message(
+        owner.session.as_mut().unwrap(),
+        ProtocolMessage::set(
+            SetPayload::new().with_playback_barrier_v1(
+                PlaybackBarrierSetExtension::new()
+                    .with_buffering_policy(policy.clone())
+                    .with_buffering_status(RoomBufferingStatusPayload {
+                        config: policy,
+                        phase: RoomBufferingPhase::Paused,
+                        eligible_clients: 1,
+                        required_buffering_clients: 1,
+                        buffering_clients: ["alice".to_owned()].into(),
+                        pause_deadline: None,
+                    }),
+            ),
+        ),
+    );
+    for (i, paused) in [true, false].into_iter().enumerate() {
+        apply_protocol_message(
+            owner.session.as_mut().unwrap(),
+            ProtocolMessage::state(
+                StatePayload::new().with_playstate(
+                    PlaystatePayload::new()
+                        .with_position(12.25)
+                        .with_paused(paused)
+                        .with_do_seek(false)
+                        .with_set_by("alice"),
+                ),
+            ),
+        );
+        owner.sync_session_playstate_to_attached_player_impl(
+            &runtime_state_for_shell(&shell),
+            false,
+        );
+        let phase = if paused {
+            sorotte_player_api::PlayerTransportPhase::ReadyPaused
+        } else {
+            sorotte_player_api::PlayerTransportPhase::Playing
+        };
+        let actions = owner
+            .session
+            .as_mut()
+            .unwrap()
+            .sync_attached_player_transport_telemetry(
+                transport(4.0 + i as f64, phase, 12.25, paused, 1),
+                crate::app::support::system_time_seconds(),
+            )
+            .unwrap();
+        owner.apply_attached_player_runtime_actions_impl(actions, "test buffering observation");
+    }
+    assert_eq!(recorded.lock().unwrap().paused, vec![true, false]);
 }
 
 #[test]
 fn gui_recovery_interrupt_resets_rate_on_the_real_attached_player() {
-    let state = std::sync::Arc::new(std::sync::Mutex::new(
+    use crate::app::runtime_stack::test_support::barrier::{
+        accept_coordinator_commands, transport,
+    };
+    use sorotte_player_api::PlayerTransportPhase::*;
+    let mut session = crate::app::runtime_stack::test_support::active_session();
+    session
+        .prepare_attached_playback_media(
+            sorotte_client_core::LogicalMediaId::new("catchup-media").unwrap(),
+            sorotte_client_core::MediaTransportKind::NetworkVod,
+            sorotte_client_core::MediaLoadIntent::NewPlayback,
+            0.0,
+        )
+        .unwrap();
+    session
+        .apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":false,"setBy":"bob"}}}"#,
+            0.0,
+        )
+        .unwrap();
+    let actions = session.attached_player_runtime_actions(0.0).unwrap();
+    accept_coordinator_commands(&mut session, &actions, 0.0);
+    for (time, phase, position, rate) in [
+        (0.0, Playing, 0.0, 1.0),
+        (0.2, Playing, 0.2, 1.0),
+        (10.0, Rebuffering, 8.0, 1.0),
+        (11.0, Playing, 9.0, 1.0),
+        (12.0, Playing, 10.0, 1.0),
+        (13.0, Playing, 11.0, 1.03),
+    ] {
+        let mut update = transport(time, phase, position, false, 1);
+        update.playback_rate = Some(rate);
+        let actions = session
+            .sync_attached_player_transport_telemetry(update, time)
+            .unwrap();
+        accept_coordinator_commands(&mut session, &actions, time);
+    }
+    assert!(
+        session
+            .playback_coordination_snapshot()
+            .unwrap()
+            .recovery_episode
+            .is_some()
+    );
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(
         CoordinatorAuthorityPlayerState::default(),
     ));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
-    owner.session = Some(Box::new(CoordinatorAuthoritySession {
-        actions: Vec::new(),
-        recovery_cleanup_actions: vec![GuiAttachedPlayerRuntimeAction::Coordinator {
-            command_id: sorotte_client_core::CoordinatorCommandId::new(5),
-            command: CoordinatorPlayerCommand::SetPlaybackRate(1.0),
-        }],
-    }));
+    owner.session = Some(Box::new(session));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         CoordinatorAuthorityPlayer {
-            state: state.clone(),
+            state: recorded.clone(),
         },
     )));
-
     assert!(owner.interrupt_attached_playback_recovery_impl("test interruption"));
-    assert_eq!(
-        state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .playback_rates,
-        vec![1.0],
-        "recovery cleanup must cross the GUI's external-player seam instead of the no-op runtime player"
+    assert_eq!(recorded.lock().unwrap().playback_rates, vec![1.0]);
+    assert!(
+        owner
+            .session
+            .as_ref()
+            .unwrap()
+            .playback_coordination_snapshot()
+            .unwrap()
+            .recovery_episode
+            .is_none()
     );
 }
 

@@ -636,10 +636,10 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
 }
 
 #[test]
-fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek_fails() {
+fn gui_persisted_config_runtime_owner_retries_undo_seek_after_player_failure() {
     #[derive(Debug, Default)]
     struct RecordingPlayerState {
-        set_position_attempts: usize,
+        set_positions: Vec<f64>,
     }
 
     struct RecordingPlayerAdapter {
@@ -653,15 +653,20 @@ fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek
 
         fn set_position(
             &mut self,
-            _position_seconds: f64,
+            position_seconds: f64,
         ) -> Result<(), sorotte_player_api::PlayerError> {
-            self.state
+            let mut state = self
+                .state
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .set_position_attempts += 1;
-            Err(sorotte_player_api::PlayerError::OperationFailed(
-                "seek failed".to_owned(),
-            ))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.set_positions.push(position_seconds);
+            if state.set_positions.len() == 1 {
+                Err(sorotte_player_api::PlayerError::OperationFailed(
+                    "seek failed".to_owned(),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -736,7 +741,21 @@ fn gui_persisted_config_runtime_owner_does_not_commit_undo_seek_when_player_seek
         player_state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .set_position_attempts,
-        1
+            .set_positions,
+        vec![10.0]
     );
+
+    handle.push_request(GuiRuntimeRequest::UndoSeek);
+    let retry_actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    assert!(retry_actions.iter().any(|action| matches!(
+        action,
+        GuiShellAction::PushTransientNotification { level, message }
+            if *level == GuiTransientNotificationLevel::Success
+                && message.contains("Undo seek applied via the attached recording player")
+    )));
+    assert_eq!(owner.player_position_seconds, Some(10.0));
+    let session = owner.session.as_ref().unwrap();
+    assert_eq!(session.local_position_seconds(), Some(10.0));
+    assert_eq!(session.pending_undo_seek_target_position(), Some(20.0));
+    assert_eq!(player_state.lock().unwrap().set_positions, vec![10.0, 10.0]);
 }

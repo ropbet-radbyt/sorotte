@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::runtime_state_for_shell;
 
 use crate::app::support::system_time_seconds;
@@ -8,8 +7,7 @@ use sorotte_protocol::{ParticipantPlaybackPhase, ParticipantPlayerConnection};
 
 #[test]
 fn gui_adapter_forwards_external_player_availability_transitions() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let _ = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup Hello should flush");
@@ -24,7 +22,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
     let now_seconds = system_time_seconds();
 
     assert!(
-        GuiSessionRuntimeAdapter::set_external_player_availability(
+        GuiClientSession::set_external_player_availability(
             &mut adapter,
             ExternalPlayerAvailability::Connecting,
             now_seconds,
@@ -42,7 +40,7 @@ fn gui_adapter_forwards_external_player_availability_transitions() {
     );
 
     assert!(
-        GuiSessionRuntimeAdapter::set_external_player_availability(
+        GuiClientSession::set_external_player_availability(
             &mut adapter,
             ExternalPlayerAvailability::Unavailable,
             now_seconds + 1.0,
@@ -67,8 +65,7 @@ fn gui_runtime_projects_negotiated_participant_status_and_authoritative_room_int
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
 
     let startup_lines = adapter
@@ -192,8 +189,7 @@ fn compact_and_stale_exact_statuses_do_not_invent_scope_mismatches() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let _ = adapter
         .deliver_outbound_protocol_lines()
@@ -250,8 +246,7 @@ fn legacy_uncorrelated_wire_rows_never_project_precise_room_offsets() {
         room: Some("room1".to_owned()),
         ..StoredClientSettings::default()
     });
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core GUI adapter should bootstrap");
+    let mut adapter = GuiClientSession::new("alice", "room1");
     sync_adapter_to_saved_session_settings(&mut adapter, &state);
     let _ = adapter
         .deliver_outbound_protocol_lines()

@@ -65,15 +65,7 @@ impl SorotteGuiShellAppState {
             GuiWidgetKind::Panel,
             vec![selected_detail.with_span(2)],
         );
-        GuiWidgetNode::layout(
-            "plugins-root",
-            "Plugins",
-            GuiLayoutMode::ResponsiveColumns {
-                min_column_width: 260.0,
-                max_columns: 3,
-            },
-            vec![plugin_list, detail.with_span(2)],
-        )
+        GuiShellView::Plugins.widget_tree_root(vec![plugin_list, detail.with_span(2)])
     }
 
     fn plex_plugin_detail_widget_tree(&self) -> GuiWidgetNode {

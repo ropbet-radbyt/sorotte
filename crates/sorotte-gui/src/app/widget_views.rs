@@ -14,9 +14,9 @@ use super::support::{
     bool_label, configured_room_name_text, joined_room_name_text, normalized_editable_text,
     optional_seconds_text,
 };
-use super::widget_tree::{
-    GuiLayoutMode, GuiStatusTone, GuiWidgetKind, GuiWidgetNode, GuiWidgetRenderer,
-};
+#[cfg(test)]
+use super::widget_tree::GuiWidgetRenderer;
+use super::widget_tree::{GuiLayoutMode, GuiStatusTone, GuiWidgetKind, GuiWidgetNode};
 
 mod configuration;
 mod main_window;

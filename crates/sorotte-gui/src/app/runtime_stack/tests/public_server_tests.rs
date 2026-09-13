@@ -1,11 +1,10 @@
 use super::*;
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_normalizes_public_server_refresh_rows() {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core chat adapter should bootstrap");
+fn gui_client_session_normalizes_public_server_refresh_rows() {
+    let mut adapter = GuiClientSession::new("alice", "room1");
 
-    let refreshed = GuiSessionRuntimeAdapter::refresh_public_servers(
+    let refreshed = GuiClientSession::refresh_public_servers(
         &mut adapter,
         vec![
             (" Primary ".to_owned(), " syncplay.pl:8999 ".to_owned()),
@@ -28,16 +27,14 @@ fn gui_client_core_chat_session_runtime_adapter_normalizes_public_server_refresh
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_uses_lookup_public_server_refresh_source() {
+fn gui_client_session_uses_lookup_public_server_refresh_source() {
     let refreshed =
-        GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_lookup(&|name| {
-            match name {
-                "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS" => Some(
-                    r#"[[" Gui Primary ", " syncplay.pl:8999 "], ["Duplicate", "SYNCPLAY.PL:8999"]]"#
-                        .to_owned(),
-                ),
-                _ => None,
-            }
+        GuiClientSession::refreshed_public_server_rows_from_lookup(&|name| match name {
+            "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS" => Some(
+                r#"[[" Gui Primary ", " syncplay.pl:8999 "], ["Duplicate", "SYNCPLAY.PL:8999"]]"#
+                    .to_owned(),
+            ),
+            _ => None,
         })
         .expect("lookup-backed public-server refresh should parse")
         .expect("lookup-backed public-server refresh should produce rows");
@@ -49,8 +46,8 @@ fn gui_client_core_chat_session_runtime_adapter_uses_lookup_public_server_refres
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_uses_file_lookup_public_server_refresh_source() {
-    let refreshed = GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_sources(
+fn gui_client_session_uses_file_lookup_public_server_refresh_source() {
+    let refreshed = GuiClientSession::refreshed_public_server_rows_from_sources(
         &|name| match name {
             "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS_PATH" => Some("public-servers.txt".to_owned()),
             "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS" => {
@@ -79,14 +76,12 @@ fn gui_client_core_chat_session_runtime_adapter_uses_file_lookup_public_server_r
 }
 
 #[test]
-fn gui_client_core_chat_session_runtime_adapter_rejects_invalid_lookup_public_server_refresh_source()
- {
-    let error =
-        GuiClientCoreChatSessionRuntimeAdapter::refreshed_public_server_rows_from_lookup(&|name| {
-            (name == "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS")
-                .then_some("not-a-serialized-public-server-list".to_owned())
-        })
-        .expect_err("invalid lookup-backed public-server refresh should fail");
+fn gui_client_session_rejects_invalid_lookup_public_server_refresh_source() {
+    let error = GuiClientSession::refreshed_public_server_rows_from_lookup(&|name| {
+        (name == "SOROTTE_GUI_REFRESH_PUBLIC_SERVERS")
+            .then_some("not-a-serialized-public-server-list".to_owned())
+    })
+    .expect_err("invalid lookup-backed public-server refresh should fail");
 
     assert!(
         error.contains("SOROTTE_GUI_REFRESH_PUBLIC_SERVERS"),

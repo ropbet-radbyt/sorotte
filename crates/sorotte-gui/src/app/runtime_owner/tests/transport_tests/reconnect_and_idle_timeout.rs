@@ -1,56 +1,16 @@
 use super::*;
 use crate::app::runtime_stack::{
-    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionRuntimeAdapter,
-    GuiSessionTransportDriver, GuiTcpSessionTransportDriver,
+    GuiOutboundProtocolDeliveryResult, GuiQueuedSessionTransportHandle, GuiSessionTransportDriver,
+    GuiTcpSessionTransportDriver,
 };
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 
-struct ReceiptTimeRecordingSession {
-    received_at_seconds: Arc<Mutex<Vec<f64>>>,
-}
-
-impl GuiSessionRuntimeAdapter for ReceiptTimeRecordingSession {
-    fn apply_message_json_at(
-        &mut self,
-        _json_line: &str,
-        received_at_seconds: f64,
-    ) -> Result<(), String> {
-        self.received_at_seconds
-            .lock()
-            .expect("receipt-time log should not be poisoned")
-            .push(received_at_seconds);
-        Ok(())
-    }
-
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
-    }
-}
-
 #[test]
 fn queued_inbound_line_keeps_network_receipt_time_until_owner_drain() {
-    let received_at_seconds = Arc::new(Mutex::new(Vec::new()));
     let session_transport = GuiQueuedSessionTransportHandle::default();
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(ReceiptTimeRecordingSession {
-            received_at_seconds: Arc::clone(&received_at_seconds),
-        }),
+        Box::new(crate::app::runtime_stack::test_support::active_session()),
     );
     owner.session_transport = Some(session_transport.clone());
     let handle = GuiQueuedRuntimeBridgeHandle::default();
@@ -58,14 +18,21 @@ fn queued_inbound_line_keeps_network_receipt_time_until_owner_drain() {
         &StoredClientSettings::default(),
     );
 
-    session_transport.push_inbound_protocol_line_at("{}", 123.5);
+    session_transport.push_inbound_protocol_line_at(
+        r#"{"State":{"playstate":{"position":4.0,"paused":true}}}"#,
+        123.5,
+    );
     owner.drain_session_transport_inbound(&handle, &mut state);
 
     assert_eq!(
-        *received_at_seconds
-            .lock()
-            .expect("receipt-time log should not be poisoned"),
-        vec![123.5]
+        owner
+            .session
+            .as_ref()
+            .unwrap()
+            .runtime
+            .session()
+            .current_room_playstate_updated_at_seconds(),
+        Some(123.5)
     );
 }
 

@@ -9,7 +9,7 @@ use super::super::shell_state::{
 use super::super::support::{
     nonempty_room_name_text, normalized_editable_text, system_time_seconds,
 };
-use super::GuiClientCoreChatSessionRuntimeAdapter;
+use super::GuiClientSession;
 use crate::app::runtime_state::GuiRuntimeState;
 use sorotte_client_app::app_boundary::readiness::{
     ParticipantReadinessPresentation, PendingReadinessIntentPresentation,
@@ -145,7 +145,7 @@ fn room_playstate_authority_label(authority: RoomPlaystateAuthority) -> String {
     }
 }
 
-impl GuiClientCoreChatSessionRuntimeAdapter {
+impl GuiClientSession {
     fn session_readiness_presentations(
         &self,
         users: &[MainWindowRuntimeUserSnapshot],
@@ -385,9 +385,10 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
     }
 
     pub(super) fn main_window_runtime_snapshot(
-        &self,
+        &mut self,
         state: &GuiRuntimeState,
     ) -> Option<MainWindowRuntimeSnapshot> {
+        let (room_position, room_position_sampled_at) = self.room_clock_position();
         let baseline_main_window =
             MainWindowShellState::from_stored_settings(&self.runtime_settings.settings);
         let session = self.runtime.session();
@@ -492,14 +493,11 @@ impl GuiClientCoreChatSessionRuntimeAdapter {
         snapshot.autoplay_countdown_seconds = session
             .autoplay_timer_is_running()
             .then(|| session.autoplay_time_left_seconds().max(0.0).floor() as u32);
-        let now_seconds = system_time_seconds();
-        if let Some(playstate) = session.current_room_playstate_at(now_seconds) {
-            snapshot.room_playback_intent.position_seconds = playstate.position;
-            snapshot.room_playback_intent.position_sampled_at = (playstate.paused == Some(false)
-                && playstate.position.is_some())
-            .then(std::time::Instant::now);
+        if let Some(playstate) = session.current_room_playstate() {
+            snapshot.room_playback_intent.position_seconds = room_position;
+            snapshot.room_playback_intent.position_sampled_at = room_position_sampled_at;
             snapshot.room_playback_intent.paused = playstate.paused;
-            snapshot.room_playback_intent.set_by = playstate.set_by;
+            snapshot.room_playback_intent.set_by = playstate.set_by.clone();
             snapshot.room_playback_intent.authority = session
                 .current_room_playstate_authority()
                 .map(room_playstate_authority_label);

@@ -3,11 +3,9 @@ use crate::app::runtime_owner::{
     GuiPendingPlaylistSourceResolution,
     player::{PlaylistResolutionAttemptState, SelectedPlaylistMediaSyncOutcome},
 };
-use crate::app::runtime_stack::test_support::GuiSessionDeliveryTestExt;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::{
-    GuiClientCoreChatSessionRuntimeAdapter, GuiMediaSourceProviderId, GuiPlaylistSourceState,
-    GuiPlaylistSourceStatus,
+    GuiClientSession, GuiMediaSourceProviderId, GuiPlaylistSourceState, GuiPlaylistSourceStatus,
 };
 
 use sorotte_plex::{
@@ -45,9 +43,8 @@ fn detached_playlist_owner_and_state(
     (owner, handle, state)
 }
 
-fn active_client_core_playlist_adapter() -> GuiClientCoreChatSessionRuntimeAdapter {
-    let mut adapter = GuiClientCoreChatSessionRuntimeAdapter::new("alice", "room1")
-        .expect("client-core playlist adapter should bootstrap");
+fn active_client_core_playlist_adapter() -> GuiClientSession {
+    let mut adapter = GuiClientSession::new("alice", "room1");
     let startup_lines = adapter
         .deliver_outbound_protocol_lines()
         .expect("startup hello should encode");
@@ -57,9 +54,7 @@ fn active_client_core_playlist_adapter() -> GuiClientCoreChatSessionRuntimeAdapt
             r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true,"chat":true}}}"#,
         )
         .expect("server hello should activate playlist control");
-    assert!(GuiSessionRuntimeAdapter::playlist_control_available(
-        &adapter
-    ));
+    assert!(GuiClientSession::playlist_control_available(&adapter));
     adapter
 }
 
@@ -1012,48 +1007,15 @@ fn rejected_full_replacement_does_not_advance_scope_or_cancel_pending_row() {
 
 #[test]
 fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
-    struct RevisionSession {
-        revision: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    }
-
-    impl GuiSessionRuntimeAdapter for RevisionSession {
-        fn current_room_playlist_revision(&self) -> Option<u64> {
-            Some(self.revision.load(std::sync::atomic::Ordering::Relaxed))
-        }
-
-        fn current_room_playlist_remote_revision(&self) -> u64 {
-            self.revision.load(std::sync::atomic::Ordering::Relaxed)
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            _current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(Vec::new())
-        }
-    }
-
     let root = test_temp_root("playlist-origin-session-revision");
     let media_path = root.join("episode.mkv");
     std::fs::write(&media_path, b"episode").expect("session revision fixture should be written");
-    let revision = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
-    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None).with_session_runtime(
-        Box::new(RevisionSession {
-            revision: revision.clone(),
-        }),
-    );
+    let mut session = crate::app::runtime_stack::test_support::active_session();
+    session
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode.mkv"],"user":"bob"}}}"#)
+        .unwrap();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_session_runtime(Box::new(session));
     let mut state =
         crate::app::runtime_state::GuiRuntimeState::from_stored_settings(&StoredClientSettings {
             room: Some("room1".to_owned()),
@@ -1076,7 +1038,12 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
     });
     let prior_generation = owner.playlist_resolution.generation;
 
-    revision.store(2, std::sync::atomic::Ordering::Relaxed);
+    owner
+        .session
+        .as_mut()
+        .unwrap()
+        .apply_message_json(r#"{"Set":{"playlistChange":{"files":["episode.mkv"],"user":"bob"}}}"#)
+        .unwrap();
     owner.reconcile_local_shared_playlist_media_paths(&state);
 
     assert!(owner.playlist_resolution.local_origins_by_row.is_empty());

@@ -5,179 +5,51 @@ use crate::app::runtime_owner::{
 };
 
 #[derive(Debug, Default)]
-struct PositionSessionState {
+struct PlaybackObservations {
     local_position_seconds: Option<f64>,
     synchronized_positions: Vec<f64>,
     recorded_manual_seeks: Vec<f64>,
     manual_seek_attempts: Vec<f64>,
-    manual_seek_failures_remaining: usize,
     eof_observations: usize,
     transport_updates: Vec<sorotte_player_api::PlayerTransportTelemetryUpdate>,
-    playback_coordination_snapshot: Option<sorotte_client_core::PlaybackCoordinationSnapshot>,
-    adapter_logical_generations: std::collections::BTreeMap<u64, u64>,
     keep_waiting_calls: usize,
     media_preparation_calls: usize,
 }
 
-struct PositionSession {
-    state: std::sync::Arc<std::sync::Mutex<PositionSessionState>>,
+struct PlaybackProbe {
+    state: std::sync::Arc<std::sync::Mutex<PlaybackObservations>>,
 }
 
-impl GuiSessionRuntimeAdapter for PositionSession {
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
-    }
-
-    fn sync_local_playback_telemetry(
-        &mut self,
-        _paused: Option<bool>,
-        position_seconds: Option<f64>,
-    ) -> Result<(), String> {
-        if let Some(position_seconds) = position_seconds {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.local_position_seconds = Some(position_seconds);
-            state.synchronized_positions.push(position_seconds);
-        }
-        Ok(())
-    }
-
-    fn record_manual_seek_to_position(&mut self, position_seconds: f64) -> Result<bool, String> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.manual_seek_attempts.push(position_seconds);
-        if state.manual_seek_failures_remaining > 0 {
-            state.manual_seek_failures_remaining -= 1;
-            return Ok(false);
-        }
-        state.local_position_seconds = Some(position_seconds);
-        state.recorded_manual_seeks.push(position_seconds);
-        Ok(true)
-    }
-
-    fn local_position_seconds(&self) -> Option<f64> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .local_position_seconds
-    }
-
-    fn current_room_name(&self) -> Option<&str> {
-        Some("room1")
-    }
-
-    fn observe_external_player_end_of_file(&mut self, _now_seconds: f64) -> Result<(), String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .eof_observations += 1;
-        Ok(())
-    }
-
-    fn sync_attached_player_transport_telemetry(
-        &mut self,
-        update: sorotte_player_api::PlayerTransportTelemetryUpdate,
-        _now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .transport_updates
-            .push(update);
-        Ok(Vec::new())
-    }
-
-    fn prepare_attached_playback_media(
-        &mut self,
-        _logical_id: sorotte_client_core::LogicalMediaId,
-        _kind: sorotte_client_core::MediaTransportKind,
-        _intent: sorotte_client_core::MediaLoadIntent,
-        _now_seconds: f64,
-    ) -> Result<Option<sorotte_client_core::MediaLoadPlan>, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .media_preparation_calls += 1;
-        Ok(None)
-    }
-
-    fn playback_coordination_snapshot(
-        &self,
-    ) -> Option<sorotte_client_core::PlaybackCoordinationSnapshot> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .playback_coordination_snapshot
-            .clone()
-    }
-
-    fn logical_generation_for_adapter_generation(
-        &self,
-        adapter_generation: sorotte_player_api::PlayerMediaGeneration,
-    ) -> Option<u64> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .adapter_logical_generations
-            .get(&adapter_generation.get())
-            .copied()
-    }
-
-    fn keep_waiting_for_seek_preparation(
-        &mut self,
-        _now_seconds: f64,
-    ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .keep_waiting_calls += 1;
-        Ok(Vec::new())
-    }
-}
-
-struct AlternateRoomPositionSession;
-
-impl GuiSessionRuntimeAdapter for AlternateRoomPositionSession {
-    fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn connect_public_server(
-        &mut self,
-        _selected_server: Option<(String, String)>,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn refresh_public_servers(
-        &mut self,
-        current_servers: Vec<(String, String)>,
-        _language: Option<&str>,
-    ) -> Result<Vec<(String, String)>, String> {
-        Ok(current_servers)
-    }
-
-    fn current_room_name(&self) -> Option<&str> {
-        Some("room2")
+impl PlaybackProbe {
+    fn into_session(self) -> crate::app::GuiClientSession {
+        crate::app::runtime_stack::test_support::active_session().with_observer(move |event| {
+            use crate::app::runtime_stack::test_support::SessionObservation::*;
+            let mut state = self.state.lock().unwrap();
+            match event {
+                PlaybackObserved {
+                    position: Some(position),
+                    ..
+                } => {
+                    state.local_position_seconds = Some(position);
+                    state.synchronized_positions.push(position);
+                }
+                SeekRequested {
+                    position,
+                    published,
+                } => {
+                    state.manual_seek_attempts.push(position);
+                    if published {
+                        state.local_position_seconds = Some(position);
+                        state.recorded_manual_seeks.push(position);
+                    }
+                }
+                EndOfFile => state.eof_observations += 1,
+                TransportObserved(update) => state.transport_updates.push(update.clone()),
+                MediaPrepared(_) => state.media_preparation_calls += 1,
+                SeekWaitRenewed => state.keep_waiting_calls += 1,
+                _ => {}
+            }
+        })
     }
 }
 
@@ -418,54 +290,10 @@ fn seek_transition(
     [seeking, completed]
 }
 
-fn active_seek_preparation_snapshot(
-    media_generation: u64,
-    target_seconds: f64,
-) -> sorotte_client_core::PlaybackCoordinationSnapshot {
-    sorotte_client_core::PlaybackCoordinationSnapshot {
-        media_generation: Some(media_generation),
-        pending_local_pause_intent: None,
-        pending_local_pause_intent_dormant: false,
-        last_local_pause_intent_stage_accepted: None,
-        diagnostic: sorotte_client_core::PlaybackDiagnostic::ReadyWaitingForRoom,
-        recovery_episode: None,
-        seek_preparation: Some(sorotte_client_core::SeekPreparationSnapshot {
-            id: 1,
-            media_generation,
-            load_attempt: 1,
-            room_revision: 1,
-            latest_room_revision: 1,
-            requested_target_seconds: target_seconds,
-            frozen_target_seconds: target_seconds,
-            frozen_room_anchor_position_seconds: target_seconds,
-            frozen_room_anchor_observed_at_seconds: 0.0,
-            latest_room_position_seconds: target_seconds,
-            availability: sorotte_client_core::SeekTargetAvailability::FetchRequired,
-            phase: sorotte_client_core::SeekPreparationPhase::Fetching,
-            cache_buffering_percent: None,
-            buffered_ahead_seconds: None,
-            nearest_safe_buffered_position_seconds: None,
-            started_at_seconds: 0.0,
-            terminal_outcome: None,
-            can_keep_waiting: true,
-            can_cancel_and_remain: false,
-            can_join_nearest_buffered: false,
-        }),
-        last_seek_preparation_terminal_outcome: None,
-        last_seek_preparation_terminal: None,
-        metrics: Default::default(),
-        transport_telemetry_observed: true,
-        ordinary_correction_blocked: true,
-        last_applied_revision: None,
-        last_started_revision: None,
-        last_degraded_reason: None,
-    }
-}
-
 #[test]
 fn attached_position_telemetry_grounds_normal_progress_and_publishes_native_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update(0.0, 10.0),
@@ -476,9 +304,12 @@ fn attached_position_telemetry_grounds_normal_progress_and_publishes_native_seek
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_paused = Some(false);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -493,22 +324,27 @@ fn attached_position_telemetry_grounds_normal_progress_and_publishes_native_seek
 #[test]
 fn attached_position_telemetry_does_not_republish_sorotte_owned_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport(position_update(0.0, 10.0));
 
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_paused = Some(false);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
-    session_state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .local_position_seconds = Some(20.0);
+    owner
+        .session
+        .as_mut()
+        .unwrap()
+        .sync_local_playback_telemetry(Some(false), Some(20.0))
+        .unwrap();
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PositionTelemetryPlayer::with_updates(events.clone(), [position_update(0.1, 20.0)]),
     )));
@@ -526,7 +362,7 @@ fn coordinator_seek_completion_is_never_republished_as_a_native_seek() {
     for completed_position_seconds in [39.5, 40.0, 40.5] {
         let events = position_events(1);
         let session_state =
-            std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+            std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
         let mut seeking = sparse_update(0.1);
         seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
         seeking.seeking = Some(true);
@@ -537,9 +373,12 @@ fn coordinator_seek_completion_is_never_republished_as_a_native_seek() {
         baseline_player.queue_transport(position_update_at_rate(0.0, 10.0, 1.0));
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-        owner.session = Some(Box::new(PositionSession {
-            state: session_state.clone(),
-        }));
+        owner.session = Some(Box::new(
+            PlaybackProbe {
+                state: session_state.clone(),
+            }
+            .into_session(),
+        ));
         owner.refresh_player_state_impl();
 
         let mut seek_player = PositionTelemetryPlayer::new(events.clone());
@@ -572,14 +411,17 @@ fn coordinator_seek_completion_is_never_republished_as_a_native_seek() {
 #[test]
 fn split_mpv_seek_completion_reanchors_before_the_next_stable_position() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     let mut seeking = sparse_update(0.1);
@@ -631,14 +473,17 @@ fn split_mpv_seek_completion_reanchors_before_the_next_stable_position() {
 #[test]
 fn superseded_coordinator_seek_effects_remain_owned_after_replacement_dispatch() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     let mut seek_player = PositionTelemetryPlayer::new(events.clone());
@@ -678,14 +523,17 @@ fn superseded_coordinator_seek_effects_remain_owned_after_replacement_dispatch()
 #[test]
 fn direct_runtime_position_preserves_older_coordinator_effect_ownership() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
@@ -726,14 +574,17 @@ fn direct_runtime_position_preserves_older_coordinator_effect_ownership() {
 #[test]
 fn ownership_pressure_fails_closed_instead_of_reclassifying_a_system_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
@@ -791,14 +642,17 @@ fn ownership_pressure_fails_closed_instead_of_reclassifying_a_system_seek() {
 #[test]
 fn failed_replacement_dispatch_preserves_the_accepted_seek_ownership() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     let mut seek_player = PositionTelemetryPlayer {
@@ -838,14 +692,17 @@ fn failed_replacement_dispatch_preserves_the_accepted_seek_ownership() {
 #[test]
 fn coordinator_seek_ownership_covers_coordinator_and_adapter_timeout_windows() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
@@ -879,14 +736,17 @@ fn coordinator_seek_ownership_covers_coordinator_and_adapter_timeout_windows() {
 #[test]
 fn adapter_timeout_retains_seek_ownership_through_late_preparation_completion() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
     let adapter_command_id = sorotte_player_api::PlayerCommandId::new(7);
     owner.note_attached_coordinator_seek_dispatched(
@@ -933,14 +793,17 @@ fn adapter_timeout_retains_seek_ownership_through_late_preparation_completion() 
 #[test]
 fn direct_position_joins_system_ownership_and_session_lifecycle_retires_it() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PositionTelemetryPlayer::new(events.clone()),
     )));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     let coordinator_seek = GuiAttachedPlayerRuntimeAction::Coordinator {
         command_id: sorotte_client_core::CoordinatorCommandId::new(1),
@@ -969,9 +832,12 @@ fn direct_position_joins_system_ownership_and_session_lifecycle_retires_it() {
         vec![coordinator_seek.clone()],
         "session replacement lifecycle regression",
     );
-    owner.install_session_runtime(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.install_session_runtime(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     assert!(owner.attached_system_seek_ownership.is_empty());
 
     owner.apply_attached_player_runtime_actions_impl(
@@ -986,14 +852,17 @@ fn direct_position_joins_system_ownership_and_session_lifecycle_retires_it() {
 #[test]
 fn room_change_retires_seek_ownership_even_when_the_session_instance_survives() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
         PositionTelemetryPlayer::new(events.clone()),
     )));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state,
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state,
+        }
+        .into_session(),
+    ));
     owner.apply_attached_player_runtime_actions_impl(
         vec![GuiAttachedPlayerRuntimeAction::Coordinator {
             command_id: sorotte_client_core::CoordinatorCommandId::new(1),
@@ -1003,7 +872,9 @@ fn room_change_retires_seek_ownership_even_when_the_session_instance_survives() 
     );
     assert_eq!(owner.attached_system_seek_ownership.len(), 1);
 
-    owner.session = Some(Box::new(AlternateRoomPositionSession));
+    owner.session = Some(Box::new(
+        crate::app::runtime_stack::test_support::active_session_in_room("room2"),
+    ));
     owner.refresh_player_state_impl();
 
     assert!(owner.attached_system_seek_ownership.is_empty());
@@ -1012,7 +883,7 @@ fn room_change_retires_seek_ownership_even_when_the_session_instance_survives() 
 #[test]
 fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update_with_delivery(0.0, 0.0, 10.0),
@@ -1020,9 +891,12 @@ fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1045,7 +919,7 @@ fn stale_delivery_timestamp_cannot_publish_or_ground_a_native_seek() {
 #[test]
 fn stale_rich_update_drops_position_but_preserves_cache_lifecycle_fields() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
 
     let baseline = position_update_with_delivery(0.0, 0.0, 99.0);
@@ -1056,9 +930,12 @@ fn stale_rich_update_drops_position_but_preserves_cache_lifecycle_fields() {
     player.queue_transport_script([baseline, stale]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.player_local_file =
         Some(sorotte_player_api::LocalFileUpdate::new("episode.mkv").with_duration_seconds(100.0));
     owner.player_paused = Some(false);
@@ -1095,7 +972,7 @@ fn stale_rich_update_drops_position_but_preserves_cache_lifecycle_fields() {
 #[test]
 fn delayed_old_media_generation_cannot_replace_the_authoritative_position() {
     let events = position_events(2);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut current = position_update(2.0, 10.0);
     current.media_generation = Some(sorotte_player_api::PlayerMediaGeneration::new(2));
     let old = position_update(3.0, 50.0);
@@ -1103,9 +980,12 @@ fn delayed_old_media_generation_cannot_replace_the_authoritative_position() {
     player.queue_transport_script([current, old]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1123,7 +1003,7 @@ fn delayed_old_media_generation_cannot_replace_the_authoritative_position() {
 #[test]
 fn untimestamped_position_disarms_comparison_until_a_fresh_baseline() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut untimestamped = position_update(1.0, 20.0);
     untimestamped.observed_at = None;
     untimestamped.playback_rate = Some(4.0);
@@ -1136,9 +1016,12 @@ fn untimestamped_position_disarms_comparison_until_a_fresh_baseline() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1156,7 +1039,7 @@ fn untimestamped_position_disarms_comparison_until_a_fresh_baseline() {
 #[test]
 fn regressing_position_timestamp_is_rejected_instead_of_becoming_the_anchor() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update(2.0, 10.0),
@@ -1166,9 +1049,12 @@ fn regressing_position_timestamp_is_rejected_instead_of_becoming_the_anchor() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1187,7 +1073,7 @@ fn regressing_position_timestamp_is_rejected_instead_of_becoming_the_anchor() {
 fn attached_position_telemetry_uses_the_observed_playback_rate() {
     for playback_rate in [0.5, 2.0, 3.0, 4.0] {
         let session_state =
-            std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+            std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
         let events = position_events(1);
         let mut player = PositionTelemetryPlayer::new(events.clone());
         player.queue_transport_script([
@@ -1196,9 +1082,12 @@ fn attached_position_telemetry_uses_the_observed_playback_rate() {
         ]);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
         owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-        owner.session = Some(Box::new(PositionSession {
-            state: session_state.clone(),
-        }));
+        owner.session = Some(Box::new(
+            PlaybackProbe {
+                state: session_state.clone(),
+            }
+            .into_session(),
+        ));
 
         owner.refresh_player_state_impl();
 
@@ -1216,7 +1105,7 @@ fn attached_position_telemetry_uses_the_observed_playback_rate() {
 #[test]
 fn low_rate_forward_seek_is_not_hidden_by_a_two_x_assumption() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update_at_rate(0.0, 10.0, 0.5),
@@ -1224,9 +1113,12 @@ fn low_rate_forward_seek_is_not_hidden_by_a_two_x_assumption() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1242,7 +1134,7 @@ fn low_rate_forward_seek_is_not_hidden_by_a_two_x_assumption() {
 #[test]
 fn high_rate_backward_seek_is_measured_against_expected_progress() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update_at_rate(0.0, 10.0, 4.0),
@@ -1250,9 +1142,12 @@ fn high_rate_backward_seek_is_measured_against_expected_progress() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1269,7 +1164,7 @@ fn high_rate_backward_seek_is_measured_against_expected_progress() {
 #[test]
 fn rate_transition_reanchors_before_normal_four_x_progress() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut rate_transition = sorotte_player_api::PlayerTransportTelemetryUpdate::new(
         sorotte_player_api::PlayerMediaGeneration::new(1),
         sorotte_player_api::PlayerObservationTimestamp::from_adapter_start(
@@ -1286,9 +1181,12 @@ fn rate_transition_reanchors_before_normal_four_x_progress() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1304,7 +1202,7 @@ fn rate_transition_reanchors_before_normal_four_x_progress() {
 #[test]
 fn coalesced_rate_and_position_transition_is_a_new_anchor() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update_at_rate(0.0, 10.0, 1.0),
@@ -1313,9 +1211,12 @@ fn coalesced_rate_and_position_transition_is_a_new_anchor() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1331,7 +1232,7 @@ fn coalesced_rate_and_position_transition_is_a_new_anchor() {
 #[test]
 fn pause_transitions_do_not_turn_position_samples_into_seeks() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut paused = position_update_at_rate(1.0, 10.0, 1.0);
     paused.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
     paused.logical_pause = Some(true);
@@ -1347,9 +1248,12 @@ fn pause_transitions_do_not_turn_position_samples_into_seeks() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1365,7 +1269,7 @@ fn pause_transitions_do_not_turn_position_samples_into_seeks() {
 #[test]
 fn seeking_suppresses_intermediate_samples_but_publishes_the_completed_native_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut seeking = position_update_at_rate(0.2, 20.0, 1.0);
     seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
     seeking.seeking = Some(true);
@@ -1380,9 +1284,12 @@ fn seeking_suppresses_intermediate_samples_but_publishes_the_completed_native_se
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1398,7 +1305,7 @@ fn seeking_suppresses_intermediate_samples_but_publishes_the_completed_native_se
 #[test]
 fn paused_core_idle_seek_publishes_after_seek_completion() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut paused = position_update_at_rate(0.0, 10.0, 1.0);
     paused.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
     paused.logical_pause = Some(true);
@@ -1417,9 +1324,12 @@ fn paused_core_idle_seek_publishes_after_seek_completion() {
     player.queue_transport_script([paused, seeking, seek_complete]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1435,7 +1345,7 @@ fn paused_core_idle_seek_publishes_after_seek_completion() {
 #[test]
 fn sparse_pause_then_transient_native_seek_edge_publishes_before_ready_paused_settles() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut pause = sparse_update(0.1);
     pause.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
     pause.logical_pause = Some(true);
@@ -1464,9 +1374,12 @@ fn sparse_pause_then_transient_native_seek_edge_publishes_before_ready_paused_se
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1483,7 +1396,7 @@ fn sparse_pause_then_transient_native_seek_edge_publishes_before_ready_paused_se
 #[test]
 fn loading_and_unknown_rate_samples_only_reestablish_a_baseline() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut loading = position_update_at_rate(0.5, 30.0, 1.0);
     loading.phase = Some(sorotte_player_api::PlayerTransportPhase::Loading);
     let mut invalid_rate = position_update_at_rate(1.0, 30.0, 1.0);
@@ -1498,9 +1411,12 @@ fn loading_and_unknown_rate_samples_only_reestablish_a_baseline() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1516,10 +1432,7 @@ fn loading_and_unknown_rate_samples_only_reestablish_a_baseline() {
 #[test]
 fn rejected_native_seek_publication_retries_from_the_previous_anchor() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState {
-        manual_seek_failures_remaining: 1,
-        ..PositionSessionState::default()
-    }));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut player = PositionTelemetryPlayer::new(events.clone());
     player.queue_transport_script([
         position_update_at_rate(0.0, 10.0, 1.0),
@@ -1528,9 +1441,13 @@ fn rejected_native_seek_publication_retries_from_the_previous_anchor() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session()
+        .with_failure(crate::app::runtime_stack::test_support::SessionFailure::SeekPublications(1)),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1545,10 +1462,7 @@ fn rejected_native_seek_publication_retries_from_the_previous_anchor() {
 #[test]
 fn rejected_coalesced_seek_completion_retries_with_current_transport_state() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState {
-        manual_seek_failures_remaining: 1,
-        ..PositionSessionState::default()
-    }));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut seeking = sparse_update(0.1);
     seeking.phase = Some(sorotte_player_api::PlayerTransportPhase::Seeking);
     seeking.seeking = Some(true);
@@ -1564,9 +1478,13 @@ fn rejected_coalesced_seek_completion_retries_with_current_transport_state() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session()
+        .with_failure(crate::app::runtime_stack::test_support::SessionFailure::SeekPublications(1)),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1581,7 +1499,7 @@ fn rejected_coalesced_seek_completion_retries_with_current_transport_state() {
 #[test]
 fn sparse_pause_seek_and_loading_sequences_use_transport_ordered_state() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut pause = sparse_update(0.2);
     pause.phase = Some(sorotte_player_api::PlayerTransportPhase::ReadyPaused);
     pause.logical_pause = Some(true);
@@ -1618,9 +1536,12 @@ fn sparse_pause_seek_and_loading_sequences_use_transport_ordered_state() {
     ]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1651,7 +1572,7 @@ fn sparse_pause_seek_and_loading_sequences_use_transport_ordered_state() {
 #[test]
 fn never_known_playback_rate_does_not_infer_a_seek() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut first = sparse_position_update(0.0, 10.0);
     first.phase = Some(sorotte_player_api::PlayerTransportPhase::Playing);
     first.logical_pause = Some(false);
@@ -1662,9 +1583,12 @@ fn never_known_playback_rate_does_not_infer_a_seek() {
     player.queue_transport_script([first, sparse_position_update(0.1, 20.0)]);
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1680,14 +1604,17 @@ fn never_known_playback_rate_does_not_infer_a_seek() {
 #[test]
 fn same_pump_completion_reanchors_before_the_following_stable_position() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(
@@ -1733,19 +1660,58 @@ fn same_pump_completion_reanchors_before_the_following_stable_position() {
 #[test]
 fn repeated_keep_waiting_renews_matching_seek_ownership_past_the_old_deadline() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState {
-        playback_coordination_snapshot: Some(active_seek_preparation_snapshot(17, 40.0)),
-        adapter_logical_generations: [(1, 17)].into(),
-        ..PositionSessionState::default()
-    }));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
+    // Retain a distinct logical generation after attaching an adapter whose
+    // own media counter starts at one; exercise the real generation mapping.
+    let session = owner.session.as_mut().unwrap();
+    for i in 0..16 {
+        session
+            .prepare_attached_playback_media(
+                sorotte_client_core::LogicalMediaId::new(format!("seek-history-{i}")).unwrap(),
+                sorotte_client_core::MediaTransportKind::NetworkVod,
+                sorotte_client_core::MediaLoadIntent::NewPlayback,
+                0.0,
+            )
+            .unwrap();
+    }
+    session.reset_playback_transport_adapter_epoch(0.0);
+    session.apply_message_json_at(r#"{"State":{"playstate":{"position":40.0,"paused":false,"doSeek":true,"setBy":"bob"}}}"#, 0.0).unwrap();
+    let _ = session.attached_player_runtime_actions(0.0).unwrap();
+    let mut update = crate::app::runtime_stack::test_support::barrier::transport(
+        0.1,
+        sorotte_player_api::PlayerTransportPhase::ReadyPaused,
+        5.0,
+        true,
+        0,
+    );
+    update.seekable_ranges = Some(vec![sorotte_player_api::PlayerSeekableRange::new(
+        0.0, 10.0,
+    )]);
+    let actions = session
+        .sync_attached_player_transport_telemetry(update, 0.1)
+        .unwrap();
+    crate::app::runtime_stack::test_support::barrier::accept_coordinator_commands(
+        session, &actions, 0.1,
+    );
+    assert!(
+        session
+            .playback_coordination_snapshot()
+            .unwrap()
+            .seek_preparation
+            .is_some(),
+        "real network seek must be preparing"
+    );
     owner.note_attached_coordinator_seek_dispatched(
         sorotte_client_core::CoordinatorCommandId::new(1),
         Some(sorotte_player_api::PlayerCommandId::new(7)),
@@ -1802,7 +1768,7 @@ fn repeated_keep_waiting_renews_matching_seek_ownership_past_the_old_deadline() 
 #[test]
 fn delayed_lifecycle_fields_survive_queue_dwell_while_stale_position_is_dropped() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let delayed_timestamp = |observed_at_seconds| {
         sorotte_player_api::PlayerObservationTimestamp::from_adapter_observation(
             std::time::Duration::from_secs_f64(observed_at_seconds),
@@ -1837,9 +1803,12 @@ fn delayed_lifecycle_fields_survive_queue_dwell_while_stale_position_is_dropped(
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_position_seconds = Some(7.0);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
 
     owner.refresh_player_state_impl();
 
@@ -1875,15 +1844,18 @@ fn delayed_lifecycle_fields_survive_queue_dwell_while_stale_position_is_dropped(
 #[test]
 fn old_generation_transport_is_processed_before_the_new_local_file_boundary() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("old.mkv"));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
     owner.note_attached_runtime_position_dispatched(None, 40.0, 40.0);
 
@@ -1921,14 +1893,17 @@ fn old_generation_transport_is_processed_before_the_new_local_file_boundary() {
 #[test]
 fn seek_ownership_matches_raw_player_targets_across_offset_changes_and_zero_clamping() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
     owner.note_attached_runtime_position_dispatched(None, 40.0, 40.0);
     owner.user_offset_seconds = 5.0;
@@ -1976,15 +1951,18 @@ fn seek_ownership_matches_raw_player_targets_across_offset_changes_and_zero_clam
 #[test]
 fn media_load_failure_is_ordered_after_earlier_transport_from_the_same_drain() {
     let events = position_events(1);
-    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let session_state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut baseline_player = PositionTelemetryPlayer::new(events.clone());
     baseline_player.queue_transport(position_update(0.0, 10.0));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_local_file = Some(sorotte_player_api::LocalFileUpdate::new("episode.mkv"));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(baseline_player)));
-    owner.session = Some(Box::new(PositionSession {
-        state: session_state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: session_state.clone(),
+        }
+        .into_session(),
+    ));
     owner.refresh_player_state_impl();
 
     let generation = sorotte_player_api::PlayerMediaGeneration::new(1);
@@ -2155,13 +2133,16 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
         generation,
     );
     player.queue_transport(position_update(1.0, 5.0));
-    let state = std::sync::Arc::new(std::sync::Mutex::new(PositionSessionState::default()));
+    let state = std::sync::Arc::new(std::sync::Mutex::new(PlaybackObservations::default()));
     let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
     owner.player_local_file =
         Some(sorotte_player_api::LocalFileUpdate::new("current.mkv").with_path("current.mkv"));
-    owner.session = Some(Box::new(PositionSession {
-        state: state.clone(),
-    }));
+    owner.session = Some(Box::new(
+        PlaybackProbe {
+            state: state.clone(),
+        }
+        .into_session(),
+    ));
     owner.player = Some(GuiOwnedPlayer::Custom(Box::new(player)));
 
     owner.refresh_player_state_impl();

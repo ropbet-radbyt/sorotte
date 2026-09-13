@@ -16,11 +16,9 @@ mod room_browser;
 mod shortcuts;
 #[cfg(test)]
 mod tests;
-mod tree_renderer;
 
 #[derive(Debug, Default)]
 pub(super) struct GuiWidgetEguiRenderer {
-    stack: Vec<GuiWidgetNode>,
     root: Option<GuiWidgetNode>,
     actions: Vec<GuiShellAction>,
     close_requested: bool,
@@ -263,8 +261,11 @@ impl GuiWidgetEguiRenderer {
         });
     }
 
-    pub(super) fn root(&self) -> Option<&GuiWidgetNode> {
-        self.root.as_ref()
+    pub(super) fn new(root: GuiWidgetNode) -> Self {
+        Self {
+            root: Some(root),
+            ..Self::default()
+        }
     }
 
     pub(super) fn take_close_requested(&mut self) -> bool {
@@ -306,12 +307,13 @@ impl GuiWidgetEguiRenderer {
             self.playlist_drop_target_slot = None;
         }
         self.dropped_files_request = None;
-        if let Some(root) = self.root().cloned() {
+        if let Some(root) = self.root.take() {
             self.show_menu_bar(ui, &root, state);
             self.show_modal_window(&ctx, state);
             self.show_status_bar(ui, &root, show_manual_pending_controls);
             self.show_navigation_panel(ui, &root, state);
             self.show_active_surface(ui, &root, state);
+            self.root = Some(root);
         } else {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.heading("Sorotte GUI");

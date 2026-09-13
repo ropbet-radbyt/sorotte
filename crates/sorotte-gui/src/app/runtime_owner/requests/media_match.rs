@@ -2445,6 +2445,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
 #[cfg(test)]
 mod tests {
+    use crate::app::runtime_stack::test_support::{
+        session_with_media_target, session_with_peer_files,
+    };
+
     use super::*;
     use crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome;
     use crate::app::runtime_owner::{
@@ -2452,72 +2456,9 @@ mod tests {
         GuiAttachedMediaSearchRootIndex, GuiAttachedMediaSearchRootRefreshResult,
         GuiPendingAttachedMediaResolution,
     };
-    use crate::app::runtime_stack::{
-        GuiOwnedPlayer, GuiSessionRuntimeAdapter, GuiTestPlayerAdapter,
-    };
+    use crate::app::runtime_stack::{GuiOwnedPlayer, GuiTestPlayerAdapter};
     use crate::app::testing::support::test_temp_root;
     use sorotte_client_app::app_boundary::state::StoredClientSettings;
-
-    struct MediaMatchTargetSession {
-        target: String,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchTargetSession {
-        fn missing_media_search_target_file_name(&self) -> Result<String, String> {
-            Ok(self.target.clone())
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(current_servers)
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    struct MediaMatchPeerStateSession {
-        peer_files: Vec<sorotte_client_core::ClientMediaMatchPeerFileState>,
-    }
-
-    impl GuiSessionRuntimeAdapter for MediaMatchPeerStateSession {
-        fn current_room_media_match_peer_file_states(
-            &self,
-        ) -> Vec<sorotte_client_core::ClientMediaMatchPeerFileState> {
-            self.peer_files.clone()
-        }
-
-        fn send_chat_message(&mut self, _message: String) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn connect_public_server(
-            &mut self,
-            _selected_server: Option<(String, String)>,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn refresh_public_servers(
-            &mut self,
-            current_servers: Vec<(String, String)>,
-            _language: Option<&str>,
-        ) -> Result<Vec<(String, String)>, String> {
-            Ok(current_servers)
-        }
-    }
 
     fn media_match_test_record_for_path(
         path: impl AsRef<std::path::Path>,
@@ -2614,8 +2555,8 @@ mod tests {
 
         let mut owner =
             GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")))
-                .with_session_runtime(Box::new(MediaMatchPeerStateSession {
-                    peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+                .with_session_runtime(Box::new(session_with_peer_files(vec![
+                    sorotte_client_core::ClientMediaMatchPeerFileState {
                         username: "bob".to_owned(),
                         has_file: true,
                         file_name: Some(target.to_owned()),
@@ -2627,8 +2568,8 @@ mod tests {
                             )
                             .expect("remote signature should validate"),
                         ),
-                    }],
-                }));
+                    },
+                ])));
         owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
         owner.active_shared_playlist_index = Some(0);
         owner.media_match_runtime_snapshot.health = GuiMediaMatchToolHealth::Healthy;
@@ -3066,13 +3007,13 @@ mod tests {
             media_match_fingerprinting_enabled: Some(true),
             ..StoredClientSettings::default()
         };
-        let state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
+        let mut state = SorotteGuiShellAppState::from_stored_settings(&saved_settings);
         let root_key =
             crate::app::media_search_cache::normalized_media_search_root_key(&media_root);
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_session_runtime(Box::new(MediaMatchTargetSession {
-                target: "episode.mkv".to_owned(),
-            }));
+            .with_session_runtime(Box::new(session_with_media_target(
+                "episode.mkv".to_owned(),
+            )));
         owner.attached_media_search_index = Some(GuiAttachedMediaSearchIndex {
             roots: vec![root_key.clone()],
             root_indexes_by_key: std::collections::HashMap::from([(
@@ -3090,6 +3031,14 @@ mod tests {
             roots_requiring_refresh: std::collections::BTreeSet::new(),
         });
 
+        for action in owner
+            .session
+            .as_mut()
+            .unwrap()
+            .drain_gui_actions(&runtime_state_for_shell(&state))
+        {
+            state.apply(action);
+        }
         assert!(owner.player_local_file.is_none());
         assert_eq!(
             owner.media_match_room_target_for_state(&runtime_state_for_shell(&state)),
@@ -3207,8 +3156,8 @@ mod tests {
         .expect("remote media-match signature should serialize");
 
         let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(config_path))
-            .with_session_runtime(Box::new(MediaMatchPeerStateSession {
-                peer_files: vec![sorotte_client_core::ClientMediaMatchPeerFileState {
+            .with_session_runtime(Box::new(session_with_peer_files(vec![
+                sorotte_client_core::ClientMediaMatchPeerFileState {
                     username: "bob".to_owned(),
                     has_file: true,
                     file_name: Some(remote_file_name.to_owned()),
@@ -3220,8 +3169,8 @@ mod tests {
                         )
                         .expect("remote signature should validate"),
                     ),
-                }],
-            }));
+                },
+            ])));
         owner.active_shared_playlist_index = Some(0);
         owner.player_local_file = Some(
             sorotte_player_api::LocalFileUpdate::new("coalgirls-episode4.mkv")
