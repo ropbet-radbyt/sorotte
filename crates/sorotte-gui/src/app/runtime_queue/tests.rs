@@ -27,6 +27,81 @@ use crate::app::{
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
 #[test]
+fn runtime_handoff_keeps_unconsumed_output_across_both_input_race_orders() {
+    use crate::app::{feature_slices::GuiRuntimeInput, shell_state::MainWindowRuntimeSnapshot};
+
+    for output_before_input in [false, true] {
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        let mut shell =
+            SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+        let mut opened = shell.clone();
+        opened.apply_shared_playlist_entries(vec!["dropped.mkv".to_owned()], Some(0), false);
+        let output = GuiShellAction::ApplyMainWindowRuntimeSnapshot(
+            MainWindowRuntimeSnapshot::from_shell_state(&opened.main_window),
+        );
+        shell.last_media_dialog_directory = Some("C:/media".to_owned());
+        let input = Arc::new(GuiRuntimeInput::from_shell(&shell));
+        if output_before_input {
+            handle.push_action(output);
+            handle.submit_runtime_input(input.clone());
+        } else {
+            handle.submit_runtime_input(input.clone());
+            handle.push_action(output);
+        }
+
+        // Draining an output after submission must not remove its effect from
+        // an input that is already waiting for the worker.
+        for action in handle.drain_actions() {
+            assert!(shell.apply(action));
+        }
+        let resumed = handle.take_runtime_input().unwrap().to_runtime_state();
+        assert_eq!(resumed.current_shared_playlist_entries(), ["dropped.mkv"]);
+        assert_eq!(
+            resumed.media_resolution.last_dialog_directory.as_deref(),
+            Some("C:/media")
+        );
+        assert!(
+            input.to_runtime_state().current_shared_playlist_entries() != ["dropped.mkv"],
+            "reconciling a pending input must not mutate the UI's cached snapshot"
+        );
+
+        // Once the UI has consumed the output, a subsequent local edit wins.
+        shell.apply_shared_playlist_entries(vec!["next.mkv".to_owned()], Some(0), false);
+        handle.submit_runtime_input(Arc::new(GuiRuntimeInput::from_shell(&shell)));
+        let next = handle.take_runtime_input().unwrap().to_runtime_state();
+        assert_eq!(next.current_shared_playlist_entries(), ["next.mkv"]);
+        assert!(handle.take_runtime_input().is_none());
+    }
+}
+
+#[test]
+fn runtime_handoff_coalesces_input_without_resurrecting_completed_operations() {
+    use crate::app::{feature_slices::GuiRuntimeInput, shell_state::GuiPendingOperationState};
+
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    shell.pending_operation = Some(GuiPendingOperationState {
+        kind: GuiPendingOperationKind::SaveConfiguration,
+    });
+    handle.submit_runtime_input(Arc::new(GuiRuntimeInput::from_shell(&shell)));
+    let saved = StoredClientSettings {
+        username: Some("saved-user".to_owned()),
+        ..StoredClientSettings::default()
+    };
+    handle.push_action(GuiShellAction::CompleteConfigurationSave(saved.clone()));
+    shell.last_media_dialog_directory = Some("C:/later".to_owned());
+    handle.submit_runtime_input(Arc::new(GuiRuntimeInput::from_shell(&shell)));
+
+    let resumed = handle.take_runtime_input().unwrap().to_runtime_state();
+    assert!(resumed.session.pending_operation.is_none());
+    assert_eq!(resumed.settings.saved, saved);
+    assert_eq!(
+        resumed.media_resolution.last_dialog_directory.as_deref(),
+        Some("C:/later")
+    );
+}
+
+#[test]
 fn gui_queued_runtime_bridge_and_preview_owner_cover_runtime_requests() {
     let media_root = test_temp_root("queued-runtime-preview-media");
     let movie_path = media_root.join("movie.mkv");

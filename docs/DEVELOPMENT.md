@@ -125,7 +125,11 @@ Narrow fault injection covers otherwise inaccessible failure paths.
 
 Native `App::logic` drains runtime output and progresses pending operations even
 when the window is minimized or occluded. `App::ui` handles visible controls and
-builds only the active shell body. Anchor the room clock once per received source
+builds only the active shell body, then consumes output from visible interactions.
+The input/output handoff projects unconsumed output onto pending GUI input so a
+stale UI snapshot cannot undo work completed by the runtime thread. Preserve this
+ordering when changing the bridge or adding runtime output.
+Anchor the room clock once per received source
 sample: rendering its interpolated value must not manufacture new runtime input.
 The [GUI cleanup audit](audits/gui-session-rendering-cleanup-2026-09-13.md) records
 the redraw regression, hidden-window checks and physical GPU measurement limits.

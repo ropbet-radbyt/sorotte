@@ -371,6 +371,9 @@ impl eframe::App for GuiNativeApp {
             state_changed |= self.state.apply(action);
         }
         self.runtime_pump.pump(&self.state);
+        // A visible interaction can produce output after logic ran. Consume it
+        // before yielding and repaint the resulting state on the next frame.
+        state_changed |= self.drain_runtime_output(&ctx);
         if close_requested {
             super::super::test_lifecycle::record(
                 super::super::test_lifecycle::VIEWPORT_CLOSE_REQUESTED,
@@ -389,7 +392,8 @@ impl eframe::App for GuiNativeApp {
 }
 
 impl GuiNativeApp {
-    fn drain_runtime_output(&mut self, ctx: &egui::Context) {
+    fn drain_runtime_output(&mut self, ctx: &egui::Context) -> bool {
+        let mut state_changed = false;
         for action in self.runtime.drain_runtime_actions() {
             if Self::action_requests_app_close(&action) {
                 super::super::test_lifecycle::record(
@@ -397,8 +401,9 @@ impl GuiNativeApp {
                 );
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            self.state.apply(action);
+            state_changed |= self.state.apply(action);
         }
+        state_changed
     }
 }
 
