@@ -41,7 +41,8 @@ hidden, but can skip `App::ui`. Output draining and automatic pending-operation
 completion previously lived in `ui`. They now run in `logic`, including the
 successful-update window-close effect. Queued output therefore cannot accumulate
 solely because the window is minimized or occluded. Visible user actions still
-pump the runtime after they are handled.
+pump the runtime after they are handled and consume its output before yielding,
+requesting a repaint when that output changes shell state.
 
 Headless tests call the actual eframe logic entrypoint with minimized input. They
 check queued chat consumption, one-time pending pause dispatch and completion,
@@ -106,3 +107,44 @@ plus seek/buffering and readiness transitions. Observe redraw frequency alongsid
 GPU utilization so a remaining cause can be distinguished from this repaired
 feedback loop. Do not infer a GPU percentage from repaint timer intervals or
 Sandbox qualification.
+
+## First native attempt and visible-frame follow-up
+
+The first exact candidate, `9294ceff262eaba2be9f7ca20a44872cf46f31bc`, passed
+local workspace, all-feature nextest, doctest and semantic validation. Its
+[native attempt](https://github.com/ropbet-radbyt/sorotte/actions/runs/34752177099)
+failed while waiting for `drag-window-target.mkv` in the accessibility tree.
+Playback qualification was consequently skipped. The failed invocation, report,
+job log and exported diagnostics are retained; the host removed the guest,
+registration and token, and the watchdog completed. Automatic guest-side runner
+unregistration was not attested on that failed attempt.
+
+The threaded headless replay subsequently reproduced the missing entry: the
+window switched to Room, but the playlist reverted to its placeholder. The GUI
+records the dropped file's directory while the worker opens it. Submitting that
+changed GUI input could replace the worker's completed playlist with the older
+playlist still present in the GUI snapshot.
+
+Input and output now share one locked handoff. Before accepting input, the handoff
+projects any output the GUI has not consumed onto it. Output emitted after input
+submission also updates that pending input. The worker takes the reconciled input
+before processing its next command batch. This handles both race orders without
+keeping an output journal or discarding GUI edits. Drained output is no longer
+replayed onto later input, and the GUI's cached comparison snapshot remains
+unchanged. Controlled tests cover both orders, draining after submission,
+subsequent edits, input coalescing and an already completed configuration save.
+
+A single-pass visible replay also showed that the refactor left output produced
+by visible input queued until the next frame. Restoring the end-of-frame drain
+and repaint request fixes that regression while preserving hidden-window logic.
+Visible tests now keep a real dropped file accessible through subsequent frames
+using both the synchronous and threaded real owner. The corrected release
+candidate still requires fresh native qualification; the original failure and
+the failing threaded replay remain recorded.
+
+The requested tagged patch release is prepared as `v0.2.16`. Its qualification
+must bind the corrected PR head and version. The earlier nonpublishing package
+run was cancelled before provisioning its Windows guest because it targeted the
+superseded version. Release publication follows the repository's qualified-PR
+handoff: verify the ordinary merge, then tag the original qualified candidate and
+publish its tested artifacts.
