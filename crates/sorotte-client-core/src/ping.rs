@@ -9,11 +9,7 @@ pub struct ClientPingMetrics {
 }
 
 impl ClientPingMetrics {
-    pub fn observe_inbound_state(&mut self, state: &StatePayload) {
-        let now_seconds = unix_wall_clock_time_seconds();
-        self.observe_inbound_state_at(state, now_seconds);
-    }
-
+    #[cfg(test)]
     pub(crate) fn observe_inbound_state_at(&mut self, state: &StatePayload, now_seconds: f64) {
         let state = normalize_client_state_payload(state.clone());
         self.observe_normalized_inbound_state_at(&state, now_seconds);

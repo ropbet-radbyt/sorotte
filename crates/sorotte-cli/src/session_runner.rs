@@ -6,25 +6,11 @@ use sorotte_client_app::app_boundary::{
     application::{ClientApplication, ClientCommand, ClientEvent, PlexClientConfig},
     commands::{
         LocalInputCommandPlanningContext, PlannedLocalInputDispatch, parse_local_input_command,
-        plan_local_input_command, plan_local_input_dispatch,
+        plan_local_input_dispatch,
         render_local_input_display_lines as shared_render_local_input_display_lines,
     },
     diagnostics::ReconnectCorrectionDiagnosticsState,
     notifications::FileDifferenceNotificationState,
-    session::{
-        ConnectedSessionBranchPlan, ConnectedSessionDiagnosticsPlan, ConnectedSessionDrainAction,
-        ConnectedSessionDrainPlan, ConnectedSessionEventExecutionPlan,
-        ConnectedSessionInboundApplyPlan, ConnectedSessionInboundPostApplyAction,
-        ConnectedSessionInboundPostApplyPlan, ConnectedSessionProtocolPlan,
-        ConnectedSessionRuntimeStepAction, ConnectedSessionRuntimeStepPlan,
-        ConnectedSessionSharedExecutionInputs, ConnectedSessionStartupPlaylistDisposition,
-        connected_session_autoplay_tick_event_execution_plan, connected_session_drain_actions,
-        connected_session_inbound_message_event_execution_plan,
-        connected_session_inbound_post_apply_actions,
-        connected_session_local_input_event_execution_plan,
-        connected_session_player_coordination_tick_event_execution_plan,
-        connected_session_runtime_step_actions,
-    },
     state::{ClientConfig, StoredClientSettings, TlsPolicy},
 };
 use sorotte_client_core::{

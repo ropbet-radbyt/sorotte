@@ -455,14 +455,6 @@ fn authoritative_inbound_room_change_cancels_barrier_and_participant_status() {
     ));
 }
 
-#[test]
-fn client_file_effect_rejects_non_object_payload() {
-    let error = ClientEffect::set_file_from_value(json!("not-an-object"))
-        .expect_err("non-object file payload should be rejected");
-
-    assert!(matches!(error, ClientEffectError::InvalidFilePayload(_)));
-}
-
 #[derive(Default)]
 struct UnsupportedEffectSink;
 

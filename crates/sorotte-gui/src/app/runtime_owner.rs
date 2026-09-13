@@ -677,11 +677,26 @@ impl GuiPersistedConfigRuntimeOwner {
         .into_iter()
         .flatten()
         {
-            let settings = GuiConfigurationDraft::merge_apply_requirement_from_settings(
-                &active_settings.settings,
-                saved_settings,
-                GuiSettingApplyRequirement::RestartPlayer,
-            );
+            let mut settings = active_settings.settings.clone();
+            settings.player_path = saved_settings
+                .player_path
+                .as_deref()
+                .and_then(super::support::normalized_editable_text);
+            if let Some(player_path) = settings.player_path.as_ref() {
+                let arguments = saved_settings
+                    .per_player_arguments
+                    .as_ref()
+                    .and_then(|arguments| arguments.get(player_path));
+                let merged = settings.per_player_arguments.get_or_insert_default();
+                if let Some(arguments) = arguments.filter(|arguments| !arguments.is_empty()) {
+                    merged.insert(player_path.clone(), arguments.clone());
+                } else {
+                    merged.remove(player_path);
+                }
+                if merged.is_empty() {
+                    settings.per_player_arguments = None;
+                }
+            }
             Self::replace_active_runtime_settings_preserving_controlled_room_password(
                 active_settings,
                 &settings,

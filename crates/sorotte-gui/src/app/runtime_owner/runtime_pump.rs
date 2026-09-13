@@ -89,7 +89,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.update_runtime.handle_command(handle, *command);
                     true
                 }
-                GuiClientCommand::Routed { request, .. } => {
+                GuiClientCommand::Request(request) => {
                     self.handle_runtime_request(handle, &mut projected_state, *request)
                 }
             };

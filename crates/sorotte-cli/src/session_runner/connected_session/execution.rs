@@ -40,79 +40,62 @@ fn ready_at_start_disposition(
     }
 }
 
-struct ConnectedSessionBranchOutputState<'a> {
-    reconnect_correction_diagnostics: &'a mut ReconnectCorrectionDiagnosticsState,
-    seek_preparation_notifications: &'a mut SeekPreparationNotificationState,
-    readiness_notifications: &'a mut ReadinessNotificationState,
-    file_difference_notifications: &'a mut FileDifferenceNotificationState,
+#[derive(Clone, Copy)]
+pub(super) enum ConnectedSessionEvent<'a> {
+    InboundMessage(&'a str),
+    AutoplayTick,
+    PlayerCoordinationTick,
+    LocalInput { emitted: bool },
 }
 
-fn flush_connected_session_branch_outputs<F, G>(
+fn flush_connected_session_outputs<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
-    diagnostics_config: &ClientLoopDiagnosticsConfig,
-    output_state: ConnectedSessionBranchOutputState<'_>,
-    plan: ConnectedSessionDrainPlan,
-    notification_sink: &mut F,
-    file_difference_sink: &mut G,
+    event: ConnectedSessionEvent<'_>,
+    context: &mut ConnectedSessionExecutionContext<'_, F, G>,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    let ConnectedSessionBranchOutputState {
-        reconnect_correction_diagnostics,
-        seek_preparation_notifications,
-        readiness_notifications,
-        file_difference_notifications,
-    } = output_state;
-    // Seek-preparation is an ordinary user-visible lifecycle, not verbose
-    // telemetry. Project changed states on every branch so the recovery
-    // controls remain discoverable with the default diagnostics settings.
-    flush_seek_preparation_notifications(runtime, seek_preparation_notifications);
-    flush_readiness_status_notifications(runtime, readiness_notifications);
-    for action in connected_session_drain_actions(plan) {
-        match action {
-            ConnectedSessionDrainAction::FlushPlayerPlaybackDiagnostics => {
-                flush_player_playback_telemetry_diagnostics(
-                    runtime,
-                    diagnostics_config.log_player_telemetry,
-                    diagnostics_config.log_player_drift,
-                )?;
-            }
-            ConnectedSessionDrainAction::FlushReconnectNotifications => {
-                flush_reconnect_notifications(runtime)?;
-            }
-            ConnectedSessionDrainAction::FlushReconnectCorrectionDiagnostics(format) => {
-                flush_reconnect_correction_diagnostics_to_sink(
-                    runtime,
-                    reconnect_correction_diagnostics,
-                    &diagnostics_config.reconnect_correction_diagnostics_alert_thresholds,
-                    format,
-                    &mut emit_reconnect_correction_diagnostic,
-                )?;
-            }
-            ConnectedSessionDrainAction::FlushControllerAuthNotifications => {
-                flush_controller_auth_notifications(runtime)?;
-            }
-            ConnectedSessionDrainAction::FlushChatNotifications => {
-                flush_chat_notifications(runtime)?;
-            }
-            ConnectedSessionDrainAction::FlushUserChangeNotifications => {
-                flush_user_change_notifications(runtime)?;
-            }
-            ConnectedSessionDrainAction::FlushAutoplayNotifications => {
-                flush_autoplay_notifications(runtime, notification_sink)?;
-            }
-            ConnectedSessionDrainAction::FlushFileDifferenceNotifications => {
-                flush_file_difference_notifications(
-                    runtime,
-                    file_difference_notifications,
-                    file_difference_sink,
-                )?;
-            }
-        }
+    // Readiness and seek preparation are ordinary user-visible state on every event.
+    flush_seek_preparation_notifications(runtime, context.seek_preparation_notification_state);
+    flush_readiness_status_notifications(runtime, context.readiness_notification_state);
+    let diagnostics = context.diagnostics_config;
+    if diagnostics.log_player_telemetry || diagnostics.log_player_drift {
+        flush_player_playback_telemetry_diagnostics(
+            runtime,
+            diagnostics.log_player_telemetry,
+            diagnostics.log_player_drift,
+        )?;
     }
-
+    flush_reconnect_notifications(runtime)?;
+    if let Some(format) = diagnostics.reconnect_correction_diagnostics_format {
+        flush_reconnect_correction_diagnostics_to_sink(
+            runtime,
+            context.reconnect_correction_diagnostics_state,
+            &diagnostics.reconnect_correction_diagnostics_alert_thresholds,
+            format,
+            &mut emit_reconnect_correction_diagnostic,
+        )?;
+    }
+    if matches!(event, ConnectedSessionEvent::InboundMessage(_)) {
+        flush_controller_auth_notifications(runtime)?;
+        flush_chat_notifications(runtime)?;
+        flush_user_change_notifications(runtime)?;
+    }
+    if matches!(
+        event,
+        ConnectedSessionEvent::InboundMessage(_) | ConnectedSessionEvent::AutoplayTick
+    ) {
+        flush_autoplay_notifications(runtime, context.notification_sink)?;
+    }
+    if !matches!(event, ConnectedSessionEvent::LocalInput { .. }) {
+        flush_file_difference_notifications(
+            runtime,
+            context.file_difference_state,
+            context.file_difference_sink,
+        )?;
+    }
     Ok(())
 }
 
@@ -121,103 +104,66 @@ fn run_connected_session_inbound_post_apply<P>(
     pending_ready_at_start_on_server_hello: &mut Option<PendingReadyAtStart>,
     pending_chat_message_on_connect: &mut Option<String>,
     now_seconds: f64,
-    plan: ConnectedSessionInboundPostApplyPlan,
+    consume_pending_readiness: bool,
+    shared_playlists_enabled: bool,
 ) -> Option<ContainedConnectedSessionPlayerFailure>
 where
     P: sorotte_player_api::PlayerAdapter,
 {
-    for action in connected_session_inbound_post_apply_actions(plan) {
-        let (operation, outcome) = match action {
-            ConnectedSessionInboundPostApplyAction::ConsumePendingReadyAtStart => {
-                if let Some(pending) = *pending_ready_at_start_on_server_hello {
-                    match ready_at_start_disposition(runtime.session(), pending) {
-                        ReadyAtStartDisposition::AwaitCanonicalV2Membership => {}
-                        ReadyAtStartDisposition::ConsumeWithoutMutation => {
-                            *pending_ready_at_start_on_server_hello = None;
-                        }
-                        ReadyAtStartDisposition::Apply(ready_at_start) => {
-                            *pending_ready_at_start_on_server_hello = None;
-                            if let Err(error) = runtime.run_initial_readiness_intent(ready_at_start)
-                            {
-                                return Some(contain_connected_session_player_failure(
-                                    runtime,
-                                    now_seconds,
-                                    "apply initial readiness intent",
-                                    error.into(),
-                                ));
-                            }
-                        }
-                    }
+    let result = (|| -> Result<(), (&'static str, anyhow::Error)> {
+        if consume_pending_readiness && let Some(pending) = *pending_ready_at_start_on_server_hello
+        {
+            match ready_at_start_disposition(runtime.session(), pending) {
+                ReadyAtStartDisposition::AwaitCanonicalV2Membership => {}
+                ReadyAtStartDisposition::ConsumeWithoutMutation => {
+                    *pending_ready_at_start_on_server_hello = None;
                 }
-                ("apply initial readiness intent", Ok(()))
-            }
-            ConnectedSessionInboundPostApplyAction::ConsumePendingChatMessageOnConnect => {
-                if let Some(message) = pending_chat_message_on_connect.take()
-                    && let Err(error) = runtime.run_send_chat_message(message)
-                {
-                    return Some(contain_connected_session_player_failure(
-                        runtime,
-                        now_seconds,
-                        "send initial chat message",
-                        error.into(),
-                    ));
+                ReadyAtStartDisposition::Apply(ready_at_start) => {
+                    *pending_ready_at_start_on_server_hello = None;
+                    runtime
+                        .run_initial_readiness_intent(ready_at_start)
+                        .map_err(|error| ("apply initial readiness intent", error.into()))?;
                 }
-                ("send initial chat message", Ok(()))
             }
-            ConnectedSessionInboundPostApplyAction::RunReconnectTransition => (
-                "apply reconnect transition",
-                runtime
-                    .run_reconnect_transition_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunControllerReidentify => (
-                "reidentify room controller",
-                runtime
-                    .run_controller_reidentify_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunControllerAuthNotifications => (
-                "publish controller authentication notification",
-                runtime
-                    .run_controller_auth_notifications_if_needed_at(now_seconds)
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunChatNotifications => (
-                "publish chat notification",
-                runtime
-                    .run_chat_notifications_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunUserChangeNotifications => (
-                "publish user-change notification",
-                runtime
-                    .run_user_change_notifications_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunReconnectStateRestore => (
-                "restore player state after reconnect",
-                runtime
-                    .run_reconnect_state_restore_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionInboundPostApplyAction::RunReconnectPlaylistRestore => (
-                "restore player playlist after reconnect",
-                runtime
-                    .run_reconnect_playlist_restore_if_needed()
-                    .map_err(anyhow::Error::from),
-            ),
-        };
-        if let Err(error) = outcome {
-            return Some(contain_connected_session_player_failure(
-                runtime,
-                now_seconds,
-                operation,
-                error,
-            ));
         }
-    }
-
-    None
+        if let Some(message) = pending_chat_message_on_connect.take() {
+            runtime
+                .run_send_chat_message(message)
+                .map_err(|error| ("send initial chat message", error.into()))?;
+        }
+        runtime
+            .run_reconnect_transition_if_needed()
+            .map_err(|error| ("apply reconnect transition", error.into()))?;
+        runtime
+            .run_controller_reidentify_if_needed()
+            .map_err(|error| ("reidentify room controller", error.into()))?;
+        runtime
+            .run_controller_auth_notifications_if_needed_at(now_seconds)
+            .map_err(|error| {
+                (
+                    "publish controller authentication notification",
+                    error.into(),
+                )
+            })?;
+        runtime
+            .run_chat_notifications_if_needed()
+            .map_err(|error| ("publish chat notification", error.into()))?;
+        runtime
+            .run_user_change_notifications_if_needed()
+            .map_err(|error| ("publish user-change notification", error.into()))?;
+        runtime
+            .run_reconnect_state_restore_if_needed()
+            .map_err(|error| ("restore player state after reconnect", error.into()))?;
+        if shared_playlists_enabled {
+            runtime
+                .run_reconnect_playlist_restore_if_needed()
+                .map_err(|error| ("restore player playlist after reconnect", error.into()))?;
+        }
+        Ok(())
+    })();
+    result.err().map(|(operation, error)| {
+        contain_connected_session_player_failure(runtime, now_seconds, operation, error)
+    })
 }
 
 fn apply_connected_session_inbound_message<P>(
@@ -225,8 +171,8 @@ fn apply_connected_session_inbound_message<P>(
     line: &str,
     now_seconds: f64,
     dont_slow_down_with_me: bool,
-    plan: ConnectedSessionInboundApplyPlan,
-) -> anyhow::Result<ConnectedSessionInboundApplyOutcome>
+    contains_state: bool,
+) -> anyhow::Result<sorotte_client_app::app_boundary::application::ProtocolLineApplyOutcome>
 where
     P: sorotte_player_api::PlayerAdapter,
 {
@@ -234,51 +180,14 @@ where
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .unwrap_or(0.0);
-    let outcome = application.apply_protocol_line_prefix_at_clocks(
+    Ok(application.apply_protocol_line_prefix_at_clocks(
         line,
         now_seconds,
         ping_received_at_seconds,
-        plan.reconcile_inbound_state,
+        contains_state,
         dont_slow_down_with_me,
-        plan.apply_message_json_at,
-    )?;
-    Ok(ConnectedSessionInboundApplyOutcome {
-        outbound_state_sync_enabled: outcome.state_sync_emitted || plan.outbound_state_sync_enabled,
-        applied_message_count: outcome.applied_message_count,
-        trailing_decode_error: outcome.trailing_decode_error,
-    })
-}
-
-struct ConnectedSessionInboundApplyOutcome {
-    outbound_state_sync_enabled: bool,
-    applied_message_count: usize,
-    trailing_decode_error: Option<ProtocolError>,
-}
-
-async fn apply_connected_session_protocol_plan(
-    runtime: &mut ClientApplication<MpvAdapter>,
-    writer: &mut ConnectedSessionWriteHalf,
-    startup_playlist_file_on_connect: &mut Option<String>,
-    plan: ConnectedSessionProtocolPlan,
-) -> anyhow::Result<()> {
-    if plan.flush_runtime_protocol_lines {
-        flush_runtime_protocol_lines(runtime, writer).await?;
-    }
-
-    match plan.startup_playlist_disposition {
-        ConnectedSessionStartupPlaylistDisposition::LeavePending => {}
-        ConnectedSessionStartupPlaylistDisposition::EmitIfAvailable => {
-            if let Some(playlist_path) = startup_playlist_file_on_connect.take() {
-                let _ =
-                    emit_startup_playlist_load_from_file(runtime, writer, &playlist_path).await?;
-            }
-        }
-        ConnectedSessionStartupPlaylistDisposition::DiscardIfPending => {
-            let _ = startup_playlist_file_on_connect.take();
-        }
-    }
-
-    Ok(())
+        !contains_state,
+    )?)
 }
 
 fn synchronize_connected_session_player_availability<P>(
@@ -400,11 +309,9 @@ fn run_connected_session_branch_runtime_steps(
     now_seconds: f64,
     dont_slow_down_with_me: bool,
     outbound_state_sync_enabled: bool,
-    plan: ConnectedSessionRuntimeStepPlan,
+    event: ConnectedSessionEvent<'_>,
 ) -> Option<ContainedConnectedSessionPlayerFailure> {
-    // Reconnection/lease maintenance can change the attachment state and
-    // produce the first sample for a replacement player. Observe that
-    // transition before opening the lifecycle fence for telemetry.
+    // Maintenance may attach a replacement player. Record that transition before telemetry.
     runtime.with_player_io(|player| player.maintain_runtime_integrations());
     if let Err(error) = synchronize_connected_session_player_availability(runtime, now_seconds) {
         return Some(contain_connected_session_player_failure(
@@ -414,26 +321,19 @@ fn run_connected_session_branch_runtime_steps(
             error.into(),
         ));
     }
-    let actions = connected_session_runtime_step_actions(plan, outbound_state_sync_enabled);
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
     let shared_playlists_enabled = shared_playlists_enabled_cli(config);
-
-    for action in actions {
-        let (operation, outcome) = match action {
-            ConnectedSessionRuntimeStepAction::RunRoomPauseSync => {
-                let outcome = if shared_playlists_enabled {
-                    runtime
-                        .run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(now_seconds)
-                } else {
-                    runtime.run_room_pause_sync_if_needed_at(now_seconds)
-                };
-                (
-                    "synchronize room pause state",
-                    outcome.map_err(anyhow::Error::from),
-                )
-            }
-            ConnectedSessionRuntimeStepAction::RunReadinessUnpauseAttempt => (
-                "apply readiness unpause",
+    let result = (|| -> Result<(), (&'static str, anyhow::Error)> {
+        if !matches!(event, ConnectedSessionEvent::LocalInput { .. }) {
+            let outcome = if shared_playlists_enabled {
+                runtime.run_room_pause_sync_if_needed_at_for_canonical_playlist_owner(now_seconds)
+            } else {
+                runtime.run_room_pause_sync_if_needed_at(now_seconds)
+            };
+            outcome.map_err(|error| ("synchronize room pause state", error.into()))?;
+        }
+        match event {
+            ConnectedSessionEvent::InboundMessage(_) => {
                 runtime
                     .run_readiness_unpause_attempt(
                         now_seconds,
@@ -441,19 +341,15 @@ fn run_connected_session_branch_runtime_steps(
                         inputs.local_can_control,
                         inputs.is_playing_music,
                     )
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionRuntimeStepAction::RunUpdateAutoplayCheck => {
+                    .map_err(|error| ("apply readiness unpause", error.into()))?;
+            }
+            ConnectedSessionEvent::AutoplayTick => {
                 runtime.update_autoplay_check(
                     inputs.readiness_supported,
                     inputs.local_can_control,
                     inputs.is_playing_music,
                     inputs.recently_advanced,
                 );
-                ("update autoplay", Ok(()))
-            }
-            ConnectedSessionRuntimeStepAction::RunTickAutoplay => (
-                "advance autoplay",
                 runtime
                     .tick_autoplay(
                         inputs.readiness_supported,
@@ -461,56 +357,56 @@ fn run_connected_session_branch_runtime_steps(
                         inputs.is_playing_music,
                         inputs.recently_advanced,
                     )
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionRuntimeStepAction::RunDesyncCorrection => (
-                "apply desync correction",
-                runtime
-                    .run_desync_correction_if_needed(
-                        now_seconds,
-                        inputs.local_can_control,
-                        dont_slow_down_with_me,
-                        true,
-                    )
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionRuntimeStepAction::RunReconnectStateRestoreValidation => (
-                "validate player state after reconnect",
-                runtime
-                    .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
-                    .map_err(anyhow::Error::from),
-            ),
-            ConnectedSessionRuntimeStepAction::RunStateSyncHeartbeat => {
-                if outbound_state_sync_enabled {
-                    let _ = runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
-                        StatePayload::new(),
-                        dont_slow_down_with_me,
-                        now_seconds,
-                    );
-                    ("publish state heartbeat", Ok(()))
-                } else {
-                    let _ = runtime.run_participant_status_heartbeat(now_seconds);
-                    ("publish participant status heartbeat", Ok(()))
-                }
+                    .map_err(|error| ("advance autoplay", error.into()))?;
             }
-            ConnectedSessionRuntimeStepAction::PublishPendingLocalFileUpdates => (
-                "publish local file update",
-                publish_pending_local_file_updates(
-                    runtime,
-                    config,
-                    network_options_health_reporter,
-                    now_seconds,
-                ),
-            ),
-        };
-        if let Err(error) = outcome {
-            return Some(contain_connected_session_player_failure(
-                runtime,
-                now_seconds,
-                operation,
-                error,
-            ));
+            ConnectedSessionEvent::PlayerCoordinationTick
+            | ConnectedSessionEvent::LocalInput { .. } => {}
         }
+        if matches!(
+            event,
+            ConnectedSessionEvent::InboundMessage(_) | ConnectedSessionEvent::AutoplayTick
+        ) {
+            runtime
+                .run_desync_correction_if_needed(
+                    now_seconds,
+                    inputs.local_can_control,
+                    dont_slow_down_with_me,
+                    true,
+                )
+                .map_err(|error| ("apply desync correction", error.into()))?;
+        }
+        runtime
+            .run_reconnect_state_restore_validation_if_needed_at(now_seconds)
+            .map_err(|error| ("validate player state after reconnect", error.into()))?;
+        if matches!(event, ConnectedSessionEvent::AutoplayTick) {
+            if outbound_state_sync_enabled {
+                let _ = runtime.run_state_sync_reconcile_with_inbound_state_with_ping_at(
+                    StatePayload::new(),
+                    dont_slow_down_with_me,
+                    now_seconds,
+                );
+            } else {
+                let _ = runtime.run_participant_status_heartbeat(now_seconds);
+            }
+        }
+        if !matches!(event, ConnectedSessionEvent::LocalInput { .. }) {
+            publish_pending_local_file_updates(
+                runtime,
+                config,
+                network_options_health_reporter,
+                now_seconds,
+            )
+            .map_err(|error| ("publish local file update", error))?;
+        }
+        Ok(())
+    })();
+    if let Err((operation, error)) = result {
+        return Some(contain_connected_session_player_failure(
+            runtime,
+            now_seconds,
+            operation,
+            error,
+        ));
     }
 
     if shared_playlists_enabled {
@@ -544,91 +440,7 @@ fn run_connected_session_branch_runtime_steps(
     None
 }
 
-async fn run_connected_session_branch_plan<F, G>(
-    runtime: &mut ClientApplication<MpvAdapter>,
-    now_seconds: f64,
-    dont_slow_down_with_me: bool,
-    outbound_state_sync_enabled: bool,
-    plan: ConnectedSessionBranchPlan,
-    prior_player_failure: Option<ContainedConnectedSessionPlayerFailure>,
-    context: ConnectedSessionBranchExecutionContext<'_, F, G>,
-) -> anyhow::Result<()>
-where
-    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
-    G: FnMut(&str) -> anyhow::Result<()>,
-{
-    let ConnectedSessionBranchExecutionContext {
-        config,
-        writer,
-        startup_playlist_file_on_connect,
-        diagnostics_config,
-        reconnect_correction_diagnostics_state,
-        seek_preparation_notification_state,
-        readiness_notification_state,
-        file_difference_state,
-        network_options_health_reporter,
-        notification_sink,
-        file_difference_sink,
-    } = context;
-    if plan.run_protocol_before_runtime_steps {
-        apply_connected_session_protocol_plan(
-            runtime,
-            writer,
-            startup_playlist_file_on_connect,
-            plan.protocol,
-        )
-        .await?;
-    }
-    let player_failure = prior_player_failure.or_else(|| {
-        run_connected_session_branch_runtime_steps(
-            runtime,
-            config,
-            network_options_health_reporter,
-            now_seconds,
-            dont_slow_down_with_me,
-            outbound_state_sync_enabled,
-            plan.runtime_steps,
-        )
-    });
-    if !plan.run_protocol_before_runtime_steps {
-        apply_connected_session_protocol_plan(
-            runtime,
-            writer,
-            startup_playlist_file_on_connect,
-            plan.protocol,
-        )
-        .await?;
-    }
-    if player_failure.is_some() {
-        // A player fault is not a Sorotte transport fault. Always give the
-        // freshly queued advisory status and its steady heartbeat a write
-        // opportunity even on plans
-        // whose ordinary protocol flush happened before runtime work.
-        let _ = runtime.run_participant_status_heartbeat(now_seconds);
-        flush_runtime_protocol_lines(runtime, writer).await?;
-    }
-    flush_connected_session_branch_outputs(
-        runtime,
-        diagnostics_config,
-        ConnectedSessionBranchOutputState {
-            reconnect_correction_diagnostics: reconnect_correction_diagnostics_state,
-            seek_preparation_notifications: seek_preparation_notification_state,
-            readiness_notifications: readiness_notification_state,
-            file_difference_notifications: file_difference_state,
-        },
-        plan.drain,
-        notification_sink,
-        file_difference_sink,
-    )?;
-
-    if let Some(failure) = player_failure.as_ref() {
-        report_contained_connected_session_player_failure(failure);
-    }
-
-    Ok(())
-}
-
-pub(super) struct ConnectedSessionBranchExecutionContext<'a, F, G>
+pub(super) struct ConnectedSessionExecutionContext<'a, F, G>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
@@ -644,88 +456,99 @@ where
     pub(super) network_options_health_reporter: &'a mut CliNetworkOptionsHealthReporter,
     pub(super) notification_sink: &'a mut F,
     pub(super) file_difference_sink: &'a mut G,
-}
-
-pub(super) struct ConnectedSessionEventExecutionContext<'a, F, G>
-where
-    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
-    G: FnMut(&str) -> anyhow::Result<()>,
-{
     pub(super) pending_ready_at_start_on_server_hello: &'a mut Option<PendingReadyAtStart>,
     pub(super) pending_chat_message_on_connect: &'a mut Option<String>,
     pub(super) outbound_state_sync_enabled: &'a mut bool,
-    pub(super) branch: ConnectedSessionBranchExecutionContext<'a, F, G>,
 }
 
-pub(super) async fn run_connected_session_event_plan<F, G>(
+pub(super) async fn run_connected_session_event<F, G>(
     runtime: &mut ClientApplication<MpvAdapter>,
-    inbound_message_line: Option<&str>,
+    event: ConnectedSessionEvent<'_>,
     now_seconds: f64,
-    dont_slow_down_with_me: bool,
-    event_execution_plan: ConnectedSessionEventExecutionPlan,
-    context: ConnectedSessionEventExecutionContext<'_, F, G>,
+    mut context: ConnectedSessionExecutionContext<'_, F, G>,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
     G: FnMut(&str) -> anyhow::Result<()>,
 {
-    let ConnectedSessionEventExecutionContext {
-        pending_ready_at_start_on_server_hello,
-        pending_chat_message_on_connect,
-        outbound_state_sync_enabled,
-        branch,
-    } = context;
+    let dont_slow_down_with_me = context
+        .config
+        .dont_slow_down_with_me_override
+        .unwrap_or(false);
+    let shared_playlists_enabled = shared_playlists_enabled_cli(context.config);
     let mut trailing_decode_error = None;
-    if let Some(inbound_apply) = event_execution_plan.inbound_apply {
-        let inbound_message_line = inbound_message_line.ok_or_else(|| {
-            anyhow::anyhow!("inbound apply plan requires an inbound message line")
-        })?;
+    let mut player_failure = None;
+    if let ConnectedSessionEvent::InboundMessage(line) = event {
+        let (messages, _) = decode_inbound_message_prefix(line);
+        let contains_state = messages
+            .iter()
+            .any(|message| matches!(message, ProtocolMessage::State(_)));
+        let consume_pending_readiness = context.pending_ready_at_start_on_server_hello.is_some()
+            && (messages
+                .iter()
+                .any(|message| matches!(message, ProtocolMessage::Hello(_)))
+                || runtime.session().server_readiness_v2_supported());
         let outcome = apply_connected_session_inbound_message(
             runtime,
-            inbound_message_line,
+            line,
             now_seconds,
             dont_slow_down_with_me,
-            inbound_apply,
+            contains_state,
         )?;
-        let ConnectedSessionInboundApplyOutcome {
-            outbound_state_sync_enabled: next_outbound_state_sync_enabled,
-            applied_message_count,
-            trailing_decode_error: outcome_trailing_decode_error,
-        } = outcome;
-        *outbound_state_sync_enabled = next_outbound_state_sync_enabled;
-        match (applied_message_count, outcome_trailing_decode_error) {
+        *context.outbound_state_sync_enabled |= contains_state || outcome.state_sync_emitted;
+        match (outcome.applied_message_count, outcome.trailing_decode_error) {
             (0, Some(error)) => return Err(error.into()),
             (_, error) => trailing_decode_error = error,
         }
+        player_failure = run_connected_session_inbound_post_apply(
+            runtime,
+            context.pending_ready_at_start_on_server_hello,
+            context.pending_chat_message_on_connect,
+            now_seconds,
+            consume_pending_readiness,
+            shared_playlists_enabled,
+        );
     }
-    let player_failure =
-        event_execution_plan
-            .event
-            .inbound_post_apply
-            .and_then(|inbound_post_apply| {
-                run_connected_session_inbound_post_apply(
-                    runtime,
-                    pending_ready_at_start_on_server_hello,
-                    pending_chat_message_on_connect,
-                    now_seconds,
-                    inbound_post_apply,
-                )
-            });
-    run_connected_session_branch_plan(
-        runtime,
-        now_seconds,
-        dont_slow_down_with_me,
-        *outbound_state_sync_enabled,
-        event_execution_plan.event.branch,
-        player_failure,
-        branch,
-    )
-    .await?;
-
+    // Local input delivers its command before maintenance; timers and inbound messages
+    // deliver after runtime work. Keep this order and exact transport receipts.
+    if matches!(event, ConnectedSessionEvent::LocalInput { emitted: true }) {
+        flush_runtime_protocol_lines(runtime, context.writer).await?;
+    }
+    let player_failure = player_failure.or_else(|| {
+        run_connected_session_branch_runtime_steps(
+            runtime,
+            context.config,
+            context.network_options_health_reporter,
+            now_seconds,
+            dont_slow_down_with_me,
+            *context.outbound_state_sync_enabled,
+            event,
+        )
+    });
+    if !matches!(event, ConnectedSessionEvent::LocalInput { .. }) {
+        flush_runtime_protocol_lines(runtime, context.writer).await?;
+    }
+    if matches!(event, ConnectedSessionEvent::InboundMessage(_))
+        && let Some(playlist_path) = context.startup_playlist_file_on_connect.take()
+        && shared_playlists_enabled
+    {
+        let _ =
+            emit_startup_playlist_load_from_file(runtime, context.writer, &playlist_path).await?;
+    }
+    if player_failure.is_some() {
+        // Contain player faults within the room and give advisory status a write opportunity,
+        // including local input whose normal write happened before maintenance.
+        let _ = runtime.run_participant_status_heartbeat(now_seconds);
+        flush_runtime_protocol_lines(runtime, context.writer).await?;
+    }
+    flush_connected_session_outputs(runtime, event, &mut context)?;
+    if let Some(failure) = player_failure.as_ref() {
+        report_contained_connected_session_player_failure(failure);
+    }
+    // Effects from accepted commands, including their write receipts, precede a suffix error.
     if let Some(error) = trailing_decode_error {
         return Err(error.into());
     }
-
     Ok(())
 }
 
@@ -1080,6 +903,62 @@ mod tests {
         assert!(application.session().is_active());
     }
 
+    #[test]
+    fn player_coordination_publishes_file_updates_deferred_by_local_input() {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), MpvAdapter::simulated());
+        application
+            .player_mut()
+            .open_file("movie.mkv")
+            .expect("the adapter should queue the opened file");
+        let config = crate::tests::test_client_loop_config();
+        let mut network_options = CliNetworkOptionsHealthReporter::default();
+
+        for (event, expected_file) in [
+            (ConnectedSessionEvent::LocalInput { emitted: true }, None),
+            (
+                ConnectedSessionEvent::PlayerCoordinationTick,
+                Some("movie.mkv"),
+            ),
+        ] {
+            assert!(
+                run_connected_session_branch_runtime_steps(
+                    &mut application,
+                    &config,
+                    &mut network_options,
+                    1.0,
+                    false,
+                    false,
+                    event,
+                )
+                .is_none(),
+                "processing a queued file should not produce a player fault",
+            );
+            assert_eq!(
+                application
+                    .last_local_file_update()
+                    .and_then(|update| update.path.as_deref()),
+                expected_file,
+                "local input should leave the queued file for player coordination",
+            );
+        }
+
+        let pending = application
+            .pending_protocol_line()
+            .expect("the published file should encode")
+            .expect("player coordination should queue the file announcement");
+        let message = application
+            .acknowledge_protocol_line(pending.lease())
+            .expect("the file announcement should remain queued until acknowledged");
+        let ProtocolMessage::Set(message) = message else {
+            panic!("expected a Set.file announcement");
+        };
+        assert_eq!(
+            message.set.file.and_then(|file| file.name),
+            Some("movie.mkv".to_owned()),
+        );
+    }
+
     #[tokio::test]
     async fn failed_player_step_is_flushed_as_status_without_failing_the_branch() {
         let mut session = ClientSession::default();
@@ -1122,41 +1001,14 @@ mod tests {
         let mut notification_sink = |_notification: &AutoplayCountdownNotification| Ok(());
         let mut file_difference_sink = |_line: &str| Ok(());
 
-        run_connected_session_branch_plan(
+        run_connected_session_event(
             &mut application,
+            ConnectedSessionEvent::PlayerCoordinationTick,
             2.0,
-            false,
-            false,
-            ConnectedSessionBranchPlan {
-                run_protocol_before_runtime_steps: true,
-                runtime_steps: ConnectedSessionRuntimeStepPlan {
-                    run_room_pause_sync: true,
-                    run_readiness_unpause_attempt: false,
-                    run_update_autoplay_check: false,
-                    run_tick_autoplay: false,
-                    run_desync_correction: false,
-                    run_reconnect_state_restore_validation: false,
-                    run_state_sync_heartbeat: false,
-                    publish_pending_local_file_updates: false,
-                },
-                protocol: ConnectedSessionProtocolPlan {
-                    flush_runtime_protocol_lines: false,
-                    startup_playlist_disposition:
-                        ConnectedSessionStartupPlaylistDisposition::LeavePending,
-                },
-                drain: ConnectedSessionDrainPlan {
-                    flush_player_playback_diagnostics: false,
-                    reconnect_correction_diagnostics_format: None,
-                    flush_reconnect_notifications: false,
-                    flush_controller_auth_notifications: false,
-                    flush_chat_notifications: false,
-                    flush_user_change_notifications: false,
-                    flush_autoplay_notifications: false,
-                    flush_file_difference_notifications: false,
-                },
-            },
-            None,
-            ConnectedSessionBranchExecutionContext {
+            ConnectedSessionExecutionContext {
+                pending_ready_at_start_on_server_hello: &mut None,
+                pending_chat_message_on_connect: &mut None,
+                outbound_state_sync_enabled: &mut false,
                 config: &config,
                 writer: &mut writer,
                 startup_playlist_file_on_connect: &mut startup_playlist,
@@ -1385,25 +1237,14 @@ mod tests {
             had_current_v2_membership: false,
         });
         let mut pending_chat = None;
-        let plan = ConnectedSessionInboundPostApplyPlan {
-            consume_pending_ready_at_start: true,
-            consume_pending_chat_message_on_connect: false,
-            run_reconnect_transition: false,
-            run_controller_reidentify: false,
-            run_controller_auth_notifications: false,
-            run_chat_notifications: false,
-            run_user_change_notifications: false,
-            run_reconnect_state_restore: false,
-            run_reconnect_playlist_restore: false,
-        };
-
         assert!(
             run_connected_session_inbound_post_apply(
                 &mut application,
                 &mut pending_ready,
                 &mut pending_chat,
                 1.0,
-                plan,
+                true,
+                false,
             )
             .is_none(),
             "deferring startup readiness must not manufacture a contained player failure"
@@ -1425,7 +1266,8 @@ mod tests {
                 &mut pending_ready,
                 &mut pending_chat,
                 2.0,
-                plan,
+                true,
+                false,
             )
             .is_none(),
             "emitting startup readiness must not manufacture a contained player failure"
@@ -1506,18 +1348,8 @@ mod tests {
             ),
         ));
         let retry_line = encode_message_line(&retry_later).expect("retry result should encode");
-        apply_connected_session_inbound_message(
-            &mut application,
-            &retry_line,
-            10.0,
-            false,
-            ConnectedSessionInboundApplyPlan {
-                reconcile_inbound_state: false,
-                apply_message_json_at: true,
-                outbound_state_sync_enabled: false,
-            },
-        )
-        .expect("CLI inbound apply should keep retryLater nonfatal");
+        apply_connected_session_inbound_message(&mut application, &retry_line, 10.0, false, false)
+            .expect("CLI inbound apply should keep retryLater nonfatal");
         let mut pending_ready = None;
         let mut pending_chat = None;
         assert!(
@@ -1526,17 +1358,8 @@ mod tests {
                 &mut pending_ready,
                 &mut pending_chat,
                 10.0,
-                ConnectedSessionInboundPostApplyPlan {
-                    consume_pending_ready_at_start: false,
-                    consume_pending_chat_message_on_connect: false,
-                    run_reconnect_transition: false,
-                    run_controller_reidentify: false,
-                    run_controller_auth_notifications: true,
-                    run_chat_notifications: false,
-                    run_user_change_notifications: false,
-                    run_reconnect_state_restore: false,
-                    run_reconnect_playlist_restore: false,
-                },
+                false,
+                false,
             )
             .is_none(),
             "CLI post-apply should use the same monotonic timestamp without a contained failure"

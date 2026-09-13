@@ -203,15 +203,6 @@ impl ParticipantReadinessPresentation {
         format!("{base} — {suffix}")
     }
 
-    pub fn retained_intent_label(&self) -> Option<&'static str> {
-        (self.technical_phase == Some(TechnicalPlayabilityPhase::TerminallyBlocked)).then_some(
-            match self.canonical_user_intent {
-                UserReadinessIntent::Ready => "Ready",
-                UserReadinessIntent::NotReady => "Not Ready",
-            },
-        )
-    }
-
     pub fn intent_detail_label(&self) -> String {
         let canonical = intent_label(self.canonical_user_intent);
         if self.has_unacknowledged_pending_intent() {
@@ -554,7 +545,6 @@ mod tests {
             None,
         );
         assert_eq!(failed.status_label(), "Not Ready — technical failure");
-        assert_eq!(failed.retained_intent_label(), Some("Ready"));
     }
 
     #[test]

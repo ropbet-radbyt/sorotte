@@ -154,7 +154,6 @@ class DiffCoverageMapTests(unittest.TestCase):
         self.write_map(document)
         return coverage.build_report(
             repo_root=self.repo,
-            lcov_path=None,
             coverage_map_path=self.map_path,
             diff_path=self.diff_path,
             base=None,
@@ -209,7 +208,6 @@ class DiffCoverageMapTests(unittest.TestCase):
 
         report = coverage.build_report(
             repo_root=self.repo,
-            lcov_path=None,
             coverage_map_paths=[linux_path, windows_path],
             diff_path=self.diff_path,
             base=None,
@@ -243,7 +241,6 @@ class DiffCoverageMapTests(unittest.TestCase):
         ):
             coverage.build_report(
                 repo_root=self.repo,
-                lcov_path=None,
                 coverage_map_paths=[first, second],
                 diff_path=self.diff_path,
                 base=None,
@@ -321,7 +318,6 @@ class DiffCoverageMapTests(unittest.TestCase):
         with self.assertRaisesRegex(coverage.DiffCoverageError, "duplicate_key"):
             coverage.build_report(
                 repo_root=self.repo,
-                lcov_path=None,
                 coverage_map_path=self.map_path,
                 diff_path=self.diff_path,
                 base=None,
@@ -359,31 +355,30 @@ class DiffCoverageMapTests(unittest.TestCase):
         document["summary"]["llvm_minus_physical_line_count"] = 0
         self.assert_invalid(document, "delta is inconsistent")
 
-    def test_exactly_one_coverage_input_is_required(self) -> None:
+    def test_coverage_maps_are_required_and_input_parameters_cannot_be_combined(self) -> None:
         self.write_map()
-        with self.assertRaisesRegex(coverage.DiffCoverageError, "exactly one"):
-            coverage.build_report(
-                repo_root=self.repo,
-                lcov_path=None,
-                coverage_map_path=None,
-                diff_path=self.diff_path,
-                base=None,
-                head=None,
-                minimum_text="50",
-            )
+        for options, message in [
+            ({}, "at least one"),
+            ({"coverage_map_paths": []}, "at least one"),
+            ({"coverage_map_path": self.map_path, "coverage_map_paths": [self.map_path]}, "cannot be combined"),
+        ]:
+            with self.subTest(options=options), self.assertRaisesRegex(coverage.DiffCoverageError, message):
+                coverage.build_report(
+                    repo_root=self.repo,
+                    diff_path=self.diff_path,
+                    base=None,
+                    head=None,
+                    minimum_text="50",
+                    **options,
+                )
 
-        lcov = self.repo / "coverage.info"
-        lcov.write_text("TN:\nend_of_record\n", encoding="utf-8")
-        with self.assertRaisesRegex(coverage.DiffCoverageError, "exactly one"):
-            coverage.build_report(
-                repo_root=self.repo,
-                lcov_path=lcov,
-                coverage_map_path=self.map_path,
-                diff_path=self.diff_path,
-                base=None,
-                head=None,
-                minimum_text="50",
-            )
+    def test_retired_lcov_option_is_rejected(self) -> None:
+        import contextlib
+        import io
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            coverage.argument_parser().parse_args(["--coverage-map", str(self.map_path), "--lcov", "coverage.info"])
+        self.assertEqual(raised.exception.code, 2)
 
     def test_cli_accepts_canonical_map_and_writes_source_bound_report(self) -> None:
         self.write_map()

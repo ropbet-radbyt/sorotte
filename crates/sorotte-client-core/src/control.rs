@@ -400,19 +400,11 @@ impl std::fmt::Debug for ClientEffect {
 pub enum ClientEffectError {
     #[error("client effect is not supported: {0}")]
     Unsupported(&'static str),
-    #[error("invalid file effect payload: {0}")]
-    InvalidFilePayload(String),
     #[error("client effect failed: {0}")]
     OperationFailed(String),
 }
 
 impl ClientEffect {
-    pub fn set_file_from_value(value: Value) -> Result<Self, ClientEffectError> {
-        serde_json::from_value(value)
-            .map(Self::SetFile)
-            .map_err(|error| ClientEffectError::InvalidFilePayload(error.to_string()))
-    }
-
     pub fn send_playback_barrier_set(
         extension: PlaybackBarrierSetExtension,
         scope: PlaybackBarrierRequestScope,

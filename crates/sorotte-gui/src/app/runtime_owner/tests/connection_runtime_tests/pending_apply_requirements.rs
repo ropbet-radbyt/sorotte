@@ -1184,3 +1184,98 @@ fn reload_to_intentionally_unconfigured_player_clears_restart_requirement() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn player_restart_promotes_typed_arguments_without_advancing_other_settings() {
+    use std::collections::BTreeMap;
+
+    let baseline = StoredClientSettings {
+        host: Some("active.example".to_owned()),
+        server_password: Some("active-secret".into()),
+        language: Some("en".to_owned()),
+        player_path: Some("mpv-a".to_owned()),
+        per_player_arguments: Some(BTreeMap::from([
+            ("mpv-a".to_owned(), vec!["--profile=active-a".to_owned()]),
+            ("mpv-b".to_owned(), vec!["--profile=old-b".to_owned()]),
+        ])),
+        ..StoredClientSettings::default()
+    };
+    let arguments = vec![
+        "--title=Watch party".to_owned(),
+        r"--script=C:\My Scripts\custom.lua".to_owned(),
+        "--title=Alice's \"watch party\"".to_owned(),
+        String::new(),
+    ];
+    let saved = StoredClientSettings {
+        host: Some("saved.example".to_owned()),
+        server_password: Some("saved-secret".into()),
+        language: Some("fr".to_owned()),
+        player_path: Some("mpv-b".to_owned()),
+        per_player_arguments: Some(BTreeMap::from([
+            ("mpv-a".to_owned(), vec!["--profile=saved-a".to_owned()]),
+            ("mpv-b".to_owned(), arguments.clone()),
+            ("mpv-c".to_owned(), vec!["--profile=saved-c".to_owned()]),
+        ])),
+        ..baseline.clone()
+    };
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    install_active_settings_baseline(&mut owner, &baseline);
+    owner.promote_restart_player_runtime_fields(&saved);
+
+    let mut expected = baseline;
+    expected.player_path = saved.player_path.clone();
+    expected
+        .per_player_arguments
+        .as_mut()
+        .unwrap()
+        .insert("mpv-b".to_owned(), arguments);
+    let expected =
+        sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snapshot(&expected);
+    assert_eq!(
+        owner.active_session_settings.as_ref().unwrap().settings,
+        expected.settings
+    );
+    assert_eq!(
+        owner
+            .active_session_configured_settings
+            .as_ref()
+            .unwrap()
+            .settings,
+        expected.settings
+    );
+}
+
+#[test]
+fn player_restart_removes_cleared_arguments_only_for_the_selected_player() {
+    use std::collections::BTreeMap;
+
+    for retain_other_player in [false, true] {
+        let mut arguments = BTreeMap::from([("mpv".to_owned(), vec!["--title=old".to_owned()])]);
+        if retain_other_player {
+            arguments.insert("other-mpv".to_owned(), vec!["--no-border".to_owned()]);
+        }
+        let baseline = StoredClientSettings {
+            player_path: Some("mpv".to_owned()),
+            per_player_arguments: Some(arguments.clone()),
+            ..StoredClientSettings::default()
+        };
+        let saved = StoredClientSettings {
+            per_player_arguments: None,
+            ..baseline.clone()
+        };
+        let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+        install_active_settings_baseline(&mut owner, &baseline);
+        owner.promote_restart_player_runtime_fields(&saved);
+        arguments.remove("mpv");
+        let expected = (!arguments.is_empty()).then_some(arguments);
+        for active in [
+            &owner.active_session_settings,
+            &owner.active_session_configured_settings,
+        ] {
+            assert_eq!(
+                active.as_ref().unwrap().settings.per_player_arguments,
+                expected
+            );
+        }
+    }
+}

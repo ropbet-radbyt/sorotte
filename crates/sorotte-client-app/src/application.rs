@@ -233,22 +233,6 @@ impl ClientCommand {
 
 #[derive(Clone, PartialEq)]
 pub enum ClientEvent {
-    ConnectionChanged(ConnectionPhase),
-    RoomChanged {
-        previous: Option<String>,
-        current: Option<String>,
-    },
-    PlaybackChanged {
-        paused: Option<bool>,
-        position_seconds: Option<f64>,
-        playback_rate: Option<f64>,
-        paused_for_cache: Option<bool>,
-        cache_buffering_percent: Option<f64>,
-    },
-    ReadinessChanged {
-        username: Option<String>,
-        ready: Option<bool>,
-    },
     CommandCompleted {
         command: &'static str,
         changed: bool,
@@ -263,34 +247,6 @@ pub enum ClientEvent {
 impl std::fmt::Debug for ClientEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConnectionChanged(value) => formatter
-                .debug_tuple("ConnectionChanged")
-                .field(value)
-                .finish(),
-            Self::RoomChanged { previous, current } => formatter
-                .debug_struct("RoomChanged")
-                .field("previous", previous)
-                .field("current", current)
-                .finish(),
-            Self::PlaybackChanged {
-                paused,
-                position_seconds,
-                playback_rate,
-                paused_for_cache,
-                cache_buffering_percent,
-            } => formatter
-                .debug_struct("PlaybackChanged")
-                .field("paused", paused)
-                .field("position_seconds", position_seconds)
-                .field("playback_rate", playback_rate)
-                .field("paused_for_cache", paused_for_cache)
-                .field("cache_buffering_percent", cache_buffering_percent)
-                .finish(),
-            Self::ReadinessChanged { username, ready } => formatter
-                .debug_struct("ReadinessChanged")
-                .field("username", username)
-                .field("ready", ready)
-                .finish(),
             Self::CommandCompleted { command, changed } => formatter
                 .debug_struct("CommandCompleted")
                 .field("command", command)
@@ -316,19 +272,6 @@ impl ClientEvent {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ApplicationSnapshot {
-    connection_phase: ConnectionPhase,
-    room: Option<String>,
-    paused: Option<bool>,
-    position_seconds: Option<f64>,
-    playback_rate: Option<f64>,
-    paused_for_cache: Option<bool>,
-    cache_buffering_percent: Option<f64>,
-    username: Option<String>,
-    ready: Option<bool>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1009,64 +952,9 @@ where
         })
     }
 
-    fn snapshot(&self) -> ApplicationSnapshot {
-        let session = self.runtime.session();
-        let username = session.username().map(ToOwned::to_owned);
-        ApplicationSnapshot {
-            connection_phase: session.connection_phase().clone(),
-            room: session.room().map(ToOwned::to_owned),
-            paused: session.local_paused(),
-            position_seconds: session.local_position_seconds(),
-            playback_rate: session.local_playback_rate(),
-            paused_for_cache: session.local_paused_for_cache(),
-            cache_buffering_percent: session.local_cache_buffering_percent(),
-            ready: username
-                .as_deref()
-                .and_then(|username| session.user_ready(username)),
-            username,
-        }
-    }
-
-    fn domain_events_since(&self, before: &ApplicationSnapshot) -> Vec<ClientEvent> {
-        let after = self.snapshot();
-        let mut events = Vec::new();
-        if before.connection_phase != after.connection_phase {
-            events.push(ClientEvent::ConnectionChanged(
-                after.connection_phase.clone(),
-            ));
-        }
-        if before.room != after.room {
-            events.push(ClientEvent::RoomChanged {
-                previous: before.room.clone(),
-                current: after.room.clone(),
-            });
-        }
-        if before.paused != after.paused
-            || before.position_seconds != after.position_seconds
-            || before.playback_rate != after.playback_rate
-            || before.paused_for_cache != after.paused_for_cache
-            || before.cache_buffering_percent != after.cache_buffering_percent
-        {
-            events.push(ClientEvent::PlaybackChanged {
-                paused: after.paused,
-                position_seconds: after.position_seconds,
-                playback_rate: after.playback_rate,
-                paused_for_cache: after.paused_for_cache,
-                cache_buffering_percent: after.cache_buffering_percent,
-            });
-        }
-        if before.username != after.username || before.ready != after.ready {
-            events.push(ClientEvent::ReadinessChanged {
-                username: after.username,
-                ready: after.ready,
-            });
-        }
-        events
-    }
-
-    fn set_connection_phase(&mut self, phase: ConnectionPhase) -> Vec<ClientEvent> {
+    fn set_connection_phase(&mut self, phase: ConnectionPhase) {
         if self.connection_phase() == &phase {
-            return Vec::new();
+            return;
         }
         let mut session = self.runtime.session_mut();
         match phase {
@@ -1079,9 +967,6 @@ where
                 unreachable!("Active is entered only by applying a server Hello")
             }
         }
-        vec![ClientEvent::ConnectionChanged(
-            self.connection_phase().clone(),
-        )]
     }
 
     fn apply_settings(&mut self, settings: ClientApplicationSettings) {
@@ -1189,12 +1074,12 @@ where
     }
 
     pub fn dispatch(&mut self, command: ClientCommand) -> Vec<ClientEvent> {
-        let before = self.snapshot();
         let (operation, result) = match command {
             ClientCommand::Connect { endpoint } => {
                 self.endpoint = Some(endpoint);
                 self.runtime.begin_protocol_connection_generation();
-                return self.set_connection_phase(ConnectionPhase::Connecting);
+                self.set_connection_phase(ConnectionPhase::Connecting);
+                return Vec::new();
             }
             ClientCommand::BeginConnecting => {
                 return match self.connection_phase() {
@@ -1202,7 +1087,8 @@ where
                     | ConnectionPhase::AwaitingHello
                     | ConnectionPhase::Reconnecting { .. } => {
                         self.runtime.begin_protocol_connection_generation();
-                        self.set_connection_phase(ConnectionPhase::Connecting)
+                        self.set_connection_phase(ConnectionPhase::Connecting);
+                        Vec::new()
                     }
                     ConnectionPhase::Connecting => Vec::new(),
                     phase => vec![ClientEvent::OperationFailed {
@@ -1216,7 +1102,8 @@ where
             ClientCommand::TransportConnected => {
                 return match self.connection_phase() {
                     ConnectionPhase::Connecting | ConnectionPhase::Reconnecting { .. } => {
-                        self.set_connection_phase(ConnectionPhase::AwaitingHello)
+                        self.set_connection_phase(ConnectionPhase::AwaitingHello);
+                        Vec::new()
                     }
                     ConnectionPhase::AwaitingHello => Vec::new(),
                     phase => vec![ClientEvent::OperationFailed {
@@ -1229,7 +1116,8 @@ where
             }
             ClientCommand::Reconnect { attempt } => {
                 self.runtime.begin_protocol_connection_generation();
-                return self.set_connection_phase(ConnectionPhase::Reconnecting { attempt });
+                self.set_connection_phase(ConnectionPhase::Reconnecting { attempt });
+                return Vec::new();
             }
             ClientCommand::Disconnect { now_seconds } => {
                 self.runtime.session_mut().mark_closing();
@@ -1394,24 +1282,16 @@ where
             ),
         };
 
-        match result {
-            Ok(changed) => {
-                let mut events = self.domain_events_since(&before);
-                events.push(ClientEvent::CommandCompleted {
-                    command: operation,
-                    changed,
-                });
-                events
-            }
-            Err(error) => {
-                let mut events = self.domain_events_since(&before);
-                events.push(ClientEvent::OperationFailed {
-                    operation,
-                    message: error.to_string(),
-                });
-                events
-            }
-        }
+        vec![match result {
+            Ok(changed) => ClientEvent::CommandCompleted {
+                command: operation,
+                changed,
+            },
+            Err(error) => ClientEvent::OperationFailed {
+                operation,
+                message: error.to_string(),
+            },
+        }]
     }
 
     pub fn pending_protocol_line(&self) -> Result<Option<PendingProtocolLine>, ProtocolError> {
@@ -3128,61 +3008,58 @@ mod tests {
     }
 
     #[test]
-    fn application_tracks_connection_lifecycle_as_events() {
+    fn application_tracks_connection_lifecycle_in_session_state() {
         let mut application =
             ClientApplication::new(ClientSession::default(), TestPlayer::default());
-        assert_eq!(
-            application.dispatch(ClientCommand::Connect {
-                endpoint: "sync.example:8999".to_owned(),
-            }),
-            vec![ClientEvent::ConnectionChanged(ConnectionPhase::Connecting)],
+        assert!(
+            application
+                .dispatch(ClientCommand::Connect {
+                    endpoint: "sync.example:8999".to_owned(),
+                })
+                .is_empty()
         );
         assert_eq!(application.endpoint(), Some("sync.example:8999"));
         let identity_events = application.dispatch(ClientCommand::InitializeSessionIdentity {
             username: "alice".to_owned(),
             room: "room-a".to_owned(),
         });
-        assert!(identity_events.iter().any(|event| matches!(
-            event,
-            ClientEvent::RoomChanged { current, .. } if current.as_deref() == Some("room-a")
-        )));
-        assert!(matches!(
-            application.connection_phase(),
-            ConnectionPhase::Connecting
-        ));
-        assert_eq!(
-            application.dispatch(ClientCommand::TransportConnected),
-            vec![ClientEvent::ConnectionChanged(
-                ConnectionPhase::AwaitingHello,
-            )],
+        assert!(
+            identity_events
+                .iter()
+                .any(|event| event.command_changed() == Some(true))
         );
-        assert_eq!(
-            application.dispatch(ClientCommand::Reconnect { attempt: 2 }),
-            vec![ClientEvent::ConnectionChanged(
+        assert_eq!(application.session().room(), Some("room-a"));
+        assert_eq!(application.connection_phase(), &ConnectionPhase::Connecting);
+        for (command, phase) in [
+            (
+                ClientCommand::TransportConnected,
+                ConnectionPhase::AwaitingHello,
+            ),
+            (
+                ClientCommand::Reconnect { attempt: 2 },
                 ConnectionPhase::Reconnecting { attempt: 2 },
-            )],
-        );
-        assert_eq!(
-            application.dispatch(ClientCommand::TransportConnected),
-            vec![ClientEvent::ConnectionChanged(
+            ),
+            (
+                ClientCommand::TransportConnected,
                 ConnectionPhase::AwaitingHello,
-            )],
-        );
-        assert!(matches!(
-            application.connection_phase(),
-            ConnectionPhase::AwaitingHello
-        ));
-
+            ),
+        ] {
+            assert!(application.dispatch(command).is_empty());
+            assert_eq!(application.connection_phase(), &phase);
+        }
         let events = application.dispatch(ClientCommand::ReceiveProtocolLine {
             line: r#"{"Hello":{"username":"alice","room":{"name":"room-a"},"version":"1.7.5","features":{"chat":true}}}"#
                 .to_owned(),
             received_at_seconds: 1.0,
         });
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ClientEvent::ConnectionChanged(ConnectionPhase::Active(capabilities))
-                if capabilities.chat
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.command_changed() == Some(true))
+        );
+        assert!(
+            matches!(application.connection_phase(), ConnectionPhase::Active(capabilities) if capabilities.chat)
+        );
 
         let identity_events = application.dispatch(ClientCommand::InitializeSessionIdentity {
             username: "mallory".to_owned(),
@@ -3840,16 +3717,6 @@ mod tests {
         );
         assert!(events.iter().any(|event| matches!(
             event,
-            ClientEvent::PlaybackChanged {
-                paused: Some(false),
-                position_seconds: Some(42.5),
-                playback_rate: Some(0.95),
-                paused_for_cache: Some(false),
-                cache_buffering_percent: Some(37.5),
-            }
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
             ClientEvent::CommandCompleted {
                 command: "player-playback-observed",
                 changed: true,
@@ -3867,11 +3734,6 @@ mod tests {
     #[test]
     fn application_reports_unchanged_for_empty_identical_and_invalid_player_telemetry() {
         fn assert_unchanged(events: &[ClientEvent]) {
-            assert!(
-                !events
-                    .iter()
-                    .any(|event| matches!(event, ClientEvent::PlaybackChanged { .. }))
-            );
             assert!(events.iter().any(|event| matches!(
                 event,
                 ClientEvent::CommandCompleted {
@@ -3924,7 +3786,7 @@ mod tests {
     }
 
     #[test]
-    fn application_failure_preserves_final_domain_truth_before_operation_failed() {
+    fn application_failure_preserves_final_session_state() {
         let player = TestPlayer {
             pause_error: Some("pause transport failed".to_owned()),
             ..TestPlayer::default()
@@ -3942,20 +3804,6 @@ mod tests {
 
         let events = application.dispatch(ClientCommand::Disconnect { now_seconds: 1.0 });
 
-        let connection_event = events
-            .iter()
-            .position(|event| {
-                matches!(
-                    event,
-                    ClientEvent::ConnectionChanged(ConnectionPhase::Disconnected)
-                )
-            })
-            .expect("disconnect state change should survive the player failure");
-        let failure_event = events
-            .iter()
-            .position(|event| matches!(event, ClientEvent::OperationFailed { .. }))
-            .expect("the player failure should still be surfaced");
-        assert!(connection_event < failure_event);
         assert!(matches!(
             events.last(),
             Some(ClientEvent::OperationFailed { .. })
@@ -4137,7 +3985,7 @@ mod tests {
     }
 
     #[test]
-    fn application_protocol_input_emits_room_change_event() {
+    fn application_protocol_input_updates_room_and_negotiated_capabilities() {
         let mut application =
             ClientApplication::new(ClientSession::default(), TestPlayer::default());
         let events = application.dispatch(ClientCommand::ReceiveProtocolLine {
@@ -4146,18 +3994,15 @@ mod tests {
             received_at_seconds: 1.0,
         });
 
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ClientEvent::RoomChanged { current, .. } if current.as_deref() == Some("room-a")
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ClientEvent::ConnectionChanged(ConnectionPhase::Active(capabilities))
-                if !capabilities.chat
-        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.command_changed() == Some(true))
+        );
+        assert_eq!(application.session().room(), Some("room-a"));
         assert!(matches!(
             application.connection_phase(),
-            ConnectionPhase::Active(_)
+            ConnectionPhase::Active(capabilities) if !capabilities.chat
         ));
     }
 
