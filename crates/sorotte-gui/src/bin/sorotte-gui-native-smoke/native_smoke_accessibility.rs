@@ -2,12 +2,10 @@ use super::*;
 
 pub(super) const MENU_SOURCE_UIA_ACCESSKIT: &str = "uia-accesskit";
 pub(super) const FILE_MENU_AUTOMATION_ID: &str = "menu.section.file";
-pub(super) const ADVANCED_MENU_AUTOMATION_ID: &str = "menu.section.advanced";
 pub(super) const HELP_MENU_AUTOMATION_ID: &str = "menu.section.help";
 pub(super) const OPEN_MEDIA_MENU_AUTOMATION_ID: &str = "menu.open_media";
 pub(super) const EXIT_MENU_AUTOMATION_ID: &str = "menu.exit";
 pub(super) const ABOUT_MENU_AUTOMATION_ID: &str = "menu.about";
-pub(super) const TLS_CERTIFICATES_MENU_AUTOMATION_ID: &str = "menu.tls_certificates";
 
 const REQUIRED_MENU_SECTIONS: [(&str, &str); 5] = [
     (FILE_MENU_AUTOMATION_ID, "File"),

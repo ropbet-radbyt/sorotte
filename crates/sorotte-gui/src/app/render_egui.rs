@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use super::render_io::GuiDroppedFilesRequest;
-use super::shell_state::{GuiShellAction, GuiShellModal, MenuActionId, SorotteGuiShellAppState};
+use super::shell_state::{GuiShellAction, MenuActionId, SorotteGuiShellAppState};
 use super::widget_tree::{GuiWidgetKind, GuiWidgetNode};
 
 mod chat;
@@ -365,9 +365,6 @@ impl GuiWidgetEguiRenderer {
         let Some(modal) = state.open_modal else {
             return;
         };
-        if modal == GuiShellModal::UpdateNotice {
-            return;
-        }
         let mut open = true;
         let mut close_clicked = false;
         egui::Window::new(Self::modal_window_title_for_state(modal, state))
@@ -377,11 +374,6 @@ impl GuiWidgetEguiRenderer {
             .show(ctx, |ui| {
                 for line in Self::modal_body_lines(modal, state) {
                     ui.label(line);
-                }
-                if modal == GuiShellModal::UpdateNotice
-                    && let Some(url) = state.update_check.url.as_deref()
-                {
-                    ui.hyperlink_to("Open update page", url);
                 }
                 ui.separator();
                 ui.horizontal_wrapped(|ui| {

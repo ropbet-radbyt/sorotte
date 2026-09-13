@@ -82,17 +82,6 @@ fn emit_autoplay_countdown_notification_to_player(
     );
 }
 
-#[cfg(test)]
-pub(crate) fn flush_autoplay_notifications_to_sink<F>(
-    runtime: &mut ClientApplication<MpvAdapter>,
-    notify: &mut F,
-) -> anyhow::Result<()>
-where
-    F: FnMut(&AutoplayCountdownNotification) -> anyhow::Result<()>,
-{
-    runtime.drain_autoplay_notifications_to_sink(|notification| notify(notification))
-}
-
 pub(crate) fn flush_autoplay_notifications<F>(
     runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,

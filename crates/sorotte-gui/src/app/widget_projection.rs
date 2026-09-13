@@ -41,16 +41,6 @@ impl SorotteGuiShellAppState {
         );
     }
 
-    fn preserves_runtime_dialog_expectations(
-        &self,
-        previous_settings: &StoredClientSettings,
-    ) -> (bool, bool) {
-        super::configuration_model::preserves_runtime_dialog_expectations(
-            &self.menus,
-            previous_settings,
-        )
-    }
-
     fn preserves_runtime_public_server_surface(
         &self,
         previous_settings: &StoredClientSettings,
@@ -85,8 +75,6 @@ impl SorotteGuiShellAppState {
         let preserved_media_search_directories = (previous_settings.media_search_directories
             == settings.media_search_directories)
             .then(|| self.media_search.directories.clone());
-        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
-            self.preserves_runtime_dialog_expectations(previous_settings);
         let preserve_public_servers =
             self.preserves_runtime_public_server_surface(previous_settings);
         let preserved_public_server_flags = preserve_public_servers
@@ -96,21 +84,13 @@ impl SorotteGuiShellAppState {
             .then(|| MediaSearchWorkflowRuntimeFlags::from_shell_state(&self.media_search));
         let selected_public_server_address =
             self.selected_public_server_address().map(str::to_owned);
-        let tls_prompt_expected = self.menus.tls_prompt_expected;
-        let update_notice_expected = self.menus.update_notice_expected;
         let about_dialog_available = self.menus.about_dialog_available;
         self.main_window = MainWindowShellState::from_stored_settings(&settings);
         self.reapply_runtime_main_window_surface_from_snapshot(
             previous_settings,
             &preserved_main_window_runtime_snapshot,
         );
-        self.menus = MenuDialogShellState::from_stored_settings(&settings);
-        if preserve_tls_prompt_expected {
-            self.menus.tls_prompt_expected = tls_prompt_expected;
-        }
-        if preserve_update_notice_expected {
-            self.menus.update_notice_expected = update_notice_expected;
-        }
+        self.menus = MenuDialogShellState::default();
         self.menus.about_dialog_available = about_dialog_available;
         self.public_servers = PublicServerBrowserShellState::from_stored_settings(&settings);
         if let Some(servers) = preserved_public_server_rows {
@@ -128,7 +108,7 @@ impl SorotteGuiShellAppState {
             self.media_search.apply_runtime_flags(runtime_flags);
         }
         self.media_index_status = preserved_media_index_status;
-        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.normalize_runtime_menu_action_overrides();
         self.sync_dialog_menu_actions_from_runtime_state();
         self.normalize_selection();
         self.normalize_selected_menu_action_after_runtime_update();
@@ -186,15 +166,11 @@ impl SorotteGuiShellAppState {
         let player_setup_issue = self.player_setup_issue.clone();
         let plex = self.plex.clone();
         let saved_configuration = self.saved_configuration.clone();
-        let tls_prompt_expected = self.menus.tls_prompt_expected;
-        let update_notice_expected = self.menus.update_notice_expected;
         let about_dialog_available = self.menus.about_dialog_available;
         let selected_public_server_address =
             self.selected_public_server_address().map(str::to_owned);
         let preserved_main_window_runtime_snapshot =
             MainWindowRuntimeSnapshot::from_shell_state(&self.main_window);
-        let (preserve_tls_prompt_expected, preserve_update_notice_expected) =
-            self.preserves_runtime_dialog_expectations(&previous_settings);
         let preserved_public_server_rows = (previous_settings.public_servers
             == settings.public_servers)
             .then(|| self.public_servers.servers.clone());
@@ -249,12 +225,6 @@ impl SorotteGuiShellAppState {
         self.player_setup_issue = player_setup_issue;
         self.plex = plex;
         self.saved_configuration = saved_configuration;
-        if preserve_tls_prompt_expected {
-            self.menus.tls_prompt_expected = tls_prompt_expected;
-        }
-        if preserve_update_notice_expected {
-            self.menus.update_notice_expected = update_notice_expected;
-        }
         self.menus.about_dialog_available = about_dialog_available;
         if let Some(servers) = preserved_public_server_rows {
             self.public_servers.servers = servers;
@@ -269,7 +239,7 @@ impl SorotteGuiShellAppState {
         if let Some(runtime_flags) = preserved_media_search_flags {
             self.media_search.apply_runtime_flags(runtime_flags);
         }
-        self.normalize_runtime_menu_action_overrides_for_settings(&settings);
+        self.normalize_runtime_menu_action_overrides();
         self.reapply_runtime_main_window_surface_from_snapshot(
             &previous_settings,
             &preserved_main_window_runtime_snapshot,

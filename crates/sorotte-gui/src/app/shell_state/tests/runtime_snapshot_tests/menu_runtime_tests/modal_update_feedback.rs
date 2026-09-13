@@ -15,12 +15,8 @@ fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
 
     assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::About)));
     assert_eq!(state.open_modal, Some(GuiShellModal::About));
-    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::UpdateNotice)));
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
-    assert!(state.apply(GuiShellAction::OpenModal(
-        GuiShellModal::TlsCertificatePrompt
-    )));
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+    assert!(state.apply(GuiShellAction::OpenModal(GuiShellModal::StreamSupport)));
+    assert_eq!(state.open_modal, Some(GuiShellModal::StreamSupport));
 
     assert!(state.apply(GuiShellAction::CloseModal));
     assert_eq!(state.open_modal, None);
@@ -30,15 +26,6 @@ fn gui_shell_app_state_switches_views_and_tracks_modal_lifecycle() {
 #[test]
 fn gui_shell_app_state_announces_menu_and_dialog_events() {
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-
-    assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
-    assert!(state.menus.tls_prompt_expected);
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
-    assert_chat_pane_ready(&state.main_window.chat);
-
-    assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
-    assert!(!state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 
     assert!(state.apply(GuiShellAction::AnnounceAboutDialogRequested));
     assert_eq!(state.active_view, GuiShellView::Setup);
@@ -51,27 +38,6 @@ fn gui_shell_app_state_announces_menu_and_dialog_events() {
             .message
             .contains("Opening the Sorotte client guide")
     }));
-}
-
-#[test]
-fn gui_shell_app_state_dismisses_update_notice_and_completes_tls_prompt() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-
-    assert!(state.apply(GuiShellAction::AnnounceUpdateNoticeAvailable));
-    assert!(!state.apply(GuiShellAction::DismissUpdateNotice));
-    assert!(!state.menus.update_notice_expected);
-    assert_eq!(state.open_modal, None);
-    assert!(state.notifications.is_empty());
-
-    assert!(state.apply(GuiShellAction::AnnounceTlsCertificatePromptRequired));
-    assert!(state.apply(GuiShellAction::CloseModal));
-    assert!(state.menus.tls_prompt_expected);
-    assert_eq!(state.open_modal, None);
-
-    assert!(state.apply(GuiShellAction::TrustTlsCertificatePrompt));
-    assert!(!state.menus.tls_prompt_expected);
-    assert_eq!(state.open_modal, None);
-    assert_chat_pane_ready(&state.main_window.chat);
 }
 
 #[test]
@@ -100,7 +66,6 @@ fn gui_shell_app_state_applies_user_initiated_update_check_results() {
         }))
     );
 
-    assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
     assert_eq!(
         state.update_check.indicator_model(None).title,
@@ -147,41 +112,12 @@ fn gui_shell_app_state_applies_automatic_update_check_results_without_modal_when
         }))
     );
 
-    assert!(!state.menus.update_notice_expected);
     assert_eq!(state.open_modal, None);
     assert_eq!(
         state.update_check.message.as_deref(),
         Some("Sorotte is up to date")
     );
     assert!(state.notifications.is_empty());
-}
-
-#[test]
-fn gui_shell_app_state_auto_opens_new_runtime_prompt_flags() {
-    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
-
-    assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: Vec::new(),
-            tls_prompt_expected: false,
-            update_notice_expected: true,
-            about_dialog_available: true,
-        },
-    )));
-    assert_eq!(state.open_modal, None);
-
-    assert!(state.apply(GuiShellAction::DismissUpdateNotice));
-    assert_eq!(state.open_modal, None);
-
-    assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
-        MenuDialogRuntimeSnapshot {
-            action_overrides: Vec::new(),
-            tls_prompt_expected: true,
-            update_notice_expected: false,
-            about_dialog_available: true,
-        },
-    )));
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
 }
 
 #[test]
@@ -207,8 +143,6 @@ fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
                     enabled: false,
                 },
             ],
-            tls_prompt_expected: true,
-            update_notice_expected: false,
             about_dialog_available: false,
         },
     )));
@@ -234,8 +168,6 @@ fn gui_shell_app_state_applies_menu_dialog_runtime_snapshots() {
             .find(|action| action.label == "Seek")
             .is_some_and(|action| !action.enabled && !action.is_selected)
     );
-    assert!(state.menus.tls_prompt_expected);
-    assert!(!state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
     let help = state
         .menus

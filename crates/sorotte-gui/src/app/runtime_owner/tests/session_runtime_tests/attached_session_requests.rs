@@ -172,8 +172,6 @@ fn gui_persisted_config_runtime_owner_uses_attached_session_runtime_for_session_
             main_window: inbound_snapshot,
             public_servers: state.public_servers.clone(),
             media_search: state.media_search.clone(),
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }),
     ];

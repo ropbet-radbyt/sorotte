@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn flush_reconnect_notifications_to_sink_dispatches_notifications() {
+fn flush_reconnect_notifications_dispatches_notifications() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -57,13 +57,33 @@ fn flush_reconnect_notifications_to_sink_dispatches_notifications() {
         .run_reconnect_transition_if_needed()
         .expect("reconnect completion should queue reconnect notification");
 
+    let pending = runtime
+        .pending_reconnect_notification()
+        .cloned()
+        .expect("notification should be queued");
+    assert!(
+        flush_reconnect_notifications(&mut runtime, &mut |_| anyhow::bail!("output unavailable"))
+            .is_err()
+    );
+    assert_eq!(runtime.pending_reconnect_notification(), Some(&pending));
     let mut captured = Vec::new();
-    flush_reconnect_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_reconnect_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
     .expect("reconnect notifications should dispatch");
-    flush_reconnect_notifications_to_sink(&mut runtime, &mut ignore_reconnect_notification)
+    assert!(runtime.pending_reconnect_notification().is_none());
+    assert_eq!(
+        runtime.player().last_simulated_syncplay_osd_message(),
+        Some(&(
+            crate::reconnect_transition_notification_message_localized(
+                captured.last().unwrap(),
+                crate::language_support::current_runtime_language_tag().as_deref()
+            ),
+            sorotte_player_mpv::SyncplayOsdKind::Notification,
+        ))
+    );
+    flush_reconnect_notifications(&mut runtime, &mut ignore_reconnect_notification)
         .expect("drained reconnect notification queue should be empty");
 
     assert_eq!(
@@ -79,7 +99,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_notifications() {
 }
 
 #[test]
-fn flush_reconnect_notifications_to_sink_dispatches_disconnected_notification() {
+fn flush_reconnect_notifications_dispatches_disconnected_notification() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -130,7 +150,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_disconnected_notification() 
         .expect("terminal reconnect retry should queue disconnected notification");
 
     let mut captured = Vec::new();
-    flush_reconnect_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_reconnect_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
@@ -143,7 +163,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_disconnected_notification() 
 }
 
 #[test]
-fn flush_reconnect_notifications_to_sink_dispatches_state_restore_notification() {
+fn flush_reconnect_notifications_dispatches_state_restore_notification() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -215,7 +235,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_state_restore_notification()
         .expect("reconnect state restore should dispatch");
 
     let mut captured = Vec::new();
-    flush_reconnect_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_reconnect_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })
@@ -228,7 +248,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_state_restore_notification()
 }
 
 #[test]
-fn flush_reconnect_notifications_to_sink_dispatches_playlist_restore_notification() {
+fn flush_reconnect_notifications_dispatches_playlist_restore_notification() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -304,7 +324,7 @@ fn flush_reconnect_notifications_to_sink_dispatches_playlist_restore_notificatio
         .expect("reconnect playlist restore should dispatch");
 
     let mut captured = Vec::new();
-    flush_reconnect_notifications_to_sink(&mut runtime, &mut |notification| {
+    flush_reconnect_notifications(&mut runtime, &mut |notification| {
         captured.push(notification.clone());
         Ok(())
     })

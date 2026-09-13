@@ -37,10 +37,9 @@ pub use diagnostics::{
 };
 pub use extraction::{
     InstrumentedMediaFingerprint, MediaAudioStreamMetrics, MediaExtractionTimings,
-    MediaFingerprintError, MediaFingerprintExtractionOptions, MediaFingerprintExtractionReport,
-    MediaMatchToolPaths, MediaToolInvocationCounts, fingerprint_media_file,
-    fingerprint_media_file_cancellable, fingerprint_media_file_cancellable_with_report,
-    fingerprint_media_file_with_report, probe_media_duration_seconds, run_tool_probe,
+    MediaFingerprintError, MediaFingerprintExtractionReport, MediaMatchToolPaths,
+    MediaToolInvocationCounts, fingerprint_media_file_with_report, probe_media_duration_seconds,
+    run_tool_probe,
 };
 pub use identity::normalize_media_path;
 pub use matching::{MediaMatchCandidateDecision, decide_media_match, rank_media_match_candidates};
@@ -61,10 +60,7 @@ pub use settings::{
     MEDIA_MATCH_V3_PROFILE_LABEL, MediaExtractionSettings, MediaSampledAudioPolicy,
     media_extraction_settings_hash, media_match_v3_fingerprint_config_hash,
 };
-pub use timeline_v3::{
-    classify_timeline_at_query_ms, map_candidate_position_to_query_ms,
-    map_query_position_to_candidate_ms, timeline_map_contains_query_position,
-};
+pub use timeline_v3::{map_candidate_position_to_query_ms, map_query_position_to_candidate_ms};
 pub use tuning::{V3Tuning, current_v3_tuning};
 pub use types::{
     AlignedSegmentV3, AudioMatchEvidence, MatchClassV3, MediaDurationCompatibility,

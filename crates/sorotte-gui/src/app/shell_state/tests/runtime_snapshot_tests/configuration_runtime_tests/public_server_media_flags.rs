@@ -23,8 +23,6 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
             main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
             public_servers: runtime_public_servers,
             media_search: runtime_media_search,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }
     )));
@@ -63,8 +61,6 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_flags_ac
             main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
             public_servers: runtime_public_servers,
             media_search: runtime_media_search,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }
     )));
@@ -143,8 +139,6 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_acr
             main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
             public_servers: runtime_public_servers,
             media_search: runtime_media_search,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }
     )));
@@ -212,8 +206,6 @@ fn gui_shell_app_state_preserves_runtime_public_server_and_media_search_rows_acr
             main_window: MainWindowRuntimeSnapshot::from_shell_state(&state.main_window),
             public_servers: runtime_public_servers,
             media_search: runtime_media_search,
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }
     )));

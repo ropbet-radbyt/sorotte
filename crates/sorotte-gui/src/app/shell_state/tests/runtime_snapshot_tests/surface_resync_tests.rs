@@ -64,8 +64,6 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
     assert!(state.apply(GuiShellAction::ApplyMenuDialogRuntimeSnapshot(
         MenuDialogRuntimeSnapshot {
             action_overrides: Vec::new(),
-            tls_prompt_expected: true,
-            update_notice_expected: true,
             about_dialog_available: false,
         },
     )));
@@ -110,8 +108,6 @@ fn gui_shell_app_state_resyncs_surfaces_from_configuration_edits() {
             .flat_map(|section| &section.actions)
             .all(|item| item.label != "Show Playlist")
     );
-    assert!(state.menus.tls_prompt_expected);
-    assert!(state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
     assert_eq!(state.selection.selected_menu_action, Some((0, 1)));
     let file = state

@@ -61,7 +61,6 @@ pub(in crate::app) enum MenuActionId {
     IdentifyAsController,
     TrustedDomains,
     SetOffset,
-    TlsCertificates,
     TogglePlaybackButtons,
     ToggleAutoplayControls,
     ToggleHideEmptyRooms,
@@ -71,7 +70,7 @@ pub(in crate::app) enum MenuActionId {
 }
 
 impl MenuActionId {
-    pub(in crate::app) const ALL: [Self; 21] = [
+    pub(in crate::app) const ALL: [Self; 20] = [
         Self::OpenMedia,
         Self::OpenMediaSearch,
         Self::OpenPublicServerBrowser,
@@ -86,7 +85,6 @@ impl MenuActionId {
         Self::IdentifyAsController,
         Self::TrustedDomains,
         Self::SetOffset,
-        Self::TlsCertificates,
         Self::TogglePlaybackButtons,
         Self::ToggleAutoplayControls,
         Self::ToggleHideEmptyRooms,
@@ -111,7 +109,6 @@ impl MenuActionId {
             Self::IdentifyAsController => "menu.identify_as_controller",
             Self::TrustedDomains => "menu.trusted_domains",
             Self::SetOffset => "menu.set_offset",
-            Self::TlsCertificates => "menu.tls_certificates",
             Self::TogglePlaybackButtons => "menu.toggle_playback_buttons",
             Self::ToggleAutoplayControls => "menu.toggle_autoplay_controls",
             Self::ToggleHideEmptyRooms => "menu.toggle_hide_empty_rooms",
@@ -137,7 +134,6 @@ impl MenuActionId {
             Self::IdentifyAsController => "Identify As Controller",
             Self::TrustedDomains => "Trusted Domains",
             Self::SetOffset => "Set Offset",
-            Self::TlsCertificates => "TLS Certificates",
             Self::TogglePlaybackButtons => "Playback Buttons",
             Self::ToggleAutoplayControls => "Autoplay",
             Self::ToggleHideEmptyRooms => "Hide Empty Rooms",
@@ -225,8 +221,6 @@ impl super::MenuDialogShellState {
 mod tests {
     use std::collections::HashSet;
 
-    use sorotte_client_app::app_boundary::state::StoredClientSettings;
-
     use super::*;
 
     #[test]
@@ -285,9 +279,7 @@ mod tests {
 
     #[test]
     fn menu_action_ids_cover_every_presented_menu_action() {
-        let menus = super::super::MenuDialogShellState::from_stored_settings(
-            &StoredClientSettings::default(),
-        );
+        let menus = super::super::MenuDialogShellState::default();
         assert_eq!(
             menus
                 .sections

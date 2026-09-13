@@ -69,7 +69,7 @@ async fn run_reconnect_backoff(
 ) -> anyhow::Result<bool> {
     let _ = runtime.dispatch(ClientCommand::Reconnect { attempt: *retries });
     runtime.run_reconnect_retry(*retries)?;
-    flush_reconnect_notifications(runtime)?;
+    flush_reconnect_notifications(runtime, &mut emit_reconnect_transition_notification)?;
     let mut reconnect_delay = None;
     let mut stop_requested = false;
     runtime.drain_reconnect_intents(

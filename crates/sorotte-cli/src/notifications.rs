@@ -56,29 +56,27 @@ use self::player_osd::{
 };
 
 #[cfg(test)]
-pub(super) use self::autoplay::{
-    autoplay_countdown_notification_message_localized, flush_autoplay_notifications_to_sink,
-};
+pub(super) use self::autoplay::autoplay_countdown_notification_message_localized;
 pub(super) use self::autoplay::{
     emit_autoplay_countdown_notification, flush_autoplay_notifications,
 };
-pub(super) use self::chat::flush_chat_notifications;
 #[cfg(test)]
-pub(super) use self::chat::{chat_notification_message, flush_chat_notifications_to_sink};
-pub(super) use self::controller_auth::flush_controller_auth_notifications;
+pub(super) use self::chat::chat_notification_message;
+pub(super) use self::chat::{emit_chat_notification, flush_chat_notifications};
 #[cfg(test)]
 pub(super) use self::controller_auth::{
     controller_auth_notification_hidden_from_osd, controller_auth_transition_notification_message,
     controller_auth_transition_notification_message_localized,
-    flush_controller_auth_notifications_to_sink,
+};
+pub(super) use self::controller_auth::{
+    emit_controller_auth_transition_notification, flush_controller_auth_notifications,
 };
 pub(super) use self::file_difference::{
     emit_file_difference_notification, flush_file_difference_notifications,
 };
 #[cfg(test)]
 pub(super) use self::file_difference::{
-    flush_file_difference_notifications_to_sink, format_file_difference_summary,
-    localized_file_difference_summary,
+    format_file_difference_summary, localized_file_difference_summary,
 };
 pub(super) use self::playback_diagnostics::{
     SeekPreparationNotificationState, flush_player_playback_telemetry_diagnostics,
@@ -93,19 +91,21 @@ pub(super) use self::playback_diagnostics::{
 pub(super) use self::readiness::{
     ReadinessNotificationState, flush_readiness_status_notifications,
 };
-pub(super) use self::reconnect::flush_reconnect_notifications;
+pub(super) use self::reconnect::{
+    emit_reconnect_transition_notification, flush_reconnect_notifications,
+};
 #[cfg(test)]
 pub(super) use self::reconnect::{
-    flush_reconnect_notifications_to_sink, reconnect_transition_notification_message,
-    reconnect_transition_notification_message_localized,
+    reconnect_transition_notification_message, reconnect_transition_notification_message_localized,
 };
 pub(super) use self::reconnect_diagnostics::{
     emit_reconnect_correction_diagnostic, flush_reconnect_correction_diagnostics_to_sink,
 };
-pub(super) use self::user_change::flush_user_change_notifications;
+pub(super) use self::user_change::{
+    emit_user_change_notification, flush_user_change_notifications,
+};
 #[cfg(test)]
 pub(super) use self::user_change::{
-    flush_user_change_notifications_to_sink, format_duration,
-    user_change_notification_hidden_from_osd, user_change_notification_message,
+    format_duration, user_change_notification_hidden_from_osd, user_change_notification_message,
     user_change_notification_message_localized,
 };

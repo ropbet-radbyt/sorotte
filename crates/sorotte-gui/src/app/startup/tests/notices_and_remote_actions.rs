@@ -28,7 +28,7 @@ fn startup_notice_mentions_configuration_surface_and_grouped_sections() {
     assert!(notice.contains("[Public Server Browser]"));
     assert!(notice.contains("[Media Search Workflow]"));
     assert!(notice.contains("Playback Controls:"));
-    assert!(notice.contains("Dialog Prompts:"));
+    assert!(notice.contains("Dialogs:"));
     assert!(notice.contains("Servers (0):"));
     assert!(notice.contains("Directories (0):"));
     assert!(notice.contains("unified shell app state and action reducer"));

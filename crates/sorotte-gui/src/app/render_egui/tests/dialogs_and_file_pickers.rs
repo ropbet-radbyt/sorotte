@@ -3,22 +3,6 @@ use super::*;
 #[test]
 fn gui_widget_egui_renderer_exposes_modal_specific_titles_and_actions() {
     assert_eq!(
-        GuiWidgetEguiRenderer::modal_window_title(GuiShellModal::TlsCertificatePrompt),
-        "TLS Certificate Prompt"
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::modal_actions(GuiShellModal::TlsCertificatePrompt),
-        vec![
-            ("shell:modal:tls:trust", "Trust Certificate"),
-            ("shell:modal:tls:reject", "Reject Certificate"),
-            ("shell:modal:tls:help", "Open Help"),
-        ]
-    );
-    assert_eq!(
-        GuiWidgetEguiRenderer::modal_actions(GuiShellModal::UpdateNotice),
-        Vec::<(&'static str, &'static str)>::new()
-    );
-    assert_eq!(
         GuiWidgetEguiRenderer::modal_actions(GuiShellModal::About),
         vec![
             ("shell:modal:about:help", "Open Help"),

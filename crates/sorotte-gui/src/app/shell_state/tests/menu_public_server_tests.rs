@@ -20,11 +20,11 @@ fn gui_shell_app_state_triggers_selected_menu_actions() {
     assert_eq!(state.active_view, GuiShellView::Setup);
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
-        section_index: 2,
-        action_index: 4,
+        section_index: 4,
+        action_index: 0,
     }));
     assert!(state.apply(GuiShellAction::TriggerSelectedMenuAction));
-    assert_eq!(state.open_modal, Some(GuiShellModal::TlsCertificatePrompt));
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
 
     assert!(state.apply(GuiShellAction::SelectMenuAction {
         section_index: 1,

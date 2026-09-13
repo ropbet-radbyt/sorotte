@@ -146,7 +146,7 @@ activate	settings.general.autosave_joins_to_list
 activate	settings.general.force_gui_prompt
 assert-value	settings.connection.room_history_count	2
 assert-value	settings.media_library.directory_count	2
-assert-value	menus:dialog:tls	yes
+assert-value	shell:open-modal	(none)
 assert-value	shell:update-indicator:title	Update
 activate	plugins-root
 assert-selected	plugins-root	true

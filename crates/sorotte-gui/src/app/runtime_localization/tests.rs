@@ -1,6 +1,6 @@
 use super::{
     localize_gui_runtime_message, localized_public_server_list_failed_message,
-    localized_sorotte_uptodate_message, localized_update_check_failed_message,
+    localized_sorotte_uptodate_message,
 };
 
 #[test]
@@ -13,7 +13,6 @@ fn service_messages_use_selected_language() {
         localized_public_server_list_failed_message(Some("de")),
         "Die Liste der oeffentlichen Server konnte nicht geladen werden. Bitte besuchen Sie https://www.syncplay.pl/ in Ihrem Browser."
     );
-    assert!(localized_update_check_failed_message(Some("fr"), "1.7.5").contains("Sorotte 1.7.5"));
 }
 
 #[test]

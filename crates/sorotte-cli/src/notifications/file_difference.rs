@@ -19,25 +19,6 @@ pub(crate) fn emit_file_difference_notification(summary: &str) -> anyhow::Result
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn flush_file_difference_notifications_to_sink<F>(
-    runtime: &ClientApplication<MpvAdapter>,
-    state: &mut FileDifferenceNotificationState,
-    notify: &mut F,
-) -> anyhow::Result<()>
-where
-    F: FnMut(&str) -> anyhow::Result<()>,
-{
-    if let Some(summary) = shared_next_file_difference_notification_summary(
-        state,
-        runtime.session().file_differences_for_current_room(),
-    ) {
-        notify(summary.as_str())?;
-    }
-
-    Ok(())
-}
-
 fn file_difference_notification_message_localized(summary: &str, language: Option<&str>) -> String {
     shared_localized_file_difference_notification_line(summary, language)
 }
@@ -61,8 +42,9 @@ pub(crate) fn flush_file_difference_notifications<F>(
 where
     F: FnMut(&str) -> anyhow::Result<()>,
 {
+    let mut next_state = state.clone();
     if let Some(summary) = shared_next_file_difference_notification_summary(
-        state,
+        &mut next_state,
         runtime.session().file_differences_for_current_room(),
     ) {
         runtime.with_player_io(|player| {
@@ -70,6 +52,7 @@ where
         });
         notify(summary.as_str())?;
     }
+    *state = next_state;
 
     Ok(())
 }

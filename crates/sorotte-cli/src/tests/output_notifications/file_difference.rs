@@ -37,7 +37,7 @@ fn localized_file_difference_summary_localizes_user_visible_tokens() {
 }
 
 #[test]
-fn flush_file_difference_notifications_to_sink_dedupes_and_honors_duration_overrides() {
+fn flush_file_difference_notifications_dedupes_and_honors_duration_overrides() {
     let config = ClientLoopConfig {
         host: "127.0.0.1".to_owned(),
         port: 8999,
@@ -100,25 +100,42 @@ fn flush_file_difference_notifications_to_sink_dedupes_and_honors_duration_overr
             .expect("peer duration mismatch should apply");
 
     let mut state = crate::FileDifferenceNotificationState::default();
+    let error = flush_file_difference_notifications(&mut runtime, &mut state, &mut |_| {
+        anyhow::bail!("notification output unavailable")
+    })
+    .expect_err("output failure should be reported");
+    assert_eq!(error.to_string(), "notification output unavailable");
+    assert_eq!(
+        state,
+        crate::FileDifferenceNotificationState::default(),
+        "failed output must not acknowledge the summary"
+    );
     let mut captured = Vec::new();
-    flush_file_difference_notifications_to_sink(&runtime, &mut state, &mut |summary| {
+    flush_file_difference_notifications(&mut runtime, &mut state, &mut |summary| {
         captured.push(summary.to_owned());
         Ok(())
     })
     .expect("duration mismatch should emit one notification");
-    flush_file_difference_notifications_to_sink(&runtime, &mut state, &mut |summary| {
+    flush_file_difference_notifications(&mut runtime, &mut state, &mut |summary| {
         captured.push(summary.to_owned());
         Ok(())
     })
     .expect("identical summary should not emit duplicate notification");
     assert_eq!(captured, vec!["duration"]);
+    assert_eq!(
+        runtime.player().last_simulated_syncplay_osd_message(),
+        Some(&(
+            "file differences: duration".to_owned(),
+            sorotte_player_mpv::SyncplayOsdKind::Notification,
+        ))
+    );
 
     let mut readiness = runtime.session().readiness_autoplay_config().clone();
     readiness.show_duration_notification = false;
     runtime
         .session_mut()
         .set_readiness_autoplay_config(readiness);
-    flush_file_difference_notifications_to_sink(&runtime, &mut state, &mut |summary| {
+    flush_file_difference_notifications(&mut runtime, &mut state, &mut |summary| {
         captured.push(summary.to_owned());
         Ok(())
     })
@@ -131,7 +148,7 @@ fn flush_file_difference_notifications_to_sink_dedupes_and_honors_duration_overr
                 r#"{"Set":{"user":{"bob":{"room":{"name":"room1"},"file":{"name":"other.mkv","size":123456789,"duration":100.0}}}}}"#,
             )
             .expect("peer filename mismatch should apply");
-    flush_file_difference_notifications_to_sink(&runtime, &mut state, &mut |summary| {
+    flush_file_difference_notifications(&mut runtime, &mut state, &mut |summary| {
         captured.push(summary.to_owned());
         Ok(())
     })

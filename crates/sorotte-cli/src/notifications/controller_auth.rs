@@ -20,7 +20,7 @@ pub(crate) fn controller_auth_notification_hidden_from_osd(
     shared_controller_auth_notification_hidden_from_osd(notification)
 }
 
-fn emit_controller_auth_transition_notification(
+pub(crate) fn emit_controller_auth_transition_notification(
     notification: &ControllerAuthTransitionNotification,
 ) -> anyhow::Result<()> {
     if controller_auth_notification_hidden_from_osd(notification) {
@@ -58,27 +58,20 @@ fn emit_controller_auth_transition_notification_to_player(
     );
 }
 
-pub(crate) fn flush_controller_auth_notifications(
-    runtime: &mut ClientApplication<MpvAdapter>,
-) -> anyhow::Result<()> {
-    while let Some(notification) = runtime.pending_controller_auth_notification().cloned() {
-        runtime.with_player_io(|player| {
-            emit_controller_auth_transition_notification_to_player(player, &notification);
-        });
-        emit_controller_auth_transition_notification(&notification)?;
-        let acknowledged = runtime.acknowledge_controller_auth_notification();
-        debug_assert!(acknowledged.is_some());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-pub(crate) fn flush_controller_auth_notifications_to_sink<F>(
+pub(crate) fn flush_controller_auth_notifications<F>(
     runtime: &mut ClientApplication<MpvAdapter>,
     notify: &mut F,
 ) -> anyhow::Result<()>
 where
     F: FnMut(&ControllerAuthTransitionNotification) -> anyhow::Result<()>,
 {
-    runtime.drain_controller_auth_notifications_to_sink(|notification| notify(notification))
+    while let Some(notification) = runtime.pending_controller_auth_notification().cloned() {
+        runtime.with_player_io(|player| {
+            emit_controller_auth_transition_notification_to_player(player, &notification);
+        });
+        notify(&notification)?;
+        let acknowledged = runtime.acknowledge_controller_auth_notification();
+        debug_assert!(acknowledged.is_some());
+    }
+    Ok(())
 }

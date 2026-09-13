@@ -33,7 +33,6 @@ impl SorotteGuiShellAppState {
                 true
             }
             GuiShellAction::CloseModal => self.close_modal_window(),
-            GuiShellAction::DismissUpdateNotice => self.dismiss_update_notice(),
             GuiShellAction::BeginUpdateCheck { user_initiated } => {
                 self.begin_update_check(user_initiated)
             }
@@ -53,18 +52,8 @@ impl SorotteGuiShellAppState {
             GuiShellAction::ApplyStartupPublicServerCache(servers) => {
                 self.apply_startup_public_server_cache(servers)
             }
-            GuiShellAction::TrustTlsCertificatePrompt => self.complete_tls_certificate_prompt(true),
-            GuiShellAction::RejectTlsCertificatePrompt => {
-                self.complete_tls_certificate_prompt(false)
-            }
             GuiShellAction::TriggerSelectedMenuAction => self.trigger_selected_menu_action(),
             GuiShellAction::InvokeMenuAction(action_id) => self.invoke_menu_action(action_id),
-            GuiShellAction::AnnounceTlsCertificatePromptRequired => {
-                self.announce_tls_certificate_prompt_required()
-            }
-            GuiShellAction::AnnounceUpdateNoticeAvailable => {
-                self.announce_update_notice_available()
-            }
             GuiShellAction::AnnounceAboutDialogRequested => self.announce_about_dialog_requested(),
             GuiShellAction::AnnounceHelpRequested => self.announce_help_requested(),
             GuiShellAction::ApplyMenuDialogRuntimeSnapshot(snapshot) => {

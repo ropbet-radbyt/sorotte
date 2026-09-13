@@ -153,9 +153,6 @@ pub struct InstrumentedMediaFingerprint {
     pub report: MediaFingerprintExtractionReport,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct MediaFingerprintExtractionOptions;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaFingerprintError {
     FileMetadata {
@@ -220,55 +217,11 @@ impl fmt::Display for MediaFingerprintError {
 
 impl std::error::Error for MediaFingerprintError {}
 
-pub fn fingerprint_media_file(
-    path: impl AsRef<Path>,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &crate::MediaExtractionSettings,
-) -> Result<MediaFingerprintRecord, MediaFingerprintError> {
-    fingerprint_media_file_with_report(path, tools, extraction_settings, None)
-        .map(|fingerprint| fingerprint.record)
-}
-
-pub fn fingerprint_media_file_cancellable(
-    path: impl AsRef<Path>,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &crate::MediaExtractionSettings,
-    cancel_flag: &AtomicBool,
-) -> Result<MediaFingerprintRecord, MediaFingerprintError> {
-    fingerprint_media_file_with_report(path, tools, extraction_settings, Some(cancel_flag))
-        .map(|fingerprint| fingerprint.record)
-}
-
-pub fn fingerprint_media_file_cancellable_with_report(
-    path: impl AsRef<Path>,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &crate::MediaExtractionSettings,
-    cancel_flag: &AtomicBool,
-) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
-    fingerprint_media_file_with_report(path, tools, extraction_settings, Some(cancel_flag))
-}
-
 pub fn fingerprint_media_file_with_report(
     path: impl AsRef<Path>,
     tools: &MediaMatchToolPaths,
     extraction_settings: &crate::MediaExtractionSettings,
     cancel_flag: Option<&AtomicBool>,
-) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
-    fingerprint_media_file_with_report_and_options(
-        path,
-        tools,
-        extraction_settings,
-        cancel_flag,
-        &MediaFingerprintExtractionOptions,
-    )
-}
-
-pub fn fingerprint_media_file_with_report_and_options(
-    path: impl AsRef<Path>,
-    tools: &MediaMatchToolPaths,
-    extraction_settings: &crate::MediaExtractionSettings,
-    cancel_flag: Option<&AtomicBool>,
-    _options: &MediaFingerprintExtractionOptions,
 ) -> Result<InstrumentedMediaFingerprint, MediaFingerprintError> {
     // Retain the supported worst-case probe plus three-window audio budget, but
     // do not renew it between subprocess execution, pipe draining, and analysis.

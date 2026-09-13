@@ -499,66 +499,6 @@ pub fn ensure_sorotte_client_storage_root(root: &Path) -> anyhow::Result<()> {
     })
 }
 
-pub fn resolve_sorotte_client_storage_paths_from_lookup<F, C, I, R>(
-    lookup: &F,
-    current_dir: C,
-    is_file: I,
-    read_to_string: R,
-    cli_config_path: Option<PathBuf>,
-    cli_config_root: Option<PathBuf>,
-) -> Option<SorotteClientStoragePaths>
-where
-    F: Fn(&str) -> Option<String>,
-    C: Fn() -> Option<PathBuf>,
-    I: Fn(&Path) -> bool,
-    R: Fn(&Path) -> Option<String>,
-{
-    resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
-        lookup,
-        current_dir,
-        || None,
-        is_file,
-        read_to_string,
-        cli_config_path,
-        cli_config_root,
-    )
-}
-
-pub fn resolve_sorotte_client_storage_paths_from_lookup_with_install_root<F, C, E, I, R>(
-    lookup: &F,
-    current_dir: C,
-    install_root: E,
-    is_file: I,
-    read_to_string: R,
-    cli_config_path: Option<PathBuf>,
-    cli_config_root: Option<PathBuf>,
-) -> Option<SorotteClientStoragePaths>
-where
-    F: Fn(&str) -> Option<String>,
-    C: Fn() -> Option<PathBuf>,
-    E: Fn() -> Option<PathBuf>,
-    I: Fn(&Path) -> bool,
-    R: Fn(&Path) -> Option<String>,
-{
-    resolve_sorotte_client_storage_paths_with_reader(
-        lookup,
-        current_dir,
-        install_root,
-        &is_file,
-        |path| match read_to_string(path) {
-            Some(contents) => Ok(Some(contents)),
-            None if is_file(path) => {
-                Err(anyhow!("failed reading storage locator {}", path.display()))
-            }
-            None => Ok(None),
-        },
-        cli_config_path,
-        cli_config_root,
-    )
-    .ok()
-    .flatten()
-}
-
 /// Resolve storage locations with a transaction-consistent locator read.
 /// Metadata probes only label the default target; they cannot override locator bytes.
 pub fn try_resolve_sorotte_client_storage_paths_from_lookup_with_install_root<F, C, E, I>(
@@ -922,23 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_locator_read_failure_returns_no_path() {
-        let paths = resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
-            &lookup(base_env()),
-            || None,
-            || Some(PathBuf::from("/install")),
-            |_| true,
-            |_| None,
-            None,
-            None,
-        );
-        assert!(
-            paths.is_none(),
-            "unreadable locator must not become a portable config"
-        );
-    }
-
-    #[test]
     fn checked_locator_reports_invalid_utf8_instead_of_using_default_storage() {
         let fixture = LocatorFixture::new("invalid-utf8");
         std::fs::write(sorotte_client_install_locator_path(&fixture.0), [0xff]).unwrap();
@@ -1028,14 +951,16 @@ mod tests {
         let mut env = base_env();
         env.insert(SOROTTE_CLIENT_CONFIG_PATH_ENV, "/env/sorotte.ini");
         env.insert(SOROTTE_CLIENT_CONFIG_ROOT_ENV, "/env-root");
-        let paths = resolve_sorotte_client_storage_paths_from_lookup(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
+            || None,
             |_| false,
-            |_| Some("/persisted-root".to_owned()),
+            |_| Ok(Some("/persisted-root".to_owned())),
             Some(PathBuf::from("relative/custom.ini")),
             Some(PathBuf::from("ignored")),
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::CliConfigPath);
@@ -1047,14 +972,16 @@ mod tests {
     fn storage_paths_use_cli_root_before_env_sources() {
         let mut env = base_env();
         env.insert(SOROTTE_CLIENT_CONFIG_PATH_ENV, "/env/sorotte.ini");
-        let paths = resolve_sorotte_client_storage_paths_from_lookup(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
+            || None,
             |_| false,
-            |_| None,
+            |_| Ok(None),
             None,
             Some(PathBuf::from("portable")),
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::CliConfigRoot);
@@ -1070,14 +997,16 @@ mod tests {
         let mut env = base_env();
         env.insert(SOROTTE_CLIENT_CONFIG_PATH_ENV, "/env/sorotte.ini");
         env.insert(SOROTTE_CLIENT_CONFIG_ROOT_ENV, "/env-root");
-        let paths = resolve_sorotte_client_storage_paths_from_lookup(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
+            || None,
             |_| false,
-            |_| None,
+            |_| Ok(None),
             None,
             None,
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::EnvConfigPath);
@@ -1089,14 +1018,16 @@ mod tests {
     fn storage_paths_use_env_root_before_persisted_root() {
         let mut env = base_env();
         env.insert(SOROTTE_CLIENT_CONFIG_ROOT_ENV, "/env-root");
-        let paths = resolve_sorotte_client_storage_paths_from_lookup(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
+            || None,
             |_| true,
-            |_| Some("/persisted-root".to_owned()),
+            |_| Ok(Some("/persisted-root".to_owned())),
             None,
             None,
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::EnvConfigRoot);
@@ -1106,7 +1037,7 @@ mod tests {
     #[test]
     fn storage_paths_use_install_locator_before_persisted_root() {
         let env = base_env();
-        let paths = resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
             || Some(PathBuf::from("/install")),
@@ -1121,14 +1052,15 @@ mod tests {
                     .file_name()
                     .is_some_and(|name| name == SOROTTE_INSTALL_CONFIG_LOCATOR_FILE_NAME)
                 {
-                    Some("[settings]\nconfigRoot = .\n".to_owned())
+                    Ok(Some("[settings]\nconfigRoot = .\n".to_owned()))
                 } else {
-                    Some("/persisted-root".to_owned())
+                    Ok(Some("/persisted-root".to_owned()))
                 }
             },
             None,
             None,
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::InstallConfigRoot);
@@ -1139,7 +1071,7 @@ mod tests {
     #[test]
     fn storage_paths_use_existing_install_sorotte_ini_without_locator_as_portable_config() {
         let env = base_env();
-        let paths = resolve_sorotte_client_storage_paths_from_lookup_with_install_root(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
             || Some(PathBuf::from("/install")),
@@ -1147,10 +1079,11 @@ mod tests {
                 path.file_name()
                     .is_some_and(|name| name == SOROTTE_INSTALL_CONFIG_LOCATOR_FILE_NAME)
             },
-            |_| Some("[client_settings]\nname = portable-user\n".to_owned()),
+            |_| Ok(Some("[client_settings]\nname = portable-user\n".to_owned())),
             None,
             None,
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(paths.source, SorotteClientStorageSource::InstallConfigRoot);
@@ -1161,17 +1094,19 @@ mod tests {
     #[test]
     fn storage_paths_use_persisted_root_before_default_root() {
         let env = base_env();
-        let paths = resolve_sorotte_client_storage_paths_from_lookup(
+        let paths = resolve_sorotte_client_storage_paths_with_reader(
             &lookup(env),
             || Some(PathBuf::from("/cwd")),
+            || None,
             |path| {
                 path.file_name()
                     .is_some_and(|name| name == SOROTTE_CLIENT_CONFIG_ROOT_POINTER_FILE_NAME)
             },
-            |_| Some("portable-root".to_owned()),
+            |_| Ok(Some("portable-root".to_owned())),
             None,
             None,
         )
+        .expect("locator read should succeed")
         .expect("storage paths should resolve");
 
         assert_eq!(

@@ -108,12 +108,8 @@ fn gui_persisted_config_runtime_owner_routes_client_core_chat_transport_lines() 
         action,
         GuiShellAction::ApplyMenuDialogRuntimeSnapshot(MenuDialogRuntimeSnapshot {
             action_overrides,
-            tls_prompt_expected,
-            update_notice_expected,
             about_dialog_available,
-        }) if *tls_prompt_expected == state.menus.tls_prompt_expected
-            && *update_notice_expected == state.menus.update_notice_expected
-            && *about_dialog_available == state.menus.about_dialog_available
+        }) if *about_dialog_available == state.menus.about_dialog_available
             && action_overrides.iter().any(|override_action|
                 override_action.id == MenuActionId::CreateControlledRoom
                     && override_action.enabled)

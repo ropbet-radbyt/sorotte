@@ -78,8 +78,6 @@ pub(super) struct MenuSectionShellState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuDialogShellState {
     pub(super) sections: Vec<MenuSectionShellState>,
-    pub(super) tls_prompt_expected: bool,
-    pub(super) update_notice_expected: bool,
     pub(super) about_dialog_available: bool,
 }
 
@@ -92,8 +90,6 @@ pub(super) struct MenuActionRuntimeOverride {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuDialogRuntimeSnapshot {
     pub(super) action_overrides: Vec<MenuActionRuntimeOverride>,
-    pub(super) tls_prompt_expected: bool,
-    pub(super) update_notice_expected: bool,
     pub(super) about_dialog_available: bool,
 }
 
@@ -801,8 +797,6 @@ pub(super) struct SorotteGuiRuntimeSnapshot {
     pub(super) main_window: MainWindowRuntimeSnapshot,
     pub(super) public_servers: PublicServerBrowserShellState,
     pub(super) media_search: MediaSearchWorkflowShellState,
-    pub(super) tls_prompt_expected: bool,
-    pub(super) update_notice_expected: bool,
     pub(super) about_dialog_available: bool,
 }
 
@@ -1661,8 +1655,6 @@ impl GuiShellView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GuiShellModal {
     About,
-    UpdateNotice,
-    TlsCertificatePrompt,
     PlayerSetup,
     StreamSupport,
 }
@@ -1671,8 +1663,6 @@ impl GuiShellModal {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::About => "about",
-            Self::UpdateNotice => "update-notice",
-            Self::TlsCertificatePrompt => "tls-certificate-prompt",
             Self::PlayerSetup => "player-setup",
             Self::StreamSupport => "stream-support",
         }

@@ -412,7 +412,7 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
     assert!(state.apply(GuiShellAction::ApplyGuiRuntimeSnapshot(
         SorotteGuiRuntimeSnapshot {
             active_view: GuiShellView::Setup,
-            open_modal: Some(GuiShellModal::UpdateNotice),
+            open_modal: Some(GuiShellModal::About),
             main_window: MainWindowRuntimeSnapshot {
                 room_name: "+LiveRoom".to_owned(),
                 shared_playlist_enabled: true,
@@ -483,14 +483,12 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
                 double_check_interval_seconds: Some(2.0),
                 warning_threshold_seconds: Some(5.0),
             },
-            tls_prompt_expected: true,
-            update_notice_expected: true,
             about_dialog_available: false,
         },
     )));
 
     assert_eq!(state.active_view, GuiShellView::Setup);
-    assert_eq!(state.open_modal, Some(GuiShellModal::UpdateNotice));
+    assert_eq!(state.open_modal, Some(GuiShellModal::About));
     assert_eq!(state.main_window.room_name, "+LiveRoom");
     assert!(state.main_window.playback_paused);
     assert!(state.main_window.autoplay_active);
@@ -539,8 +537,6 @@ fn gui_shell_app_state_applies_full_gui_runtime_snapshots() {
             .find(|action| action.label == "Shared Playlist")
             .is_some_and(|action| action.enabled)
     );
-    assert!(state.menus.tls_prompt_expected);
-    assert!(state.menus.update_notice_expected);
     assert!(!state.menus.about_dialog_available);
     let help = state
         .menus
@@ -600,8 +596,6 @@ fn gui_shell_app_state_rejects_invalid_full_gui_runtime_snapshots() {
                 double_check_interval_seconds: None,
                 warning_threshold_seconds: None,
             },
-            tls_prompt_expected: false,
-            update_notice_expected: false,
             about_dialog_available: true,
         },
     )));

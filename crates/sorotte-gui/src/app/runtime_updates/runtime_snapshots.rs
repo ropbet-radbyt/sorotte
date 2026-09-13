@@ -21,12 +21,9 @@ impl SorotteGuiShellAppState {
         &mut self,
         snapshot: MenuDialogRuntimeSnapshot,
     ) -> bool {
-        let previous_tls_prompt_expected = self.menus.tls_prompt_expected;
-        let previous_update_notice_expected = self.menus.update_notice_expected;
         if let Err(message) = super::super::feature_snapshots::apply_menu_dialog_snapshot(
             &mut self.menus,
             &mut self.runtime_menu_action_overrides,
-            &self.configuration.to_stored_settings(),
             snapshot,
         ) {
             return self.record_action_error(message);
@@ -34,10 +31,6 @@ impl SorotteGuiShellAppState {
         self.sync_dialog_menu_actions_from_runtime_state();
         self.normalize_selected_menu_action_after_runtime_update();
         self.apply_selection_to_surfaces();
-        self.open_newly_expected_modal_if_needed(
-            previous_tls_prompt_expected,
-            previous_update_notice_expected,
-        );
         self.clear_action_error_and_refresh();
         true
     }

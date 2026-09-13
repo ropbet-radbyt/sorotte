@@ -1,7 +1,7 @@
 use super::*;
 
-impl MenuDialogShellState {
-    pub(in crate::app) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
+impl Default for MenuDialogShellState {
+    fn default() -> Self {
         Self {
             sections: vec![
                 MenuSectionShellState {
@@ -38,7 +38,6 @@ impl MenuDialogShellState {
                         MenuActionShellItem::new(MenuActionId::IdentifyAsController, false, false),
                         MenuActionShellItem::new(MenuActionId::TrustedDomains, true, false),
                         MenuActionShellItem::new(MenuActionId::SetOffset, false, false),
-                        MenuActionShellItem::new(MenuActionId::TlsCertificates, true, false),
                     ],
                 },
                 MenuSectionShellState {
@@ -60,14 +59,12 @@ impl MenuDialogShellState {
                     ],
                 },
             ],
-            // The menu models whether the persisted checkbox explicitly requests a prompt;
-            // the live session uses the resolved playback policy.
-            tls_prompt_expected: settings.only_switch_to_trusted_domains == Some(true),
-            update_notice_expected: false,
             about_dialog_available: true,
         }
     }
+}
 
+impl MenuDialogShellState {
     #[cfg(test)]
     pub(in crate::app) fn render_lines(&self) -> Vec<String> {
         let mut lines = vec!["[Menus & Dialogs]".to_owned()];
@@ -85,9 +82,7 @@ impl MenuDialogShellState {
         }
 
         lines.push(format!(
-            "Dialog Prompts: tls_certificate={}, update_notice={}, about={}",
-            bool_label(self.tls_prompt_expected),
-            bool_label(self.update_notice_expected),
+            "Dialogs: about={}",
             bool_label(self.about_dialog_available),
         ));
 

@@ -35,7 +35,7 @@ impl GuiRuntimeState {
                 commands: GuiCommandAvailabilityState::default(),
                 command_overrides: GuiCommandAvailabilityRuntimeOverride::default(),
                 menu_overrides: Vec::new(),
-                menus: MenuDialogShellState::from_stored_settings(&shell_settings),
+                menus: MenuDialogShellState::default(),
                 pending_operation: None,
                 pending_local_ready_target: None,
                 pending_saved_server_connect_intent: None,

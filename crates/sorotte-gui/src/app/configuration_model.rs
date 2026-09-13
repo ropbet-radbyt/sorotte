@@ -610,17 +610,6 @@ pub(super) fn apply_persisted_settings_patch(
     refresh_sources
 }
 
-pub(super) fn preserves_runtime_dialog_expectations(
-    menus: &MenuDialogShellState,
-    previous_settings: &StoredClientSettings,
-) -> (bool, bool) {
-    let previous_baseline = MenuDialogShellState::from_stored_settings(previous_settings);
-    (
-        menus.tls_prompt_expected != previous_baseline.tls_prompt_expected,
-        menus.update_notice_expected != previous_baseline.update_notice_expected,
-    )
-}
-
 pub(super) fn preserves_runtime_public_server_surface(
     public_servers: &PublicServerBrowserShellState,
     previous_settings: &StoredClientSettings,
@@ -639,11 +628,10 @@ pub(super) fn preserves_runtime_media_search_surface(
         != MediaSearchWorkflowRuntimeFlags::from_shell_state(&previous_baseline)
 }
 
-pub(super) fn normalize_runtime_menu_action_overrides_for_settings(
+pub(super) fn normalize_runtime_menu_action_overrides(
     overrides: &mut Vec<MenuActionRuntimeOverride>,
-    settings: &StoredClientSettings,
 ) {
-    let baseline_menus = MenuDialogShellState::from_stored_settings(settings);
+    let baseline_menus = MenuDialogShellState::default();
     overrides.retain(|action_override| {
         baseline_menus
             .action(action_override.id)

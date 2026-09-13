@@ -119,8 +119,6 @@ fn gui_persisted_config_runtime_owner_reconnects_client_core_tcp_session_for_pub
                 id: MenuActionId::SharedPlaylist,
                 enabled: true,
             }],
-            tls_prompt_expected: state.menus.tls_prompt_expected,
-            update_notice_expected: state.menus.update_notice_expected,
             about_dialog_available: state.menus.about_dialog_available,
         }
     )));
