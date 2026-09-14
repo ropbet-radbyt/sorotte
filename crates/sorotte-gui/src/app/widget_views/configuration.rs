@@ -719,6 +719,16 @@ impl SorotteGuiShellAppState {
     fn synchronization_presets_widget_tree(&self) -> GuiWidgetNode {
         let current = self.draft_synchronization_preset();
         let can_apply = self.pending_operation.is_none() && self.text_edit_session.is_none();
+        let preset_buttons = SynchronizationPreset::ALL.map(|preset| {
+            GuiWidgetNode::leaf(
+                format!("settings-preset:{}:apply", preset.stable_id()),
+                preset.label(),
+                GuiWidgetKind::Button,
+                None,
+                can_apply && current != Some(preset),
+                current == Some(preset),
+            )
+        });
         let mut children = vec![
             GuiWidgetNode::leaf(
                 "settings-preset:current",
@@ -740,19 +750,7 @@ impl SorotteGuiShellAppState {
                     min_column_width: 160.0,
                     max_columns: 2,
                 },
-                SynchronizationPreset::ALL
-                    .into_iter()
-                    .map(|preset| {
-                        GuiWidgetNode::leaf(
-                            format!("settings-preset:{}:apply", preset.stable_id()),
-                            preset.label(),
-                            GuiWidgetKind::Button,
-                            None,
-                            can_apply && current != Some(preset),
-                            current == Some(preset),
-                        )
-                    })
-                    .collect(),
+                preset_buttons.into(),
             ),
         ];
         if let Some(preset) = current {
