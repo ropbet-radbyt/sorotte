@@ -186,6 +186,14 @@ impl GuiWidgetEguiRenderer {
             "config-command:connect-once" => vec![GuiShellAction::BeginConnectOnce],
             "config-command:save-and-connect" => vec![GuiShellAction::BeginSaveAndConnect],
             "config-command:disconnect" => vec![GuiShellAction::BeginSessionDisconnect],
+            "settings-preset:standard:apply" => vec![GuiShellAction::ApplySynchronizationPreset(
+                super::super::shell_state::SynchronizationPreset::Standard,
+            )],
+            "settings-preset:watch-together:apply" => {
+                vec![GuiShellAction::ApplySynchronizationPreset(
+                    super::super::shell_state::SynchronizationPreset::WatchTogether,
+                )]
+            }
             "config-command:save" => vec![GuiShellAction::BeginConfigurationSave],
             "config-command:discard" => vec![GuiShellAction::BeginDiscardConfigurationChanges],
             "config-command:reload" => vec![GuiShellAction::BeginConfigurationReload],

@@ -58,6 +58,9 @@ pub(super) use self::main_window::{
     MainWindowRuntimeUserSnapshot, MainWindowShellState, MainWindowUserRow,
 };
 pub(in crate::app) use self::menu::{MenuActionId, MenuSectionId};
+pub(super) use sorotte_client_app::app_boundary::settings_presets::{
+    SynchronizationPreset, SynchronizationPresetField, detect_synchronization_preset,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MenuActionShellItem {

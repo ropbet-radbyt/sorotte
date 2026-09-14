@@ -107,6 +107,24 @@ A future optional room-level mid-play seek barrier could coordinate prepare, par
 
 Settings live in `[client_settings]` in `sorotte.ini` and are editable in the GUI Streaming section.
 
+### Synchronization presets
+
+The GUI offers **Standard** and **Watch together** in Overview and Playback & Search. Presets write these existing settings into the draft; Save persists them through the normal settings transaction, and they apply on the next connection. No preset name is stored in the INI file.
+
+| Setting | Standard | Watch together |
+| --- | --- | --- |
+| `streamingStartPolicy` | `immediate` | `wait-all` |
+| `streamingStartQuorumPercent` | `75` | `100` |
+| `streamingStartTimeout` | `15` | `30` |
+| `streamingStartTimeoutAction` | `continue` | `ask-controller` |
+| `streamingRoomBufferingPolicy` | `independent` | `pause-eligible` |
+| `streamingRoomQuorumPercent` | `75` | `100` |
+| `streamingRoomMaxPause` | `30` | `30` |
+
+The label is derived from these seven values, including their resolved defaults. A different or invalid owned value is **Custom**; validation errors in unrelated controls do not change the label. Applying a preset preserves all other settings and unsaved edits, including cache, quality, recovery, readiness intent preferences, advanced player arguments, and credentials. Existing sparse/imported settings therefore remain Standard, and the cache defaults remain 5 seconds target, 30 seconds read-ahead, 150 MiB memory, and disk cache disabled.
+
+Watch together respects current server readiness and authority. In a readiness V2 room, every required participant must have Ready intent and be technically playable before the start gate can commit. A quorum does not bypass that gate. The 30-second timeout leaves the room paused awaiting a controller decision. Non-independent buffering requires a controlled room and its authenticated controller; the preset neither creates one nor grants authority. Servers without the negotiated barrier extension retain the compatibility start path. See [Readiness and automatic start](READINESS.md) for mixed-room participation rules.
+
 ### Quality and mpv cache
 
 | Key | Default | Effect |

@@ -432,15 +432,18 @@ impl SorotteGuiShellAppState {
         let public_servers_panel = self.public_server_widget_tree();
         let media_search_panel = self.media_search_widget_tree();
 
-        let mut overview_children = vec![GuiWidgetNode::layout(
-            "configuration:sections",
-            "Configuration Sections",
-            GuiLayoutMode::ResponsiveColumns {
-                min_column_width: 420.0,
-                max_columns: 3,
-            },
-            section_cards.clone(),
-        )];
+        let mut overview_children = vec![
+            self.synchronization_presets_widget_tree(),
+            GuiWidgetNode::layout(
+                "configuration:sections",
+                "Configuration Sections",
+                GuiLayoutMode::ResponsiveColumns {
+                    min_column_width: 420.0,
+                    max_columns: 3,
+                },
+                section_cards.clone(),
+            ),
+        ];
         overview_children.push(GuiWidgetNode::layout(
             "configuration:setup-workflows",
             "Setup Workflows",
@@ -499,16 +502,19 @@ impl SorotteGuiShellAppState {
                 min_column_width: 420.0,
                 max_columns: 3,
             },
-            [
-                SettingId::PlaybackReadyAtStart,
-                SettingId::SyncRewindOnDesync,
-                SettingId::StreamingQuality,
-                SettingId::MediaLibraryDirectories,
-            ]
-            .into_iter()
-            .filter_map(section_card)
-            .chain([media_search_panel.clone()])
-            .collect(),
+            std::iter::once(self.synchronization_presets_widget_tree())
+                .chain(
+                    [
+                        SettingId::PlaybackReadyAtStart,
+                        SettingId::SyncRewindOnDesync,
+                        SettingId::StreamingQuality,
+                        SettingId::MediaLibraryDirectories,
+                    ]
+                    .into_iter()
+                    .filter_map(section_card),
+                )
+                .chain([media_search_panel.clone()])
+                .collect(),
         );
 
         let privacy_chat_content = GuiWidgetNode::layout(
@@ -707,6 +713,79 @@ impl SorotteGuiShellAppState {
                     commands_panel,
                 ])
                 .collect(),
+        )
+    }
+
+    fn synchronization_presets_widget_tree(&self) -> GuiWidgetNode {
+        let current = self.draft_synchronization_preset();
+        let can_apply = self.pending_operation.is_none() && self.text_edit_session.is_none();
+        let mut children = vec![
+            GuiWidgetNode::leaf(
+                "settings-preset:current",
+                "Draft preset",
+                GuiWidgetKind::Status,
+                Some(
+                    current
+                        .map(SynchronizationPreset::label)
+                        .unwrap_or("Custom")
+                        .to_owned(),
+                ),
+                true,
+                false,
+            ),
+            GuiWidgetNode::layout(
+                "settings-preset:choices",
+                "Synchronization presets",
+                GuiLayoutMode::ResponsiveColumns {
+                    min_column_width: 160.0,
+                    max_columns: 2,
+                },
+                SynchronizationPreset::ALL
+                    .into_iter()
+                    .map(|preset| {
+                        GuiWidgetNode::leaf(
+                            format!("settings-preset:{}:apply", preset.stable_id()),
+                            preset.label(),
+                            GuiWidgetKind::Button,
+                            None,
+                            can_apply && current != Some(preset),
+                            current == Some(preset),
+                        )
+                    })
+                    .collect(),
+            ),
+        ];
+        if let Some(preset) = current {
+            children.push(GuiWidgetNode::leaf(
+                "settings-preset:description",
+                "Behavior",
+                GuiWidgetKind::Status,
+                Some(preset.description().to_owned()),
+                true,
+                false,
+            ));
+        }
+        children.push(GuiWidgetNode::leaf(
+            "settings-preset:scope",
+            "Changes",
+            GuiWidgetKind::Status,
+            Some("Changes only coordinated start and room buffering. Save changes to use this preset for the next connection.".to_owned()),
+            true,
+            false,
+        ));
+        children.push(GuiWidgetNode::leaf(
+            "settings-preset:requirements",
+            "Watch together requirements",
+            GuiWidgetKind::Status,
+            Some("Coordinated starts need a supporting server. Pausing together requires a controlled room and its authenticated controller. Choosing a preset does not create a room.".to_owned()),
+            true,
+            false,
+        ));
+        GuiWidgetNode::branch(
+            "settings-presets",
+            "Synchronization presets",
+            GuiWidgetKind::Panel,
+            children,
         )
     }
 

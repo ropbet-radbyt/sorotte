@@ -7,7 +7,7 @@ use fake_server_protocol::{
 
 use super::*;
 
-const NATIVE_SMOKE_ARTIFACT_DIR_ENV: &str = "SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR";
+pub(super) const NATIVE_SMOKE_ARTIFACT_DIR_ENV: &str = "SOROTTE_GUI_NATIVE_SMOKE_ARTIFACT_DIR";
 
 pub(super) fn capture_native_failure_artifacts<D: NativeGuiDriver>(
     driver: &D,

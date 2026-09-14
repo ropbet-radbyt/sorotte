@@ -27,3 +27,4 @@ mod configuration_views;
 mod dialogs_public_servers_layout;
 mod main_window_controls;
 mod playlist_shell_status_renderer;
+mod synchronization_presets;

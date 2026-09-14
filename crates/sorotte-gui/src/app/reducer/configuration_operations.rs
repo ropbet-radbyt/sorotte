@@ -3,6 +3,9 @@ use super::*;
 impl SorotteGuiShellAppState {
     pub(super) fn apply_configuration_operation_action(&mut self, action: GuiShellAction) -> bool {
         match action {
+            GuiShellAction::ApplySynchronizationPreset(preset) => {
+                self.apply_synchronization_preset(preset)
+            }
             GuiShellAction::BeginConfigurationSave => self.begin_configuration_save(),
             GuiShellAction::CompleteConfigurationSave(settings) => {
                 self.complete_configuration_save(settings)

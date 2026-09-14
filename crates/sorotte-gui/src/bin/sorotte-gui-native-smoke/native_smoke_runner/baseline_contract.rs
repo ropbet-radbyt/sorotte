@@ -553,6 +553,43 @@ pub(super) fn verify_interaction_contract<D: NativeGuiDriver>(
     )?;
     wait_for_accessible_name(driver, window, "Autoplay", step_timeout)?;
     wait_for_accessible_name(driver, window, "Rewind On Desync", step_timeout)?;
+    select_top_tab_with_wait(
+        driver,
+        window,
+        "configuration:tab:overview",
+        "Draft preset: Standard",
+        step_timeout,
+    )?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "settings-preset:watch-together:apply",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Draft preset: Watch together", step_timeout)?;
+    if let Some(directory) = std::env::var_os(NATIVE_SMOKE_ARTIFACT_DIR_ENV).map(PathBuf::from) {
+        fs::create_dir_all(&directory)
+            .map_err(|error| format!("create preset screenshot directory: {error}"))?;
+        driver.capture_window_png(window, &directory.join("settings-watch-together.png"))?;
+    }
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "settings-preset:standard:apply",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Draft preset: Standard", step_timeout)?;
+    invoke_named_control_with_wait(
+        driver,
+        window,
+        "config-command:discard",
+        NativeControlKind::Button,
+        step_timeout,
+    )?;
+    wait_for_accessible_name(driver, window, "Save: disabled", step_timeout)?;
+    steps.push("synchronization-presets-draft-and-discard".to_owned());
     driver
         .activate_named_control_by_keyboard(
             window,

@@ -11,5 +11,6 @@ mod runtime_config;
 mod sorotte_ini;
 mod stored_config;
 mod stored_settings;
+mod synchronization_presets;
 mod syncplay_config_contract;
 mod syncplay_ini_values;
