@@ -29,6 +29,17 @@ After connecting, the main window supports room/user/file browsing, chat, readin
 
 Readiness-capable Sorotte rooms keep the user's Ready/Not Ready intent separate from loading, buffering, seeking, and recovery. Player Play/Pause gestures count as deliberate readiness changes, while automatic player corrections do not. See [Readiness and automatic start](READINESS.md) for the full behavior and CLI commands.
 
+### Synchronization presets
+
+Open **Overview** or **Playback & Search** in settings to choose a synchronization preset:
+
+- **Standard** keeps immediate starts and independent buffering, matching the application defaults.
+- **Watch together** waits for every required participant to be ready and able to play, asks the controller after a 30-second preparation timeout, and requests coordinated buffering pauses of up to 30 seconds.
+
+Selecting a preset edits the draft. Use **Save** to keep it for the next connection; **Discard** restores the saved settings. The label is derived from the seven coordinated-start and room-buffering values, so editing one can show **Custom**. Invalid values in those controls also show Custom and can be repaired by applying a preset again. Cache sizes, quality, recovery, readiness preferences, connection details, and credentials keep their existing values.
+
+Coordinated starts require a supporting server. Coordinated buffering requires a controlled room and its authenticated controller; selecting Watch together does not create a controlled room or grant control. See [Stream Synchronization](STREAM_SYNCHRONIZATION.md#synchronization-presets) for the exact settings and compatibility behavior.
+
 ## Configuration Storage
 
 Sorotte uses `sorotte.ini` in the install folder as a locator to find the storage root for `sorotte.ini` and appdata-style GUI files. On first startup, Sorotte creates this locator if it is missing and points it at the platform Sorotte folder:

@@ -2,6 +2,7 @@ use super::*;
 use crate::{PendingUserTransportEvidence, READINESS_USER_TRANSPORT_GRACE_SECONDS};
 use sorotte_client_app::app_boundary::{
     application::{ClientApplication, ClientApplicationSettings, ClientCommand},
+    settings_presets::SynchronizationPreset,
     state::{
         ClientConfig, StartSynchronizationConfig, StartSynchronizationPolicy, StoredClientSettings,
     },
@@ -2888,6 +2889,19 @@ fn explicit_wait_all_settings_wait_for_every_ready_and_playable_participant() {
         streaming_start_policy: Some("wait-all".to_owned()),
         ..StoredClientSettings::default()
     };
+    assert_wait_all_settings_wait_for_every_ready_and_playable_participant(stored_wait_all);
+}
+
+#[test]
+fn watch_together_preset_waits_for_every_ready_and_playable_participant() {
+    let mut settings = StoredClientSettings::default();
+    SynchronizationPreset::WatchTogether.apply_to(&mut settings);
+    assert_wait_all_settings_wait_for_every_ready_and_playable_participant(settings);
+}
+
+fn assert_wait_all_settings_wait_for_every_ready_and_playable_participant(
+    stored_wait_all: StoredClientSettings,
+) {
     let configured_wait_all = ClientConfig::try_from_stored(&stored_wait_all)
         .expect("explicit wait-all stored settings should resolve");
     assert_eq!(

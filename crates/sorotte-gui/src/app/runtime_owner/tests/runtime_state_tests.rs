@@ -55,6 +55,37 @@ fn worker_applies_pending_completion_before_the_next_settings_action() {
 }
 
 #[test]
+fn preset_draft_survives_worker_polls_and_unrelated_runtime_output() {
+    use crate::app::shell_state::SynchronizationPreset;
+    let mut shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    assert!(shell.apply(GuiShellAction::ApplySynchronizationPreset(
+        SynchronizationPreset::WatchTogether
+    )));
+    let draft = shell.configuration.clone();
+    let (_, handle) = GuiQueuedRuntimeBridge::new();
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.startup_saved_connect_attempted = true;
+    owner.input_changed(&handle, &GuiRuntimeInput::from_shell(&shell));
+    owner.poll(&handle);
+    owner.poll(&handle);
+    assert_eq!(owner.runtime_state.as_ref().unwrap().settings.draft, draft);
+    let mut worker = owner.runtime_state.take().unwrap();
+    GuiPersistedConfigRuntimeOwner::push_actions_and_project(
+        &handle,
+        &mut worker,
+        vec![GuiShellAction::ApplyPendingApplyRequirementsSnapshot(vec![
+            crate::app::shell_state::GuiSettingApplyRequirement::Reconnect,
+        ])],
+    );
+    for action in handle.drain_actions() {
+        assert!(shell.apply(action));
+    }
+    assert_eq!(shell.configuration, draft);
+    assert_eq!(worker.settings.draft, draft);
+    assert_eq!(shell.saved_configuration, StoredClientSettings::default());
+}
+
+#[test]
 fn ordinary_polls_keep_worker_changes_and_changed_input_replaces_them() {
     let shell = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
     let input = GuiRuntimeInput::from_shell(&shell);

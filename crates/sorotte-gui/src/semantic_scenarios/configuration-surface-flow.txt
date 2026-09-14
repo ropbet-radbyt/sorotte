@@ -318,3 +318,42 @@ complete-pending
 assert-pending	none
 assert-value	settings.connection.server_password.status	No password is configured.
 assert-value	settings.connection.username	smoke-user-after-clear
+# Presets use the same draft and Save transaction as individual controls.
+activate	configuration:tab:playback-search
+assert-value	settings-preset:current	Custom
+activate	settings-preset:watch-together:apply
+assert-value	settings-preset:current	Watch together
+assert-value	settings.streaming.start_synchronization	wait-all
+assert-value	settings.streaming.start_quorum_percent	100
+assert-value	settings.streaming.start_timeout_seconds	30
+assert-value	settings.streaming.start_timeout_action	ask-controller
+assert-value	settings.streaming.room_buffering_policy	pause-eligible
+assert-value	settings.streaming.room_quorum_percent	100
+assert-value	settings.streaming.room_maximum_pause_seconds	30
+assert-value	settings.streaming.buffer_target_seconds	8
+assert-value	settings.streaming.read_ahead_seconds	45
+assert-value	settings.streaming.memory_cache_mib	256
+assert-value	settings.streaming.disk_cache	yes
+enter-text	settings.streaming.start_timeout_seconds	false	invalid
+assert-value	settings-preset:current	Custom
+activate	settings-preset:watch-together:apply
+assert-value	settings-preset:current	Watch together
+activate	config-command:save
+assert-pending	save-configuration
+assert-enabled	settings-preset:standard:apply	false
+complete-pending
+assert-value	shell:command:save	disabled
+activate	settings-preset:standard:apply
+assert-value	settings-preset:current	Standard
+activate	config-command:discard
+assert-pending	discard-configuration-changes
+complete-pending
+assert-value	settings-preset:current	Watch together
+activate	config-command:reload
+assert-pending	reload-configuration
+complete-pending
+assert-value	settings-preset:current	Watch together
+assert-value	settings.streaming.read_ahead_seconds	45
+activate	configuration:tab:connection
+assert-value	settings.connection.server_password.status	No password is configured.
+assert-value	settings.connection.username	smoke-user-after-clear

@@ -80,12 +80,16 @@ fn gui_semantic_driver_runs_widget_id_scenario_without_platform_ui() {
     assert_eq!(saved.streaming_max_hard_seeks_per_episode, Some(1));
     assert_eq!(
         saved.streaming_room_buffering_policy.as_deref(),
-        Some("quorum")
+        Some("pause-eligible")
     );
+    assert_eq!(saved.streaming_room_quorum_percent, Some(100.0));
+    assert_eq!(saved.streaming_room_max_pause_seconds, Some(30.0));
     assert_eq!(saved.streaming_start_policy.as_deref(), Some("wait-all"));
+    assert_eq!(saved.streaming_start_quorum_percent, Some(100.0));
+    assert_eq!(saved.streaming_start_timeout_seconds, Some(30.0));
     assert_eq!(
         saved.streaming_start_timeout_action.as_deref(),
-        Some("remain-paused")
+        Some("ask-controller")
     );
     assert_eq!(
         saved.media_search_directories,

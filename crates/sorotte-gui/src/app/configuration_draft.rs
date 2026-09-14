@@ -6,7 +6,7 @@ use sorotte_client_core::PrivacyMode;
 
 use super::shell_state::{
     GuiConfigurationDraft, GuiConfigurationState, GuiDialogControl, GuiDialogControlKind,
-    SecretDraft, SettingId,
+    SecretDraft, SettingId, SynchronizationPreset, SynchronizationPresetField,
 };
 use super::support::{
     bool_label, configured_room_name_text, normalized_editable_text,
@@ -17,7 +17,37 @@ use super::support::{
 #[cfg(test)]
 mod tests;
 
+impl SettingId {
+    pub(super) fn for_synchronization_preset(field: SynchronizationPresetField) -> Self {
+        match field {
+            SynchronizationPresetField::StartPolicy => Self::StreamingStartSynchronization,
+            SynchronizationPresetField::StartQuorum => Self::StreamingStartQuorumPercent,
+            SynchronizationPresetField::StartTimeout => Self::StreamingStartTimeoutSeconds,
+            SynchronizationPresetField::StartTimeoutAction => Self::StreamingStartTimeoutAction,
+            SynchronizationPresetField::RoomBufferingPolicy => Self::StreamingRoomBufferingPolicy,
+            SynchronizationPresetField::RoomQuorum => Self::StreamingRoomQuorumPercent,
+            SynchronizationPresetField::RoomMaximumPause => Self::StreamingRoomMaximumPauseSeconds,
+        }
+    }
+}
+
 impl GuiConfigurationDraft {
+    pub(super) fn apply_synchronization_preset(&mut self, preset: SynchronizationPreset) {
+        preset.apply_to(&mut self.settings);
+        let values = Self::from_stored_settings(&self.settings);
+        for field in SynchronizationPresetField::ALL {
+            let id = SettingId::for_synchronization_preset(field);
+            let value = values
+                .control(id)
+                .expect("preset field has a projected control");
+            self.control_mut(id)
+                .expect("preset field has a draft control")
+                .value
+                .clone_from(&value.value);
+        }
+        self.refresh_derived_controls();
+    }
+
     pub(super) fn from_stored_settings(settings: &StoredClientSettings) -> Self {
         let state = GuiConfigurationState::from_stored_settings(settings);
         let sections = state.dialog_sections();

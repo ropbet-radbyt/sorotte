@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.16; landed base `e4899e10a9485d8652ab7f14e2e347a562f4bfbb`; fixing commit **pending**; hosted evidence **pending**. The v0.2.16 candidate continues internal API and terminology cleanup, replaces the GUI session fallback interface, settles playback redraw feedback and progresses native runtime output while hidden and after visible interactions. Syncplay interoperability and settings import remain supported. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
+Release 0.2.17; landed base `47a5859d9b449de812d4eec221ccc43d357de601`; fixing commit **pending**; hosted evidence **pending**. The v0.2.17 candidate adds Standard and Watch together synchronization presets to the settings draft, preserves cache and recovery defaults, and respects current readiness and controller authority. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
 
 ## Authority flow
 

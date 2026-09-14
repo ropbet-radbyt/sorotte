@@ -492,6 +492,38 @@ fn unix_directory_alias_and_private_directory_mode_follow_the_contract() {
 }
 
 #[test]
+fn preset_save_merges_only_edited_fields_and_preserves_concurrent_changes() {
+    use crate::synchronization_presets::{SynchronizationPreset, detect_synchronization_preset};
+    let fixture = Fixture::new("preset-save");
+    let baseline = StoredClientSettings {
+        server_password: Some("synthetic-password".into()),
+        ..Default::default()
+    };
+    upsert_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &baseline).unwrap();
+    let mut desired = baseline.clone();
+    SynchronizationPreset::WatchTogether.apply_to(&mut desired);
+    edit_sorotte_ini_stored_client_settings_at_path(&fixture.path(), |settings| {
+        settings.server_password = None;
+        settings.room = Some("concurrent-room".into());
+        settings.streaming_read_ahead_seconds = Some(90.0);
+    })
+    .unwrap();
+    let committed =
+        merge_sorotte_ini_stored_client_settings_at_path(&fixture.path(), &baseline, &desired)
+            .unwrap();
+    assert_eq!(
+        detect_synchronization_preset(&committed),
+        Some(SynchronizationPreset::WatchTogether)
+    );
+    assert!(committed.server_password.is_none());
+    assert_eq!(committed.room.as_deref(), Some("concurrent-room"));
+    assert_eq!(committed.streaming_read_ahead_seconds, Some(90.0));
+    let reloaded =
+        parse_sorotte_ini_stored_client_settings(&std::fs::read_to_string(fixture.path()).unwrap());
+    assert_eq!(reloaded, committed);
+}
+
+#[test]
 fn stale_full_snapshot_preserves_new_values_and_cannot_restore_cleared_secrets() {
     let fixture = Fixture::new("stale");
     let baseline = StoredClientSettings {

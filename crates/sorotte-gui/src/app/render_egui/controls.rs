@@ -158,6 +158,10 @@ impl GuiWidgetEguiRenderer {
     }
 
     pub(super) fn render_status_pair(&mut self, ui: &mut egui::Ui, node: &GuiWidgetNode) {
+        if node.id.starts_with("settings-preset:") {
+            ui.add(egui::Label::new(Self::display_text(node)).wrap());
+            return;
+        }
         if Self::should_render_combined_status_label(node) {
             ui.label(Self::display_text(node));
             return;

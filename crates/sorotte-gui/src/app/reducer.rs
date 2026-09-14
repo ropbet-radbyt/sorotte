@@ -59,7 +59,8 @@ impl SorotteGuiShellAppState {
             | GuiShellAction::ApplyGuiConfigStorageRuntimeSnapshot(_) => {
                 self.apply_shell_runtime_action(action)
             }
-            GuiShellAction::BeginConfigurationSave
+            GuiShellAction::ApplySynchronizationPreset(_)
+            | GuiShellAction::BeginConfigurationSave
             | GuiShellAction::CompleteConfigurationSave(_)
             | GuiShellAction::CancelConfigurationSave
             | GuiShellAction::BeginDiscardConfigurationChanges

@@ -3,12 +3,55 @@ use sorotte_client_app::app_boundary::state::StoredClientSettings;
 use super::super::shell_state::{
     GuiConfigStorageChangeTarget, GuiConfigStorageRuntimeSnapshot, GuiConfigurationTab,
     GuiPendingOperationKind, GuiPendingOperationState, GuiRoomHistoryEditSessionState,
-    GuiSettingApplyRequirement, GuiShellView, GuiTransientNotificationLevel,
-    SorotteGuiShellAppState,
+    GuiSettingApplyRequirement, GuiShellView, GuiTransientNotificationLevel, SettingId,
+    SorotteGuiShellAppState, SynchronizationPreset, SynchronizationPresetField,
+    detect_synchronization_preset,
 };
 use super::super::support::normalized_editable_text;
 
 impl SorotteGuiShellAppState {
+    pub(in crate::app) fn draft_synchronization_preset(&self) -> Option<SynchronizationPreset> {
+        if self.validation.issues.iter().any(|issue| {
+            issue.setting_id.is_some_and(|id| {
+                SynchronizationPresetField::ALL
+                    .into_iter()
+                    .any(|field| SettingId::for_synchronization_preset(field) == id)
+            })
+        }) {
+            return None;
+        }
+        detect_synchronization_preset(&self.configuration.settings)
+    }
+
+    pub(in crate::app) fn apply_synchronization_preset(
+        &mut self,
+        preset: SynchronizationPreset,
+    ) -> bool {
+        if self.pending_operation.is_some() {
+            return self.record_action_error("Another GUI operation is already in progress.");
+        }
+        if self.text_edit_session.is_some() {
+            return self
+                .record_action_error("Finish the active setting edit before applying a preset.");
+        }
+        if self.draft_synchronization_preset() == Some(preset) {
+            return self.record_action_error(format!(
+                "{} is already selected in the draft.",
+                preset.label()
+            ));
+        }
+        self.configuration.apply_synchronization_preset(preset);
+        self.push_transient_notification(
+            GuiTransientNotificationLevel::Info,
+            format!(
+                "{} applied to the draft. Save changes to keep it.",
+                preset.label()
+            ),
+        );
+        self.clear_action_error_and_refresh();
+        true
+    }
+
     pub(in crate::app) fn replace_pending_apply_requirements(
         &mut self,
         requirements: impl IntoIterator<Item = GuiSettingApplyRequirement>,

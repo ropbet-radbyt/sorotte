@@ -25,4 +25,5 @@ mod edit_actions;
 mod playlist_interactions;
 mod playlist_source_mapping;
 mod renderer_contract_and_layout;
+mod synchronization_presets;
 mod workflow_and_stream_support;

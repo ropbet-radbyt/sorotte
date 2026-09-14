@@ -98,6 +98,12 @@ pub mod readiness {
     };
 }
 
+pub mod settings_presets {
+    pub use crate::synchronization_presets::{
+        SynchronizationPreset, SynchronizationPresetField, detect_synchronization_preset,
+    };
+}
+
 pub mod storage {
     pub use crate::client_storage_paths::{
         SOROTTE_CLIENT_CONFIG_PATH_ENV, SOROTTE_CLIENT_CONFIG_ROOT_ENV,
