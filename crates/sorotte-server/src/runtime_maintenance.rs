@@ -645,7 +645,9 @@ impl ServerRuntime {
         );
         let session = self.sessions.remove(client_id)?;
         self.playback_barrier_fenced_clients.remove(client_id);
-        let _ = self.domain.leave_room(&session.username, &session.room);
+        let _ = self
+            .room_roster
+            .leave_room(&session.username, &session.room);
         self.remove_room_controller(&session.username, &session.room);
         self.client_state_counters.remove(client_id);
         self.client_playback_states.remove(client_id);
@@ -2041,12 +2043,7 @@ impl ServerRuntime {
     }
 
     pub(crate) fn stored_user_ready(&self, username: &str, room_name: &str) -> Option<bool> {
-        self.domain.users_in_room(room_name).and_then(|users| {
-            users
-                .into_iter()
-                .find(|user| user.username == username)
-                .and_then(|user| user.ready)
-        })
+        self.room_roster.user_ready(username, room_name)
     }
 
     pub(crate) fn file_payload_for_client_from_source(

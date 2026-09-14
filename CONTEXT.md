@@ -32,6 +32,10 @@ _Avoid_: Player lifecycle when only one local player is meant
 The server-owned room position, pause state, and playback authority that may direct participants' players.
 _Avoid_: Peer status, observed room state
 
+**Room roster**:
+The participants belonging to a room and each participant's Syncplay readiness flag. Membership and readiness are distinct from detailed participant status and canonical playback intent.
+_Avoid_: Sync domain, synchronization state
+
 **Canonical playlist selection**:
 The server-owned playlist contents and selected entry for a room. A participant's local queue or currently open path is an observation, not canonical selection.
 _Avoid_: Local playlist, mpv playlist

@@ -383,7 +383,7 @@ impl ServerRuntime {
         let room_ready = self
             .readiness_record(&session.room, &session.username)
             .is_some_and(|record| record.room_ready);
-        self.domain
+        self.room_roster
             .set_ready(&session.username, &session.room, room_ready)?;
 
         let mut outbound = self.syncplay_readiness_projection_fanout(
@@ -587,7 +587,7 @@ impl ServerRuntime {
         ) else {
             return Ok(Some(Vec::new()));
         };
-        self.domain
+        self.room_roster
             .set_ready(target_username, &session.room, room_ready)?;
         self.refresh_readiness_gate_phase(&session.room);
 
@@ -648,7 +648,8 @@ impl ServerRuntime {
             let room_ready = self
                 .readiness_record(room_name, &username)
                 .is_some_and(|record| record.room_ready);
-            self.domain.set_ready(&username, room_name, room_ready)?;
+            self.room_roster
+                .set_ready(&username, room_name, room_ready)?;
             if previous_projection.get(&username).copied() != Some(room_ready) {
                 outbound.extend(self.syncplay_readiness_projection_fanout(
                     room_name, &username, room_ready, false, None,
@@ -1461,7 +1462,7 @@ impl ServerRuntime {
             trim_readiness_operations(&mut actor.accepted_operations);
         }
 
-        self.domain
+        self.room_roster
             .set_ready(&target_username, &session.room, room_ready)?;
         let mut transport_outbound = Vec::new();
         let gate_is_preparing = self
@@ -1656,7 +1657,7 @@ impl ServerRuntime {
             (before_room_ready, changed, participant.record.room_ready)
         };
         if changed {
-            self.domain
+            self.room_roster
                 .set_ready(&session.username, &session.room, room_ready)?;
         }
         let current_pause_owner = self

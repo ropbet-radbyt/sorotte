@@ -32,7 +32,7 @@ class PackageSelectionTests(unittest.TestCase):
     def test_docs_do_not_select_archives_but_package_harness_and_product_changes_do(self):
         policy = json.loads(verify.POLICY.read_text(encoding="utf-8"))
         for path, expected in (("docs/tutorial.md", False), ("scripts/package-gui-release.ps1", True),
-                               ("crates/sorotte-core/src/lib.rs", True), ("Dockerfile", True)):
+                               ("crates/sorotte-server/src/room_roster.rs", True), ("Dockerfile", True)):
             lane = next(item for item in verify.select([path], policy) if item["id"] == "release")
             self.assertEqual(lane["selected"], expected, path)
         with self.assertRaises(ValueError): verify.gate("release", False, ["archive=skipped"], ["archive"], None)

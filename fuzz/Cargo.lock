@@ -1174,7 +1174,6 @@ dependencies = [
  "md-5",
  "serde_json",
  "sha2",
- "sorotte-core",
  "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
@@ -1184,13 +1183,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "sorotte-core"
-version = "0.2.16"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]

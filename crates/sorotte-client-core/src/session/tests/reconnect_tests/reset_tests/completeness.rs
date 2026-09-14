@@ -308,7 +308,6 @@ struct SessionResetProjection {
     connection_phase: ConnectionPhase,
     connection_participant_status_v1: bool,
     room_name: Option<String>,
-    room_domain: String,
     room_users: BTreeMap<String, crate::ClientUserView>,
     room_participant_status_capabilities: BTreeMap<String, bool>,
     room_legacy_list_position_snapshots: BTreeMap<String, f64>,
@@ -369,7 +368,6 @@ impl SessionResetProjection {
             connection_phase: connection.phase.clone(),
             connection_participant_status_v1: connection.participant_status_v1,
             room_name: room.name.clone(),
-            room_domain: format!("{:#?}", room.domain),
             room_users: room.users.clone(),
             room_participant_status_capabilities: room.participant_status_capabilities.clone(),
             room_legacy_list_position_snapshots: room.list_position_snapshots.clone(),
@@ -618,16 +616,6 @@ fn seed_durable_configuration(session: &mut ClientSession, seed: u64) {
 
 fn seed_room_state(session: &mut ClientSession, seed: u64) {
     session.model.room.name = Some("room1".to_owned());
-    session
-        .model
-        .room
-        .domain
-        .join_room_with_ready("alice", "room1", Some(true));
-    session
-        .model
-        .room
-        .domain
-        .join_room_with_ready("bob", "other-room", Some(false));
     session.model.room.users.insert(
         "alice".to_owned(),
         crate::ClientUserView {
@@ -1088,7 +1076,6 @@ fn assert_dense_seed(session: &ClientSession) {
     let projection = SessionResetProjection::from_session(session);
     let fresh = SessionResetProjection::from_session(&ClientSession::default());
     assert_ne!(projection.connection_phase, fresh.connection_phase);
-    assert_ne!(projection.room_domain, fresh.room_domain);
     assert_ne!(projection.room_users, fresh.room_users);
     assert_ne!(
         projection.room_playstate_transport_revisions,

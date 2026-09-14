@@ -598,7 +598,7 @@ impl ClientSession {
     }
 
     pub(super) fn set_user_room(&mut self, username: &str, room_name: Option<String>) {
-        let (previous_room, ready) = {
+        let previous_room = {
             let user_view = self
                 .model
                 .room
@@ -606,20 +606,10 @@ impl ClientSession {
                 .entry(username.to_owned())
                 .or_default();
             let previous_room = user_view.room.clone();
-            let ready = user_view.ready;
             user_view.room = room_name.clone();
-            (previous_room, ready)
+            previous_room
         };
 
-        if previous_room != room_name
-            && let Some(previous_room_name) = previous_room.as_deref()
-        {
-            let _ = self
-                .model
-                .room
-                .domain
-                .leave_room(username, previous_room_name);
-        }
         if previous_room != room_name {
             self.model.room.participant_statuses.remove(username);
             self.model.room.participant_status_receipts.remove(username);
@@ -632,10 +622,6 @@ impl ClientSession {
 
         if let Some(new_room_name) = room_name.as_deref() {
             self.model.room.known_rooms.insert(new_room_name.to_owned());
-            self.model
-                .room
-                .domain
-                .join_room_with_ready(username, new_room_name, ready);
         }
     }
 
@@ -644,23 +630,12 @@ impl ClientSession {
     }
 
     pub(super) fn set_user_ready_state(&mut self, username: &str, ready: Option<bool>) {
-        let room_name = {
-            let user_view = self
-                .model
-                .room
-                .users
-                .entry(username.to_owned())
-                .or_default();
-            user_view.ready = ready;
-            user_view.room.clone()
-        };
-
-        if let Some(room_name) = room_name {
-            self.model
-                .room
-                .domain
-                .join_room_with_ready(username, &room_name, ready);
-        }
+        self.model
+            .room
+            .users
+            .entry(username.to_owned())
+            .or_default()
+            .ready = ready;
     }
 
     pub(super) fn set_user_file(&mut self, username: &str, file: Option<SharedFile>) {
@@ -756,11 +731,7 @@ impl ClientSession {
     }
 
     pub(super) fn remove_user(&mut self, username: &str) {
-        if let Some(user_view) = self.model.room.users.remove(username)
-            && let Some(room_name) = user_view.room
-        {
-            let _ = self.model.room.domain.leave_room(username, &room_name);
-        }
+        self.model.room.users.remove(username);
         self.model.room.media_match_peer_tiers.remove(username);
         self.model
             .room

@@ -51,7 +51,6 @@ pub struct ServerCapabilities {
 #[derive(Debug, Default)]
 pub struct RoomState {
     pub(crate) name: Option<String>,
-    pub(crate) domain: SyncDomain,
     pub(crate) users: BTreeMap<String, ClientUserView>,
     pub(crate) participant_status_capabilities: BTreeMap<String, bool>,
     pub(crate) list_position_snapshots: BTreeMap<String, f64>,
@@ -391,16 +390,7 @@ impl ClientModel {
         let Some(username) = self.connection.username.clone() else {
             return;
         };
-        let room_name = {
-            let user = self.room.users.entry(username.clone()).or_default();
-            user.ready = ready;
-            user.room.clone()
-        };
-        if let Some(room_name) = room_name {
-            self.room
-                .domain
-                .join_room_with_ready(&username, &room_name, ready);
-        }
+        self.room.users.entry(username).or_default().ready = ready;
     }
 
     fn begin_room_pause_sync(
@@ -940,10 +930,6 @@ mod tests {
                 ..ClientUserView::default()
             },
         );
-        model
-            .room
-            .domain
-            .join_room_with_ready("alice", "room1", Some(true));
         let effects = vec![
             ClientEffect::SetPlayerPaused(true),
             ClientEffect::SetReady {

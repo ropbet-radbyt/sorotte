@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::Md5;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use sorotte_core::SyncDomain;
 use sorotte_lifecycle_evidence::{
     Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
 };
