@@ -75,7 +75,6 @@ cargo run --release -p sorotte-cli -- --no-gui
 - `crates/sorotte-player-api`: player abstraction
 - `crates/sorotte-player-mpv`: `mpv` JSON IPC adapter
 - `crates/sorotte-protocol`: typed Syncplay protocol models
-- `crates/sorotte-core`: shared domain helpers
 - `crates/sorotte-compat`: Python Syncplay compatibility and interop test support
 - `crates/sorotte-sim`: deterministic simulation helpers
 - `fixtures/`: protocol, scenario, and TLS fixtures

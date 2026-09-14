@@ -17,7 +17,7 @@ impl ServerRuntime {
         getrandom::fill(&mut persistent_room_quota_secret)
             .expect("operating system random source should be available");
         Self {
-            domain: SyncDomain::default(),
+            room_roster: RoomRoster::default(),
             sessions: BTreeMap::new(),
             room_controllers: BTreeMap::new(),
             room_playlists: BTreeMap::new(),
@@ -420,11 +420,11 @@ impl ServerRuntime {
     }
 
     pub fn bootstrap_room(&mut self, room_name: &str) {
-        self.domain.join_room("bootstrap", room_name);
+        self.room_roster.join_room("bootstrap", room_name);
     }
 
     pub fn room_is_present(&self, room_name: &str) -> bool {
-        self.domain.users_in_room(room_name).is_some()
+        self.room_roster.contains_room(room_name)
     }
 
     pub fn session(&self, client_id: &str) -> Option<&ServerSession> {

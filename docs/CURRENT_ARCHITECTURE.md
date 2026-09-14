@@ -28,7 +28,6 @@ Server state owns shared room order and canonical playback. Client-core maps tha
 |---|---|
 | [sorotte-secret](../crates/sorotte-secret/Cargo.toml) | Typed sensitive values and redacted formatting. |
 | [sorotte-protocol](../crates/sorotte-protocol/Cargo.toml) | Wire schemas, compatibility decoding, and encoded byte budgets. |
-| [sorotte-core](../crates/sorotte-core/Cargo.toml) | Shared room and synchronization domain types. |
 | [sorotte-lifecycle-evidence](../crates/sorotte-lifecycle-evidence/Cargo.toml) | Causal records, bounded serialization, and observable recorder failure. |
 | [sorotte-server](../crates/sorotte-server/Cargo.toml) | Room authority, fanout, admission/byte permits, clocks, and durable server state. |
 | [sorotte-media-match](../crates/sorotte-media-match/Cargo.toml) | Media identity/indexing and owned cancellable extraction processes. |

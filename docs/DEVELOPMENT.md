@@ -15,7 +15,6 @@ separates executed validation from pending hosted or native acceptance.
 ## Workspace Layout
 
 - `sorotte-protocol`: typed protocol models and fixture coverage
-- `sorotte-core`: shared domain helpers
 - `sorotte-server`: server runtime library and executable
 - `sorotte-client-core`: client session/runtime logic
 - `sorotte-client-app`: app-level settings, compatibility, local commands, and shared client behavior

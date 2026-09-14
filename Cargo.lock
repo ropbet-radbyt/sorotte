@@ -3704,7 +3704,6 @@ dependencies = [
  "proptest",
  "serde_json",
  "sha2",
- "sorotte-core",
  "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",
@@ -3726,13 +3725,6 @@ dependencies = [
  "sorotte-client-core",
  "sorotte-protocol",
  "sorotte-server",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "sorotte-core"
-version = "0.2.16"
-dependencies = [
  "thiserror 2.0.20",
 ]
 
@@ -3866,7 +3858,6 @@ dependencies = [
  "sha2",
  "sorotte-client-app",
  "sorotte-client-core",
- "sorotte-core",
  "sorotte-lifecycle-evidence",
  "sorotte-media-match",
  "sorotte-player-api",

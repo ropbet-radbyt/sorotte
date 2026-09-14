@@ -162,17 +162,6 @@ impl ClientSession {
             .room
             .list_position_snapshots
             .remove(&provisional_username);
-        let provisional_room = provisional_user
-            .as_ref()
-            .and_then(|user| user.room.clone())
-            .or_else(|| self.model.room.name.clone());
-        if let Some(room_name) = provisional_room.as_deref() {
-            let _ = self
-                .model
-                .room
-                .domain
-                .leave_room(&provisional_username, room_name);
-        }
         let provisional_file = provisional_user.and_then(|user| user.file);
         self.model
             .room
@@ -874,7 +863,6 @@ impl ClientSession {
         self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
-        self.model.room.domain = SyncDomain::default();
 
         let mut resolved_self_room = None;
         let current_username = self.model.connection.username.clone();

@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`sorotte` is a Rust workspace rooted in `crates/`. Core protocol and runtime crates live in `sorotte-protocol`, `sorotte-core`, `sorotte-client-core`, and `sorotte-server`. User-facing binaries live in `sorotte-cli` and `sorotte-gui`; player integration is split into `sorotte-player-api` and `sorotte-player-mpv`. Keep shared test data in `fixtures/`, repo docs in `docs/`, and automation in `scripts/` and `.github/workflows/`.
+`sorotte` is a Rust workspace rooted in `crates/`. Core protocol and runtime crates live in `sorotte-protocol`, `sorotte-client-core`, and `sorotte-server`. User-facing binaries live in `sorotte-cli` and `sorotte-gui`; player integration is split into `sorotte-player-api` and `sorotte-player-mpv`. Keep shared test data in `fixtures/`, repo docs in `docs/`, and automation in `scripts/` and `.github/workflows/`.
 
 For detailed contributor workflow, test placement, and compatibility guidance, use `docs/DEVELOPMENT.md`. For parity work, treat the sibling Python checkout in `../syncplay/` as the behavioral reference.
 

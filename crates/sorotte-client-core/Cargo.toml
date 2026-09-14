@@ -14,7 +14,6 @@ test-support = ["sorotte-player-api/test-support"]
 
 [dependencies]
 getrandom.workspace = true
-sorotte-core = { path = "../sorotte-core" }
 sorotte-lifecycle-evidence = { path = "../sorotte-lifecycle-evidence" }
 sorotte-media-match = { path = "../sorotte-media-match" }
 sorotte-protocol = { path = "../sorotte-protocol" }

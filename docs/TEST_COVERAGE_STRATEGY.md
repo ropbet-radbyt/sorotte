@@ -2217,7 +2217,6 @@ Add a nightly Miri shard for pure crates/targets first:
 ```text
 cargo +nightly miri test \
   -p sorotte-secret \
-  -p sorotte-core \
   -p sorotte-protocol \
   -p sorotte-player-api \
   --lib --locked

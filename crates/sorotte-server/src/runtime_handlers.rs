@@ -598,7 +598,7 @@ impl ServerRuntime {
         self.ensure_room_state(&room_name);
         let now = self.current_time_seconds();
         let join_room_playback = self.refresh_room_playback_state_from_clients_at(&room_name, now);
-        self.domain.join_room(&username, &room_name);
+        self.room_roster.join_room(&username, &room_name);
         self.sessions.insert(
             client_id.to_owned(),
             ServerSession {
@@ -990,13 +990,14 @@ impl ServerRuntime {
                     let new_room_should_seed_position = new_room_had_clients_before_join
                         || self.room_is_persistent(&new_room_name)
                         || self.room_is_permanent(&new_room_name);
-                    self.domain.leave_room(&session.username, &previous_room)?;
+                    self.room_roster
+                        .leave_room(&session.username, &previous_room)?;
                     self.remove_room_controller(&session.username, &previous_room);
                     self.ensure_room_state(&new_room_name);
                     let now_seconds = self.current_time_seconds();
                     let room_playback = self
                         .refresh_room_playback_state_from_clients_at(&new_room_name, now_seconds);
-                    self.domain.join_room_with_ready(
+                    self.room_roster.join_room_with_ready(
                         &session.username,
                         &new_room_name,
                         previous_ready,
@@ -1249,7 +1250,7 @@ impl ServerRuntime {
                     if requested_username != session.username {
                         if self.user_can_control_playlist(&session.username, &session.room)
                             && self
-                                .domain
+                                .room_roster
                                 .set_ready(requested_username, &session.room, is_ready)
                                 .is_ok()
                         {
@@ -1280,7 +1281,7 @@ impl ServerRuntime {
                             }
                         }
                     } else {
-                        self.domain
+                        self.room_roster
                             .set_ready(&session.username, &session.room, is_ready)?;
                         let ready_message = ready_update_message(
                             &session.username,

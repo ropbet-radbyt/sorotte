@@ -11,6 +11,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::room_roster::RoomRoster;
 use md5::Md5;
 use regex::Regex;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -21,7 +22,6 @@ use rustls::{
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use sorotte_core::{DomainError, SyncDomain};
 use sorotte_lifecycle_evidence::{
     Disposition, ProcessRole, TargetKind, TransitionObservation, Trigger, emit_global,
 };
@@ -325,6 +325,7 @@ mod network;
 mod persistence;
 mod persistence_actor;
 mod resources;
+mod room_roster;
 mod runtime_api;
 mod runtime_handlers;
 mod runtime_maintenance;
@@ -346,6 +347,7 @@ pub use persistence_actor::{
     persistence_workers_awaiting_join,
 };
 pub use resources::{ServerResourceLimits, ServerResourceSnapshot};
+pub use room_roster::RoomRosterError;
 
 pub(crate) use auth::{RoomPasswordCheckError, RoomPasswordProvider, generate_server_salt};
 pub(crate) use backpressure::ServerOutboundBackpressureMetrics;
@@ -383,7 +385,7 @@ pub enum ServerRuntimeError {
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
     #[error(transparent)]
-    Domain(#[from] DomainError),
+    RoomRoster(#[from] RoomRosterError),
     #[error(transparent)]
     StatsPersistence(#[from] StatsPersistenceError),
     #[error(transparent)]
@@ -511,7 +513,7 @@ impl DirectedTransportAction {
 
 #[derive(Debug)]
 pub struct ServerRuntime {
-    domain: SyncDomain,
+    room_roster: RoomRoster,
     sessions: BTreeMap<String, ServerSession>,
     room_controllers: BTreeMap<String, BTreeSet<String>>,
     room_playlists: BTreeMap<String, RoomPlaylistState>,

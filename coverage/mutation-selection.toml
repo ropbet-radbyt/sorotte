@@ -13,7 +13,7 @@ paths = ["crates/sorotte-protocol/**", "fixtures/**"]
 shards = ["protocol-codec", "client-ping", "client-inbound-order", "cli-framing", "server-auth", "server-local-clock", "server-resource-permits", "client-local-seek-echo"]
 
 [[dependency]]
-paths = ["crates/sorotte-client-core/**", "crates/sorotte-core/**"]
+paths = ["crates/sorotte-client-core/**"]
 shards = ["client-reconnect-state", "client-ping", "client-runtime-config", "cli-stored-config", "client-inbound-order", "client-playlist-shuffle", "client-local-seek-echo"]
 
 [[dependency]]

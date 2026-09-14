@@ -16,10 +16,6 @@ name = "sorotte-protocol"
 responsibility = "Wire schemas, compatibility decoding, and encoded byte budgets."
 
 [[crate]]
-name = "sorotte-core"
-responsibility = "Shared room and synchronization domain types."
-
-[[crate]]
 name = "sorotte-lifecycle-evidence"
 responsibility = "Causal records, bounded serialization, and observable recorder failure."
 

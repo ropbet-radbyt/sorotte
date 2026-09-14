@@ -116,22 +116,8 @@ fn hello_assigned_username_migrates_provisional_identity_before_list() {
     assert_eq!(session.user_ready("alice_2"), Some(true));
     assert!(session.media_match_peer_tiers().is_empty());
 
-    let domain_users = session
-        .model
-        .room
-        .domain
-        .users_in_room("server-room")
-        .expect("assigned user should join the server room");
-    assert_eq!(domain_users.len(), 1);
-    assert_eq!(domain_users[0].username, "alice_2");
-    assert_eq!(domain_users[0].ready, Some(true));
     assert!(
-        session
-            .model
-            .room
-            .domain
-            .users_in_room("provisional-room")
-            .is_none(),
+        session.usernames_in_room("provisional-room").is_empty(),
         "the provisional and pre-Hello assigned memberships must both be removed"
     );
 

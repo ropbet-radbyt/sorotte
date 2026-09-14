@@ -79,7 +79,6 @@ impl ClientSession {
         self.clear_participant_status_views();
         self.model.room.media_match_peer_tiers.clear();
         self.model.room.known_rooms.clear();
-        self.model.room.domain = SyncDomain::default();
         self.model.playlist.rooms.clear();
         self.model.room.playstates.clear();
         self.model.room.playstate_transport_revisions.clear();
