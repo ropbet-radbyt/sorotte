@@ -23,6 +23,7 @@ pub(crate) fn client(name: &str) {
 pub(crate) fn current_client() -> String {
     CLIENT.with(|value| value.borrow().clone())
 }
+#[cfg(windows)]
 pub(crate) fn mark(label: &str) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
