@@ -30,6 +30,11 @@ pub(in crate::app) enum GuiSemanticStep {
         start_barrier_status: Option<String>,
     },
     ApplyMainWindowPlaylistSelection(Option<usize>),
+    ApplyMainWindowPlaylistSourceStatus {
+        index: usize,
+        status: super::super::GuiPlaylistSourceStatus,
+        detail: String,
+    },
     ApplyPlayerSetupRuntimeSnapshot(GuiPlayerSetupRuntimeSnapshot),
     ApplySeekPreparationRuntimeSnapshot(GuiSeekPreparationRuntimeSnapshot),
     OpenMediaFiles(Vec<String>),
@@ -1104,6 +1109,36 @@ impl GuiSemanticStep {
                     );
                 }
                 Self::ApplyMainWindowPlaylistSelection(index)
+            }
+            "apply-main-window-playlist-source-status" => {
+                let index = fields
+                    .next()
+                    .ok_or("playlist source status requires an index")?
+                    .parse::<usize>()
+                    .map_err(|_| "playlist source status requires a numeric index")?;
+                let status = match fields.next() {
+                    Some("available") => super::super::GuiPlaylistSourceStatus::Available,
+                    Some("resolving") => super::super::GuiPlaylistSourceStatus::Resolving,
+                    Some("missing") => super::super::GuiPlaylistSourceStatus::Missing,
+                    _ => {
+                        return Err(
+                            "playlist source status must be available, resolving or missing"
+                                .to_owned(),
+                        );
+                    }
+                };
+                let detail = fields
+                    .next()
+                    .ok_or("playlist source status requires detail")?
+                    .to_owned();
+                if fields.next().is_some() {
+                    return Err("playlist source status accepts three arguments".to_owned());
+                }
+                Self::ApplyMainWindowPlaylistSourceStatus {
+                    index,
+                    status,
+                    detail,
+                }
             }
             "push-chat-message" => {
                 let sender = fields

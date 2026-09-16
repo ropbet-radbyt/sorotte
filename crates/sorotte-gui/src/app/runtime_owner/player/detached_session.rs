@@ -6,6 +6,10 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pending_attached_player_pause_command = Some(GuiPendingAttachedPlayerPauseCommand {
             target_paused,
             suppress_until: Instant::now() + ATTACHED_PLAYER_PAUSE_COMMAND_SUPPRESSION,
+            // A command to an already observed state need not emit a new pause
+            // property edge (notably after a native mpv gesture).
+            observed: matches!(self.ordered_player_events.transport.logical_pause,
+                sorotte_player_api::SnapshotField::Known(paused) if paused == target_paused),
         });
     }
 

@@ -172,20 +172,30 @@ pub(super) fn run_gui_semantic_persistence_reset_flow() -> Result<GuiSemanticSce
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
             GuiPendingCompletionRequest::ClearGuiData,
         ));
-        owner.pump_shell_input(&handle, &clear_state);
-        let actions = handle.drain_actions();
-        if !actions
-            .iter()
-            .any(|action| matches!(action, GuiShellAction::CompleteClearGuiData))
-        {
-            return Err(
-                "semantic clear-GUI-data flow did not produce a completion action".to_owned(),
-            );
-        }
-        for action in actions {
-            if !clear_state.apply(action) {
-                return Err("semantic clear-GUI-data completion action was rejected".to_owned());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            owner.pump_shell_input(&handle, &clear_state);
+            let actions = handle.drain_actions();
+            let completed = actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CompleteClearGuiData));
+            let canceled = actions
+                .iter()
+                .any(|action| matches!(action, GuiShellAction::CancelClearGuiData));
+            for action in actions {
+                if !clear_state.apply(action) {
+                    return Err("semantic clear-GUI-data completion action was rejected".to_owned());
+                }
             }
+            if completed {
+                break;
+            }
+            if canceled || std::time::Instant::now() >= deadline {
+                return Err(
+                    "semantic clear-GUI-data flow did not produce a completion action".to_owned(),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         if root.join("sorotte.ini").exists() {

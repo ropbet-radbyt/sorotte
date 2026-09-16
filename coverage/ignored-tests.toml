@@ -405,3 +405,25 @@ prerequisites = ["managed_process parent contracts", "parent-owned temporary pat
 operating_systems = ["linux", "windows"]
 required_job = "checks"
 parent_test = "managed_process::tests::independent_scope_terminates_child_when_blocked_owner_parent_exits"
+
+[[ignored_test]]
+id = "IGN-GUI-010"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server/latency_review.rs"
+test = "latency_review_real_players"
+source_reason = "requires explicit generated media, mpv and optional tools; runs isolated real TCP and player measurements"
+tier = "manual"
+owner = "gui"
+rationale = "Measures playlist propagation, required indexing and native controls through three real players with mixed Media Match settings in an explicitly provisioned isolated experiment."
+prerequisites = ["SOROTTE_TEST_MPV_BIN", "generated media fixture", "explicit fresh SOROTTE_LATENCY_OUTPUT", "optional ffmpeg and ffprobe for indexing", "Windows process and IPC support"]
+operating_systems = ["windows"]
+
+[[ignored_test]]
+id = "IGN-SIM-006"
+source = "crates/sorotte-media-match/src/media_index/latency_review_tests.rs"
+test = "latency_review_index_transaction_scaling"
+source_reason = "writes synthetic indexes under SOROTTE_LATENCY_OUTPUT and measures real SQLite transactions"
+tier = "manual"
+owner = "simulation"
+rationale = "Builds intentionally large synthetic indexes to compare real SQLite read, recovery and transaction costs without adding disk-heavy timing experiments to ordinary unit tests."
+prerequisites = ["explicit fresh SOROTTE_LATENCY_OUTPUT", "disk space for synthetic indexes"]
+operating_systems = ["linux", "macos", "windows"]

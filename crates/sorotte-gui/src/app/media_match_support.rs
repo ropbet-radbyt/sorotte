@@ -21,8 +21,8 @@ use sorotte_media_match::{
     MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
     MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
     fingerprint_media_file_with_report, map_query_position_to_candidate_ms,
-    media_extraction_settings_hash, media_match_wire_value_from_records, normalize_media_path,
-    rank_media_match_candidates, summarize_record_v3_diagnostics,
+    media_extraction_settings_hash, normalize_media_path, rank_media_match_candidates,
+    summarize_record_v3_diagnostics,
 };
 
 #[cfg(test)]
@@ -392,6 +392,8 @@ impl GuiMediaMatchIndexBuildTransaction {
     }
 
     pub(super) fn commit(mut self) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.transaction.commit");
         let result = self
             .transaction
             .take()
@@ -451,9 +453,20 @@ impl GuiMediaMatchIndexBuildTransaction {
     }
 }
 
+impl Drop for GuiMediaMatchIndexBuildTransaction {
+    fn drop(&mut self) {
+        drop(self.transaction.take());
+        if self.staging_app_root.exists() {
+            let _ = fs::remove_dir_all(&self.staging_app_root);
+        }
+    }
+}
+
 pub(super) fn prepare_media_match_index_rebuild_backup(
     root: &Path,
 ) -> Result<GuiMediaMatchIndexBuildTransaction, String> {
+    #[cfg(test)]
+    let _latency_review_span = crate::app::latency_review_probe::span("mm.transaction.begin");
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -462,10 +475,21 @@ pub(super) fn prepare_media_match_index_rebuild_backup(
         ".media-match-build-{}-{unique}",
         std::process::id()
     ));
-    let transaction = MediaIndexBuildTransaction::begin(
+    fs::create_dir_all(root.join("cache")).map_err(|error| error.to_string())?;
+    fs::create_dir(&staging_app_root).map_err(|error| error.to_string())?;
+    let transaction = match MediaIndexBuildTransaction::begin(
         managed_media_match_index_dir(root),
         managed_media_match_index_dir(&staging_app_root),
-    )?;
+    ) {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            let cleanup = fs::remove_dir_all(&staging_app_root);
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; staging cleanup failed: {cleanup}"),
+            });
+        }
+    };
     Ok(GuiMediaMatchIndexBuildTransaction {
         staging_app_root,
         transaction: Some(transaction),
@@ -1775,8 +1799,21 @@ fn media_match_inventory_exact_target_rank(
     (folded_file_name == target.folded_file_name).then_some((1, 2))
 }
 
+#[cfg(test)]
 pub(super) fn media_match_inventory_exact_resolution_for_targets(
     root: &Path,
+    search_roots: &[PathBuf],
+    targets: &[String],
+) -> Option<MediaMatchInventoryExactResolution> {
+    let rows = open_media_match_index_session(root)
+        .ok()?
+        .inventory_paths()
+        .ok()?;
+    media_match_inventory_exact_resolution_from_paths(rows, search_roots, targets)
+}
+
+pub(super) fn media_match_inventory_exact_resolution_from_paths(
+    rows: Vec<String>,
     search_roots: &[PathBuf],
     targets: &[String],
 ) -> Option<MediaMatchInventoryExactResolution> {
@@ -1792,10 +1829,6 @@ pub(super) fn media_match_inventory_exact_resolution_for_targets(
         .iter()
         .map(normalize_media_path)
         .collect::<Vec<_>>();
-    let rows = open_media_match_index_session(root)
-        .ok()?
-        .inventory_paths()
-        .ok()?;
     let mut best_match: Option<MediaMatchInventoryRankedCandidate> = None;
     let mut best_credibility_match_count = 0_usize;
 
@@ -2805,6 +2838,7 @@ pub(super) fn load_media_match_cache_for_settings(
         .filter(|cache| !cache.records.is_empty())
 }
 
+#[cfg(test)]
 pub(super) fn media_match_wire_value_for_path(
     root: &Path,
     current_player_path: &str,
@@ -2814,14 +2848,17 @@ pub(super) fn media_match_wire_value_for_path(
         current_player_path,
         &MediaExtractionSettings::sampled_fast_audio_index_v3(),
     )?;
-    media_match_wire_value_from_records(std::slice::from_ref(&record))
+    sorotte_media_match::media_match_wire_value_from_records(std::slice::from_ref(&record))
 }
 
+#[cfg(test)]
 pub(super) fn media_match_record_for_path(
     root: &Path,
     current_player_path: &str,
     extraction_settings: &MediaExtractionSettings,
 ) -> Option<MediaFingerprintRecord> {
+    #[cfg(test)]
+    let _latency_review_span = crate::app::latency_review_probe::span("mm.record");
     let normalized_path = normalize_media_path(current_player_path);
     let metadata = fs::metadata(current_player_path).ok()?;
     let modified_unix_millis = metadata

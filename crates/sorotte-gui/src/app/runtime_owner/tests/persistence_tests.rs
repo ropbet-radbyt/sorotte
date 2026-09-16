@@ -1882,7 +1882,18 @@ fn gui_persisted_config_runtime_owner_clears_gui_data_files_and_returns_first_ru
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ClearGuiData,
     ));
-    let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let mut actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while owner.pending_gui_data_clear {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "asynchronous cache clear did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        actions.extend(pump_and_apply_runtime_owner_actions(
+            &mut owner, &handle, &mut state,
+        ));
+    }
 
     assert!(
         actions

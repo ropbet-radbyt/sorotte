@@ -1762,6 +1762,27 @@ impl PlaybackCoordinator {
             })
     }
 
+    /// Recovery continues to own drift correction during its stability window,
+    /// but an otherwise healthy, uncommanded logical Pause can still be a user
+    /// gesture. Command receipts and the transition classifier retain ownership
+    /// of system pauses; unresolved recovery seeks remain technical.
+    pub(crate) fn recovery_blocks_native_pause(&self) -> bool {
+        let Some(episode) = self.recovery.as_ref() else {
+            return false;
+        };
+        episode.degraded
+            || episode.seek_active
+            || episode.post_cache_baseline_at_seconds.is_none()
+            || self.observed.is_none_or(|observed| {
+                observed.paused_for_cache
+                    || observed.seeking
+                    || !matches!(
+                        observed.phase,
+                        PlayerTransportPhase::Playing | PlayerTransportPhase::ReadyPaused
+                    )
+            })
+    }
+
     pub fn desired_revision_pending(&self) -> Option<u64> {
         let desired = self.desired?;
         (self.last_applied_revision != Some(desired.state_revision))

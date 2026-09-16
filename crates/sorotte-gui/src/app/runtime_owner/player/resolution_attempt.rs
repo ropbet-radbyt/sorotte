@@ -1339,7 +1339,18 @@ impl GuiPersistedConfigRuntimeOwner {
             let permanent_plex_failure = matching_plex_miss.is_some_and(|miss| {
                 miss.disposition == GuiPlexStreamResolveFailureDisposition::PermanentForContext
             });
+            let indexing_current_item = self.media_match_background_worker_rx.is_some()
+                && self.media_match_background_cancel_disposition.is_none()
+                && self
+                    .media_match_background_scope
+                    .as_ref()
+                    .is_some_and(|scope| {
+                        scope.room_target.as_deref() == Some(attempt.target.as_str())
+                            && self.syncplay_qsettings_root().as_ref() == Some(&scope.root)
+                            && scope.settings == state.media_match.model.settings
+                    });
             let resolution_in_flight = self.attached_media_search_in_flight()
+                || indexing_current_item
                 || self.media_match_remote_lookup_rx.is_some()
                 || self.plex_stream_resolution_owns_cache_snapshot()
                 || matching_plex_miss.is_some_and(|miss| miss.retry_in_flight);
@@ -1350,7 +1361,9 @@ impl GuiPersistedConfigRuntimeOwner {
             } else {
                 GuiPlaylistSourceStatus::Missing
             };
-            source_state.detail = Some(if resolution_in_flight {
+            source_state.detail = Some(if indexing_current_item {
+                "Media Match is indexing local files for this item.".to_owned()
+            } else if resolution_in_flight {
                 "Searching the available media providers.".to_owned()
             } else if permanent_plex_failure {
                 "Plex found multiple indistinguishable playable parts; choose a source or retry after changing Plex metadata.".to_owned()
@@ -1458,6 +1471,67 @@ impl GuiPersistedConfigRuntimeOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_feedback_identifies_indexing_only_for_its_current_item_and_root() {
+        use crate::app::runtime_owner::media_match_worker::IndexJobScope;
+        let root = tempfile::tempdir().unwrap();
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.path().join("sorotte.ini")));
+        let mut state = GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            shared_playlist_enabled: Some(true),
+            ..Default::default()
+        });
+        state.apply_shared_playlist_entries(vec!["episode.mkv".to_owned()], Some(0), false);
+        owner.reconcile_local_shared_playlist_media_paths(&state);
+        owner.ensure_playlist_resolution_attempt(
+            state.playlist.main_window.playlist[0].entry_id,
+            owner.playlist_resolution.generation,
+            "episode.mkv",
+            GuiPlaylistSourcePolicy::Automatic,
+        );
+        let (_tx, rx) = std::sync::mpsc::channel();
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_scope = Some(IndexJobScope {
+            root: root.path().to_owned(),
+            settings: state.media_match.model.settings.clone(),
+            player_path: None,
+            room_target: Some("episode.mkv".to_owned()),
+        });
+        let (_, source) = owner
+            .playlist_resolution_source_state_for_projection(&state)
+            .unwrap();
+        assert_eq!(source.status, GuiPlaylistSourceStatus::Resolving);
+        assert_eq!(
+            source.detail.as_deref(),
+            Some("Media Match is indexing local files for this item.")
+        );
+        owner
+            .media_match_background_scope
+            .as_mut()
+            .unwrap()
+            .room_target = Some("other.mkv".to_owned());
+        let (_, source) = owner
+            .playlist_resolution_source_state_for_projection(&state)
+            .unwrap();
+        assert_eq!(source.status, GuiPlaylistSourceStatus::Missing);
+        assert!(!source.detail.unwrap().contains("indexing"));
+        owner
+            .media_match_background_scope
+            .as_mut()
+            .unwrap()
+            .room_target = Some("episode.mkv".to_owned());
+        owner.media_match_background_scope.as_mut().unwrap().root =
+            root.path().join("another-root");
+        assert_eq!(
+            owner
+                .playlist_resolution_source_state_for_projection(&state)
+                .unwrap()
+                .1
+                .status,
+            GuiPlaylistSourceStatus::Missing
+        );
+    }
     use crate::app::runtime_owner::player::media_resolution::GuiMediaResolutionPlan;
     use crate::app::runtime_owner::player_event_test_support::*;
     use crate::app::{

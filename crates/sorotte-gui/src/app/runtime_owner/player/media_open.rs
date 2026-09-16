@@ -494,6 +494,8 @@ impl GuiPersistedConfigRuntimeOwner {
         dispatch: GuiSharedPlaylistOpenDispatch,
         playlist_insert_slot: Option<usize>,
     ) {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("playlist.apply");
         if self.pending_shared_playlist_open.is_some() {
             Self::push_runtime_unavailable(
                 handle,

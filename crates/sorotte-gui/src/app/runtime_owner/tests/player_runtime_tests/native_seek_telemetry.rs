@@ -2152,6 +2152,7 @@ fn authoritative_rebase_preserves_accepted_seek_ownership_and_has_no_new_media_e
     owner.pending_attached_player_pause_command = Some(GuiPendingAttachedPlayerPauseCommand {
         target_paused: true,
         suppress_until: std::time::Instant::now() + std::time::Duration::from_secs(30),
+        observed: false,
     });
 
     state.lock().unwrap().media_preparation_calls = 0;

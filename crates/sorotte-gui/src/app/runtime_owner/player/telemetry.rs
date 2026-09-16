@@ -763,6 +763,30 @@ impl GuiOrderedPlayerEventConsumer {
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(in crate::app) fn take_attached_player_pause_command_echo(&mut self) -> bool {
+        let Some(pending) = self.pending_attached_player_pause_command else {
+            return false;
+        };
+        if pending.suppress_until <= Instant::now() {
+            self.pending_attached_player_pause_command = None;
+            return false;
+        }
+        if !pending.observed || self.player_paused != Some(pending.target_paused) {
+            return false;
+        }
+        self.pending_attached_player_pause_command = None;
+        true
+    }
+
+    fn observe_attached_pause_command_result(&mut self, paused: Option<bool>) {
+        if let Some(pending) = self.pending_attached_player_pause_command.as_mut()
+            && paused == Some(pending.target_paused)
+            && pending.suppress_until > Instant::now()
+        {
+            pending.observed = true;
+        }
+    }
+
     fn current_attached_system_seek_room_name(&self) -> Option<String> {
         self.session
             .as_ref()
@@ -1367,6 +1391,7 @@ impl GuiPersistedConfigRuntimeOwner {
         transport: &PlayerTransportSnapshot,
         user_offset_seconds: f64,
     ) {
+        self.observe_attached_pause_command_result(snapshot_known_copy(&transport.logical_pause));
         self.player_position_seconds = snapshot_known_copy(&transport.position_seconds)
             .map(|position| position - user_offset_seconds);
         self.player_paused = snapshot_known_copy(&transport.logical_pause);
@@ -1547,6 +1572,7 @@ impl GuiPersistedConfigRuntimeOwner {
         delta: PlayerTransportDelta,
         user_offset_seconds: f64,
     ) {
+        self.observe_attached_pause_command_result(delta.logical_pause);
         if let Some(paused_for_cache) = delta.paused_for_cache {
             self.player_paused_for_cache = Some(paused_for_cache);
         }
@@ -2018,6 +2044,8 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     pub(in crate::app::runtime_owner) fn refresh_player_state_impl(&mut self) {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("player.refresh");
         self.prune_attached_system_seek_ownership(Instant::now());
         let user_offset_seconds = self.user_offset_seconds;
         let Some(player) = self.player.as_mut() else {
@@ -2813,6 +2841,57 @@ mod transport_timeline_tests {
 #[cfg(test)]
 mod ordered_delivery_tests {
     use super::*;
+
+    #[test]
+    fn matching_command_observation_does_not_reoriginate_pause_but_next_native_edge_does() {
+        use crate::app::runtime_stack::test_support::{SessionObservation, active_session};
+        use std::sync::{Arc, Mutex};
+        for target in [true, false] {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorded = requests.clone();
+            let mut session = active_session().with_observer(move |event| {
+                if let SessionObservation::PauseRequested(paused) = event {
+                    recorded.lock().unwrap().push(paused);
+                }
+            });
+            session
+                .sync_local_playback_telemetry(Some(!target), Some(10.0))
+                .unwrap();
+            let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+                .with_session_runtime(Box::new(session));
+            let state = crate::app::runtime_state::GuiRuntimeState::from_stored_settings(
+                &Default::default(),
+            );
+            owner.player_paused = Some(target);
+            owner.note_local_attached_player_pause_command(target);
+            assert!(
+                !owner.take_attached_player_pause_command_echo(),
+                "command acceptance alone is not observation"
+            );
+            owner.observe_attached_pause_command_result(Some(target));
+            owner
+                .sync_detached_session_preferences_and_player_state(&state)
+                .unwrap();
+            assert!(
+                requests.lock().unwrap().is_empty(),
+                "command echo must remain telemetry"
+            );
+            assert!(owner.pending_attached_player_pause_command.is_none());
+            assert_eq!(
+                owner.session.as_ref().unwrap().local_pause_state(),
+                Some(target)
+            );
+            owner.player_paused = Some(!target);
+            owner
+                .sync_detached_session_preferences_and_player_state(&state)
+                .unwrap();
+            assert_eq!(
+                *requests.lock().unwrap(),
+                vec![!target],
+                "a later native edge still owns its user action"
+            );
+        }
+    }
     use sorotte_player_api::PlayerPhysicalLoadOutcome;
     use sorotte_player_mpv::lifecycle::{
         AuthoritativePlaylistEntry, PlayerLifecycleEffect, PlayerLifecycleInput,

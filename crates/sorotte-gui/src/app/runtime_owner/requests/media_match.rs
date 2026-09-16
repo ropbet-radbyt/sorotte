@@ -15,15 +15,14 @@ use std::{
 };
 
 use sorotte_media_match::{
-    MediaExtractionSettings, MediaIndexCommitError, MediaIndexCommitOutcome, MediaMatchDecision,
-    MediaMatchTier, MediaMatchWireSignature, decide_media_match_against_wire_signature,
+    MediaExtractionSettings, MediaIndexCommitOutcome, MediaMatchDecision, MediaMatchTier,
+    MediaMatchWireSignature, decide_media_match_against_wire_signature,
 };
 
-use crate::app::media_match_support::{
-    media_match_record_for_path, media_match_sqlite_index_exists, media_match_tier_label,
-    prepare_media_match_index_rebuild_backup,
-};
+use crate::app::media_match_support::{media_match_sqlite_index_exists, media_match_tier_label};
 
+use super::super::media_match_lookup::{FingerprintLookup, InventoryLookup};
+use super::super::media_match_worker::{IndexFinalization, IndexJobScope, spawn_index_worker};
 use super::super::{
     GuiMediaMatchBackgroundCancelDisposition, GuiMediaMatchBackgroundWorkerEvent,
     GuiMediaMatchRemoteLookupResult, GuiMediaMatchToolWorkerEvent,
@@ -53,12 +52,24 @@ fn media_match_sampled_fast_extraction_settings() -> MediaExtractionSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GuiMediaMatchExactPlaylistPlan {
+    ExactPendingSignature,
     None,
     ExactNoFingerprint { path: String },
     ExactNeedsSignature { path: String },
 }
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(in crate::app) fn pump_media_match_record_lookup(&mut self) -> bool {
+        if !self.media_match_record_lookup.take_changed() {
+            return false;
+        }
+        self.media_match_wire_sync_token = None;
+        // A completed lookup is new resolution evidence. Retry the current
+        // selection through its existing receipt/priority checks.
+        self.last_attached_media_resolution_trigger = None;
+        true
+    }
+
     fn media_match_resolution_enabled(projected_state: &GuiRuntimeState) -> bool {
         projected_state
             .settings
@@ -241,17 +252,21 @@ impl GuiPersistedConfigRuntimeOwner {
                     self.update_media_match_remote_status(handle, projected_state, status);
                     return true;
                 };
-            let Some(local_record) = media_match_record_for_path(
+            let lookup = self.media_match_record_lookup.lookup(
                 &root,
                 &current_path,
                 &media_match_sampled_fast_extraction_settings(),
-            ) else {
-                let status = if self.media_match_runtime_snapshot.health
-                    == GuiMediaMatchToolHealth::Healthy
-                {
-                    "pending local fingerprint".to_owned()
-                } else {
-                    "unavailable: tools unhealthy".to_owned()
+            );
+            let FingerprintLookup::Present(local_record) = lookup else {
+                let status = match lookup {
+                    FingerprintLookup::Failed(error) => format!("unavailable: {error}"),
+                    FingerprintLookup::Pending => "checking local fingerprint".to_owned(),
+                    _ if self.media_match_runtime_snapshot.health
+                        == GuiMediaMatchToolHealth::Healthy =>
+                    {
+                        "pending local fingerprint".to_owned()
+                    }
+                    _ => "unavailable: tools unhealthy".to_owned(),
                 };
                 let gate_tiers = BTreeMap::new();
                 if !self.set_media_match_peer_tiers(handle, projected_state, gate_tiers) {
@@ -276,7 +291,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         continue;
                     };
                     let decision = decide_media_match_against_wire_signature(
-                        &local_record,
+                        &local_record.record,
                         &signature,
                         &projected_state.media_match.model.settings,
                     );
@@ -311,6 +326,8 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) -> bool {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.wire");
         let token = self.media_match_wire_sync_token_for_state(projected_state);
         if self.media_match_wire_sync_token.as_deref() == Some(token.as_str()) {
             return true;
@@ -525,56 +542,6 @@ impl GuiPersistedConfigRuntimeOwner {
         false
     }
 
-    fn commit_media_match_background_index_backup(
-        &mut self,
-    ) -> Result<MediaIndexCommitOutcome, MediaIndexCommitError> {
-        let Some(backup) = self.media_match_background_index_backup.take() else {
-            return Ok(MediaIndexCommitOutcome::Activated {
-                cleanup_warning: None,
-            });
-        };
-        backup.commit()
-    }
-
-    fn abort_media_match_background_index_backup(&mut self) -> Result<(), String> {
-        let Some(backup) = self.media_match_background_index_backup.take() else {
-            return Ok(());
-        };
-        backup.abort()
-    }
-
-    fn publish_media_match_background_cancel_status(
-        &mut self,
-        handle: &GuiQueuedRuntimeBridgeHandle,
-        projected_state: &mut GuiRuntimeState,
-        disposition: GuiMediaMatchBackgroundCancelDisposition,
-    ) {
-        let status = match disposition {
-            GuiMediaMatchBackgroundCancelDisposition::RestorePrevious => self
-                .abort_media_match_background_index_backup()
-                .map(|()| "canceled: previous index restored".to_owned())
-                .unwrap_or_else(|error| format!("canceled: restore failed: {error}")),
-            GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint => self
-                .commit_media_match_background_index_backup()
-                .map(|MediaIndexCommitOutcome::Activated { cleanup_warning }| {
-                    cleanup_warning.map_or_else(
-                        || "canceled: checkpoint kept".to_owned(),
-                        |warning| format!("canceled: checkpoint kept; cleanup warning: {warning}"),
-                    )
-                })
-                .unwrap_or_else(|error| format!("canceled: checkpoint failed: {error}")),
-        };
-        let mut snapshot =
-            self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
-        snapshot.background_status = Some(status);
-        self.media_match_runtime_snapshot = snapshot.clone();
-        Self::push_actions_and_project(
-            handle,
-            projected_state,
-            vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
-        );
-    }
-
     fn publish_media_match_activation_failure(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
@@ -634,8 +601,23 @@ impl GuiPersistedConfigRuntimeOwner {
         )
     }
 
-    fn media_match_exact_playlist_signature_trigger_key(path: &str) -> String {
-        format!("exact-playlist-signature={path}")
+    fn media_match_exact_playlist_signature_trigger_key(
+        root: &Path,
+        path: &str,
+        settings: &sorotte_media_match::MediaMatchSettings,
+    ) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        let modified = metadata.modified().ok()?;
+        // A completed extraction only deduplicates that file version and index
+        // context. Replacing a file at the same path must permit new indexing.
+        Some(format!(
+            "exact-playlist-signature={path:?}\nroot={root:?}\nsettings={settings:?}\nmodified={modified:?}\ncreated={:?}\nbytes={}",
+            metadata.created().ok(),
+            metadata.len(),
+        ))
     }
 
     fn local_shared_playlist_media_match_signature_path_matches(&self, path: &str) -> bool {
@@ -652,18 +634,6 @@ impl GuiPersistedConfigRuntimeOwner {
         path: &str,
     ) {
         self.local_shared_playlist_media_match_signature_path = Some(path.to_owned());
-    }
-
-    pub(in crate::app) fn clear_local_shared_playlist_media_match_signature_path_if_current(
-        &mut self,
-        local_file: Option<&sorotte_player_api::LocalFileUpdate>,
-    ) {
-        let Some(path) = local_file.and_then(|file| file.path.as_deref()) else {
-            return;
-        };
-        if self.local_shared_playlist_media_match_signature_path_matches(path) {
-            self.local_shared_playlist_media_match_signature_path = None;
-        }
     }
 
     pub(in crate::app) fn media_match_wire_signature_allowed_for_local_file(
@@ -684,7 +654,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn media_match_exact_playlist_plan_for_state(
-        &self,
+        &mut self,
         projected_state: &GuiRuntimeState,
         root: &Path,
     ) -> GuiMediaMatchExactPlaylistPlan {
@@ -710,14 +680,22 @@ impl GuiPersistedConfigRuntimeOwner {
             .settings
             .wire_sharing_enabled
             && self.local_shared_playlist_media_match_signature_path_matches(&path)
-            && media_match_record_for_path(
+        {
+            return match self.media_match_record_lookup.lookup(
                 root,
                 &path,
                 &media_match_sampled_fast_extraction_settings(),
-            )
-            .is_none()
-        {
-            return GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature { path };
+            ) {
+                FingerprintLookup::Missing => {
+                    GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature { path }
+                }
+                FingerprintLookup::Present(_) => {
+                    GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint { path }
+                }
+                FingerprintLookup::Pending | FingerprintLookup::Failed(_) => {
+                    GuiMediaMatchExactPlaylistPlan::ExactPendingSignature
+                }
+            };
         }
 
         GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint { path }
@@ -732,7 +710,18 @@ impl GuiPersistedConfigRuntimeOwner {
         force_restart: bool,
         notify_on_finish: bool,
     ) -> bool {
-        let trigger_key = Self::media_match_exact_playlist_signature_trigger_key(&path);
+        if self.media_match_record_lookup.is_clearing() || self.pending_gui_data_clear {
+            return false;
+        }
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.signature.queue");
+        let Some(trigger_key) = Self::media_match_exact_playlist_signature_trigger_key(
+            &root,
+            &path,
+            &projected_state.media_match.model.settings,
+        ) else {
+            return false;
+        };
         if self.media_match_background_worker_rx.is_some() {
             if !force_restart
                 && self.media_match_background_trigger_key.as_deref() == Some(trigger_key.as_str())
@@ -773,17 +762,15 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = projected_state.media_match.model.settings.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
-        let (tx, rx) = mpsc::channel();
-        let index_transaction = match prepare_media_match_index_rebuild_backup(&root) {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                if notify_on_finish {
-                    Self::push_runtime_error_notification(handle, projected_state, error);
-                }
-                return false;
-            }
+        let scope = IndexJobScope {
+            root: root.clone(),
+            settings: settings.clone(),
+            player_path: self
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.clone()),
+            room_target: self.current_shared_playlist_target(projected_state),
         };
-        let worker_root = index_transaction.staging_app_root().to_path_buf();
         let tool_root = root.clone();
         let worker_path = path.clone();
         let current_player_position_seconds = self
@@ -791,16 +778,19 @@ impl GuiPersistedConfigRuntimeOwner {
             .as_ref()
             .and_then(|session| session.local_position_seconds());
 
-        match thread::Builder::new()
-            .name("sorotte-gui-media-match-exact-signature".to_owned())
-            .spawn(move || {
+        match spawn_index_worker(
+            "sorotte-gui-media-match-exact-signature",
+            root,
+            cancel_flag.clone(),
+            handle.clone(),
+            move |worker_root, tx| {
                 let progress_tx = tx.clone();
                 let extraction_settings = media_match_sampled_fast_extraction_settings();
                 let result = media_match_tool_paths_for_settings(&tool_root, &extraction_settings)
                     .and_then(|tools| {
                         rebuild_persisted_media_match_candidates_with_progress_and_cancel(
                             MediaMatchCandidateRebuildRequest {
-                                root: &worker_root,
+                                root: worker_root,
                                 candidates: vec![PathBuf::from(&worker_path)],
                                 current_player_path: Some(worker_path.as_str()),
                                 current_player_position_seconds,
@@ -815,20 +805,21 @@ impl GuiPersistedConfigRuntimeOwner {
                             },
                         )
                     });
-                let result = result.map(|mut result| {
+                result.map(|mut result| {
                     result.message = format!(
                         "Media Matching playlist fingerprint ready. {}",
                         result.message
                     );
                     result
-                });
-                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(result));
-            }) {
-            Ok(_thread) => {
+                })
+            },
+        ) {
+            Ok((rx, finish_tx)) => {
                 self.media_match_background_worker_rx = Some(rx);
                 self.media_match_background_worker_cancel = Some(cancel_flag);
                 self.media_match_background_trigger_key = Some(trigger_key);
-                self.media_match_background_index_backup = Some(index_transaction);
+                self.media_match_background_finish_tx = Some(finish_tx);
+                self.media_match_background_scope = Some(scope);
                 self.media_match_background_cancel_disposition = None;
                 self.publish_media_match_background_status(
                     handle,
@@ -840,7 +831,6 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.media_match_background_worker_cancel = None;
                 self.media_match_background_worker_rx = None;
-                let _ = index_transaction.abort();
                 if notify_on_finish {
                     Self::push_runtime_error_notification(
                         handle,
@@ -1172,13 +1162,15 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<String> {
+        use MediaMatchInventoryExactResolution::Resolved;
+
         match self.media_match_cached_exact_inventory_resolution_for_target(
             projected_state,
             target,
             search_roots,
-        )? {
-            MediaMatchInventoryExactResolution::Resolved { path, .. } => Some(path),
-            MediaMatchInventoryExactResolution::Ambiguous { .. } => None,
+        ) {
+            InventoryLookup::Ready(Some(Resolved { path, .. })) => Some(path),
+            _ => None,
         }
     }
 
@@ -1187,13 +1179,16 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &GuiRuntimeState,
         target: &str,
         search_roots: &[PathBuf],
-    ) -> Option<MediaMatchInventoryExactResolution> {
+    ) -> InventoryLookup {
         if !Self::media_match_resolution_enabled(projected_state) {
-            return None;
+            return InventoryLookup::Ready(None);
         }
-        let root = self.media_match_root_for_request(projected_state)?;
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
+            return InventoryLookup::Ready(None);
+        };
         let targets = Self::local_media_search_candidates_for_target(target);
-        media_match_inventory_exact_resolution_for_targets(&root, search_roots, &targets)
+        self.media_match_record_lookup
+            .lookup_inventory(&root, search_roots, &targets)
     }
 
     fn current_player_path_if_cached_media_match_candidate_for_target(
@@ -1349,6 +1344,9 @@ impl GuiPersistedConfigRuntimeOwner {
         force_restart: bool,
         notify_on_finish: bool,
     ) -> bool {
+        if self.media_match_record_lookup.is_clearing() || self.pending_gui_data_clear {
+            return false;
+        }
         if !projected_state
             .media_match
             .model
@@ -1390,6 +1388,9 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match self.media_match_exact_playlist_plan_for_state(projected_state, &root) {
             GuiMediaMatchExactPlaylistPlan::None => {}
+            GuiMediaMatchExactPlaylistPlan::ExactPendingSignature => {
+                return true;
+            }
             GuiMediaMatchExactPlaylistPlan::ExactNoFingerprint { .. } => {
                 if self.media_match_background_worker_rx.is_some() {
                     self.request_media_match_background_worker_cancel(
@@ -1498,30 +1499,31 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = projected_state.media_match.model.settings.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let worker_cancel_flag = Arc::clone(&cancel_flag);
-        let (tx, rx) = mpsc::channel();
-        let index_transaction = match prepare_media_match_index_rebuild_backup(&root) {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                if notify_on_finish {
-                    Self::push_runtime_error_notification(handle, projected_state, error);
-                }
-                return false;
-            }
+        let scope = IndexJobScope {
+            root: root.clone(),
+            settings: settings.clone(),
+            player_path: self
+                .player_local_file
+                .as_ref()
+                .and_then(|file| file.path.clone()),
+            room_target: self.current_shared_playlist_target(projected_state),
         };
-        let worker_root = index_transaction.staging_app_root().to_path_buf();
         let tool_root = root.clone();
 
-        match thread::Builder::new()
-            .name("sorotte-gui-media-match-background".to_owned())
-            .spawn(move || {
+        match spawn_index_worker(
+            "sorotte-gui-media-match-background",
+            root,
+            cancel_flag.clone(),
+            handle.clone(),
+            move |worker_root, tx| {
                 let progress_tx = tx.clone();
-                let fast_result = if current_player_path.is_none() {
+                if current_player_path.is_none() {
                     if let Some(remote_candidate) = remote_candidate.clone() {
                         let extraction_settings =
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         media_match_tool_paths_for_settings(&tool_root, &extraction_settings).and_then(|tools| {
                             let request = MediaMatchRemoteCandidateRebuildRequest {
-                                root: &worker_root,
+                                root: worker_root,
                                 search_roots: &search_roots,
                                 candidates: candidates.clone(),
                                 target_file_name: &remote_candidate.target_file_name,
@@ -1545,7 +1547,7 @@ impl GuiPersistedConfigRuntimeOwner {
                             sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                         rebuild_persisted_media_match_index_with_tool_root_and_cancel(
                             MediaMatchIndexRebuildRequest {
-                                root: &worker_root,
+                                root: worker_root,
                                 tool_root: &tool_root,
                                 search_roots: &search_roots,
                                 current_player_path: None,
@@ -1563,30 +1565,33 @@ impl GuiPersistedConfigRuntimeOwner {
                 } else if let Some(candidates) = candidates.clone() {
                     let extraction_settings =
                         sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
-                    media_match_tool_paths_for_settings(&tool_root, &extraction_settings).and_then(|tools| {
-                        rebuild_persisted_media_match_candidates_with_progress_and_cancel(
-                            MediaMatchCandidateRebuildRequest {
-                                root: &worker_root,
-                                candidates,
-                                current_player_path: current_player_path.as_deref(),
-                                current_player_position_seconds,
-                                settings: &settings,
-                                tools: &tools,
-                                extraction_settings: &extraction_settings,
-                                cancel_flag: Some(worker_cancel_flag.as_ref()),
-                            },
-                            |progress| {
-                                let _ = progress_tx
-                                    .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
-                            },
-                        )
-                    })
+                    media_match_tool_paths_for_settings(&tool_root, &extraction_settings).and_then(
+                        |tools| {
+                            rebuild_persisted_media_match_candidates_with_progress_and_cancel(
+                                MediaMatchCandidateRebuildRequest {
+                                    root: worker_root,
+                                    candidates,
+                                    current_player_path: current_player_path.as_deref(),
+                                    current_player_position_seconds,
+                                    settings: &settings,
+                                    tools: &tools,
+                                    extraction_settings: &extraction_settings,
+                                    cancel_flag: Some(worker_cancel_flag.as_ref()),
+                                },
+                                |progress| {
+                                    let _ = progress_tx.send(
+                                        GuiMediaMatchBackgroundWorkerEvent::Progress(progress),
+                                    );
+                                },
+                            )
+                        },
+                    )
                 } else {
                     let extraction_settings =
                         sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3();
                     rebuild_persisted_media_match_index_with_tool_root_and_cancel(
                         MediaMatchIndexRebuildRequest {
-                            root: &worker_root,
+                            root: worker_root,
                             tool_root: &tool_root,
                             search_roots: &search_roots,
                             current_player_path: current_player_path.as_deref(),
@@ -1600,14 +1605,15 @@ impl GuiPersistedConfigRuntimeOwner {
                                 .send(GuiMediaMatchBackgroundWorkerEvent::Progress(progress));
                         },
                     )
-                };
-                let _ = tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(fast_result));
-            }) {
-            Ok(_thread) => {
+                }
+            },
+        ) {
+            Ok((rx, finish_tx)) => {
                 self.media_match_background_worker_rx = Some(rx);
                 self.media_match_background_worker_cancel = Some(cancel_flag);
                 self.media_match_background_trigger_key = Some(trigger_key);
-                self.media_match_background_index_backup = Some(index_transaction);
+                self.media_match_background_finish_tx = Some(finish_tx);
+                self.media_match_background_scope = Some(scope);
                 self.media_match_background_cancel_disposition = None;
                 self.publish_media_match_background_status(
                     handle,
@@ -1619,7 +1625,6 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(error) => {
                 self.media_match_background_worker_cancel = None;
                 self.media_match_background_worker_rx = None;
-                let _ = index_transaction.abort();
                 if notify_on_finish {
                     Self::push_runtime_error_notification(
                         handle,
@@ -1679,146 +1684,167 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.worker.pump");
         let Some(rx) = self.media_match_background_worker_rx.take() else {
             return;
         };
-        let mut keep_rx = true;
-        let mut processed_events = 0usize;
-        let mut latest_progress = None;
         let plugin_enabled = projected_state
             .settings
             .plugin_enablement
             .enabled_for(GuiPluginSelection::MediaMatching);
-        loop {
-            if processed_events >= MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP {
-                break;
-            }
+        let same_root = self
+            .media_match_background_scope
+            .as_ref()
+            .is_none_or(|scope| self.syncplay_qsettings_root().as_ref() == Some(&scope.root));
+        let same_settings = self
+            .media_match_background_scope
+            .as_ref()
+            .is_none_or(|scope| scope.settings == projected_state.media_match.model.settings);
+        let mut keep_rx = true;
+        let mut latest_progress = None;
+        for _ in 0..MEDIA_MATCH_BACKGROUND_EVENTS_PER_PUMP {
             match rx.try_recv() {
                 Ok(GuiMediaMatchBackgroundWorkerEvent::Progress(progress)) => {
-                    processed_events += 1;
-                    if plugin_enabled {
+                    if plugin_enabled
+                        && same_root
+                        && self.media_match_background_cancel_disposition.is_none()
+                    {
                         latest_progress = Some(progress);
                     }
                 }
-                Ok(GuiMediaMatchBackgroundWorkerEvent::Finished(result)) => {
+                Ok(GuiMediaMatchBackgroundWorkerEvent::AwaitingActivation {
+                    extraction_succeeded,
+                }) => {
+                    // A new config root can never receive an old job's activation or projection.
+                    if !same_root
+                        || ((!plugin_enabled || !same_settings)
+                            && self.media_match_background_cancel_disposition.is_none())
+                    {
+                        self.media_match_background_cancel_disposition =
+                            Some(GuiMediaMatchBackgroundCancelDisposition::RestorePrevious);
+                    }
+                    let activate = match self.media_match_background_cancel_disposition {
+                        Some(GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint) => true,
+                        Some(GuiMediaMatchBackgroundCancelDisposition::RestorePrevious) => false,
+                        None => extraction_succeeded,
+                    };
+                    if let Some(finish_tx) = self.media_match_background_finish_tx.take() {
+                        let _ = finish_tx.send(if activate {
+                            IndexFinalization::Activate
+                        } else {
+                            IndexFinalization::Abort
+                        });
+                    }
+                }
+                Ok(GuiMediaMatchBackgroundWorkerEvent::Finished {
+                    result,
+                    finalization,
+                }) => {
                     latest_progress = None;
                     keep_rx = false;
+                    self.media_match_background_finish_tx = None;
                     self.media_match_background_worker_cancel = None;
-                    let cancel_disposition = self.media_match_background_cancel_disposition.take();
-                    if !plugin_enabled {
-                        if let Some(disposition) = cancel_disposition {
-                            self.publish_media_match_background_cancel_status(
-                                handle,
-                                projected_state,
-                                disposition,
-                            );
-                        }
+                    let scope = self.media_match_background_scope.take();
+                    let cancel = self.media_match_background_cancel_disposition.take();
+                    if !same_root {
+                        self.media_match_background_trigger_key = None;
                         break;
                     }
-                    match result {
-                        Ok(result) => {
-                            if let Some(disposition) = cancel_disposition {
-                                self.publish_media_match_background_cancel_status(
-                                    handle,
-                                    projected_state,
-                                    disposition,
-                                );
-                                break;
-                            }
-                            let cleanup_warning = match self
-                                .commit_media_match_background_index_backup()
-                            {
-                                Ok(MediaIndexCommitOutcome::Activated { cleanup_warning }) => {
-                                    cleanup_warning
-                                }
-                                Err(MediaIndexCommitError::NotActivated(error)) => {
-                                    self.publish_media_match_activation_failure(
-                                        handle,
-                                        projected_state,
-                                        error,
-                                    );
-                                    break;
-                                }
-                                Err(MediaIndexCommitError::StaleBase(error)) => {
-                                    self.publish_media_match_activation_failure(
-                                            handle,
-                                            projected_state,
-                                            format!(
-                                                "{error}. The media index changed concurrently; retry the scan."
-                                            ),
-                                        );
-                                    break;
-                                }
-                            };
-                            let background_status = if result.current_decision.as_deref()
-                                == Some("unknown: no resolved current local file")
-                            {
-                                "idle: waiting for resolved local media"
-                            } else {
-                                "idle"
-                            };
-                            if !self.apply_media_match_background_result(
+                    match finalization {
+                        Err(error) => {
+                            self.publish_media_match_activation_failure(
                                 handle,
                                 projected_state,
-                                result,
-                                true,
-                                background_status,
-                            ) {
-                                break;
+                                error.to_string(),
+                            );
+                        }
+                        Ok(Some(MediaIndexCommitOutcome::Activated { cleanup_warning })) => {
+                            self.media_match_record_lookup.invalidate();
+                            self.last_published_local_file = None;
+                            self.last_published_media_match_signature = None;
+                            self.media_match_wire_sync_token = None;
+                            self.clear_media_match_remote_lookup_state();
+                            if cancel.is_some() || !plugin_enabled || !same_settings {
+                                let status = match cancel {
+                                    Some(
+                                        GuiMediaMatchBackgroundCancelDisposition::KeepCheckpoint,
+                                    ) => "canceled: checkpoint kept",
+                                    Some(
+                                        GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
+                                    ) => "canceled after activation: completed index kept",
+                                    None => "completed: settings changed",
+                                };
+                                self.media_match_background_trigger_key = None;
+                                self.publish_media_match_background_status(
+                                    handle,
+                                    projected_state,
+                                    status,
+                                );
+                            } else if let Ok(mut result) = result {
+                                let same_media = scope.as_ref().is_none_or(|scope| {
+                                    scope.player_path
+                                        == self
+                                            .player_local_file
+                                            .as_ref()
+                                            .and_then(|file| file.path.clone())
+                                        && scope.room_target
+                                            == self.current_shared_playlist_target(projected_state)
+                                });
+                                if !same_media {
+                                    // The index is reusable; old selection evidence is not.
+                                    result.current_decision = None;
+                                    result.nearest_match = None;
+                                    result.last_evidence = None;
+                                }
+                                let status = if result.current_decision.as_deref()
+                                    == Some("unknown: no resolved current local file")
+                                {
+                                    "idle: waiting for resolved local media"
+                                } else {
+                                    "idle"
+                                };
+                                self.apply_media_match_background_result(
+                                    handle,
+                                    projected_state,
+                                    result,
+                                    true,
+                                    status,
+                                );
                             }
-                            if let Some(error) = cleanup_warning {
+                            if let Some(warning) = cleanup_warning {
                                 Self::push_runtime_error_notification(
                                     handle,
                                     projected_state,
-                                    error,
+                                    warning,
                                 );
                             }
                         }
-                        Err(error) if error.contains("canceled") => {
-                            self.publish_media_match_background_cancel_status(
-                                handle,
-                                projected_state,
-                                cancel_disposition.unwrap_or(
-                                    GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
-                                ),
-                            );
-                        }
-                        Err(error) => {
-                            if let Some(disposition) = cancel_disposition {
-                                self.publish_media_match_background_cancel_status(
+                        Ok(None) => {
+                            self.media_match_background_trigger_key = None;
+                            if let Err(error) = result
+                                && cancel.is_none()
+                                && !error.contains("canceled")
+                                && plugin_enabled
+                            {
+                                let message = format!("{error}; previous index remains active");
+                                self.publish_media_match_background_status(
                                     handle,
                                     projected_state,
-                                    disposition,
+                                    "failed: previous index remains active",
                                 );
-                                break;
+                                Self::push_runtime_error_notification(
+                                    handle,
+                                    projected_state,
+                                    message,
+                                );
+                            } else {
+                                self.publish_media_match_background_status(
+                                    handle,
+                                    projected_state,
+                                    "canceled: previous index restored",
+                                );
                             }
-                            let restore_error =
-                                self.abort_media_match_background_index_backup().err();
-                            let mut snapshot = self.refresh_media_match_runtime_snapshot(
-                                &projected_state.media_match.model.settings,
-                            );
-                            let message = restore_error
-                                .as_ref()
-                                .map(|restore_error| {
-                                    format!(
-                                        "{error}; failed restoring previous index: {restore_error}"
-                                    )
-                                })
-                                .unwrap_or_else(|| format!("{error}; previous index restored"));
-                            snapshot.message = Some(message.clone());
-                            snapshot.background_status = Some("failed".to_owned());
-                            self.media_match_runtime_snapshot = snapshot.clone();
-                            Self::push_actions_and_project(
-                                handle,
-                                projected_state,
-                                vec![
-                                    GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot),
-                                    GuiShellAction::PushTransientNotification {
-                                        level: GuiTransientNotificationLevel::Warning,
-                                        message,
-                                    },
-                                ],
-                            );
                         }
                     }
                     break;
@@ -1827,25 +1853,18 @@ impl GuiPersistedConfigRuntimeOwner {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     latest_progress = None;
                     keep_rx = false;
+                    self.media_match_background_finish_tx = None;
+                    self.media_match_background_scope = None;
                     self.media_match_background_worker_cancel = None;
                     self.media_match_background_cancel_disposition = None;
-                    if !plugin_enabled {
-                        break;
+                    self.media_match_background_trigger_key = None;
+                    if plugin_enabled && same_root {
+                        self.publish_media_match_background_status(
+                            handle,
+                            projected_state,
+                            "failed: index worker stopped before reporting completion",
+                        );
                     }
-                    let status = self
-                        .abort_media_match_background_index_backup()
-                        .map(|()| "failed: previous index restored".to_owned())
-                        .unwrap_or_else(|error| format!("failed: restore failed: {error}"));
-                    let mut snapshot = self.refresh_media_match_runtime_snapshot(
-                        &projected_state.media_match.model.settings,
-                    );
-                    snapshot.background_status = Some(status);
-                    self.media_match_runtime_snapshot = snapshot.clone();
-                    Self::push_actions_and_project(
-                        handle,
-                        projected_state,
-                        vec![GuiShellAction::ApplyGuiMediaMatchRuntimeSnapshot(snapshot)],
-                    );
                     break;
                 }
             }
@@ -1867,6 +1886,8 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.warmup");
         if !projected_state
             .settings
             .plugin_enablement
@@ -1939,6 +1960,8 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("mm.signature.check");
         if !projected_state
             .settings
             .plugin_enablement
@@ -2257,11 +2280,44 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         }
-        if let Some(root) = self.media_match_root_for_request(projected_state)
-            && let Err(error) = clear_persisted_media_match_cache_at_root(&root)
-        {
+        let Some(root) = self.media_match_root_for_request(projected_state) else {
+            return false;
+        };
+        if let Err(error) = self.media_match_record_lookup.clear(root) {
             Self::push_runtime_error_notification(handle, projected_state, error);
             return false;
+        }
+        self.publish_media_match_background_status(
+            handle,
+            projected_state,
+            "Clearing the Media Match cache",
+        );
+        true
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_media_match_cache_clear(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut GuiRuntimeState,
+    ) {
+        let Some((root, result)) = self.media_match_record_lookup.take_clear_result() else {
+            return;
+        };
+        if self.pending_gui_data_clear {
+            let result = if self.syncplay_qsettings_root().as_ref() == Some(&root) {
+                result
+            } else {
+                Err("Configuration root changed while clearing application data".to_owned())
+            };
+            self.finish_gui_data_clear_result(handle, projected_state, result);
+            return;
+        }
+        if self.syncplay_qsettings_root().as_ref() != Some(&root) {
+            return;
+        }
+        if let Err(error) = result {
+            Self::push_runtime_error_notification(handle, projected_state, error);
+            return;
         }
         let mut snapshot =
             self.refresh_media_match_runtime_snapshot(&projected_state.media_match.model.settings);
@@ -2275,7 +2331,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.last_published_media_match_signature = None;
         self.media_match_wire_sync_token = None;
         if !self.sync_media_match_wire_decisions(handle, projected_state) {
-            return true;
+            return;
         }
         let snapshot = self.media_match_runtime_snapshot.clone();
         let message = "Media Matching cache cleared.".to_owned();
@@ -2291,7 +2347,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 GuiShellAction::AnnounceSystemChatEvent(message),
             ],
         );
-        true
     }
 
     pub(super) fn handle_set_media_match_fingerprinting_request(
@@ -2784,13 +2839,30 @@ mod tests {
                 .expect("worker should finish")
             {
                 GuiMediaMatchBackgroundWorkerEvent::Progress(_) => {}
-                GuiMediaMatchBackgroundWorkerEvent::Finished(result) => break result,
+                GuiMediaMatchBackgroundWorkerEvent::AwaitingActivation {
+                    extraction_succeeded,
+                } => {
+                    assert!(extraction_succeeded);
+                    owner
+                        .media_match_background_finish_tx
+                        .take()
+                        .unwrap()
+                        .send(IndexFinalization::Activate)
+                        .unwrap();
+                }
+                GuiMediaMatchBackgroundWorkerEvent::Finished {
+                    result,
+                    finalization,
+                } => {
+                    assert!(matches!(
+                        finalization,
+                        Ok(Some(MediaIndexCommitOutcome::Activated { .. }))
+                    ));
+                    break result;
+                }
             }
         }
         .expect("inventory-only worker should succeed without media tools");
-        owner
-            .commit_media_match_background_index_backup()
-            .expect("backup should be discarded");
 
         let summary =
             sorotte_media_match::MediaIndexService::new(root.join("cache").join("media-match"))
@@ -2876,7 +2948,6 @@ mod tests {
                 Some("previous live nearest".to_owned());
             owner.media_match_runtime_snapshot.current_decision =
                 Some("previous live decision".to_owned());
-            owner.media_match_background_index_backup = Some(index_transaction);
             owner.media_match_background_trigger_key = Some(trigger_key.to_owned());
             owner.media_match_wire_sync_token = Some("stale-wire-token".to_owned());
             owner.media_match_remote_lookup_trigger_key = Some("stale-remote-trigger".to_owned());
@@ -2889,15 +2960,16 @@ mod tests {
 
             let (worker_tx, worker_rx) = mpsc::channel();
             worker_tx
-                .send(GuiMediaMatchBackgroundWorkerEvent::Finished(Ok(
-                    MediaMatchIndexRebuildResult {
+                .send(GuiMediaMatchBackgroundWorkerEvent::Finished {
+                    result: Ok(MediaMatchIndexRebuildResult {
                         message: "staging rebuild succeeded".to_owned(),
                         cache_status: "staging cache".to_owned(),
                         current_decision: Some("staging decision".to_owned()),
                         nearest_match: Some("staging nearest".to_owned()),
                         last_evidence: Some("staging evidence".to_owned()),
-                    },
-                )))
+                    }),
+                    finalization: index_transaction.commit().map(Some),
+                })
                 .expect("worker result should be queued");
             owner.media_match_background_worker_rx = Some(worker_rx);
             owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(false)));
@@ -3248,6 +3320,12 @@ mod tests {
             "wire comparison should use the real open local file for alternate encodes"
         );
 
+        assert!(matches!(
+            owner
+                .media_match_record_lookup
+                .wait_for_test(&root, &local_media_path.to_string_lossy()),
+            FingerprintLookup::Present(_)
+        ));
         assert!(owner.sync_media_match_wire_decisions(&handle, &mut state));
         assert_eq!(
             owner.media_match_runtime_snapshot.remote_status.as_deref(),
@@ -3306,15 +3384,18 @@ mod tests {
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
         owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
         let (tx, rx) = mpsc::channel();
-        tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(Ok(
-            MediaMatchIndexRebuildResult {
+        tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished {
+            result: Ok(MediaMatchIndexRebuildResult {
                 message: "stale result".to_owned(),
                 cache_status: "stale cache".to_owned(),
                 current_decision: Some("stale decision".to_owned()),
                 nearest_match: Some("stale nearest".to_owned()),
                 last_evidence: Some("stale evidence".to_owned()),
-            },
-        )))
+            }),
+            finalization: Ok(Some(MediaIndexCommitOutcome::Activated {
+                cleanup_warning: None,
+            })),
+        })
         .expect("stale worker result should be queued");
 
         owner.media_match_background_worker_rx = Some(rx);
@@ -3360,15 +3441,18 @@ mod tests {
         owner.media_match_runtime_snapshot.nearest_match = Some("current nearest".to_owned());
         owner.media_match_runtime_snapshot.last_evidence = Some("current evidence".to_owned());
         let (tx, rx) = mpsc::channel();
-        tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished(Ok(
-            MediaMatchIndexRebuildResult {
+        tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished {
+            result: Ok(MediaMatchIndexRebuildResult {
                 message: "stale result".to_owned(),
                 cache_status: "stale cache".to_owned(),
                 current_decision: Some("stale decision".to_owned()),
                 nearest_match: Some("stale nearest".to_owned()),
                 last_evidence: Some("stale evidence".to_owned()),
-            },
-        )))
+            }),
+            finalization: Ok(Some(MediaIndexCommitOutcome::Activated {
+                cleanup_warning: None,
+            })),
+        })
         .expect("stale worker result should be queued");
 
         owner.media_match_background_worker_rx = Some(rx);
@@ -3542,11 +3626,73 @@ mod tests {
         assert_eq!(
             owner
                 .media_match_exact_playlist_plan_for_state(&runtime_state_for_shell(&state), &root),
+            GuiMediaMatchExactPlaylistPlan::ExactPendingSignature
+        );
+        assert!(matches!(
+            owner
+                .media_match_record_lookup
+                .wait_for_test(&root, &media_path.to_string_lossy()),
+            FingerprintLookup::Missing
+        ));
+        assert_eq!(
+            owner
+                .media_match_exact_playlist_plan_for_state(&runtime_state_for_shell(&state), &root),
             GuiMediaMatchExactPlaylistPlan::ExactNeedsSignature {
                 path: media_path.to_string_lossy().into_owned(),
             }
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn exact_signature_job_restarts_when_file_or_index_context_changes() {
+        for change in ["replacement", "index-root", "settings"] {
+            let root = test_temp_root(&format!("exact-signature-job-{change}"));
+            let media_path = root.join("episode.mkv");
+            std::fs::write(&media_path, b"old file").unwrap();
+            let path = media_path.to_string_lossy().into_owned();
+            let mut state = GuiRuntimeState::from_stored_settings(&StoredClientSettings::default());
+            let mut owner =
+                GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+            let handle = GuiQueuedRuntimeBridgeHandle::default();
+            let (_tx, rx) = mpsc::channel();
+            let canceled = Arc::new(AtomicBool::new(false));
+            owner.media_match_background_worker_rx = Some(rx);
+            owner.media_match_background_worker_cancel = Some(Arc::clone(&canceled));
+            owner.media_match_background_trigger_key =
+                GuiPersistedConfigRuntimeOwner::media_match_exact_playlist_signature_trigger_key(
+                    &root,
+                    &path,
+                    &state.media_match.model.settings,
+                );
+            assert!(owner.queue_exact_playlist_signature_worker(
+                &handle,
+                &mut state,
+                root.clone(),
+                path.clone(),
+                false,
+                false
+            ));
+            assert!(!canceled.load(Ordering::Relaxed));
+            let mut next_root = root.clone();
+            match change {
+                "replacement" => std::fs::write(&media_path, b"replacement media file").unwrap(),
+                "index-root" => next_root = root.join("other-index"),
+                "settings" => {
+                    state.media_match.model.settings.wire_sharing_enabled =
+                        !state.media_match.model.settings.wire_sharing_enabled
+                }
+                _ => unreachable!(),
+            }
+            assert!(owner.queue_exact_playlist_signature_worker(
+                &handle, &mut state, next_root, path, false, false
+            ));
+            assert!(
+                canceled.load(Ordering::Relaxed),
+                "{change} must retire the old job instead of deduplicating it"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
     }
 
     #[test]
@@ -3626,6 +3772,12 @@ mod tests {
         owner.media_match_background_trigger_key = Some("background warmup".to_owned());
         let handle = GuiQueuedRuntimeBridgeHandle::default();
 
+        assert!(matches!(
+            owner
+                .media_match_record_lookup
+                .wait_for_test(&root, &media_path.to_string_lossy()),
+            FingerprintLookup::Missing
+        ));
         owner.maybe_queue_media_match_exact_playlist_signature(&handle, &mut state);
 
         assert!(

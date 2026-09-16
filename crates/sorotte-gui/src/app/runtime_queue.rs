@@ -68,7 +68,7 @@ impl GuiQueuedRuntimeBridgeHandle {
         *threaded_runtime_owner = Some(Arc::downgrade(owner));
     }
 
-    fn notify_threaded_runtime_owner(&self) {
+    pub(super) fn notify_threaded_runtime_owner(&self) {
         let shared = self
             .threaded_runtime_owner
             .lock()

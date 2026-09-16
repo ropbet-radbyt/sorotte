@@ -336,6 +336,8 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &GuiRuntimeState,
         paths: Vec<String>,
     ) -> Result<GuiSharedPlaylistOpenDispatch, String> {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("playlist.prepare");
         if paths.len() == 1
             && let Some(playlist_items) = Self::shared_playlist_import_items_from_path(&paths[0])?
         {

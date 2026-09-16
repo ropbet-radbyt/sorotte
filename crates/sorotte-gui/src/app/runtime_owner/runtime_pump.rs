@@ -24,10 +24,14 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         mut projected_state: GuiRuntimeState,
     ) -> GuiRuntimeState {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("owner.pump");
         self.runtime_pump_generation = self.runtime_pump_generation.wrapping_add(1);
+        self.media_match_record_lookup.set_wake(handle);
+        let mut media_resolution_completed = self.pump_media_match_record_lookup();
+        self.pump_media_match_cache_clear(handle, &mut projected_state);
         self.poll_managed_mpv_process();
         self.pump_sorotte_bridge_health_transitions();
-        let mut media_resolution_completed = false;
         self.pump_due_session_transport_reconnect(handle, &mut projected_state);
         self.sync_detached_session_runtime_state_or_notify(handle, &mut projected_state);
         self.pump_session_transport_driver(handle, &mut projected_state);
@@ -52,6 +56,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.pump_media_match_tool_worker(handle, &mut projected_state);
         media_resolution_completed |= self.pump_stream_helper_worker(handle, &mut projected_state);
         self.pump_media_match_background_worker(handle, &mut projected_state);
+        self.pump_pending_gui_data_clear(handle, &mut projected_state);
         media_resolution_completed |= self.pump_media_match_remote_lookup_worker();
         let _ = self.maybe_sync_media_match_wire_decisions(handle, &mut projected_state);
         if !self.startup_saved_connect_attempted {

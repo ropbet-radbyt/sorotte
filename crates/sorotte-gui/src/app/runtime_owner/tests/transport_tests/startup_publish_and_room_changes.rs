@@ -894,7 +894,22 @@ fn gui_persisted_config_runtime_owner_publishes_cached_media_match_without_healt
     );
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
-    let outbound_protocol_lines = session_transport.take_written_lines();
+    let mut outbound_protocol_lines = session_transport.take_written_lines();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !outbound_protocol_lines.iter().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|message| message.pointer("/Set/file/mediaMatch").is_some())
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "asynchronous fingerprint publication did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        outbound_protocol_lines.extend(session_transport.take_written_lines());
+    }
+
     assert!(
         outbound_protocol_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1128,10 +1143,12 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
             .with_path(media_path.to_string_lossy().into_owned()),
     );
 
+    owner.remember_local_shared_playlist_media_match_signature_path(&media_path.to_string_lossy());
     let handle = GuiQueuedRuntimeBridgeHandle::default();
     let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         username: Some("alice".to_owned()),
         room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
         media_match_fingerprinting_enabled: Some(true),
         media_match_wire_sharing_enabled: Some(true),
         ..StoredClientSettings::default()
@@ -1143,6 +1160,10 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
     session_transport.push_inbound_protocol_line(
         r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true,"mediaMatch":true}}}"#,
     );
+    session_transport.push_inbound_protocol_lines([
+        r#"{"Set":{"playlistChange":{"files":["episode2.mkv"],"user":"alice"}}}"#.to_owned(),
+        r#"{"Set":{"playlistIndex":{"index":0,"user":"alice"}}}"#.to_owned(),
+    ]);
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
     let first_publish_lines = session_transport.take_written_lines();
@@ -1202,7 +1223,22 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
     );
 
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let republish_lines = session_transport.take_written_lines();
+    let mut republish_lines = session_transport.take_written_lines();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !republish_lines.iter().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .is_some_and(|message| message.pointer("/Set/file/mediaMatch").is_some())
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "asynchronous fingerprint publication did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        republish_lines.extend(session_transport.take_written_lines());
+    }
+
     assert!(
         republish_lines.iter().any(|line| {
             let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -1217,6 +1253,23 @@ fn gui_persisted_config_runtime_owner_republishes_media_match_when_signature_bec
         "same local file should republish once its media-match signature becomes available; republish_lines={republish_lines:?}"
     );
 
+    for _ in 0..4 {
+        pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+        assert!(
+            owner.last_published_media_match_signature.is_some(),
+            "the source signature must survive subsequent pumps"
+        );
+        assert!(
+            session_transport.take_written_lines().iter().all(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value.pointer("/Set/file").is_none_or(|file| {
+                    file.get(sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY)
+                        .is_some()
+                })
+            }),
+            "a successful fingerprint publication must not immediately withdraw it"
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

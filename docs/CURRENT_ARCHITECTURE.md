@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.17; landed base `47a5859d9b449de812d4eec221ccc43d357de601`; fixing commit **pending**; hosted evidence **pending**. The v0.2.17 candidate adds Standard and Watch together synchronization presets to the settings draft, preserves cache and recovery defaults, and respects current readiness and controller authority. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
+Release 0.2.18; landed base `b86696ec6075d2b5bf92bec17d4abc02277847eb`; fixing commit **pending**; hosted evidence **pending**. The v0.2.18 candidate moves Media Match indexing and lookup off the GUI runtime pump, preserves scoped playlist and index ownership, and protects confirmed native Pause intent from playback correction and same-revision heartbeats. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
 
 ## Authority flow
 
