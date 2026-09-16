@@ -35,7 +35,7 @@ proptest = "1.11.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "query", "rustls-no-provider"] }
 rfd = "0.17.2"
-rustls = "0.23.44"
+rustls = "0.23.45"
 rustls-pki-types = { version = "1.15.1", features = ["std"] }
 rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 rustfft = "6.4.1"
