@@ -11,6 +11,7 @@ static ORIGIN: OnceLock<Instant> = OnceLock::new();
 static EVENTS: Mutex<Vec<serde_json::Value>> = Mutex::new(Vec::new());
 thread_local! { static CLIENT: RefCell<String> = const { RefCell::new(String::new()) }; }
 
+#[cfg(windows)]
 pub(crate) fn start() {
     ORIGIN.get_or_init(Instant::now);
     EVENTS.lock().unwrap().clear();
@@ -90,6 +91,7 @@ impl Drop for Span {
             "at_ms":self.at_ms,"duration_ms":elapsed_ms,"client":self.client,"thread":self.thread}));
     }
 }
+#[cfg(windows)]
 pub(crate) fn save(path: &std::path::Path) {
     let mut events = EVENTS.lock().unwrap().clone();
     events.sort_by(|a, b| {
