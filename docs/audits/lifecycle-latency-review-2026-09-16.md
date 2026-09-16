@@ -294,7 +294,7 @@ Nothing was committed, pushed, merged, or published. Existing dirty work in the
 original checkout was preserved.
 
 The experiment source is in the two `latency_review.rs` modules, the
-`latency_review_probe.rs` recorder, and
+`latency_review_probe_tests.rs` recorder, and
 [sandbox launcher](../../scripts/lifecycle-latency-sandbox.ps1) /
 [guest runner](../../scripts/lifecycle-latency-guest.ps1).
 The only batching override is compiled under `cfg(test)`.

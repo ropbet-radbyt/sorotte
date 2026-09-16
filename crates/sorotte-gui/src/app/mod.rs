@@ -7,6 +7,7 @@ mod feature_snapshots;
 mod feedback_workflows;
 mod helper_tools;
 #[cfg(test)]
+#[path = "latency_review_probe_tests.rs"]
 mod latency_review_probe;
 mod launcher;
 mod local_command_dispatch;

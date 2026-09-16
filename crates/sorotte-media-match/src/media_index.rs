@@ -12,7 +12,7 @@ use std::os::windows::ffi::OsStrExt;
 use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
 
 #[cfg(test)]
-mod latency_review;
+mod latency_review_tests;
 mod reader;
 pub use reader::MediaIndexRecordReader;
 use serde::{Deserialize, Serialize};

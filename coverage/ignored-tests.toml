@@ -419,7 +419,7 @@ operating_systems = ["windows"]
 
 [[ignored_test]]
 id = "IGN-SIM-006"
-source = "crates/sorotte-media-match/src/media_index/latency_review.rs"
+source = "crates/sorotte-media-match/src/media_index/latency_review_tests.rs"
 test = "latency_review_index_transaction_scaling"
 source_reason = "writes synthetic indexes under SOROTTE_LATENCY_OUTPUT and measures real SQLite transactions"
 tier = "manual"
