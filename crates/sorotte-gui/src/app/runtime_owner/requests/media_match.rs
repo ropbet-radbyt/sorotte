@@ -1162,15 +1162,14 @@ impl GuiPersistedConfigRuntimeOwner {
         target: &str,
         search_roots: &[PathBuf],
     ) -> Option<String> {
+        use MediaMatchInventoryExactResolution::Resolved;
+
         match self.media_match_cached_exact_inventory_resolution_for_target(
             projected_state,
             target,
             search_roots,
         ) {
-            InventoryLookup::Ready(Some(MediaMatchInventoryExactResolution::Resolved {
-                path,
-                ..
-            })) => Some(path),
+            InventoryLookup::Ready(Some(Resolved { path, .. })) => Some(path),
             _ => None,
         }
     }

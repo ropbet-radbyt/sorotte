@@ -171,3 +171,12 @@ production resolution priority and its asynchronous boundary are unchanged.
 The first failed hosted logs and cancelled superseded native attempts remain
 under `target/latency-review` and `target/verification/native-runners`.
 Fresh exact-source qualification is still required for the repaired candidate.
+
+Changed-line coverage identified missing worker failure and cancellation coverage.
+Seven additional regressions cover failed preparation, cancellation before
+extraction, aborted completion, disconnected workers, reads during a pending
+clear, recovery after a failed clear, and invalid media paths. The focused suite
+passes 110 tests on both Windows and Linux. Local instrumented tests exercise
+59 previously uncovered changed lines. The nested inventory match uses a local
+variant import so LLVM maps the complete match arm to one physical source line;
+its resolution behavior is unchanged. Coverage policy and thresholds are unchanged.

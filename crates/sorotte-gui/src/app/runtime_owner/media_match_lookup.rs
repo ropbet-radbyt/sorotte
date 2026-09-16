@@ -430,6 +430,119 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pending_clear_blocks_reads_and_worker_disconnect_returns_a_terminal_error() {
+        let root = tempfile::tempdir().unwrap();
+        let other_root = tempfile::tempdir().unwrap();
+        let roots = [root.path().to_owned()];
+        let targets = ["episode.mkv".to_owned()];
+        let (requests, rx) = mpsc::sync_channel(1);
+        let (tx, replies) = mpsc::channel();
+        let mut lookup = GuiMediaMatchRecordLookup {
+            worker: Some(LookupWorker { requests, replies }),
+            ..Default::default()
+        };
+        assert_eq!(
+            lookup.lookup_inventory(root.path(), &roots, &targets),
+            InventoryLookup::Pending
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            LookupRequest::Inventory(_)
+        ));
+        lookup.clear(root.path().to_owned()).unwrap();
+        assert!(lookup.clear(other_root.path().to_owned()).is_err());
+        assert_eq!(
+            lookup.lookup_inventory(root.path(), &roots, &targets),
+            InventoryLookup::Pending
+        );
+        assert!(matches!(
+            lookup.lookup(
+                root.path(),
+                "not-yet-present.mkv",
+                &MediaExtractionSettings::sampled_fast_audio_index_v3(),
+            ),
+            FingerprintLookup::Pending
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "clear must wait for the active read"
+        );
+        drop(tx);
+        let (failed_root, result) = lookup.take_clear_result().unwrap();
+        assert_eq!(failed_root, root.path());
+        assert!(result.unwrap_err().contains("worker stopped"));
+        assert!(!lookup.is_clearing());
+        assert!(!lookup.in_flight);
+        assert!(lookup.worker.is_none());
+        assert!(lookup.take_clear_result().is_none());
+    }
+
+    #[test]
+    fn inaccessible_index_reports_failure_and_can_recover_after_clear() {
+        let root = tempfile::tempdir().unwrap();
+        let media = root.path().join("episode.mkv");
+        fs::write(&media, b"media").unwrap();
+        fs::create_dir(root.path().join("cache")).unwrap();
+        let obstruction = root.path().join("cache/media-match");
+        fs::write(&obstruction, b"index path is a file").unwrap();
+        let mut lookup = GuiMediaMatchRecordLookup::default();
+        assert!(matches!(
+            lookup.wait_for_inventory_test(
+                root.path(),
+                &[root.path().to_owned()],
+                &["episode.mkv".to_owned()],
+            ),
+            InventoryLookup::Failed(_)
+        ));
+        assert!(matches!(
+            lookup.wait_for_test(root.path(), media.to_str().unwrap()),
+            FingerprintLookup::Failed(_)
+        ));
+        lookup.clear(root.path().to_owned()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some((failed_root, result)) = lookup.take_clear_result() {
+                assert_eq!(failed_root, root.path());
+                assert!(result.is_err());
+                break;
+            }
+            assert!(Instant::now() < deadline, "clear failure must complete");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!lookup.is_clearing());
+        assert_eq!(fs::read(&obstruction).unwrap(), b"index path is a file");
+        fs::remove_file(obstruction).unwrap();
+        assert!(matches!(
+            lookup.wait_for_test(root.path(), media.to_str().unwrap()),
+            FingerprintLookup::Missing
+        ));
+        assert_eq!(
+            lookup.lookup_inventory(root.path(), &[], &[]),
+            InventoryLookup::Ready(None)
+        );
+    }
+
+    #[test]
+    fn non_file_and_unreadable_media_do_not_start_a_fingerprint_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut lookup = GuiMediaMatchRecordLookup::default();
+        let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+        assert!(matches!(
+            lookup.lookup(root.path(), root.path().to_str().unwrap(), &settings),
+            FingerprintLookup::Missing
+        ));
+        assert!(matches!(
+            lookup.lookup(
+                root.path(),
+                root.path().join("missing.mkv").to_str().unwrap(),
+                &settings
+            ),
+            FingerprintLookup::Failed(_)
+        ));
+        assert!(lookup.worker.is_none());
+    }
+
+    #[test]
     fn pending_fingerprint_is_distinct_from_missing_and_changed_file_invalidates_miss() {
         let root = tempfile::tempdir().unwrap();
         let media = root.path().join("episode.mkv");

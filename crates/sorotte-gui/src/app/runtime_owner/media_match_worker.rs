@@ -251,6 +251,174 @@ mod tests {
         }
     }
 
+    #[test]
+    fn preparation_failure_reports_completion_and_removes_outer_staging_directory() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("cache")).unwrap();
+        let previous = root.path().join("cache/media-match");
+        std::fs::write(&previous, b"obstructed index root").unwrap();
+        let (rx, _finish) = spawn_index_worker(
+            "test-index-prepare-failure",
+            root.path().to_owned(),
+            Arc::new(AtomicBool::new(false)),
+            GuiQueuedRuntimeBridgeHandle::default(),
+            |_, _| panic!("extraction must not run after preparation fails"),
+        )
+        .unwrap();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                GuiMediaMatchBackgroundWorkerEvent::Progress(_) => {}
+                GuiMediaMatchBackgroundWorkerEvent::Finished {
+                    result: Err(error),
+                    finalization: Err(MediaIndexCommitError::NotActivated(reason)),
+                } => {
+                    assert!(!error.is_empty());
+                    assert_eq!(error, reason);
+                    break;
+                }
+                _ => panic!("preparation failure must finish without asking for activation"),
+            }
+        }
+        assert_eq!(std::fs::read(previous).unwrap(), b"obstructed index root");
+        assert_eq!(
+            std::fs::read_dir(root.path().join("cache"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn canceled_before_extraction_waits_for_abort_and_preserves_active_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = prepare_media_match_index_rebuild_backup(root.path()).unwrap();
+        MediaIndexService::new(initial.staging_app_root().join("cache/media-match"))
+            .open()
+            .unwrap();
+        initial.commit().unwrap();
+        let manifest = root.path().join("cache/media-match/current.json");
+        let previous = std::fs::read(&manifest).unwrap();
+        let (rx, finish) = spawn_index_worker(
+            "test-canceled-index",
+            root.path().to_owned(),
+            Arc::new(AtomicBool::new(true)),
+            GuiQueuedRuntimeBridgeHandle::default(),
+            |_, _| panic!("canceled job must not start extraction"),
+        )
+        .unwrap();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                GuiMediaMatchBackgroundWorkerEvent::Progress(_) => {}
+                GuiMediaMatchBackgroundWorkerEvent::AwaitingActivation {
+                    extraction_succeeded: false,
+                } => break,
+                _ => panic!("cancellation must await the runtime's abort decision"),
+            }
+        }
+        assert_eq!(std::fs::read(&manifest).unwrap(), previous);
+        finish.send(IndexFinalization::Abort).unwrap();
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            GuiMediaMatchBackgroundWorkerEvent::Finished {
+                result: Err(error),
+                finalization: Ok(None),
+            } => assert!(error.contains("canceled before extraction")),
+            _ => panic!("canceled extraction must finish without activation"),
+        }
+        assert_eq!(std::fs::read(manifest).unwrap(), previous);
+        assert_eq!(
+            std::fs::read_dir(root.path().join("cache"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn aborted_extraction_reports_failure_or_cancellation_and_retires_job() {
+        use crate::app::runtime_owner::{
+            GuiMediaMatchBackgroundCancelDisposition, GuiPersistedConfigRuntimeOwner,
+        };
+        use crate::app::runtime_state::GuiRuntimeState;
+        for canceled in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(Some(
+                root.path().join("sorotte.ini"),
+            ));
+            let mut state = GuiRuntimeState::from_stored_settings(&Default::default());
+            owner.media_match_background_trigger_key = Some("failed-job".to_owned());
+            owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(canceled)));
+            if canceled {
+                owner.media_match_background_cancel_disposition =
+                    Some(GuiMediaMatchBackgroundCancelDisposition::RestorePrevious);
+            }
+            let (tx, rx) = mpsc::channel();
+            owner.media_match_background_worker_rx = Some(rx);
+            tx.send(GuiMediaMatchBackgroundWorkerEvent::Finished {
+                result: Err("extraction failed".to_owned()),
+                finalization: Ok(None),
+            })
+            .unwrap();
+            owner.pump_media_match_background_worker(
+                &GuiQueuedRuntimeBridgeHandle::default(),
+                &mut state,
+            );
+            assert_eq!(
+                owner
+                    .media_match_runtime_snapshot
+                    .background_status
+                    .as_deref(),
+                Some(if canceled {
+                    "canceled: previous index restored"
+                } else {
+                    "failed: previous index remains active"
+                })
+            );
+            assert!(owner.media_match_background_worker_rx.is_none());
+            assert!(owner.media_match_background_trigger_key.is_none());
+            assert!(owner.media_match_background_worker_cancel.is_none());
+            assert!(owner.media_match_background_cancel_disposition.is_none());
+        }
+    }
+
+    #[test]
+    fn disconnected_index_worker_retires_pending_job_and_reports_failure() {
+        use crate::app::runtime_owner::GuiPersistedConfigRuntimeOwner;
+        use crate::app::runtime_state::GuiRuntimeState;
+        let root = tempfile::tempdir().unwrap();
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.path().join("sorotte.ini")));
+        let mut state = GuiRuntimeState::from_stored_settings(&Default::default());
+        let (tx, rx) = mpsc::channel();
+        let (finish, _decisions) = mpsc::channel();
+        owner.media_match_background_worker_rx = Some(rx);
+        owner.media_match_background_finish_tx = Some(finish);
+        owner.media_match_background_worker_cancel = Some(Arc::new(AtomicBool::new(false)));
+        owner.media_match_background_trigger_key = Some("disconnected-job".to_owned());
+        owner.media_match_background_scope = Some(IndexJobScope {
+            root: root.path().to_owned(),
+            settings: state.media_match.model.settings.clone(),
+            player_path: None,
+            room_target: None,
+        });
+        drop(tx);
+        owner.pump_media_match_background_worker(
+            &GuiQueuedRuntimeBridgeHandle::default(),
+            &mut state,
+        );
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("failed: index worker stopped before reporting completion")
+        );
+        assert!(owner.media_match_background_worker_rx.is_none());
+        assert!(owner.media_match_background_finish_tx.is_none());
+        assert!(owner.media_match_background_scope.is_none());
+        assert!(owner.media_match_background_worker_cancel.is_none());
+        assert!(owner.media_match_background_trigger_key.is_none());
+    }
+
     fn wait_staged(rx: &mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>) {
         loop {
             match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
