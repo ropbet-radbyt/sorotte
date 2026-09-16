@@ -52,7 +52,7 @@ foreach ($entry in $copies.GetEnumerator()) {
 $sourceSha = git -c "safe.directory=$repo" -C $repo rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Source revision lookup failed.' }
 $diffPath = Join-Path $run 'experiment.patch'
-git -c "safe.directory=$repo" -C $repo diff --no-ext-diff | Set-Content -LiteralPath $diffPath -Encoding utf8
+git -c "safe.directory=$repo" -C $repo diff --no-ext-diff "--output=$diffPath"
 if ($LASTEXITCODE -ne 0) { throw 'Source diff capture failed.' }
 $probeSources = [ordered]@{}
 foreach ($relative in (git -c "safe.directory=$repo" -C $repo ls-files --others --exclude-standard -- crates)) {
