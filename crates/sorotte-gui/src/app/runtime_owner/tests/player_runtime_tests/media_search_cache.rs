@@ -11,14 +11,28 @@ fn wait_for_exact_inventory(
     let root = owner.syncplay_qsettings_root().unwrap();
     let roots = owner.automatic_media_search_roots(&runtime_state_for_shell(state));
     let aliases = GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(target);
-    owner
+    let result = owner
         .media_match_record_lookup
         .wait_for_inventory_test(&root, &roots, &aliases);
+    assert!(
+        matches!(
+            result,
+            crate::app::runtime_owner::media_match_lookup::InventoryLookup::Ready(_)
+        ),
+        "inventory lookup must complete successfully: {result:?}"
+    );
     for alias in aliases {
-        owner.media_match_record_lookup.wait_for_inventory_test(
+        let result = owner.media_match_record_lookup.wait_for_inventory_test(
             &root,
             &roots,
             &GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(&alias),
+        );
+        assert!(
+            matches!(
+                result,
+                crate::app::runtime_owner::media_match_lookup::InventoryLookup::Ready(_)
+            ),
+            "alias inventory lookup must complete successfully: {result:?}"
         );
     }
     owner.pump_media_match_record_lookup();
@@ -1540,6 +1554,13 @@ fn gui_persisted_config_runtime_owner_uses_folded_current_file_after_exact_searc
     assert_eq!(
         owner
             .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
+            .expect("initial inventory lookup should be pending"),
+        GuiUserMediaTargetResolution::Pending
+    );
+    wait_for_exact_inventory(&mut owner, &state, "pilot.mkv");
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
             .expect("folded current fallback resolution should complete"),
         GuiUserMediaTargetResolution::Resolved {
             path: current_path.to_string_lossy().into_owned(),
@@ -1590,6 +1611,14 @@ fn gui_persisted_config_runtime_owner_waits_for_active_exact_index_before_folded
         roots_requiring_refresh: std::collections::BTreeSet::from([root_key.clone()]),
     });
 
+    assert_eq!(
+        owner
+            .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")
+            .expect("initial inventory lookup should be pending"),
+        GuiUserMediaTargetResolution::Pending
+    );
+    assert!(!owner.attached_media_search_in_flight());
+    wait_for_exact_inventory(&mut owner, &state, "pilot.mkv");
     assert_eq!(
         owner
             .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "pilot.mkv")

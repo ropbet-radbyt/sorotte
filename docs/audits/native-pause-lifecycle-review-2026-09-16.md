@@ -151,3 +151,23 @@ The current runs do not justify p95 claims.
 
 See [release qualification](../RELEASE_QUALIFICATION.md) and
 [the testing process](../TESTING_PROCESS.md) for the normative gates.
+
+## Release preparation follow-up
+
+PR #76 prepares version 0.2.18 in the workspace, both lockfiles and architecture
+catalog. Its initial dependency gate found the newly published
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285.html) advisory
+against the existing rustls 0.23.44 dependency. A narrow update to 0.23.45 passed
+the hosted dependency check without changing unrelated dependencies.
+
+Linux workspace, nextest and coverage runs exposed two case-sensitive filename
+fixtures that still assumed synchronous inventory completion. They now assert
+the initial pending state, wait for a successful inventory result, and retain
+the existing exact-case priority and non-starvation assertions. The affected
+suite passed 75 tests in Ubuntu and 71 in Windows; the complete Linux
+all-feature GUI suite passed 1,247 tests with one explicitly ignored test.
+This repairs test sequencing;
+production resolution priority and its asynchronous boundary are unchanged.
+The first failed hosted logs and cancelled superseded native attempts remain
+under `target/latency-review` and `target/verification/native-runners`.
+Fresh exact-source qualification is still required for the repaired candidate.
