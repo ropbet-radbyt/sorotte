@@ -13,10 +13,10 @@ use sorotte_client_core::PlayerCommandCause;
 use sorotte_media_match::MEDIA_MATCH_FILE_PAYLOAD_KEY;
 use sorotte_player_api::{LocalFileUpdate, PlayerAdapter};
 
-use super::media_match_support::media_match_wire_value_for_path;
 #[cfg(not(test))]
 use super::remote_services;
 use super::runtime_owner::GuiPersistedConfigRuntimeOwner;
+use super::runtime_owner::media_match_lookup::FingerprintLookup;
 use super::runtime_queue::GuiQueuedRuntimeBridgeHandle;
 use super::runtime_stack::{
     GuiClientSession, GuiLocalPlayerUnpauseDecision, GuiQueuedSessionTransportHandle,
@@ -151,7 +151,7 @@ impl GuiPersistedConfigRuntimeOwner {
     }
 
     fn media_match_wire_signature_for_local_file(
-        &self,
+        &mut self,
         state: &GuiRuntimeState,
         local_file: Option<&LocalFileUpdate>,
     ) -> Option<Value> {
@@ -171,7 +171,14 @@ impl GuiPersistedConfigRuntimeOwner {
         let root = self.syncplay_qsettings_root();
         let root = root.as_deref()?;
         let path = local_file.and_then(|local_file| local_file.path.as_deref())?;
-        media_match_wire_value_for_path(root, path)
+        match self.media_match_record_lookup.lookup(
+            root,
+            path,
+            &sorotte_media_match::MediaExtractionSettings::sampled_fast_audio_index_v3(),
+        ) {
+            FingerprintLookup::Present(value) => value.wire_value.clone(),
+            _ => None,
+        }
     }
 
     fn attach_media_match_wire_signature_to_file_payload(
@@ -219,6 +226,8 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         state: &GuiRuntimeState,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("session.sync");
         let runtime_settings = self.session_runtime_settings_for_state(state);
         if !self.session_projects_to_shell {
             self.session_default_room = runtime_settings
@@ -264,10 +273,26 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         let player_paused = self.player_paused;
         let player_paused_for_cache = self.player_paused_for_cache == Some(true);
+        let pause_is_command_echo = self.take_attached_player_pause_command_echo();
+        let coordinator_classifies_native_pause = self
+            .session
+            .as_ref()
+            .and_then(|session| session.playback_coordination_snapshot())
+            .is_some_and(|snapshot| snapshot.transport_telemetry_observed)
+            && player_paused == Some(true);
         let pending_local_attached_pause_override_update = {
             let mut pending_local_attached_pause_override_update = None;
 
-            if !player_paused_for_cache
+            // A matching observation completes our accepted player command. It
+            // must not be reinterpreted as another user gesture: doing that lets
+            // recipients claim ownership of a server pause. Consume the receipt
+            // once so a later native player edge can still change readiness.
+            // With rich transport telemetry, client-core owns native Pause
+            // stability. Another GUI pump must not independently confirm the
+            // same candidate before a confirming physical observation arrives.
+            if !pause_is_command_echo
+                && !coordinator_classifies_native_pause
+                && !player_paused_for_cache
                 && !player_observation_is_end_of_file
                 && let Some(target_paused) = player_paused
                 && previous_session_paused != Some(target_paused)
@@ -408,7 +433,11 @@ impl GuiPersistedConfigRuntimeOwner {
                 let pause_confirmation_was_pending = self
                     .pending_attached_player_pause_confirmation_pump
                     .is_some();
-                if player_paused != Some(true) || previous_session_paused == Some(true) {
+                if coordinator_classifies_native_pause
+                    || pause_is_command_echo
+                    || player_paused != Some(true)
+                    || previous_session_paused == Some(true)
+                {
                     self.pending_attached_player_pause_confirmation_pump = None;
                     if pause_confirmation_was_pending && player_paused != Some(true) {
                         pending_local_attached_pause_override_update = Some(None);
@@ -464,15 +493,10 @@ impl GuiPersistedConfigRuntimeOwner {
                 filename_privacy_mode,
                 filesize_privacy_mode,
             )?;
-            let published_file = player_local_file.clone();
-            let published_media_match_signature = media_match_signature.clone();
             self.last_published_local_file = player_local_file;
             self.last_published_media_match_signature = media_match_signature;
-            if published_media_match_signature.is_some() {
-                self.clear_local_shared_playlist_media_match_signature_path_if_current(
-                    published_file.as_ref(),
-                );
-            }
+            // Keep the source's signature available while this file is current.
+            // Publication is an observation, not consumption of its sharing scope.
         }
         if let Some(pending_local_attached_pause_override) =
             pending_local_attached_pause_override_update

@@ -1,6 +1,7 @@
 use super::*;
 use crate::app::media_match_support::{MediaAliasMatchKind, MediaMatchInventoryExactResolution};
 use crate::app::runtime_owner::GuiPendingPlaylistSourceResolution;
+use crate::app::runtime_owner::media_match_lookup::InventoryLookup;
 use crate::app::runtime_state::GuiRuntimeState;
 #[cfg(test)]
 use crate::app::shell_state::SorotteGuiShellAppState;
@@ -474,6 +475,8 @@ impl GuiPersistedConfigRuntimeOwner {
         reset_retry_on_target_change: bool,
         include_exact_inventory: bool,
     ) -> Result<GuiUserMediaTargetResolution, String> {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("local.resolve");
         let Some(target) = normalized_editable_text(target) else {
             return Ok(GuiUserMediaTargetResolution::Missing);
         };
@@ -576,14 +579,20 @@ impl GuiPersistedConfigRuntimeOwner {
                 return Ok(indexed_resolution);
             }
 
-            if include_exact_inventory
-                && let Some(inventory_resolution) = self
-                    .media_match_cached_exact_inventory_resolution_for_target(
-                        state,
-                        target_candidate,
-                        &search_roots,
-                    )
-            {
+            let inventory = if include_exact_inventory {
+                self.media_match_cached_exact_inventory_resolution_for_target(
+                    state,
+                    target_candidate,
+                    &search_roots,
+                )
+            } else {
+                InventoryLookup::Ready(None)
+            };
+            if inventory == InventoryLookup::Pending {
+                self.unresolved_attached_media_target = Some(target);
+                return Ok(GuiUserMediaTargetResolution::Pending);
+            }
+            if let InventoryLookup::Ready(Some(inventory_resolution)) = inventory {
                 let match_kind = match &inventory_resolution {
                     MediaMatchInventoryExactResolution::Resolved { match_kind, .. }
                     | MediaMatchInventoryExactResolution::Ambiguous { match_kind, .. } => {
@@ -1324,6 +1333,7 @@ impl GuiPersistedConfigRuntimeOwner {
         if self.shared_playlist_open_delivery_fence_pending() {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         }
+        self.pump_media_match_record_lookup();
 
         let Some((playlist_index, target)) = self.current_shared_playlist_index_and_target(state)
         else {
@@ -1805,6 +1815,14 @@ impl GuiPersistedConfigRuntimeOwner {
 
         let search_roots = self.automatic_media_search_roots(state);
         let excluded_current_path = self.uncorroborated_current_player_title_collision_path(target);
+        if self.media_match_cached_exact_inventory_resolution_for_target(
+            state,
+            target,
+            &search_roots,
+        ) == InventoryLookup::Pending
+        {
+            return SelectedPlaylistMediaSyncOutcome::NoChange;
+        }
         let Some(path) = self
             .media_match_cached_exact_inventory_candidate_for_target(state, target, &search_roots)
             .filter(|path| {
@@ -2508,6 +2526,8 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &GuiRuntimeState,
         player_paths: &[String],
     ) -> SelectedPlaylistMediaSyncOutcome {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("player.load");
         let Some(selected_path) = player_paths.first() else {
             return SelectedPlaylistMediaSyncOutcome::NoChange;
         };

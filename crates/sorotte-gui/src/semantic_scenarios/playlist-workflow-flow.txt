@@ -17,6 +17,10 @@ assert-label	main-window:playlist-default-source	Default Source: Plex Stream
 assert-selected	main-window:playlist-default-source:plex-stream	true
 assert-label	main-window:playlist:1:source	Local
 assert-value	main-window:playlist:1:source	available
+apply-main-window-playlist-source-status	1	resolving	Media Match is indexing local files for this item.
+assert-value	main-window:playlist:1:source	resolving
+assert-tooltip-contains	main-window:playlist:1:source	Media Match is indexing local files for this item.
+apply-main-window-playlist-source-status	1	available	The local file is ready.
 assert-selected	main-window:playlist:1:source:local	true
 assert-enabled	main-window:playlist:1:source:local	true
 assert-label	main-window:playlist:1:source:media-matching	Media Matching

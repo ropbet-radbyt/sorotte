@@ -8,6 +8,8 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
+pub(super) mod media_match_lookup;
+mod media_match_worker;
 mod player;
 mod player_facade;
 mod plex;
@@ -56,11 +58,11 @@ use sorotte_plex::{
     timeline::{PlexSyncEngine, PlexSyncState, PlexSyncStatus, PlexWatchEvent},
 };
 
-use self::updates::GuiUpdateRuntime;
-use super::media_match_support::{
-    GuiMediaMatchIndexBuildTransaction, MediaMatchIndexRebuildResult, MediaMatchToolProgress,
-    clear_persisted_media_match_cache_at_root,
+use self::media_match_worker::{
+    GuiMediaMatchBackgroundWorkerEvent, IndexFinalization, IndexJobScope,
 };
+use self::updates::GuiUpdateRuntime;
+use super::media_match_support::MediaMatchToolProgress;
 use super::media_search_cache::clear_persisted_media_search_cache_at_root;
 use super::mpv_launch;
 use super::mpv_launch::{
@@ -473,7 +475,10 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
         Option<mpsc::Receiver<GuiMediaMatchBackgroundWorkerEvent>>,
     pub(super) media_match_background_worker_cancel: Option<Arc<AtomicBool>>,
     pub(super) media_match_background_trigger_key: Option<String>,
-    pub(super) media_match_background_index_backup: Option<GuiMediaMatchIndexBuildTransaction>,
+    pub(super) media_match_background_finish_tx: Option<mpsc::Sender<IndexFinalization>>,
+    pub(super) media_match_background_scope: Option<IndexJobScope>,
+    pub(super) media_match_record_lookup: media_match_lookup::GuiMediaMatchRecordLookup,
+    pub(super) pending_gui_data_clear: bool,
     pub(super) media_match_background_cancel_disposition:
         Option<GuiMediaMatchBackgroundCancelDisposition>,
     pub(super) media_match_remote_lookup_rx:
@@ -929,6 +934,7 @@ pub(super) struct GuiPlaylistLocalOriginBindingOutcome {
 pub(super) struct GuiPendingAttachedPlayerPauseCommand {
     pub(super) target_paused: bool,
     pub(super) suppress_until: Instant,
+    pub(super) observed: bool,
 }
 
 /// Temporary P0 observation state for a desired room unpause.
@@ -1169,11 +1175,6 @@ pub(super) enum GuiMediaMatchToolWorkerEvent {
         result: Result<String, String>,
         failure_label: &'static str,
     },
-}
-
-pub(super) enum GuiMediaMatchBackgroundWorkerEvent {
-    Progress(MediaMatchToolProgress),
-    Finished(Result<MediaMatchIndexRebuildResult, String>),
 }
 
 #[derive(Clone, PartialEq, Eq)]

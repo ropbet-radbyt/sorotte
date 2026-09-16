@@ -501,7 +501,44 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) -> bool {
-        match self.clear_gui_data() {
+        self.pending_gui_data_clear = true;
+        self.pump_pending_gui_data_clear(handle, projected_state);
+        true
+    }
+
+    pub(in crate::app::runtime_owner) fn pump_pending_gui_data_clear(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut GuiRuntimeState,
+    ) {
+        if !self.pending_gui_data_clear || self.media_match_record_lookup.is_clearing() {
+            return;
+        }
+        if self.request_media_match_background_worker_cancel(
+            handle,
+            projected_state,
+            GuiMediaMatchBackgroundCancelDisposition::RestorePrevious,
+            "Canceling Media Match before clearing application data",
+        ) {
+            return;
+        }
+        let Some(root) = self.syncplay_qsettings_root() else {
+            self.finish_gui_data_clear_result(handle, projected_state, Ok(()));
+            return;
+        };
+        if let Err(error) = self.media_match_record_lookup.clear(root) {
+            self.finish_gui_data_clear_result(handle, projected_state, Err(error));
+        }
+    }
+
+    pub(in crate::app::runtime_owner) fn finish_gui_data_clear_result(
+        &mut self,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        projected_state: &mut GuiRuntimeState,
+        cache_result: Result<(), String>,
+    ) {
+        self.pending_gui_data_clear = false;
+        match cache_result.and_then(|()| self.clear_gui_data()) {
             Ok(()) => {
                 self.invalidate_plex_operation_context(handle, projected_state);
                 self.sync_player_from_lookup_and_settings(&env_trimmed, None, true);
@@ -523,7 +560,6 @@ impl GuiPersistedConfigRuntimeOwner {
                 ],
             ),
         }
-        true
     }
 
     pub(super) fn handle_complete_config_storage_root_change_request(

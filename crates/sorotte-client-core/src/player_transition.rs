@@ -750,6 +750,25 @@ impl PlayerTransitionClassifier {
             .map(|pending| pending.first_observed_at_seconds)
     }
 
+    /// Identifies an unowned pause still waiting for stable physical evidence.
+    /// This query does not confirm the edge or grant readiness/room authority.
+    pub(crate) fn pending_native_pause_first_observed_at_seconds(&self) -> Option<f64> {
+        self.pending_edge
+            .filter(|pending| pending.logical_paused)
+            .map(|pending| pending.first_observed_at_seconds)
+    }
+
+    pub(crate) fn invalidate_pending_native_pause(&mut self) -> bool {
+        if self
+            .pending_native_pause_first_observed_at_seconds()
+            .is_none()
+        {
+            return false;
+        }
+        self.accept_transition(true);
+        true
+    }
+
     /// Consumes a native Play candidate invalidated by newer room authority.
     /// Accepting the current physical state prevents another telemetry sample
     /// for the same uninterrupted Playing edge from being treated as a fresh

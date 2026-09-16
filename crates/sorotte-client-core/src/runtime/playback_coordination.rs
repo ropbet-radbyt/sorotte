@@ -223,7 +223,8 @@ pub(crate) struct RuntimePlaybackCoordination {
     next_synthetic_player_command_id: u64,
     player_transition_classifier: PlayerTransitionClassifier,
     last_player_transition_classification: Option<PlayerTransitionClassification>,
-    pending_native_play_authority_fence: Option<PendingNativePlayAuthorityFence>,
+    pending_native_play_authority_fence: Option<PendingNativePlayerAuthorityFence>,
+    pending_native_pause_authority_fence: Option<PendingNativePlayerAuthorityFence>,
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
     latest_observation: Option<PlayerTransportObservation>,
@@ -354,6 +355,7 @@ impl RuntimePlaybackCoordination {
         self.pending_coordinator_command_completion_replay = false;
         self.last_player_transition_classification = None;
         self.pending_native_play_authority_fence = None;
+        self.pending_native_pause_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
         self.latest_position_observation = None;
@@ -489,6 +491,7 @@ impl RuntimePlaybackCoordination {
             .begin_scope(plan.media_generation, classifier_adapter_epoch);
         self.last_player_transition_classification = None;
         self.pending_native_play_authority_fence = None;
+        self.pending_native_pause_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.barrier.last_reported_barrier_ready = None;
         self.barrier.last_reported_barrier_started = None;
@@ -602,6 +605,7 @@ impl RuntimePlaybackCoordination {
         }
         self.last_player_transition_classification = None;
         self.pending_native_play_authority_fence = None;
+        self.pending_native_pause_authority_fence = None;
         self.last_technical_readiness_fingerprint = None;
         self.latest_observation = None;
         self.latest_position_observation = None;
@@ -2254,7 +2258,11 @@ impl RuntimePlaybackCoordination {
                         | sorotte_player_api::PlayerTransportPhase::Prebuffering
                 )
             ))
-            .with_recovery(self.coordinator.recovery_episode().is_some())
+            .with_recovery(if observation.logical_pause == Some(true) {
+                self.coordinator.recovery_blocks_native_pause()
+            } else {
+                self.coordinator.recovery_episode().is_some()
+            })
             .with_seek_preparation(self.coordinator.seek_preparation_snapshot().is_some())
             .with_room_buffering_policy(matches!(
                 authority,
@@ -2295,6 +2303,7 @@ impl RuntimePlaybackCoordination {
         session: &ClientSession,
     ) -> Option<PlayerTransitionClassification> {
         self.invalidate_pending_native_play_if_authority_changed(session);
+        self.invalidate_pending_native_pause_if_authority_changed(session);
         let observation = self.latest_observation.as_ref()?;
         let logical_paused = observation.logical_pause?;
         let player_observation = PlayerLogicalPauseObservation::new(
@@ -2320,6 +2329,7 @@ impl RuntimePlaybackCoordination {
         }
         self.last_player_transition_classification = Some(classification);
         self.sync_pending_native_play_authority_fence(session);
+        self.sync_pending_native_pause_authority_fence(session);
         Some(classification)
     }
 
@@ -2686,6 +2696,7 @@ where
         );
         let _ = self.handle_latest_player_readiness_observation();
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
+        self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         let _ = self.emit_participant_status_transition(now_seconds);
@@ -2911,6 +2922,7 @@ where
             .observe_transport(update, now_seconds);
         let _ = self.handle_latest_player_readiness_observation();
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
+        self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         let _ = self.emit_participant_status_transition(now_seconds);
@@ -2925,6 +2937,7 @@ where
             .playback_coordination
             .update_desired_from_session(&self.session, now_seconds);
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
+        self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         let _ = self.report_playback_barrier_observations(&actions);
         self.apply_external_coordinator_control_actions(&actions);
         actions
@@ -3079,6 +3092,7 @@ where
         {
             *first_error = Some(error);
         }
+        self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         if let Err(error) = self.report_playback_barrier_observations(&actions)
             && first_error.is_none()
         {

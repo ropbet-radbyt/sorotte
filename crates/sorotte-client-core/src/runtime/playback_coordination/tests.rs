@@ -15,6 +15,7 @@ use sorotte_protocol::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
+mod native_pause_regressions;
 mod playback_status_regressions;
 mod seek_echo_tests;
 

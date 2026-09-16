@@ -3,6 +3,27 @@ use crate::app::runtime_stack::test_support::session_with_peer_files;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 
+fn wait_for_exact_inventory(
+    owner: &mut GuiPersistedConfigRuntimeOwner,
+    state: &SorotteGuiShellAppState,
+    target: &str,
+) {
+    let root = owner.syncplay_qsettings_root().unwrap();
+    let roots = owner.automatic_media_search_roots(&runtime_state_for_shell(state));
+    let aliases = GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(target);
+    owner
+        .media_match_record_lookup
+        .wait_for_inventory_test(&root, &roots, &aliases);
+    for alias in aliases {
+        owner.media_match_record_lookup.wait_for_inventory_test(
+            &root,
+            &roots,
+            &GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(&alias),
+        );
+    }
+    owner.pump_media_match_record_lookup();
+}
+
 #[cfg(windows)]
 #[test]
 fn local_load_recovers_disk_casing_from_a_case_folded_resolution() {
@@ -1310,6 +1331,7 @@ fn gui_persisted_config_runtime_owner_exhausts_inventory_filename_before_indexed
         source: GuiUserMediaTargetResolutionSource::MediaMatchExactInventory,
     };
 
+    wait_for_exact_inventory(&mut owner, &state, plex_uri);
     assert_eq!(
         owner
             .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), plex_uri)
@@ -1661,6 +1683,7 @@ fn gui_persisted_config_runtime_owner_reports_equal_exact_inventory_paths_as_amb
     owner.attached_media_search_next_retry_at =
         Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
 
+    wait_for_exact_inventory(&mut owner, &state, "episode.mkv");
     assert_eq!(
         owner
             .resolve_main_window_user_media_target(&runtime_state_for_shell(&state), "episode.mkv")
@@ -1838,6 +1861,7 @@ fn gui_persisted_config_runtime_owner_preserves_plex_alias_priority_in_exact_inv
         GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
     let plex_uri = "plex://machine-1/metadata/123?title=Pilot.mkv&file=Show.S01E01.mkv";
 
+    wait_for_exact_inventory(&mut owner, &state, plex_uri);
     assert_eq!(
         owner.media_match_cached_exact_inventory_candidate_for_target(
             &runtime_state_for_shell(&state),
@@ -1898,6 +1922,7 @@ fn gui_persisted_config_runtime_owner_excludes_case_folded_title_only_current_pa
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
     let plex_uri = "plex://machine-1/metadata/123?title=pilot.mkv&file=Missing.S01E01.mkv";
+    wait_for_exact_inventory(&mut owner, &state, plex_uri);
     assert_eq!(
         owner.media_match_cached_exact_inventory_candidate_for_target(
             &runtime_state_for_shell(&state),
@@ -2424,6 +2449,16 @@ fn gui_persisted_config_runtime_owner_preferred_media_match_recovers_from_local_
         )]),
         roots_requiring_refresh: std::collections::BTreeSet::new(),
     });
+    for alias in
+        GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target("episode.mkv")
+    {
+        owner.media_match_record_lookup.wait_for_inventory_test(
+            &root,
+            std::slice::from_ref(&media_match_root),
+            &GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(&alias),
+        );
+    }
+
     assert_eq!(
         owner.media_match_cached_exact_inventory_candidate_for_target(
             &runtime_state_for_shell(&state),
@@ -2965,6 +3000,15 @@ fn gui_persisted_config_runtime_owner_queues_plex_stream_while_media_match_misse
         ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![plex_uri.to_owned()], Some(0), false);
+
+    for alias in GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(plex_uri)
+    {
+        owner.media_match_record_lookup.wait_for_inventory_test(
+            &root,
+            std::slice::from_ref(&media_root),
+            &GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(&alias),
+        );
+    }
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
         &runtime_state_for_shell(&state),
@@ -4105,6 +4149,18 @@ fn gui_persisted_config_runtime_owner_uses_media_match_inventory_for_exact_playl
     ));
     owner.active_shared_playlist_index = Some(0);
 
+    assert_eq!(
+        owner.sync_selected_shared_playlist_media_to_attached_player_impl(
+            &runtime_state_for_shell(&state)
+        ),
+        SelectedPlaylistMediaSyncOutcome::NoChange
+    );
+    owner.media_match_record_lookup.wait_for_inventory_test(
+        &root,
+        std::slice::from_ref(&media_root),
+        &["episode2.mkv".to_owned()],
+    );
+
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
         &runtime_state_for_shell(&state),
     );
@@ -4313,6 +4369,16 @@ fn gui_persisted_config_runtime_owner_queues_media_match_remote_lookup_while_med
         ..StoredClientSettings::default()
     });
     state.apply_shared_playlist_entries(vec![playlist_target.to_owned()], Some(0), false);
+
+    for alias in
+        GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(playlist_target)
+    {
+        owner.media_match_record_lookup.wait_for_inventory_test(
+            &root,
+            std::slice::from_ref(&media_root),
+            &GuiPersistedConfigRuntimeOwner::local_media_search_candidates_for_target(&alias),
+        );
+    }
 
     let outcome = owner.sync_selected_shared_playlist_media_to_attached_player_impl(
         &runtime_state_for_shell(&state),

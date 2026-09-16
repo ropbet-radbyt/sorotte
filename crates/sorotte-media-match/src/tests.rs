@@ -11,6 +11,114 @@ use crate::{
 };
 
 #[test]
+fn media_index_reader_reuses_validation_and_observes_live_wal_changes() {
+    let root = media_index_test_root("retained-record-reader");
+    let session = MediaIndexService::new(&root).open().unwrap();
+    let record = record("episode.mkv", 0);
+    let mut reader = crate::MediaIndexRecordReader::new(&root);
+    let lookup = |reader: &mut crate::MediaIndexRecordReader| {
+        reader.load_record(
+            &record.identity.normalized_path,
+            &record.extraction_settings,
+            record.identity.modified_unix_millis,
+            record.identity.size_bytes,
+        )
+    };
+    for _ in 0..100 {
+        assert!(lookup(&mut reader).unwrap().is_none());
+    }
+    assert_eq!(
+        reader.admission_count(),
+        1,
+        "stable missing lookups must not rescan the database"
+    );
+    session.save_record(&record, None).unwrap();
+    assert_eq!(
+        lookup(&mut reader).unwrap().unwrap().identity,
+        record.identity
+    );
+    let admissions = reader.admission_count();
+    for _ in 0..100 {
+        assert!(lookup(&mut reader).unwrap().is_some());
+    }
+    assert_eq!(reader.admission_count(), admissions);
+    session
+        .delete_file(&record.identity.normalized_path)
+        .unwrap();
+    assert!(
+        lookup(&mut reader).unwrap().is_none(),
+        "a negative/positive result cannot survive another writer's change"
+    );
+    drop((reader, session));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn media_index_reader_admits_successor_generation_and_rejects_changed_file_identity() {
+    let root = media_index_test_root("record-reader-activation");
+    let service = MediaIndexService::new(&root);
+    let session = service.open().unwrap();
+    let record = record("episode.mkv", 0);
+    session.save_record(&record, None).unwrap();
+    drop(session);
+    let mut reader = crate::MediaIndexRecordReader::new(&root);
+    let lookup = |reader: &mut crate::MediaIndexRecordReader, size| {
+        reader.load_record(
+            &record.identity.normalized_path,
+            &record.extraction_settings,
+            record.identity.modified_unix_millis,
+            size,
+        )
+    };
+    assert!(
+        lookup(&mut reader, record.identity.size_bytes)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        lookup(&mut reader, record.identity.size_bytes + 1)
+            .unwrap()
+            .is_none()
+    );
+    let transaction = MediaIndexBuildTransaction::begin(&root, root.join("stage")).unwrap();
+    let stage = MediaIndexService::new(transaction.staging_root())
+        .open()
+        .unwrap();
+    stage.delete_file(&record.identity.normalized_path).unwrap();
+    drop(stage);
+    transaction.commit().unwrap();
+    assert!(
+        lookup(&mut reader, record.identity.size_bytes)
+            .unwrap()
+            .is_none(),
+        "activation must release the old connection and old positive result"
+    );
+    assert_eq!(reader.admission_count(), 2);
+    drop(reader);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn media_index_reader_revalidates_changed_schema_and_fails_closed() {
+    let root = media_index_test_root("record-reader-corruption");
+    let service = MediaIndexService::new(&root);
+    let session = service.open().unwrap();
+    let mut reader = crate::MediaIndexRecordReader::new(&root);
+    let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
+    assert!(
+        reader
+            .load_record("absent.mkv", &settings, 0, 0)
+            .unwrap()
+            .is_none()
+    );
+    let writer = rusqlite::Connection::open(service.index_path()).unwrap();
+    writer.execute_batch("DROP TABLE media_files_v3").unwrap();
+    assert!(reader.load_record("absent.mkv", &settings, 0, 0).is_err());
+    drop((reader, writer, session));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn media_index_service_owns_record_round_trip() {
     let root = std::env::temp_dir().join(format!(
         "sorotte-media-index-service-{}-{}",

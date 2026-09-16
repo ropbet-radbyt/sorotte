@@ -427,6 +427,24 @@ impl GuiSemanticDriver {
                         snapshot,
                     )]);
                 }
+                GuiSemanticStep::ApplyMainWindowPlaylistSourceStatus {
+                    index,
+                    status,
+                    detail,
+                } => {
+                    let mut snapshot =
+                        MainWindowRuntimeSnapshot::from_shell_state(&self.state.main_window);
+                    let source =
+                        snapshot
+                            .playlist_source_states
+                            .get_mut(*index)
+                            .ok_or_else(|| {
+                                format!("playlist source status references missing row {index}")
+                            })?;
+                    source.status = *status;
+                    source.detail = Some(detail.clone());
+                    self.apply_actions([GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)]);
+                }
                 GuiSemanticStep::ApplyPlayerSetupRuntimeSnapshot(snapshot) => {
                     self.apply_actions([GuiShellAction::ApplyGuiPlayerSetupRuntimeSnapshot(
                         snapshot.clone(),

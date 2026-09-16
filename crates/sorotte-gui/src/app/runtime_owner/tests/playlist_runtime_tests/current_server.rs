@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(windows)]
+mod latency_review;
+#[cfg(windows)]
 mod two_players;
 
 #[derive(Default)]

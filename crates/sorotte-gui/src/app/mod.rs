@@ -6,6 +6,8 @@ mod feature_slices;
 mod feature_snapshots;
 mod feedback_workflows;
 mod helper_tools;
+#[cfg(test)]
+mod latency_review_probe;
 mod launcher;
 mod local_command_dispatch;
 mod main_window_projection;

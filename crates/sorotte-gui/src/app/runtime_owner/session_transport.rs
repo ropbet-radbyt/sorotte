@@ -455,6 +455,8 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
     ) -> GuiSessionOutboundDrainDisposition {
+        #[cfg(test)]
+        let _latency_review_span = crate::app::latency_review_probe::span("playlist.write_receipt");
         let Some(session_transport) = self.session_transport.as_ref().cloned() else {
             return GuiSessionOutboundDrainDisposition::Drained;
         };
@@ -668,6 +670,8 @@ impl GuiPersistedConfigRuntimeOwner {
             return false;
         }
         for inbound_protocol_line in inbound_protocol_lines {
+            #[cfg(test)]
+            crate::app::latency_review_probe::protocol("inbound", &inbound_protocol_line.line);
             let apply_result = {
                 let Some(session) = self.session.as_mut() else {
                     return false;
@@ -763,6 +767,8 @@ impl GuiPersistedConfigRuntimeOwner {
         };
         match session.begin_outbound_protocol_delivery() {
             Ok(Some(delivery)) => {
+                #[cfg(test)]
+                crate::app::latency_review_probe::protocol("outbound-staged", delivery.line());
                 if let Err(delivery) =
                     session_transport.try_push_outbound_protocol_delivery(delivery)
                 {

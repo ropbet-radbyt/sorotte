@@ -10,6 +10,11 @@ use std::{
 use std::os::windows::ffi::OsStrExt;
 
 use rusqlite::{Connection, OptionalExtension, backup::Backup, params};
+
+#[cfg(test)]
+mod latency_review;
+mod reader;
+pub use reader::MediaIndexRecordReader;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -1599,6 +1604,17 @@ mod windows_atomic_replace_retry_tests {
     }
 }
 
+fn media_index_backup_pages_per_step() -> i32 {
+    let pages = 1024;
+    #[cfg(test)]
+    let pages = std::env::var("SOROTTE_REVIEW_BACKUP_PAGES")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|pages| *pages > 0)
+        .unwrap_or(pages);
+    pages
+}
+
 fn online_backup_database(source_path: &Path, destination_path: &Path) -> Result<(), String> {
     if let Some(parent) = destination_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -1629,8 +1645,15 @@ fn online_backup_database(source_path: &Path, destination_path: &Path) -> Result
                 destination_path.display()
             )
         })?;
+        // run_to_completion yields for 5 ms between successful steps as well as
+        // contention. Copy 4 MiB (at the default page size) per step so large
+        // indexes do not spend several seconds in mandatory sleeps.
         backup
-            .run_to_completion(64, Duration::from_millis(5), None)
+            .run_to_completion(
+                media_index_backup_pages_per_step(),
+                Duration::from_millis(5),
+                None,
+            )
             .map_err(|error| {
                 format!(
                     "failed completing online media-match backup '{}' to '{}': {error}",

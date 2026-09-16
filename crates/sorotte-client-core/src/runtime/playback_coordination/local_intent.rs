@@ -571,9 +571,9 @@ impl RuntimePlaybackCoordination {
         }
     }
 
-    pub(super) fn current_native_play_authority_state(
+    pub(super) fn current_native_player_authority_state(
         session: &ClientSession,
-    ) -> NativePlayAuthorityState {
+    ) -> NativePlayerAuthorityState {
         let room = session.room().map(str::to_owned);
         let playstate_updated_at_seconds = room.as_ref().and_then(|room| {
             session
@@ -583,8 +583,9 @@ impl RuntimePlaybackCoordination {
                 .get(room)
                 .copied()
         });
-        NativePlayAuthorityState {
+        NativePlayerAuthorityState {
             room,
+            transport_revision: session.current_room_transport_revision(),
             playstate: session.current_room_playstate().cloned(),
             playstate_updated_at_seconds,
             pause_owner: session
@@ -608,9 +609,10 @@ impl RuntimePlaybackCoordination {
         {
             return;
         }
-        self.pending_native_play_authority_fence = Some(PendingNativePlayAuthorityFence {
+        self.pending_native_play_authority_fence = Some(PendingNativePlayerAuthorityFence {
             first_observed_at_seconds,
-            authority: Self::current_native_play_authority_state(session),
+            connection_generation: self.connection_generation,
+            authority: Self::current_native_player_authority_state(session),
         });
     }
 
@@ -625,7 +627,8 @@ impl RuntimePlaybackCoordination {
             .as_ref()
             .is_some_and(|fence| {
                 fence.first_observed_at_seconds == first_observed_at_seconds
-                    && fence.authority == Self::current_native_play_authority_state(session)
+                    && fence.connection_generation == self.connection_generation
+                    && fence.authority == Self::current_native_player_authority_state(session)
             })
     }
 
@@ -649,6 +652,51 @@ impl RuntimePlaybackCoordination {
             .invalidate_pending_native_play();
         self.pending_native_play_authority_fence = None;
         self.last_player_transition_classification = None;
+    }
+
+    pub(super) fn sync_pending_native_pause_authority_fence(&mut self, session: &ClientSession) {
+        let Some(first_observed_at_seconds) = self
+            .player_transition_classifier
+            .pending_native_pause_first_observed_at_seconds()
+        else {
+            self.pending_native_pause_authority_fence = None;
+            return;
+        };
+        if self
+            .pending_native_pause_authority_fence
+            .as_ref()
+            .is_some_and(|fence| fence.first_observed_at_seconds == first_observed_at_seconds)
+        {
+            return;
+        }
+        self.pending_native_pause_authority_fence = Some(PendingNativePlayerAuthorityFence {
+            first_observed_at_seconds,
+            connection_generation: self.connection_generation,
+            authority: Self::current_native_player_authority_state(session),
+        });
+    }
+
+    pub(super) fn invalidate_pending_native_pause_if_authority_changed(
+        &mut self,
+        session: &ClientSession,
+    ) {
+        if self
+            .player_transition_classifier
+            .pending_native_pause_first_observed_at_seconds()
+            .is_some()
+            && self
+                .pending_native_pause_authority_fence
+                .as_ref()
+                .is_none_or(|fence| {
+                    fence.connection_generation != self.connection_generation
+                        || fence.authority != Self::current_native_player_authority_state(session)
+                })
+        {
+            self.player_transition_classifier
+                .invalidate_pending_native_pause();
+            self.pending_native_pause_authority_fence = None;
+            self.last_player_transition_classification = None;
+        }
     }
 
     pub(super) fn external_pause_command_registration(
@@ -860,6 +908,83 @@ where
         Ok(promoted)
     }
 
+    /// An ordinary correction must not erase the physical pause which the
+    /// classifier is still verifying. This grants no intent: another accepted
+    /// observation must confirm stability before readiness/room mutation.
+    pub(super) fn preserve_native_pause_before_unpause_correction(
+        &mut self,
+        actions: &mut Vec<PlaybackCoordinatorAction>,
+        now_seconds: f64,
+    ) {
+        if self
+            .playback_coordination
+            .player_transition_classifier
+            .pending_native_pause_first_observed_at_seconds()
+            .is_some()
+        {
+            self.playback_coordination
+                .tick_player_transition_classifier(now_seconds);
+        }
+        self.playback_coordination
+            .invalidate_pending_native_pause_if_authority_changed(&self.session);
+        let awaiting_pause = self
+            .playback_coordination
+            .player_transition_classifier
+            .pending_native_pause_first_observed_at_seconds()
+            .is_some();
+        let accepted_pause = self
+            .playback_coordination
+            .has_active_local_pause_intent(true, &self.session);
+        if (!awaiting_pause && !accepted_pause)
+            || !self
+                .playback_coordination
+                .current_connection_local_control_is_authorized(&self.session)
+            || self.readiness_gate_holds_current_playback()
+            || self.session.has_pending_playlist_index_reset_intent()
+        {
+            return;
+        }
+        let mut superseded = Vec::new();
+        actions.retain(|action| {
+            let PlaybackCoordinatorAction::Execute {
+                command_id,
+                command,
+            } = action
+            else {
+                return true;
+            };
+            let unpause = matches!(
+                command,
+                CoordinatorPlayerCommand::SetPaused(false) | CoordinatorPlayerCommand::Play(_)
+            );
+            if !unpause
+                || !matches!(
+                    self.playback_coordination
+                        .cause_for_coordinator_command(*command),
+                    PlayerCommandCause::RemoteRoomSynchronization
+                        | PlayerCommandCause::Recovery
+                        | PlayerCommandCause::AutomaticReadinessStart
+                )
+            {
+                return true;
+            }
+            superseded.push(*command_id);
+            false
+        });
+        for command_id in superseded {
+            let removed = self
+                .playback_coordination
+                .coordinator
+                .supersede_unaccepted_command(command_id);
+            debug_assert!(removed, "withheld correction must still be unaccepted");
+            // Retirement needs the same reconciliation wake as terminal
+            // completion. If the candidate expires or authority changes before
+            // another sample arrives, canonical playback must resume control.
+            self.playback_coordination
+                .pending_coordinator_command_completion_replay = true;
+        }
+    }
+
     pub(super) fn dispatch_native_player_readiness_action(
         &mut self,
         action: NativePlayerAction,
@@ -922,18 +1047,38 @@ pub(super) struct PendingLocalPauseIntent {
     pub(super) play_handoff_started_at_seconds: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct NativePlayAuthorityState {
+#[derive(Debug, Clone)]
+pub(super) struct NativePlayerAuthorityState {
     pub(super) room: Option<String>,
+    pub(super) transport_revision: Option<u64>,
     pub(super) playstate: Option<RoomPlaystateView>,
     pub(super) playstate_updated_at_seconds: Option<f64>,
     pub(super) pause_owner: Option<RoomPauseOwner>,
 }
 
+impl PartialEq for NativePlayerAuthorityState {
+    fn eq(&self, other: &Self) -> bool {
+        if self.room != other.room || self.pause_owner != other.pause_owner {
+            return false;
+        }
+        match (self.transport_revision, other.transport_revision) {
+            // A periodic position anchor is liveness within the same canonical
+            // decision. Only a newer transport revision supersedes the gesture.
+            (Some(left), Some(right)) => left == right,
+            (None, None) => {
+                self.playstate == other.playstate
+                    && self.playstate_updated_at_seconds == other.playstate_updated_at_seconds
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct PendingNativePlayAuthorityFence {
+pub(super) struct PendingNativePlayerAuthorityFence {
     pub(super) first_observed_at_seconds: f64,
-    pub(super) authority: NativePlayAuthorityState,
+    pub(super) connection_generation: u64,
+    pub(super) authority: NativePlayerAuthorityState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

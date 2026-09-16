@@ -92,7 +92,10 @@ impl GuiPersistedConfigRuntimeOwner {
             media_match_background_worker_rx: None,
             media_match_background_worker_cancel: None,
             media_match_background_trigger_key: None,
-            media_match_background_index_backup: None,
+            media_match_background_finish_tx: None,
+            media_match_background_scope: None,
+            media_match_record_lookup: Default::default(),
+            pending_gui_data_clear: false,
             media_match_background_cancel_disposition: None,
             media_match_remote_lookup_rx: None,
             media_match_remote_lookup_trigger_key: None,
@@ -1468,7 +1471,6 @@ impl GuiPersistedConfigRuntimeOwner {
         if let Some(root) = self.syncplay_qsettings_root() {
             clear_syncplay_qsettings_files_at_root(&root)?;
             clear_persisted_media_search_cache_at_root(&root)?;
-            clear_persisted_media_match_cache_at_root(&root)?;
         }
         self.clear_persisted_plex_match_cache()?;
         self.remove_session_runtime();
@@ -1482,6 +1484,10 @@ impl GuiPersistedConfigRuntimeOwner {
 
 impl Drop for GuiPersistedConfigRuntimeOwner {
     fn drop(&mut self) {
+        if let Some(cancel) = self.media_match_background_worker_cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
+        self.media_match_background_finish_tx = None;
         if self.player.is_some() || self.managed_mpv_process.is_some() {
             crate::emit_gui_lifecycle_transition(
                 crate::GuiLifecycleOrigin::new(

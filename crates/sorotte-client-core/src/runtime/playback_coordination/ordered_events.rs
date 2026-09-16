@@ -779,6 +779,7 @@ where
         {
             *first_error = Some(error);
         }
+        self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         if let Err(error) = self.report_playback_barrier_observations(&actions)
             && first_error.is_none()
         {
