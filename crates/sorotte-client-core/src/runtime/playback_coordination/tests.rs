@@ -4075,26 +4075,44 @@ fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
             r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":4}}}"#,
         )
         .expect("the canonical first row should be selected");
-    runtime.prepare_playback_media(
-        LogicalMediaId::new("episode.mkv").unwrap(),
-        MediaTransportKind::LocalFile,
-        0.0,
+    assert!(runtime.session().has_pending_playlist_index_reset_intent());
+    // The new canonical selection must own a real submitted load. Preparing
+    // coordinator policy alone cannot let an uncorrelated snapshot adopt a
+    // selection whose physical reset is still pending.
+    runtime
+        .player_mut()
+        .open_media(
+            "episode.mkv",
+            LogicalMediaId::new("episode.mkv").unwrap(),
+            MediaTransportKind::LocalFile,
+            0.0,
+        )
+        .expect("the selected file should be submitted through tracked player I/O");
+    let load_command_id = PlayerCommandId::new(runtime.player.next_command_id);
+    assert_eq!(
+        runtime.player.commands,
+        vec![PlayerCommand::OpenFile("episode.mkv".to_owned())]
     );
+    let mut snapshot = active_snapshot(
+        epoch,
+        1,
+        attempt_id,
+        media_generation,
+        ordered_playing_transport(
+            media_generation,
+            PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
+            9.0,
+        ),
+    );
+    let SnapshotField::Known(active_load) = &mut snapshot.active_load else {
+        panic!("the fixture must observe a loaded physical attempt");
+    };
+    active_load.command_id = Some(load_command_id);
     runtime.player.ordered_batches.push_back(ordered_batch(
         epoch,
         1,
         1,
-        Some(active_snapshot(
-            epoch,
-            1,
-            attempt_id,
-            media_generation,
-            ordered_playing_transport(
-                media_generation,
-                PlayerObservationTimestamp::from_adapter_start(Duration::from_secs(1)),
-                9.0,
-            ),
-        )),
+        Some(snapshot),
         Vec::new(),
         Vec::new(),
     ));
