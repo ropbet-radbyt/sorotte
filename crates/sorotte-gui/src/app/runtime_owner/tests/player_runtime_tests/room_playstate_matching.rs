@@ -4,6 +4,8 @@ use crate::app::runtime_owner::GuiAttachedSystemSeekSource;
 use crate::app::testing::support::runtime_state_for_shell;
 use sorotte_client_app::app_boundary::application::ClientCommand;
 
+mod shared_playlist_policy;
+
 #[derive(Debug, Default)]
 struct CoordinatorAuthorityPlayerState {
     paused: Vec<bool>,

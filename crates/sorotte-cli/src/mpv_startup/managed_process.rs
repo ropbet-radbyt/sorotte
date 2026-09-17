@@ -118,6 +118,9 @@ where
         ));
     }
     let mut runtime = ClientApplication::new(session, player);
+    runtime.set_shared_playlist_sync_enabled(crate::client_config::shared_playlists_enabled_cli(
+        config,
+    ));
     runtime.configure_streaming_playback(streaming);
     Ok(FinishedClientRuntime {
         runtime,

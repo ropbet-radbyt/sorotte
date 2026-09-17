@@ -1003,6 +1003,8 @@ where
         now_seconds: f64,
         first_error: &mut Option<PlayerError>,
     ) {
+        self.playback_coordination
+            .fence_playlist_predecessor_actions(&self.session, &mut actions);
         if let Err(error) = self.handle_latest_player_readiness_observation()
             && first_error.is_none()
         {

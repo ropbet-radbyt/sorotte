@@ -19,6 +19,7 @@ mod native_pause_regressions;
 mod playback_status_regressions;
 mod readiness_selection;
 mod seek_echo_tests;
+mod terminal_sync_races;
 
 #[test]
 fn participant_status_room_requests_preserve_only_current_seek_authority() {
@@ -4057,8 +4058,8 @@ fn participant_status_ordered_terminal_records_precise_pause_evidence() {
     );
 }
 
-#[test]
-fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
+fn natural_completion_eof_race_runtime()
+-> ClientRuntime<CoordinatedTestPlayer, QueuedRuntimeControl> {
     let epoch = PlayerAttachmentEpoch::new(1);
     let attempt_id = LoadAttemptId::new(1);
     let media_generation = PlayerMediaGeneration::new(1);
@@ -4120,6 +4121,13 @@ fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
         .drain_player_transport_coordination(1.0)
         .expect("the initial active-media snapshot should drain");
     runtime.deliver_queued_protocol_messages();
+    runtime.player_mut().set_position(0.0).unwrap();
+    runtime.player_mut().set_paused(true).unwrap();
+    assert!(
+        runtime
+            .session_mut()
+            .mark_pending_playlist_index_reset_physical_effect_applied(epoch.get())
+    );
 
     runtime
         .session_mut()
@@ -4132,7 +4140,22 @@ fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
             1.0,
         )
         .expect("the remote room playstate should apply");
+    assert!(
+        runtime
+            .session_mut()
+            .complete_pending_playlist_index_reset_for_attachment(epoch.get())
+            .is_some()
+    );
+    runtime.player.commands.clear();
+    runtime
+}
 
+#[test]
+fn natural_eof_overtaking_desync_seek_is_not_a_player_failure() {
+    let mut runtime = natural_completion_eof_race_runtime();
+    let epoch = PlayerAttachmentEpoch::new(1);
+    let attempt_id = LoadAttemptId::new(1);
+    let media_generation = PlayerMediaGeneration::new(1);
     runtime.player.reject_seek_commands = true;
     runtime.player.ordered_batch_after_rejected_seek = Some(ordered_batch(
         epoch,
