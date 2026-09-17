@@ -247,6 +247,9 @@ impl<'a> ClientSessionUpdate<'a> {
                 control.activate_protocol_connection_generation();
             }
             if is_hello {
+                if let Some(coordination) = self.playback_coordination.as_deref_mut() {
+                    coordination.bind_initial_prepared_media_room(self.session);
+                }
                 emit_client_lifecycle_transition(
                     "SESSION-ACTIVE-001",
                     "session",
@@ -300,6 +303,9 @@ impl<'a> ClientSessionUpdate<'a> {
                 control.activate_protocol_connection_generation();
             }
             if is_hello {
+                if let Some(coordination) = self.playback_coordination.as_deref_mut() {
+                    coordination.bind_initial_prepared_media_room(self.session);
+                }
                 emit_client_lifecycle_transition(
                     "SESSION-ACTIVE-001",
                     "session",

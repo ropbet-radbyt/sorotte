@@ -1795,8 +1795,9 @@ class CiPolicyTests(unittest.TestCase):
             cargo test --locked -p sorotte-media-match --test generated_media_v3
             v3_manifest_harness_runs_small_synthetic_case
             -- --ignored --exact --nocapture
-            export SOROTTE_MEDIA_MATCH_FFMPEG="$(command -v ffmpeg)"
-            export SOROTTE_MEDIA_MATCH_FFPROBE="$(command -v ffprobe)"
+            SOROTTE_MEDIA_MATCH_FFMPEG="$(command -v ffmpeg)"
+            SOROTTE_MEDIA_MATCH_FFPROBE="$(command -v ffprobe)"
+            export SOROTTE_MEDIA_MATCH_FFMPEG SOROTTE_MEDIA_MATCH_FFPROBE
             cargo test --locked -p sorotte-gui --lib
             app::runtime_owner::tests::player_runtime_tests::fingerprint_freshness::media_fingerprint_generated_equal_length_audio_replacement
             -- --ignored --exact --nocapture
@@ -2831,7 +2832,7 @@ class CiPolicyTests(unittest.TestCase):
                             "delete field (policy|quorum_percent|"
                             "maximum_pause_seconds) from struct "
                             "PlaybackBarrierRoomBufferingConfig expression in "
-                            "ClientApplication<P>::apply_settings)"
+                            "ClientApplication<P>::configure_streaming_playback)"
                         ),
                         "test_target": "lib",
                         "test_filter": "",
@@ -4536,7 +4537,7 @@ class CiPolicyTests(unittest.TestCase):
                 self.assertRegex(function, mutant_filter)
         context = (
             " from struct PlaybackBarrierRoomBufferingConfig expression in "
-            "ClientApplication<P>::apply_settings"
+            "ClientApplication<P>::configure_streaming_playback"
         )
 
         for field in ("policy", "quorum_percent", "maximum_pause_seconds"):
@@ -4547,7 +4548,7 @@ class CiPolicyTests(unittest.TestCase):
             f"delete field grace_seconds{context}",
             (
                 "delete field policy from struct OtherRoomBufferingConfig "
-                "expression in ClientApplication<P>::apply_settings"
+                "expression in ClientApplication<P>::configure_streaming_playback"
             ),
             (
                 "delete field policy from struct PlaybackBarrierRoomBufferingConfig "

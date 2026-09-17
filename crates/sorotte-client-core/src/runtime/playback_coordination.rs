@@ -831,10 +831,27 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn bind_prepared_playlist_selection(&mut self, session: &ClientSession) {
         self.prepared_playlist_selection = Some(PreparedPlaylistSelection {
-            room: session.room().map(str::to_owned),
+            room: session
+                .room()
+                .filter(|_| session.is_active())
+                .map(str::to_owned),
             target: PreparedPlaylistSelection::target(session).map(str::to_owned),
             selection_revision: session.current_room_playlist_selection_revision(),
         });
+    }
+
+    pub(crate) fn bind_initial_prepared_media_room(&mut self, session: &ClientSession) {
+        if session.is_active()
+            && let Some(prepared) = self.prepared_playlist_selection.as_mut()
+            && prepared.room.is_none()
+        {
+            // Startup can prepare a file before Hello establishes membership.
+            // Assign that initially unowned room only after authoritative
+            // Hello; provisional settings are not room authority. Preserve
+            // the captured target and replay revision, and never transfer an
+            // already scoped predecessor through a later room switch.
+            prepared.room = session.room().map(str::to_owned);
+        }
     }
 
     fn current_media_matches_playlist_selection(&self, session: &ClientSession) -> bool {
