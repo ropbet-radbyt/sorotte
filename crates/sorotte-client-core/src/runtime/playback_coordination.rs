@@ -2909,18 +2909,7 @@ where
             .playback_coordination
             .prepare_media_for_current_file_publication(logical_id, kind, now_seconds);
         let plan = self.finish_prepared_playback_media(plan, now_seconds);
-        let published_file_matches_selection = PreparedPlaylistSelection::target(&self.session)
-            .is_none_or(|target| {
-                self.last_local_file_update.as_ref().is_some_and(|file| {
-                    super::local_actions::local_file_matches_playlist_target(file, target)
-                })
-            });
-        if !published_file_matches_selection {
-            // An initially attached player may already own a different file
-            // when the room selects its successor. Publication is observation,
-            // not proof that the new selection loaded on this attachment.
-            self.playback_coordination.prepared_playlist_selection = None;
-        } else if !plan.logical_media_changed && !plan.playback_episode_changed {
+        if !plan.logical_media_changed && !plan.playback_episode_changed {
             // Re-publishing the current file can carry its existing physical
             // observations. It cannot reattribute that predecessor to a
             // selection whose asynchronous source load is still pending.
