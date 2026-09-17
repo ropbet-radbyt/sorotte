@@ -2826,6 +2826,7 @@ class CiPolicyTests(unittest.TestCase):
                             "(synchronize_player_availability|"
                             "record_contained_external_player_failure|"
                             "run_participant_status_heartbeat|"
+                            "set_shared_playlist_sync_enabled|"
                             "ParticipantStatusReportPresentation::("
                             "from_client_view|position_evidence_is_eligible|"
                             "buffer_evidence_is_eligible|headline_label)|"

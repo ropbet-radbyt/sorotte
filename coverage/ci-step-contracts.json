@@ -544,6 +544,12 @@
     {
       "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
       "job_id": "linux-candidate",
+      "step_id": "playback_lifecycle_loop_evidence",
+      "display_name": "Validate and stage privacy-safe loop release evidence"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
       "step_id": "playback_lifecycle_closed",
       "display_name": "Require every declared lifecycle gap to be closed"
     },
@@ -552,6 +558,12 @@
       "job_id": "linux-candidate",
       "step_id": "ci_upload_privacy_safe_lifecycle_release__ed6cebb6",
       "display_name": "Upload privacy-safe lifecycle release evidence"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
+      "step_id": "playback_lifecycle_loop_evidence_upload",
+      "display_name": "Upload privacy-safe loop lifecycle release evidence"
     },
     {
       "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
