@@ -18,6 +18,8 @@ use sorotte_plex::{
     server_scoped_cache_key_for_file,
 };
 
+mod natural_completion_delivery_fence;
+
 struct DelayedPlaylistReceiptDriver {
     release_one: std::sync::Arc<std::sync::atomic::AtomicBool>,
     writes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,

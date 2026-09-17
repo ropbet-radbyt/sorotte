@@ -206,11 +206,19 @@ fn gui_semantic_driver_runs_playlist_workflow_scenario_without_platform_ui() {
             .iter()
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["episode1.mkv", "https://example.com/live"]
+        vec!["episode1.mkv", "episode2.mkv", "https://example.com/live"]
     );
     assert_eq!(
         driver.state().selection.selected_main_window_playlist,
-        Some(1)
+        Some(2),
+        "restoring the removed row must keep the URL row selected"
+    );
+    assert_eq!(
+        driver
+            .widget("main-window:playlist:1:source")
+            .expect("restored row source must be visible")
+            .label,
+        "Plex Stream"
     );
     assert!(driver.state().playlist_text_edit_session.is_none());
     assert!(driver.state().playlist_url_edit_session.is_none());

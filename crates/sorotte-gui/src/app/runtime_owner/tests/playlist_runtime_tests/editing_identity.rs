@@ -213,8 +213,8 @@ fn connected_chat_delete_then_undo_preserves_each_exact_origin() {
                 .player_local_file
                 .as_ref()
                 .and_then(|file| file.path.as_ref())
-                .map(std::path::PathBuf::from),
-            Some(removed_path)
+                .map(|path| std::fs::canonicalize(path).unwrap()),
+            Some(std::fs::canonicalize(&removed_path).unwrap())
         );
     }
 }
@@ -258,10 +258,10 @@ fn assert_remove_then_undo_restores_origin(duplicate_names: bool, removed_index:
         .player_local_file
         .as_ref()
         .and_then(|file| file.path.as_ref())
-        .map(std::path::PathBuf::from);
+        .map(|path| std::fs::canonicalize(path).unwrap());
     assert_eq!(
-        after_path.as_ref(),
-        Some(&removed_path),
+        after_path,
+        Some(std::fs::canonicalize(&removed_path).unwrap()),
         "restored row must still open its explicitly supplied local file"
     );
     assert_eq!(
@@ -356,8 +356,8 @@ fn connected_reorder_chat_undo_preserves_local_file_control() {
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_ref())
-            .map(std::path::PathBuf::from),
-        Some(second_path)
+            .map(|path| std::fs::canonicalize(path).unwrap()),
+        Some(std::fs::canonicalize(&second_path).unwrap())
     );
 }
 
@@ -378,7 +378,7 @@ fn connected_no_removal_opens_explicit_second_file_control() {
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_ref())
-            .map(std::path::PathBuf::from),
-        Some(second_path)
+            .map(|path| std::fs::canonicalize(path).unwrap()),
+        Some(std::fs::canonicalize(&second_path).unwrap())
     );
 }

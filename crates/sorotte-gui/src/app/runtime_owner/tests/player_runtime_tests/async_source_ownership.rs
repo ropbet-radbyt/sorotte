@@ -163,12 +163,13 @@ fn late_local_resolution_after_selection_change(
         if let Some(session) = owner.session.as_ref() {
             assert_eq!(session.current_room_playlist_index(), Some(expected_index));
         }
+        let expected_successor = std::fs::canonicalize(&now).unwrap();
         assert!(
             opened
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|path| std::path::Path::new(path) == now),
+                .any(|path| std::fs::canonicalize(path).unwrap() == expected_successor),
             "successor should open before old search completes"
         );
         assert!(

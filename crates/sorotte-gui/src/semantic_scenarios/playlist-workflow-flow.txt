@@ -49,6 +49,8 @@ apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-u
 assert-label	main-window:playlist:1	episode2.mkv
 assert-label	main-window:playlist:2	https://example.com/live
 assert-label	main-window:playlist:1:source	Plex Stream
+assert-selected	main-window:playlist:1:source:plex-stream	true
+assert-selected	main-window:playlist:2	true
 assert-enabled	main-window:playlist:add-plex	true
 activate	main-window:playlist:add-plex
 assert-enabled	main-window:playlist-plex-search:query	false

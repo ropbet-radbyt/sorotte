@@ -2,6 +2,12 @@
 use super::*;
 use sorotte_server::ServerRuntime;
 
+async fn room_probe_phase<T>(phase: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(2), future)
+        .await
+        .unwrap_or_else(|_| panic!("room probe timed out waiting for {phase}"))
+}
+
 async fn forward_server_reply(
     server: &mut ServerRuntime,
     client: &str,
@@ -9,11 +15,14 @@ async fn forward_server_reply(
     writer: &mut OwnedWriteHalf,
 ) {
     let replies = server.handle_line(client, line).unwrap();
-    for reply in replies {
-        writer.write_all(reply.as_bytes()).await.unwrap();
-        writer.write_all(b"\n").await.unwrap();
-    }
-    writer.flush().await.unwrap();
+    room_probe_phase("server reply delivery", async {
+        for reply in replies {
+            writer.write_all(reply.as_bytes()).await.unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        }
+        writer.flush().await.unwrap();
+    })
+    .await;
 }
 
 async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<String>, String) {
@@ -33,38 +42,60 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
         let mut hello_rooms = Vec::new();
         for connection in 0..=usize::from(reconnect) {
             let client = format!("connection-{connection}");
-            let (socket, _) = listener.accept().await.unwrap();
+            let (socket, _) = room_probe_phase("client connection", listener.accept())
+                .await
+                .unwrap();
             let (reader, mut writer) = socket.into_split();
             let mut lines = BufReader::new(reader).lines();
-            let mut first = lines.next_line().await.unwrap().unwrap();
+            let mut first = room_probe_phase("client greeting", lines.next_line())
+                .await
+                .unwrap()
+                .unwrap();
             // Normal PreferTls negotiation against a plain local fixture.
             if serde_json::from_str::<Value>(&first)
                 .unwrap()
                 .get("TLS")
                 .is_some()
             {
-                writer
-                    .write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n")
+                room_probe_phase(
+                    "TLS refusal delivery",
+                    writer.write_all(b"{\"TLS\":{\"startTLS\":\"false\"}}\n"),
+                )
+                .await
+                .unwrap();
+                first = room_probe_phase("client Hello after TLS refusal", lines.next_line())
                     .await
+                    .unwrap()
                     .unwrap();
-                first = lines.next_line().await.unwrap().unwrap();
             }
             let hello: Value = serde_json::from_str(&first).unwrap();
             hello_rooms.push(hello["Hello"]["room"]["name"].as_str().unwrap().to_owned());
             forward_server_reply(&mut server, &client, &first, &mut writer).await;
             let mut user_input_sent = false;
             let mut tick = tokio::time::interval(Duration::from_millis(20));
+            let progress_deadline = tokio::time::sleep(Duration::from_secs(3));
+            tokio::pin!(progress_deadline);
+            let mut expected_progress = if connection == 0 {
+                "first post-Hello heartbeat"
+            } else {
+                "final client closure"
+            };
             loop {
                 let line = tokio::select! {
+                    _ = &mut progress_deadline => {
+                        panic!("room probe timed out waiting for {expected_progress}");
+                    }
                     line = lines.next_line() => line.unwrap(),
                     _ = tick.tick() => {
                         let dispatch = server.collect_dispatch_at(client_runtime_now_seconds()).unwrap();
-                        for reply in dispatch.outbound_lines {
-                            if reply.client_id == client {
-                                writer.write_all(reply.line.as_bytes()).await.unwrap();
-                                writer.write_all(b"\n").await.unwrap();
+                        room_probe_phase("server heartbeat delivery", async {
+                            for reply in dispatch.outbound_lines {
+                                if reply.client_id == client {
+                                    writer.write_all(reply.line.as_bytes()).await.unwrap();
+                                    writer.write_all(b"\n").await.unwrap();
+                                }
                             }
-                        }
+                        }).await;
                         continue;
                     }
                 };
@@ -86,6 +117,10 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
                         .send("chat first-phase-complete".to_owned())
                         .unwrap();
                     user_input_sent = true;
+                    expected_progress = "acceptance of queued user commands";
+                    progress_deadline
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + Duration::from_secs(3));
                 }
                 if connection == 0 && decoded.get("Chat").is_some() {
                     let expected = if change_room {
@@ -99,10 +134,16 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
                         "the user-selected room must be accepted before the disconnect"
                     );
                     if reconnect {
-                        writer.shutdown().await.unwrap();
+                        room_probe_phase("first connection closure", writer.shutdown())
+                            .await
+                            .unwrap();
                         server.handle_transport_disconnect_fanout(&client).unwrap();
                         break;
                     }
+                    expected_progress = "final client closure";
+                    progress_deadline
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + Duration::from_secs(3));
                 }
             }
         }

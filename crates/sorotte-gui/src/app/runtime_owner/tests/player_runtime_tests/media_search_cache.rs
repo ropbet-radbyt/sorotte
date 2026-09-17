@@ -17,6 +17,10 @@ fn explicit_relative_target_outweighs_current_player_basename_locality() {
     for path in [&current, &wrong, &expected] {
         std::fs::write(path, b"fixture").unwrap();
     }
+    // The fixture input can contain a Windows short alias; player-facing paths
+    // use the canonical native spelling of that same complete file path.
+    let wrong_player_path = std::fs::canonicalize(&wrong).unwrap();
+    let expected_player_path = std::fs::canonicalize(&expected).unwrap();
     let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
         media_search_directories: Some(vec![library.to_string_lossy().into_owned()]),
         ..StoredClientSettings::default()
@@ -32,7 +36,7 @@ fn explicit_relative_target_outweighs_current_player_basename_locality() {
         .unwrap();
     assert!(
         matches!(basename, GuiUserMediaTargetResolution::Resolved { ref path, .. }
-        if std::path::Path::new(path) == wrong),
+        if std::fs::canonicalize(path).unwrap() == wrong_player_path),
         "control: basename locality should work"
     );
     let absolute = owner
@@ -43,7 +47,7 @@ fn explicit_relative_target_outweighs_current_player_basename_locality() {
         .unwrap();
     assert!(
         matches!(absolute, GuiUserMediaTargetResolution::Resolved { ref path, .. }
-        if std::path::Path::new(path) == expected),
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
         "control: absolute target resolves correctly"
     );
     let mut fresh = GuiPersistedConfigRuntimeOwner::with_config_path(None);
@@ -52,7 +56,7 @@ fn explicit_relative_target_outweighs_current_player_basename_locality() {
         .unwrap();
     assert!(
         matches!(without_current, GuiUserMediaTargetResolution::Resolved { ref path, .. }
-        if std::path::Path::new(path) == expected),
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
         "control: relative target resolves correctly without current-player locality"
     );
     let explicit = owner
@@ -60,7 +64,7 @@ fn explicit_relative_target_outweighs_current_player_basename_locality() {
         .unwrap();
     assert!(
         matches!(explicit, GuiUserMediaTargetResolution::Resolved { ref path, .. }
-        if std::path::Path::new(path) == expected),
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
         "an existing exact relative path under the search root must outrank the current directory's basename-only match"
     );
     let missing_relative = owner
@@ -126,10 +130,15 @@ fn relative_playlist_selection_dispatches_exact_requested_season() {
         r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#.to_owned(),
     ]);
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
-    let actual = opened.lock().unwrap().clone();
+    let actual = opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|path| std::fs::canonicalize(path).unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
         actual,
-        vec![expected.to_string_lossy().into_owned()],
+        vec![std::fs::canonicalize(&expected).unwrap()],
         "explicit playlist selection must open the requested relative path"
     );
 }
