@@ -806,7 +806,9 @@ impl ServerRuntime {
         if let Some(control) = self.room_buffering_controls.get_mut(room_name)
             && control.configured_by_client_id == old_client_id
         {
-            control.config = control.requested_config.clone();
+            if !control.retired_for_selection {
+                control.config = control.requested_config.clone();
+            }
             control.configured_by_client_id = client_id.to_owned();
             control.configured_by_username = session.username;
             control.reports.remove(&old_client_id);
@@ -844,7 +846,9 @@ impl ServerRuntime {
             .room_buffering_controls
             .get_mut(room_name)
             .expect("policy recovery candidate should remain configured");
-        control.config = control.requested_config.clone();
+        if !control.retired_for_selection {
+            control.config = control.requested_config.clone();
+        }
         control.configured_by_client_id = client_id.to_owned();
         control.configured_by_username = session.username;
         control.reports.remove(&old_client_id);
@@ -994,7 +998,9 @@ impl ServerRuntime {
                         let Some(control) = self.room_buffering_controls.get(&session.room) else {
                             return Ok(Vec::new());
                         };
-                        if control.configured_by_username != session.username {
+                        if control.retired_for_selection
+                            || control.configured_by_username != session.username
+                        {
                             return Ok(Vec::new());
                         }
                         Some((
@@ -1011,7 +1017,10 @@ impl ServerRuntime {
                 let public_independent_identity = targeted_public_independent.then(|| {
                     self.room_buffering_controls
                         .get(&session.room)
-                        .filter(|control| control.config.policy == RoomBufferingPolicy::Independent)
+                        .filter(|control| {
+                            !control.retired_for_selection
+                                && control.config.policy == RoomBufferingPolicy::Independent
+                        })
                         .map(|control| {
                             (
                                 control.config.media_generation,
@@ -1116,7 +1125,8 @@ impl ServerRuntime {
         if let Some(active) = self.room_buffering_controls.get(&session.room)
             && (config.media_generation < active.config.media_generation
                 || (config.media_generation == active.config.media_generation
-                    && config.state_revision < active.config.state_revision))
+                    && (active.retired_for_selection
+                        || config.state_revision < active.config.state_revision)))
         {
             return Ok(Vec::new());
         }
@@ -1191,8 +1201,16 @@ impl ServerRuntime {
                 paused_by_policy: false,
                 pause_deadline: None,
                 fail_open_latched: false,
+                retired_for_selection: false,
             },
         );
+        if !paired_with_new_prepare {
+            // Immediate start still reports technical failures and recovery;
+            // it does not acquire a coordinated-start gate or pause.
+            outbound.extend(
+                self.begin_technical_readiness_generation(&room_name, config.media_generation)?,
+            );
+        }
         let status = self
             .room_buffering_status(&room_name)
             .expect("new room buffering control should have status");
@@ -1247,7 +1265,8 @@ impl ServerRuntime {
         let Some(control) = self.room_buffering_controls.get_mut(&session.room) else {
             return Ok(Vec::new());
         };
-        if report.media_generation != control.config.media_generation
+        if control.retired_for_selection
+            || report.media_generation != control.config.media_generation
             || (control.config.state_revision.is_some()
                 && report.state_revision != control.config.state_revision)
         {
@@ -2350,6 +2369,48 @@ impl ServerRuntime {
         }
         let mut outbound = self.playback_barrier_status_fanout(room_name);
         outbound.extend(self.clear_readiness_gate(room_name));
+        outbound
+    }
+
+    /// Canonical selection supersedes every predecessor start and buffering
+    /// episode. Keep their identities terminal for idempotent retries until a
+    /// fresh prepare replaces them through the ordinary replay-cache path.
+    pub(crate) fn retire_playback_coordination_for_selection(
+        &mut self,
+        room_name: &str,
+    ) -> Vec<DirectedProtocolMessage> {
+        if let Some(barrier) = self.room_playback_barriers.get_mut(room_name) {
+            barrier.phase = PlaybackBarrierPhase::Degraded;
+            barrier.started_deadline = None;
+            for participant in barrier.participants.values_mut() {
+                participant.status.phase = PlaybackBarrierParticipantPhase::Degraded;
+                participant.status.degraded_reason =
+                    Some(PlaybackBarrierDegradedReason::Superseded);
+            }
+        }
+        let mut outbound = self.playback_barrier_status_fanout(room_name);
+        if let Some(control) = self.room_buffering_controls.get_mut(room_name) {
+            control.retired_for_selection = true;
+            control.config.policy = RoomBufferingPolicy::Independent;
+            control.config.quorum_percent = None;
+            control.reports.clear();
+            control.condition_active_since = None;
+            control.condition_clear_since = None;
+            control.paused_by_policy = false;
+            control.pause_deadline = None;
+            control.fail_open_latched = false;
+            let config = control.config.clone();
+            if let Some(status) = self.room_buffering_status(room_name) {
+                outbound.extend(
+                    self.room_buffering_fanout(
+                        room_name,
+                        PlaybackBarrierSetExtension::new()
+                            .with_buffering_policy(config)
+                            .with_buffering_status(status),
+                    ),
+                );
+            }
+        }
         outbound
     }
 

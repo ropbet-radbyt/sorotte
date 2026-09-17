@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use sorotte_secret::SecretValue;
 
 /// Hello feature and nested Set/State extension key for the additive Sorotte
 /// readiness-intent protocol.
@@ -12,6 +13,34 @@ pub const SOROTTE_READINESS_V2: &str = "sorotteReadinessV2";
 /// the feature flag: advertising readiness support is not proof that a new
 /// transport owns a detached membership.
 pub const SOROTTE_READINESS_RECONNECT_TOKEN: &str = "sorotteReadinessReconnectToken";
+
+/// Private continuity identity for a newly attached room membership. A room
+/// switch does not exchange Hello, so its identity accompanies the readiness
+/// snapshot sent only to the joining participant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadinessMembershipIdentity {
+    pub room: String,
+    pub membership_epoch: u64,
+    #[serde(
+        serialize_with = "serialize_reconnect_token",
+        deserialize_with = "deserialize_reconnect_token"
+    )]
+    pub reconnect_token: SecretValue,
+}
+
+fn serialize_reconnect_token<S: serde::Serializer>(
+    token: &SecretValue,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(token.expose_secret())
+}
+
+fn deserialize_reconnect_token<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SecretValue, D::Error> {
+    String::deserialize(deserializer).map(SecretValue::new)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -695,6 +724,8 @@ pub struct ReadinessSetExtension {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<RoomReadinessSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership: Option<ReadinessMembershipIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_result: Option<ReadinessRequestResultPayload>,
 }
 
@@ -715,6 +746,11 @@ impl ReadinessSetExtension {
 
     pub fn with_snapshot(mut self, snapshot: RoomReadinessSnapshot) -> Self {
         self.snapshot = Some(snapshot);
+        self
+    }
+
+    pub fn with_membership(mut self, membership: ReadinessMembershipIdentity) -> Self {
+        self.membership = Some(membership);
         self
     }
 

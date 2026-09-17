@@ -408,9 +408,14 @@ where
             .index
             .expect("validated playlist selection must have an index");
         let terminal_position_seconds = completion
-            .completed_file
-            .as_ref()
-            .and_then(|file| file.duration_seconds)
+            .terminal_position_seconds
+            .or_else(|| {
+                completion
+                    .completed_file
+                    .as_ref()
+                    .and_then(|file| file.duration_seconds)
+                    .map(|duration| (duration - self.local_playback_offset_seconds).max(0.0))
+            })
             .filter(|position| position.is_finite() && *position >= 0.0)
             .or_else(|| {
                 self.session
@@ -472,6 +477,15 @@ where
             self.pending_natural_playback_completion = None;
         }
         result
+    }
+
+    pub fn has_pending_natural_playback_completion(&self) -> bool {
+        self.pending_natural_playback_completion.is_some()
+    }
+
+    /// Contradictory current-owner evidence invalidates an unconsumed EOF.
+    pub fn invalidate_pending_natural_playback_completion(&mut self) {
+        self.pending_natural_playback_completion = None;
     }
 
     fn current_local_playlist_target(&self) -> Option<String> {

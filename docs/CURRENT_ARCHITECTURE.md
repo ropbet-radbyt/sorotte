@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.18; landed base `b86696ec6075d2b5bf92bec17d4abc02277847eb`; fixing commit **pending**; hosted evidence **pending**. The v0.2.18 candidate moves Media Match indexing and lookup off the GUI runtime pump, preserves scoped playlist and index ownership, and protects confirmed native Pause intent from playback correction and same-revision heartbeats. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
+Release 0.2.19; landed base `5f25d584eb9a7a18da67b08e4503d73cd40627ce`; fixing commit **pending**; hosted evidence **pending**. The v0.2.19 candidate fixes playback completion and buffering, room membership and stale coordination, exact media identity and asynchronous resolution, and CLI streaming settings, reconnect and local offsets. See docs/audits/v0.2.19-bugfixes.md for the regression inventory. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
 
 ## Authority flow
 

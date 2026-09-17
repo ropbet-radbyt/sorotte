@@ -19,6 +19,17 @@ impl ClientSession {
         self.model.room.name.as_deref()
     }
 
+    /// The next connection follows an outstanding room request even if its
+    /// server acknowledgement was lost with the previous transport.
+    pub fn connection_target_room(&self) -> Option<&str> {
+        self.model
+            .controller
+            .pending_local_room_switch_target
+            .as_deref()
+            .or(self.model.reconnect.room_target.as_deref())
+            .or(self.room())
+    }
+
     pub fn model(&self) -> &ClientModel {
         &self.model
     }

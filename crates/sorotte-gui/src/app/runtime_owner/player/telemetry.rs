@@ -1572,6 +1572,14 @@ impl GuiPersistedConfigRuntimeOwner {
         delta: PlayerTransportDelta,
         user_offset_seconds: f64,
     ) {
+        if (delta.seeking == Some(true)
+            || delta.eof_reached == Some(false)
+            || delta.logical_pause == Some(false)
+            || delta.paused_for_cache == Some(true))
+            && let Some(session) = self.session.as_mut()
+        {
+            session.invalidate_pending_natural_playback_completion();
+        }
         self.observe_attached_pause_command_result(delta.logical_pause);
         if let Some(paused_for_cache) = delta.paused_for_cache {
             self.player_paused_for_cache = Some(paused_for_cache);
@@ -1774,7 +1782,7 @@ impl GuiPersistedConfigRuntimeOwner {
             PlayerEvent::LogicalPlaybackTerminal {
                 media_generation,
                 attempt_id,
-                ..
+                outcome,
             } => {
                 let transport_owns_attempt =
                     snapshot_known_copy(&self.ordered_player_events.transport.load_attempt_id)
@@ -1788,14 +1796,37 @@ impl GuiPersistedConfigRuntimeOwner {
                     None,
                 ) && transport_owns_attempt
                 {
-                    self.ordered_player_events.transport.phase =
-                        SnapshotField::Known(sorotte_player_api::PlayerTransportPhase::Ended);
+                    let natural = outcome == sorotte_player_api::PlayerPhysicalLoadOutcome::Ended;
+                    if !natural && let Some(session) = self.session.as_mut() {
+                        session.invalidate_pending_natural_playback_completion();
+                    }
+                    self.ordered_player_events.transport.phase = SnapshotField::Known(match outcome {
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Ended => sorotte_player_api::PlayerTransportPhase::Ended,
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Failed(_) | sorotte_player_api::PlayerPhysicalLoadOutcome::TransportDisconnected => sorotte_player_api::PlayerTransportPhase::Failed,
+                        _ => sorotte_player_api::PlayerTransportPhase::Empty,
+                    });
                     self.ordered_player_events.transport.logical_pause = SnapshotField::Known(true);
-                    self.ordered_player_events.transport.eof_reached = SnapshotField::Known(true);
+                    self.ordered_player_events.transport.eof_reached =
+                        SnapshotField::Known(natural);
                     self.player_paused = Some(true);
-                    if let Some(session) = self.session.as_mut()
-                        && let Err(error) =
-                            session.observe_external_player_end_of_file(system_time_seconds())
+                    let terminal_position_seconds = self
+                        .player_local_file
+                        .as_ref()
+                        .and_then(|file| file.duration_seconds)
+                        .filter(|duration| duration.is_finite() && *duration >= 0.0)
+                        .map(|duration| (duration - user_offset_seconds).max(0.0));
+                    if natural
+                        && let Some(completed_file) = self
+                            .completed_file_for_owned_playlist_terminal(
+                                attempt_id,
+                                media_generation,
+                            )
+                        && let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.observe_external_player_end_of_file(
+                            completed_file,
+                            terminal_position_seconds,
+                            system_time_seconds(),
+                        )
                     {
                         eprintln!(
                             "warning: failed to route ordered attached-player terminal playback to the session runtime: {error}"
@@ -1805,6 +1836,45 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(())
             }
         }
+    }
+
+    fn completed_file_for_owned_playlist_terminal(
+        &self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) -> Option<LocalFileUpdate> {
+        let mut file = self.player_local_file.clone()?;
+        let Some(resolution) = self.playlist_resolution_attempt.as_ref() else {
+            return Some(file);
+        };
+        let selection_matches = self.session.as_ref().is_some_and(|session| {
+            session
+                .projected_current_room_playlist()
+                .is_some_and(|playlist| {
+                    let Some(index) = playlist.index.and_then(|index| usize::try_from(index).ok())
+                    else {
+                        return false;
+                    };
+                    self.playlist_resolution.playlist_revision == Some(playlist.revision)
+                        && self.playlist_resolution.row_ids.get(index) == Some(&resolution.row_id)
+                        && playlist.files.get(index) == Some(&resolution.target)
+                })
+        });
+        if resolution.state == PlaylistResolutionAttemptState::Active
+            && !resolution.media_confirmation_pending
+            && resolution.candidate_provider.is_some()
+            && resolution.playlist_generation == self.playlist_resolution.generation
+            && resolution.player_media_generation == Some(media_generation)
+            && resolution.load_attempt_id == Some(attempt_id)
+            && selection_matches
+        {
+            // The selected source resolver, rather than the local basename,
+            // proves which canonical row this physical edition completed.
+            // Preserve physical metadata and project only this completion's
+            // identity; ordinary file publication keeps the actual local name.
+            file.name = resolution.target.clone();
+        }
+        Some(file)
     }
 
     fn apply_ordered_semantic_outcome(

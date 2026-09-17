@@ -592,9 +592,13 @@ impl ClientSession {
     }
 
     pub(super) fn resolve_room_for_playlist_update(&self, set_by: Option<&str>) -> Option<String> {
-        set_by
-            .and_then(|username| self.user_room(username).map(str::to_owned))
-            .or_else(|| self.model.room.name.clone())
+        // Playlist messages are delivered to members of the canonical room.
+        // Their author is historical attribution and may since have moved.
+        self.model
+            .room
+            .name
+            .clone()
+            .or_else(|| set_by.and_then(|username| self.user_room(username).map(str::to_owned)))
     }
 
     pub(super) fn set_user_room(&mut self, username: &str, room_name: Option<String>) {

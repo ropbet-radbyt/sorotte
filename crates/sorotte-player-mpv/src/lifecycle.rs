@@ -338,6 +338,7 @@ pub struct PlayerLifecycleState {
     next_acknowledgement_token: u64,
     deferred_start_files: VecDeque<DeferredStartFile>,
     provisional_eof: Option<ProvisionalEofCandidate>,
+    retained_completion_attempt: Option<LoadAttemptId>,
     pending_events: VecDeque<SequencedPlayerEvent>,
     retained_semantic_outcomes: VecDeque<SequencedPlayerSemanticOutcome>,
     recovery_snapshot: Option<PlayerAuthoritativeSnapshot>,
@@ -377,6 +378,7 @@ impl PlayerLifecycleState {
             next_acknowledgement_token: 1,
             deferred_start_files: VecDeque::new(),
             provisional_eof: None,
+            retained_completion_attempt: None,
             pending_events: VecDeque::new(),
             retained_semantic_outcomes: VecDeque::new(),
             recovery_snapshot: None,
@@ -500,6 +502,10 @@ impl PlayerLifecycleState {
 
     pub fn provisional_eof_attempt(&self) -> Option<LoadAttemptId> {
         self.provisional_eof.map(|candidate| candidate.attempt_id)
+    }
+
+    pub(crate) fn retained_completion_attempt(&self) -> Option<LoadAttemptId> {
+        self.retained_completion_attempt
     }
 
     pub fn requires_authoritative_snapshot(&self) -> bool {
@@ -1874,7 +1880,9 @@ impl PlayerLifecycleState {
 
         if before.semantic_load_result.is_none() {
             let result = match outcome {
-                PlayerPhysicalLoadOutcome::Ended => PlayerLoadAttemptResult::Indeterminate,
+                PlayerPhysicalLoadOutcome::Ended | PlayerPhysicalLoadOutcome::Stopped => {
+                    PlayerLoadAttemptResult::Indeterminate
+                }
                 PlayerPhysicalLoadOutcome::Failed(kind) => PlayerLoadAttemptResult::Failed(kind),
                 PlayerPhysicalLoadOutcome::NeverStarted => PlayerLoadAttemptResult::NeverStarted,
                 PlayerPhysicalLoadOutcome::TransportDisconnected => {
@@ -1896,7 +1904,9 @@ impl PlayerLifecycleState {
                 PlayerPhysicalLoadOutcome::NeverStarted => {
                     CommandSemanticState::Failed(PlayerCommandFailureKind::Unknown)
                 }
-                PlayerPhysicalLoadOutcome::Ended | PlayerPhysicalLoadOutcome::Failed(_) => {
+                PlayerPhysicalLoadOutcome::Ended
+                | PlayerPhysicalLoadOutcome::Stopped
+                | PlayerPhysicalLoadOutcome::Failed(_) => {
                     CommandSemanticState::Failed(PlayerCommandFailureKind::MediaEnded)
                 }
             };
@@ -1904,19 +1914,23 @@ impl PlayerLifecycleState {
         }
         if logical_terminal_allowed {
             self.logical_terminal = Some((before.media_generation, outcome));
-            self.queue_event(
-                PlayerEvent::LogicalPlaybackTerminal {
+            if self.retained_completion_attempt != Some(attempt_id)
+                || outcome != PlayerPhysicalLoadOutcome::Ended
+            {
+                self.queue_event(
+                    PlayerEvent::LogicalPlaybackTerminal {
+                        media_generation: before.media_generation,
+                        attempt_id,
+                        outcome,
+                    },
+                    effects,
+                );
+                effects.push(PlayerLifecycleEffect::LogicalPlaybackTerminal {
                     media_generation: before.media_generation,
                     attempt_id,
                     outcome,
-                },
-                effects,
-            );
-            effects.push(PlayerLifecycleEffect::LogicalPlaybackTerminal {
-                media_generation: before.media_generation,
-                attempt_id,
-                outcome,
-            });
+                });
+            }
         }
     }
 
@@ -1971,7 +1985,7 @@ impl PlayerLifecycleState {
             for attempt_id in terminal_attempts {
                 self.commit_physical_attempt_terminal(
                     attempt_id,
-                    PlayerPhysicalLoadOutcome::Ended,
+                    PlayerPhysicalLoadOutcome::Stopped,
                     effects,
                 );
             }
@@ -2006,7 +2020,7 @@ impl PlayerLifecycleState {
         for attempt_id in contradicted_attempts {
             self.commit_physical_attempt_terminal(
                 attempt_id,
-                PlayerPhysicalLoadOutcome::Ended,
+                PlayerPhysicalLoadOutcome::Stopped,
                 effects,
             );
         }
@@ -2176,6 +2190,13 @@ pub enum PlayerLifecycleInput {
         attachment_epoch: PlayerAttachmentEpoch,
         playlist_entry_id: i64,
         outcome: PlayerPhysicalLoadOutcome,
+    },
+    /// The adapter corroborated owned playing with EOF, idle, a finite physical
+    /// endpoint and pause, without intervening seek, cache pause or restart.
+    /// Unlike end-file, keep-open retains the physical load for later seeks.
+    RetainedEndOfFile {
+        attachment_epoch: PlayerAttachmentEpoch,
+        playlist_entry_id: i64,
     },
     PlaylistSnapshot {
         attachment_epoch: PlayerAttachmentEpoch,
@@ -2940,6 +2961,35 @@ fn reduce_player_lifecycle_inner(
                 }
             }
         }
+        PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch,
+            playlist_entry_id,
+        } => {
+            if attachment_epoch == state.attachment_epoch
+                && let Some(attempt) = state.active_attempt().cloned()
+                && attempt.playlist_entry_id == Some(playlist_entry_id)
+                && attempt.file_loaded_observed
+                && !attempt.logical_ownership_revoked
+                && attempt.superseded_by.is_none()
+                && !state.accepted_successor_exists(attempt.id)
+                && state.retained_completion_attempt != Some(attempt.id)
+            {
+                state.retained_completion_attempt = Some(attempt.id);
+                state.queue_event(
+                    PlayerEvent::LogicalPlaybackTerminal {
+                        attempt_id: attempt.id,
+                        media_generation: attempt.media_generation,
+                        outcome: PlayerPhysicalLoadOutcome::Ended,
+                    },
+                    &mut effects,
+                );
+                effects.push(PlayerLifecycleEffect::LogicalPlaybackTerminal {
+                    attempt_id: attempt.id,
+                    media_generation: attempt.media_generation,
+                    outcome: PlayerPhysicalLoadOutcome::Ended,
+                });
+            }
+        }
         PlayerLifecycleInput::PlaylistSnapshot {
             attachment_epoch,
             entries,
@@ -2977,6 +3027,9 @@ fn reduce_player_lifecycle_inner(
                 {
                     state.provisional_eof = None;
                 }
+                if !reached {
+                    state.retained_completion_attempt = None;
+                }
             }
         }
         PlayerLifecycleInput::PlaybackRestart {
@@ -2984,6 +3037,7 @@ fn reduce_player_lifecycle_inner(
             playlist_entry_id,
         } => {
             if attachment_epoch == state.attachment_epoch {
+                state.retained_completion_attempt = None;
                 let attempt_id = playlist_entry_id
                     .and_then(|entry_id| state.playlist_entry_attempts.get(&entry_id).copied());
                 if state
@@ -3080,6 +3134,7 @@ fn reduce_player_lifecycle_inner(
         } => {
             if attachment_epoch == state.attachment_epoch && seeking {
                 state.provisional_eof = None;
+                state.retained_completion_attempt = None;
                 let may_be_system_seek =
                     state.seek_ownership.values().any(|owner| {
                         owner.attachment_epoch == attachment_epoch
@@ -3452,6 +3507,7 @@ fn reduce_player_lifecycle_inner(
             state.uncertain_seek_generations.clear();
             state.deferred_start_files.clear();
             state.provisional_eof = None;
+            state.retained_completion_attempt = None;
             state.logical_terminal = None;
             state.next_event_sequence = 1;
             state.reconciliation_required = true;

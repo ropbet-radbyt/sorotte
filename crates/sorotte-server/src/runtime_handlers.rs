@@ -760,20 +760,17 @@ impl ServerRuntime {
         room: &str,
         set_by: &str,
         now_seconds: f64,
-    ) -> Vec<DirectedProtocolMessage> {
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         let transport_revision_before_selection = self.transport_authority_revision_for_room(room);
-        let readiness_outbound = if self.room_readiness.get(room).is_some_and(|room| {
-            matches!(
-                room.pause_owner,
-                RoomPauseOwner::None
-                    | RoomPauseOwner::ReadinessStartGate { .. }
-                    | RoomPauseOwner::EndOfPlaylist
-            )
-        }) {
-            self.set_readiness_pause_owner(room, RoomPauseOwner::EndOfPlaylist, true)
-        } else {
-            Vec::new()
-        };
+        let mut readiness_outbound = self.retire_playback_coordination_for_selection(room);
+        if self
+            .room_readiness
+            .get(room)
+            .is_some_and(|room| !matches!(room.pause_owner, RoomPauseOwner::User { .. }))
+        {
+            self.set_readiness_pause_owner(room, RoomPauseOwner::EndOfPlaylist, false);
+        }
+        readiness_outbound.extend(self.retire_readiness_generation(room)?);
         {
             let room_state = self.room_playback_state_mut(room);
             room_state.position = 0.0;
@@ -785,7 +782,7 @@ impl ServerRuntime {
             self.advance_transport_authority_revision(room);
         }
         self.seed_room_client_playback_states(room, 0.0, now_seconds);
-        readiness_outbound
+        Ok(readiness_outbound)
     }
 
     pub(crate) fn handle_set(
@@ -1036,7 +1033,7 @@ impl ServerRuntime {
                     // attached membership.
                     let mut new_room_readiness_outbound =
                         if self.readiness_enabled && session.capabilities.readiness_v2 {
-                            self.attach_readiness_membership(client_id, None, false, false)?
+                            self.attach_readiness_membership(client_id, None, true, false)?
                         } else {
                             Vec::new()
                         };
@@ -1385,7 +1382,7 @@ impl ServerRuntime {
                                 &session.room,
                                 &session.username,
                                 now_seconds,
-                            )
+                            )?
                         } else {
                             Vec::new()
                         };
@@ -1586,7 +1583,7 @@ impl ServerRuntime {
                                 &session.room,
                                 &session.username,
                                 now_seconds,
-                            )
+                            )?
                         } else if selection_changed
                             && self.room_readiness.get(&session.room).is_some_and(|room| {
                                 matches!(

@@ -858,7 +858,8 @@ where
                 player_attachment_revision,
             )
         {
-            self.runtime.player_mut().set_position(0.0)?;
+            let player_position = self.runtime.player_position_for_room(0.0);
+            self.runtime.player_mut().set_position(player_position)?;
             // Always reassert the temporary transition hold after authoritative
             // file evidence. A load can change mpv's pause property even when
             // the preceding command was accepted. `pause_before_sync` remains
@@ -969,24 +970,13 @@ where
         }
     }
 
-    fn apply_settings(&mut self, settings: ClientApplicationSettings) {
-        // Build complete replacement slices before borrowing the session mutably. The
-        // validated application command is infallible, and no adapter or I/O callback
-        // can observe a partially applied configuration.
-        let (mut behavior, mut desync, mut readiness) = {
-            let session = self.runtime.session();
-            (
-                session.behavior_config().clone(),
-                session.desync_config().clone(),
-                session.readiness_autoplay_config().clone(),
-            )
-        };
-        let config = settings.config;
-        self.streaming_playback_config = config.playback.streaming.clone();
-        self.runtime.set_playback_coordinator_config(
-            config.playback.streaming.playback_coordinator_config(),
-        );
-        let start = &config.playback.streaming.start_synchronization;
+    /// Applies validated streaming policies without replacing independently composed
+    /// connection, compatibility, readiness or environment overrides.
+    pub fn configure_streaming_playback(&mut self, config: StreamingPlaybackConfig) {
+        self.streaming_playback_config = config.clone();
+        self.runtime
+            .set_playback_coordinator_config(config.playback_coordinator_config());
+        let start = &config.start_synchronization;
         self.runtime
             .set_playback_barrier_start_config(PlaybackBarrierStartConfig {
                 policy: match start.policy {
@@ -1011,7 +1001,7 @@ where
                     }
                 },
             });
-        let room_buffering = &config.playback.streaming.room_buffering;
+        let room_buffering = &config.room_buffering;
         self.runtime.set_playback_barrier_room_buffering_config(
             PlaybackBarrierRoomBufferingConfig {
                 policy: match room_buffering.policy {
@@ -1031,7 +1021,22 @@ where
                 ..PlaybackBarrierRoomBufferingConfig::default()
             },
         );
+    }
 
+    fn apply_settings(&mut self, settings: ClientApplicationSettings) {
+        // Build complete replacement slices before borrowing the session mutably. The
+        // validated application command is infallible, and no adapter or I/O callback
+        // can observe a partially applied configuration.
+        let (mut behavior, mut desync, mut readiness) = {
+            let session = self.runtime.session();
+            (
+                session.behavior_config().clone(),
+                session.desync_config().clone(),
+                session.readiness_autoplay_config().clone(),
+            )
+        };
+        let config = settings.config;
+        self.configure_streaming_playback(config.playback.streaming.clone());
         behavior.show_same_room_osd = config.interface.show_same_room_osd;
         behavior.show_osd_warnings = config.interface.show_osd_warnings;
         behavior.show_noncontroller_osd = config.interface.show_noncontroller_osd;
@@ -1630,6 +1635,15 @@ where
         self.runtime.run_advance_playlist_after_natural_completion()
     }
 
+    pub fn has_pending_natural_playback_completion(&self) -> bool {
+        self.runtime.has_pending_natural_playback_completion()
+    }
+
+    pub fn invalidate_pending_natural_playback_completion(&mut self) {
+        self.runtime
+            .invalidate_pending_natural_playback_completion();
+    }
+
     pub fn run_queue_playlist_item(
         &mut self,
         file_name: impl Into<String>,
@@ -1791,6 +1805,23 @@ where
             return Ok(());
         }
         self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
+    pub fn local_playback_offset_seconds(&self) -> f64 {
+        self.runtime.local_playback_offset_seconds()
+    }
+
+    pub fn local_offset_room_position_at(&self, now_seconds: f64) -> f64 {
+        self.runtime.local_offset_room_position_at(now_seconds)
+    }
+
+    pub fn set_local_playback_offset_seconds(
+        &mut self,
+        offset_seconds: f64,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .set_local_playback_offset_seconds(offset_seconds, now_seconds)
     }
 
     pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
@@ -2110,10 +2141,15 @@ where
 
     pub fn observe_external_player_end_of_file(
         &mut self,
+        completed_file: sorotte_player_api::LocalFileUpdate,
+        terminal_position_seconds: Option<f64>,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.runtime
-            .observe_external_player_end_of_file(now_seconds)
+        self.runtime.observe_external_player_end_of_file(
+            completed_file,
+            terminal_position_seconds,
+            now_seconds,
+        )
     }
 
     pub fn update_autoplay_check(

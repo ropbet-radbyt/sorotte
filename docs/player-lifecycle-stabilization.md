@@ -391,12 +391,23 @@ restart, forward position progress, seek/seeking evidence, transition to
 playing/buffering, an accepted replacement, or other evidence that the attempt
 remains active.
 
-Logical terminal playback is committed only by:
+Physical terminal playback is committed only by:
 
 - a causally matched `end-file`; or
 - a complete authoritative snapshot proving no active file, no current entry,
   no accepted successor, no pending attempt, and no contradictory restart or
   progress evidence.
+
+Natural completion is narrower than physical termination. Only a matched
+`end-file` with reason `eof` may complete naturally; stop, quit, redirect and
+authoritative disappearance are interrupted outcomes. With `keep-open`, the
+adapter also accepts owned playing evidence corroborated by EOF, core idle,
+pause and a finite physical position within half a second of duration, in any
+notification order. Seek,
+cache pause, restart, replacement and live timelines invalidate that retained
+candidate. The lifecycle owner emits this completion once and retains the
+physical attempt, so a later seek/replay can still be observed. An isolated EOF
+property or a pause near duration never advances the playlist.
 
 An old attempt's EOF or `end-file` closes only that attempt after
 same-generation recovery has a successor.

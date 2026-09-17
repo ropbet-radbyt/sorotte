@@ -205,6 +205,7 @@ impl ReadinessResetProjection {
 #[derive(Debug, Clone, PartialEq)]
 struct ReconnectResetProjection {
     policy: crate::ReconnectPolicyConfig,
+    room_target: Option<String>,
     ready_restore_snapshot: Option<bool>,
     ready_restore_intent: Option<bool>,
     file_restore_snapshot: Option<crate::SharedFile>,
@@ -234,6 +235,7 @@ impl ReconnectResetProjection {
         let reconnect = &session.model.reconnect;
         Self {
             policy: reconnect.policy.clone(),
+            room_target: reconnect.room_target.clone(),
             ready_restore_snapshot: reconnect.ready_restore_snapshot,
             ready_restore_intent: reconnect.ready_restore_intent,
             file_restore_snapshot: reconnect.file_restore_snapshot.clone(),
@@ -1027,6 +1029,7 @@ fn fresh_reference_preserving_only_durable_state(source: &ClientSession) -> Clie
     reference.model.readiness.reconnect_token = source.model.readiness.reconnect_token.clone();
 
     reference.model.reconnect.policy = source.model.reconnect.policy.clone();
+    reference.model.reconnect.room_target = source.connection_target_room().map(str::to_owned);
     reference.model.reconnect.ready_restore_snapshot =
         source.model.reconnect.ready_restore_snapshot;
     reference.model.reconnect.file_restore_snapshot =
@@ -1035,6 +1038,11 @@ fn fresh_reference_preserving_only_durable_state(source: &ClientSession) -> Clie
         source.model.reconnect.controller_restore_snapshot;
     reference.model.reconnect.playlist_restore_snapshot =
         source.model.reconnect.playlist_restore_snapshot.clone();
+    if reference.model.reconnect.room_target != source.model.room.name {
+        reference.model.reconnect.ready_restore_snapshot = None;
+        reference.model.reconnect.controller_restore_snapshot = None;
+        reference.model.reconnect.playlist_restore_snapshot = None;
+    }
     reference
         .model
         .reconnect

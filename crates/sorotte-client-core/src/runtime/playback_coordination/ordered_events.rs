@@ -904,6 +904,13 @@ where
                 if self.playback_coordination.awaiting_ordered_snapshot {
                     return;
                 }
+                if accepted.seeking == Some(true)
+                    || accepted.eof_reached == Some(false)
+                    || accepted.logical_pause == Some(false)
+                    || accepted.paused_for_cache == Some(true)
+                {
+                    self.invalidate_pending_natural_playback_completion();
+                }
                 self.observe_pending_reconnect_rate_reset(accepted.playback_rate);
                 self.record_ordered_playback_projection(&accepted);
                 let transport = self.ordered_player_events.transport.clone();
@@ -1017,13 +1024,34 @@ where
                                 canonical_playlist_epoch,
                                 playlist_index,
                                 completed_file: self.last_local_file_update.clone(),
+                                terminal_position_seconds: self
+                                    .last_local_file_update
+                                    .as_ref()
+                                    .and_then(|file| file.duration_seconds)
+                                    .filter(|duration| duration.is_finite() && *duration >= 0.0)
+                                    .map(|duration| {
+                                        (duration - self.local_playback_offset_seconds).max(0.0)
+                                    }),
                             });
+                    } else {
+                        self.pending_natural_playback_completion = None;
                     }
                     let mut terminal = self.ordered_player_events.transport.clone();
                     terminal.load_attempt_id = SnapshotField::Known(attempt_id);
                     terminal.media_generation = SnapshotField::Known(media_generation);
-                    terminal.phase =
-                        SnapshotField::Known(sorotte_player_api::PlayerTransportPhase::Ended);
+                    terminal.phase = SnapshotField::Known(match outcome {
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Ended => {
+                            sorotte_player_api::PlayerTransportPhase::Ended
+                        }
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Failed(_)
+                        | sorotte_player_api::PlayerPhysicalLoadOutcome::TransportDisconnected => {
+                            sorotte_player_api::PlayerTransportPhase::Failed
+                        }
+                        _ => sorotte_player_api::PlayerTransportPhase::Empty,
+                    });
+                    terminal.eof_reached = SnapshotField::Known(
+                        outcome == sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+                    );
                     terminal.logical_pause = SnapshotField::Known(true);
                     self.ordered_player_events.transport = terminal.clone();
                     let terminal_delta = PlayerTransportDelta {
@@ -1093,6 +1121,8 @@ where
         batch: &PlayerEventBatch,
         now_seconds: f64,
     ) -> Result<Option<PlayerError>, PlayerError> {
+        let projected = self.project_player_batch_to_room(batch);
+        let batch = projected.as_ref();
         let mut prepared_consumer = self.ordered_player_events.clone();
         prepared_consumer.begin_batch(batch)?;
         prepared_consumer.validate_sequence_continuity(batch)?;

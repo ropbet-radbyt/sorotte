@@ -15,6 +15,8 @@ impl ClientSession {
     }
 
     pub(super) fn reset_sync_state_for_reconnect_with_attempt(&mut self, attempt: u32) {
+        self.model.reconnect.room_target = self.connection_target_room().map(str::to_owned);
+        let switching_rooms = self.model.reconnect.room_target != self.model.room.name;
         self.reset_playback_barrier();
         self.model.cancel_connection_scoped_playback_transactions();
         self.mark_readiness_v2_reconnect_pending();
@@ -64,6 +66,13 @@ impl ClientSession {
             });
         self.model.reconnect.playlist_restore_intent = None;
         self.model.reconnect.playlist_restore_pending_ack = None;
+        if switching_rooms {
+            // Membership-owned state from the departed room must not become
+            // an unsolicited mutation of the requested destination room.
+            self.model.reconnect.ready_restore_snapshot = None;
+            self.model.reconnect.controller_restore_snapshot = None;
+            self.model.reconnect.playlist_restore_snapshot = None;
+        }
         self.model.reconnect.connected_intent = false;
         self.clear_reconnect_state_restore_validation_state();
         self.pending_chat_notifications.clear();

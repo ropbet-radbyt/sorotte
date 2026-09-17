@@ -117,8 +117,10 @@ where
             "mpv JSON IPC became unavailable while configuring optional Chat/OSD integration: {detail}"
         ));
     }
+    let mut runtime = ClientApplication::new(session, player);
+    runtime.configure_streaming_playback(streaming);
     Ok(FinishedClientRuntime {
-        runtime: ClientApplication::new(session, player),
+        runtime,
         managed_guard,
         bridge_health,
         streaming_warning,

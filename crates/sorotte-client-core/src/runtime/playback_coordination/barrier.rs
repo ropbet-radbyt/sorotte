@@ -480,6 +480,9 @@ impl RuntimePlaybackCoordination {
         &self,
         session: &ClientSession,
     ) -> Option<BarrierReadySignature> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         let prepare = session.playback_barrier_prepare()?;
         if session.playback_barrier_status()?.phase != PlaybackBarrierPhase::Preparing {
             return None;
@@ -578,6 +581,9 @@ impl RuntimePlaybackCoordination {
         &self,
         session: &ClientSession,
     ) -> Option<RoomBufferingObservation> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         let policy = session.playback_barrier_buffering_policy()?;
         if policy.policy == RoomBufferingPolicy::Independent {
             return None;
@@ -610,9 +616,21 @@ impl RuntimePlaybackCoordination {
         media_generation: u64,
         state_revision: Option<u64>,
         buffering: bool,
+        observed_at: Option<f64>,
     ) -> bool {
-        self.barrier.last_reported_room_buffering
-            != Some((report_epoch, media_generation, state_revision, buffering))
+        let signature = (report_epoch, media_generation, state_revision, buffering);
+        let Some(previous) = self.barrier.last_reported_room_buffering else {
+            return true;
+        };
+        previous.signature != signature
+            || observed_at
+                .zip(previous.observed_at)
+                .is_some_and(|(now, previous)| {
+                    // The server leases transport reports for three state intervals.
+                    // Renew sustained evidence, but never refresh its lease merely
+                    // because reconciliation revisited the same cached observation.
+                    now.is_finite() && now - previous >= 1.0
+                })
     }
 
     pub(super) fn mark_room_buffering_reported(
@@ -621,9 +639,12 @@ impl RuntimePlaybackCoordination {
         media_generation: u64,
         state_revision: Option<u64>,
         buffering: bool,
+        observed_at: Option<f64>,
     ) {
-        self.barrier.last_reported_room_buffering =
-            Some((report_epoch, media_generation, state_revision, buffering));
+        self.barrier.last_reported_room_buffering = Some(ReportedRoomBuffering {
+            signature: (report_epoch, media_generation, state_revision, buffering),
+            observed_at,
+        });
     }
 
     pub(super) fn mark_barrier_ready_reported(&mut self, signature: BarrierReadySignature) {
@@ -777,6 +798,7 @@ where
                 observation.media_generation,
                 observation.state_revision,
                 observation.buffering,
+                observation.observed_at,
             )
             && let Some(state) = self.session.playback_barrier_transport_observation(
                 observation.media_generation,
@@ -793,6 +815,7 @@ where
                 observation.media_generation,
                 observation.state_revision,
                 observation.buffering,
+                observation.observed_at,
             );
         }
 
@@ -852,7 +875,13 @@ pub(super) struct RoomBarrierState {
     pub(super) pending_media_coordination: Option<PendingMediaCoordinationIntent>,
     pub(super) handled_barrier_timeout: Option<(u64, Option<u64>)>,
     pub(super) pending_barrier_timeout_action: Option<PlaybackBarrierTimeoutAction>,
-    pub(super) last_reported_room_buffering: Option<(u64, u64, Option<u64>, bool)>,
+    pub(super) last_reported_room_buffering: Option<ReportedRoomBuffering>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ReportedRoomBuffering {
+    signature: (u64, u64, Option<u64>, bool),
+    observed_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

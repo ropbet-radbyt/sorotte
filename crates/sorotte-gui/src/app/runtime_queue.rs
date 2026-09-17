@@ -520,14 +520,14 @@ impl GuiNativeRuntimeBridge for GuiQueuedRuntimeBridge {
 
     fn actions_for_playlist_reorder(
         &mut self,
-        _state: &SorotteGuiShellAppState,
+        state: &SorotteGuiShellAppState,
         playlist: Vec<String>,
         selected_index: Option<usize>,
     ) -> Vec<GuiShellAction> {
         self.handle
             .push_request(GuiRuntimeRequest::ReplacePlaylist {
                 files: playlist,
-                selected_index,
+                selected_index: selected_index.or(state.main_window.active_playlist_index),
             });
         Vec::new()
     }

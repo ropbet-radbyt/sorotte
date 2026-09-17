@@ -48,6 +48,7 @@ declare_input_kinds! {
     StartFile => PlayerLifecycleInput::StartFile { .. },
     FileLoaded => PlayerLifecycleInput::FileLoaded { .. },
     EndFile => PlayerLifecycleInput::EndFile { .. },
+    RetainedEndOfFile => PlayerLifecycleInput::RetainedEndOfFile { .. },
     PlaylistSnapshot => PlayerLifecycleInput::PlaylistSnapshot { .. },
     LifecycleReconciliationFailed => PlayerLifecycleInput::LifecycleReconciliationFailed { .. },
     EofObserved => PlayerLifecycleInput::EofObserved { .. },
@@ -133,11 +134,12 @@ fn failure(choice: u8) -> PlayerCommandFailureKind {
 }
 
 fn physical_outcome(choice: u8) -> PlayerPhysicalLoadOutcome {
-    match choice % 4 {
+    match choice % 5 {
         0 => PlayerPhysicalLoadOutcome::Ended,
         1 => PlayerPhysicalLoadOutcome::Failed(PlayerMediaLoadFailureKind::Network),
         2 => PlayerPhysicalLoadOutcome::NeverStarted,
-        _ => PlayerPhysicalLoadOutcome::TransportDisconnected,
+        3 => PlayerPhysicalLoadOutcome::TransportDisconnected,
+        _ => PlayerPhysicalLoadOutcome::Stopped,
     }
 }
 
@@ -331,6 +333,13 @@ fn materialize(
                 .copied()
                 .unwrap_or_else(|| i64::from(step.value) + 20_000),
             outcome: physical_outcome(step.choice),
+        },
+        InputKind::RetainedEndOfFile => PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch: epoch,
+            playlist_entry_id: state
+                .active_attempt()
+                .and_then(|attempt| attempt.playlist_entry_id)
+                .unwrap_or(-1),
         },
         InputKind::PlaylistSnapshot => {
             let candidate = state.load_attempts.values().find(|attempt| {
@@ -1063,6 +1072,7 @@ enum StaleInputKind {
     StartFile,
     FileLoaded,
     EndFile,
+    RetainedEndOfFile,
     PlaylistSnapshot,
     LifecycleReconciliationFailed,
     EofObserved,
@@ -1080,7 +1090,7 @@ enum StaleInputKind {
     TransportDisconnected,
 }
 
-const STALE_INPUT_KINDS: [StaleInputKind; 27] = [
+const STALE_INPUT_KINDS: [StaleInputKind; 28] = [
     StaleInputKind::ExternalLoadObserved,
     StaleInputKind::LoadAttemptAccepted,
     StaleInputKind::LoadAttemptRejected,
@@ -1093,6 +1103,7 @@ const STALE_INPUT_KINDS: [StaleInputKind; 27] = [
     StaleInputKind::StartFile,
     StaleInputKind::FileLoaded,
     StaleInputKind::EndFile,
+    StaleInputKind::RetainedEndOfFile,
     StaleInputKind::PlaylistSnapshot,
     StaleInputKind::LifecycleReconciliationFailed,
     StaleInputKind::EofObserved,
@@ -1267,6 +1278,10 @@ fn stale_observation(
             playlist_entry_id: targets.mapped_playlist_entry_id,
             outcome: PlayerPhysicalLoadOutcome::Ended,
         },
+        StaleInputKind::RetainedEndOfFile => PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch: stale_epoch,
+            playlist_entry_id: targets.mapped_playlist_entry_id,
+        },
         StaleInputKind::PlaylistSnapshot => PlayerLifecycleInput::PlaylistSnapshot {
             attachment_epoch: stale_epoch,
             entries: vec![AuthoritativePlaylistEntry::new(
@@ -1426,6 +1441,10 @@ fn representative_input(kind: InputKind) -> PlayerLifecycleInput {
             attachment_epoch: epoch,
             playlist_entry_id: 1,
             outcome: PlayerPhysicalLoadOutcome::Ended,
+        },
+        InputKind::RetainedEndOfFile => PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch: epoch,
+            playlist_entry_id: 1,
         },
         InputKind::PlaylistSnapshot => PlayerLifecycleInput::PlaylistSnapshot {
             attachment_epoch: epoch,

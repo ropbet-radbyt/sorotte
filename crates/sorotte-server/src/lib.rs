@@ -42,10 +42,10 @@ use sorotte_protocol::{
     PlaybackBarrierRequestResultPayload, PlaybackBarrierSetExtension,
     PlaybackBarrierStateExtension, PlaybackBarrierStatusPayload, PlaybackBarrierTimeoutAction,
     PlayerReadinessAction, PlaylistIndexPayload, PlaystatePayload, PrepareMediaPayload,
-    ProtocolError, ProtocolMessage, ReadinessIntentRequest, ReadinessMutationMetadata,
-    ReadinessMutationSource, ReadinessRequestResultPayload, ReadinessRequestResultStatus,
-    ReadinessSetExtension, ReadinessStateExtension, ReadyPayload, RecoveryStage,
-    RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
+    ProtocolError, ProtocolMessage, ReadinessIntentRequest, ReadinessMembershipIdentity,
+    ReadinessMutationMetadata, ReadinessMutationSource, ReadinessRequestResultPayload,
+    ReadinessRequestResultStatus, ReadinessSetExtension, ReadinessStateExtension, ReadyPayload,
+    RecoveryStage, RoomBufferingPhase, RoomBufferingPolicy, RoomBufferingPolicyPayload,
     RoomBufferingStatusPayload, RoomPauseOwner, RoomReadinessSnapshot, RoomRef, RoomStartGatePhase,
     SOROTTE_PARTICIPANT_STATUS_V1, SOROTTE_PLAYBACK_BARRIER_V1, SOROTTE_PLEX_PLAYLIST_URIS_FEATURE,
     SOROTTE_READINESS_RECONNECT_TOKEN, SOROTTE_READINESS_V2, SetPayload, StartGateDegradedReason,
@@ -1051,6 +1051,9 @@ struct RoomBufferingControl {
     paused_by_policy: bool,
     pause_deadline: Option<f64>,
     fail_open_latched: bool,
+    /// Retain the request identity for retries, but never accept predecessor
+    /// reports or reuse its generation after canonical selection changes.
+    retired_for_selection: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]

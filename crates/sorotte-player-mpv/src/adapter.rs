@@ -470,6 +470,8 @@ pub struct MpvAdapter {
     transport_phase: PlayerTransportPhase,
     active_file_loaded: bool,
     active_generation_has_restarted: bool,
+    retained_completion_playing_attempt: Option<LoadAttemptId>,
+    retained_eof_candidate: Option<LoadAttemptId>,
     timeline_kind: PlayerTimelineKind,
     ytdl_is_live: bool,
     ytdl_is_live_metadata_generation: Option<PlayerMediaGeneration>,
@@ -800,7 +802,9 @@ fn emit_player_lifecycle_input_evidence(
                 &identities,
             );
             let (transition, disposition) = match outcome {
-                PlayerPhysicalLoadOutcome::Ended => ("TRANSPORT-END-001", Disposition::Committed),
+                PlayerPhysicalLoadOutcome::Ended | PlayerPhysicalLoadOutcome::Stopped => {
+                    ("TRANSPORT-END-001", Disposition::Committed)
+                }
                 PlayerPhysicalLoadOutcome::Failed(_)
                 | PlayerPhysicalLoadOutcome::NeverStarted
                 | PlayerPhysicalLoadOutcome::TransportDisconnected => {
@@ -813,6 +817,24 @@ fn emit_player_lifecycle_input_evidence(
                 Trigger::PlayerEvent,
                 disposition,
                 &identities,
+            );
+        }
+        PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch,
+            playlist_entry_id,
+        } => {
+            emit_player_lifecycle_transition(
+                "TRANSPORT-END-001",
+                "local-transport",
+                Trigger::PlayerEvent,
+                Disposition::Committed,
+                &[
+                    ("attachment-epoch", attachment_epoch.get()),
+                    (
+                        "playlist-entry-id",
+                        u64::try_from(*playlist_entry_id).unwrap_or_default(),
+                    ),
+                ],
             );
         }
         PlayerLifecycleInput::EofObserved {
@@ -1903,6 +1925,8 @@ impl MpvAdapter {
     }
 
     fn clear_physical_projection(&mut self) {
+        self.retained_completion_playing_attempt = None;
+        self.retained_eof_candidate = None;
         self.active_load_attempt_id = None;
         self.active_media_generation = None;
         self.active_playlist_entry_id = None;
@@ -3201,6 +3225,12 @@ impl MpvAdapter {
                 PlayerTransportPhase::Prebuffering
             };
         }
+        if self.active_load_attempt_id.is_some()
+            && self.player_lifecycle.retained_completion_attempt() == self.active_load_attempt_id
+            && self.observed_state.eof_reached == Some(true)
+        {
+            return PlayerTransportPhase::Ended;
+        }
         if !self.active_file_loaded {
             return if self.active_media_generation.is_some() {
                 PlayerTransportPhase::Loading
@@ -3517,6 +3547,10 @@ impl MpvAdapter {
     }
 
     fn apply_paused_for_cache_observation(&mut self, paused_for_cache: bool) {
+        if paused_for_cache {
+            self.retained_completion_playing_attempt = None;
+            self.retained_eof_candidate = None;
+        }
         self.invalidate_cache_pause_readback_scope();
         self.paused_for_cache = paused_for_cache;
         self.observed_state.paused_for_cache = Some(paused_for_cache);
@@ -3804,6 +3838,8 @@ impl MpvAdapter {
             MPV_PROPERTY_SEEKING => {
                 if let Some(seeking) = data.and_then(Value::as_bool) {
                     if seeking {
+                        self.retained_completion_playing_attempt = None;
+                        self.retained_eof_candidate = None;
                         self.invalidate_network_stream_recovery_position_for_seek();
                     }
                     let transport_seeking = self.normalize_transport_seeking_observation(seeking);
@@ -3905,6 +3941,14 @@ impl MpvAdapter {
             }
             MPV_PROPERTY_EOF_REACHED => {
                 if let Some(eof_reached) = data.and_then(Value::as_bool) {
+                    self.retained_eof_candidate = (eof_reached
+                        && self.active_generation_has_restarted
+                        && self.active_load_attempt_id.is_some()
+                        && self.retained_completion_playing_attempt == self.active_load_attempt_id
+                        && self.observed_state.seeking != Some(true)
+                        && self.observed_state.paused_for_cache != Some(true))
+                    .then_some(self.active_load_attempt_id)
+                    .flatten();
                     self.observed_state.eof_reached = Some(eof_reached);
                     let lifecycle_epoch = self.lifecycle_epoch();
                     let lifecycle_playlist_entry_id = self
@@ -3914,7 +3958,7 @@ impl MpvAdapter {
                     let phase = self.inferred_transport_phase();
                     self.transport_phase = phase;
                     let mut update = self.transport_update().with_phase(phase);
-                    update.eof_reached = Some(false);
+                    update.eof_reached = (!eof_reached).then_some(false);
                     self.queue_transport_telemetry_update(update);
                     // The sanitized transport delta deliberately remains non-terminal. Reduce
                     // the physical EOF observation afterwards so that delta's retained Playing
@@ -3958,6 +4002,62 @@ impl MpvAdapter {
             );
         }
         self.refresh_network_stream_recovery_evidence();
+        // mpv property notifications are sparse and their relative order is
+        // not a causal boundary. Retain actual playing evidence across the
+        // final pause/idle notifications, but never across a seek or cache stop.
+        if self.active_file_loaded
+            && self.active_generation_has_restarted
+            && self.observed_state.logical_pause == Some(false)
+            && self.observed_state.core_idle != Some(true)
+            && self.observed_state.eof_reached != Some(true)
+            && self.observed_state.seeking != Some(true)
+            && self.observed_state.paused_for_cache != Some(true)
+        {
+            self.retained_completion_playing_attempt = self.active_load_attempt_id;
+        }
+        self.confirm_retained_end_of_file();
+    }
+
+    fn confirm_retained_end_of_file(&mut self) {
+        let Some(attempt_id) = self.retained_eof_candidate else {
+            return;
+        };
+        let at_endpoint = self
+            .observed_state
+            .position_seconds
+            .zip(self.observed_state.duration_seconds)
+            .is_some_and(|(position, duration)| {
+                position.is_finite()
+                    && duration.is_finite()
+                    && duration > 0.0
+                    && (position - duration).abs() <= 0.5
+            });
+        if self.active_load_attempt_id != Some(attempt_id)
+            || self.observed_state.eof_reached != Some(true)
+            || self.observed_state.logical_pause != Some(true)
+            || self.observed_state.core_idle != Some(true)
+            || self.observed_state.paused_for_cache == Some(true)
+            || self.observed_state.seeking == Some(true)
+            || self.timeline_kind == PlayerTimelineKind::SlidingLive
+            || !at_endpoint
+        {
+            return;
+        }
+        let Some(playlist_entry_id) = self
+            .active_playlist_entry_id
+            .and_then(|entry| i64::try_from(entry).ok())
+        else {
+            return;
+        };
+        self.apply_lifecycle_input(PlayerLifecycleInput::RetainedEndOfFile {
+            attachment_epoch: self.lifecycle_epoch(),
+            playlist_entry_id,
+        });
+        if self.player_lifecycle.retained_completion_attempt() == Some(attempt_id) {
+            self.transport_phase = PlayerTransportPhase::Ended;
+            self.retained_completion_playing_attempt = None;
+        }
+        self.retained_eof_candidate = None;
     }
 
     fn handle_start_file_event(&mut self, event: &Value) {
@@ -3970,6 +4070,8 @@ impl MpvAdapter {
     }
 
     fn handle_start_file_observation(&mut self, playlist_entry_id: u64) {
+        self.retained_completion_playing_attempt = None;
+        self.retained_eof_candidate = None;
         self.stream_recovery.network_stream_recovery_evidence = None;
         // `pause`, `speed`, and `core-idle` are player/core properties rather
         // than file metadata. mpv does not necessarily emit another property
@@ -4252,6 +4354,8 @@ impl MpvAdapter {
     }
 
     fn handle_seek_event(&mut self) {
+        self.retained_completion_playing_attempt = None;
+        self.retained_eof_candidate = None;
         self.stream_recovery.network_cache_stall = None;
         self.invalidate_network_stream_recovery_position_for_seek();
         self.begin_seek_cache_evidence_epoch();
@@ -4280,6 +4384,8 @@ impl MpvAdapter {
     }
 
     fn handle_playback_restart_event(&mut self) {
+        self.retained_completion_playing_attempt = None;
+        self.retained_eof_candidate = None;
         self.stream_recovery.network_cache_stall = None;
         let lifecycle_epoch = self.lifecycle_epoch();
         let lifecycle_playlist_entry_id = self
@@ -4671,11 +4777,19 @@ impl MpvAdapter {
             .map(Self::media_load_failure_kind_from_message);
         let phase = if error_kind.is_some() {
             PlayerTransportPhase::Failed
+        } else if reason != "eof" {
+            PlayerTransportPhase::Empty
         } else {
             PlayerTransportPhase::Ended
         };
-        let physical_outcome = error_kind.map_or(
-            PlayerPhysicalLoadOutcome::Ended,
+        let physical_outcome = error_kind.map_or_else(
+            || {
+                if reason == "eof" {
+                    PlayerPhysicalLoadOutcome::Ended
+                } else {
+                    PlayerPhysicalLoadOutcome::Stopped
+                }
+            },
             PlayerPhysicalLoadOutcome::Failed,
         );
         let recovery_started = reason == "eof"
@@ -4699,7 +4813,7 @@ impl MpvAdapter {
         });
         if logical_terminal && let Some(generation) = generation {
             let mut update = self.transport_update_for(generation).with_phase(phase);
-            update.eof_reached = Some(true);
+            update.eof_reached = Some(physical_outcome == PlayerPhysicalLoadOutcome::Ended);
             update.error_kind = error_kind;
             self.queue_transport_telemetry_update_for_attempt(update, Some(lifecycle_attempt_id));
             if logical_terminal {
@@ -4735,7 +4849,8 @@ impl MpvAdapter {
             };
             self.clear_physical_projection();
             self.reset_timeline_metadata();
-            self.observed_state.eof_reached = Some(true);
+            self.observed_state.eof_reached =
+                Some(physical_outcome == PlayerPhysicalLoadOutcome::Ended);
             self.observed_state.buffered_ahead_seconds = None;
             self.observed_state.buffered_ahead_bytes = None;
             self.observed_state.input_rate_bytes_per_second = None;

@@ -1743,6 +1743,30 @@ impl PlaybackCoordinator {
         self.clear_participant_status_transport_metrics();
     }
 
+    pub(crate) fn shift_local_player_timeline(&mut self, delta_seconds: f64) {
+        if let Some(observed) = self.observed.as_mut() {
+            observed.position_seconds = observed
+                .position_seconds
+                .map(|position| (position + delta_seconds).max(0.0));
+            if let Some(sample) = observed.position_sample.as_mut() {
+                sample.position_seconds = (sample.position_seconds + delta_seconds).max(0.0);
+            }
+            observed.seekable_window = observed
+                .seekable_window
+                .map(|(start, end)| (start + delta_seconds, end + delta_seconds));
+            observed.known_live_seekable_window = observed
+                .known_live_seekable_window
+                .map(|range| range.shifted(delta_seconds));
+        }
+        if let Some(ranges) = self.cached_seekable_ranges.as_mut() {
+            for range in ranges {
+                *range = range.shifted(delta_seconds);
+            }
+        }
+        self.cancel_seek_preparation_for_lifecycle();
+        self.clear_participant_status_transport_metrics();
+    }
+
     #[cfg(test)]
     pub(crate) fn set_steady_state_skew_seconds_for_test(&mut self, skew_seconds: f64) {
         self.metrics.steady_state_skew_seconds = Some(skew_seconds);

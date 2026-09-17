@@ -962,6 +962,7 @@ fn successful_insert_preserves_pending_source_resolution_while_replacement_super
         owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
             index: 0,
             entry_id: current_entry_id,
+            selection_entry_id: Some(current_entry_id),
             generation: owner.playlist_resolution.generation,
             target: "current.mkv".to_owned(),
             provider_id: GuiMediaSourceProviderId::media_matching(),

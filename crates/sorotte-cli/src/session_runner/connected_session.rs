@@ -648,13 +648,18 @@ where
     } = launch;
     network_options_health_reporter
         .set_player_telemetry_diagnostics_enabled(diagnostics_config.log_player_telemetry);
-    let had_current_v2_membership = runtime.session().room() == Some(config.room.as_str())
+    let connection_room = runtime
+        .session()
+        .connection_target_room()
+        .unwrap_or(&config.room)
+        .to_owned();
+    let had_current_v2_membership = runtime.session().room() == Some(connection_room.as_str())
         && (runtime.session().readiness_snapshot().is_some()
             || runtime.session().pending_readiness_intent().is_some());
     let mut local_input_rx = local_input_rx;
     let mut hello_payload = HelloPayload::new(
         config.username.clone(),
-        config.room.clone(),
+        connection_room.clone(),
         config.version.clone(),
     )
     .with_realversion(SYNCPLAY_COMPAT_VERSION);
@@ -668,7 +673,7 @@ where
             )),
         );
     }
-    insert_readiness_reconnect_token(&mut hello_payload, runtime.session(), &config.room);
+    insert_readiness_reconnect_token(&mut hello_payload, runtime.session(), &connection_room);
     hello_payload.features = Some(client_hello_features(config));
     let hello_message = ProtocolMessage::hello(hello_payload);
     ensure_connected_application_command_succeeded(
@@ -677,7 +682,7 @@ where
     ensure_connected_application_command_succeeded(runtime.dispatch(
         ClientCommand::InitializeSessionIdentity {
             username: config.username.clone(),
-            room: config.room.clone(),
+            room: connection_room,
         },
     ))?;
     ensure_connected_application_command_succeeded(
@@ -767,7 +772,7 @@ where
     let mut reconnect_correction_diagnostics_state = ReconnectCorrectionDiagnosticsState::default();
     let mut seek_preparation_notification_state = SeekPreparationNotificationState::default();
     let mut readiness_notification_state = ReadinessNotificationState::default();
-    let mut local_user_offset_seconds = 0.0f64;
+    let mut local_user_offset_seconds = runtime.local_playback_offset_seconds();
     let mut pending_ready_at_start_on_server_hello = Some(PendingReadyAtStart {
         desired: config.ready_at_start_override.unwrap_or(false),
         had_current_v2_membership,

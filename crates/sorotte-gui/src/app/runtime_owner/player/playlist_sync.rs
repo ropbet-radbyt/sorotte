@@ -1,10 +1,21 @@
 use super::*;
 use crate::app::runtime_state::GuiRuntimeState;
 
-const PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS: f64 = 10.0;
-const PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS: f64 = 5.0;
-
 impl GuiPersistedConfigRuntimeOwner {
+    pub(crate) fn advance_playlist_after_natural_completion_impl(&mut self) -> Result<(), String> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| "Natural playlist completion requires an active session.".to_owned())?;
+        let actions = session.advance_playlist_index_attached_player_actions()?;
+        let fence = session.advance_after_natural_completion_with_delivery_fence()?;
+        if let Some(fence) = fence {
+            self.arm_playlist_player_effect_delivery_fence(fence);
+            self.apply_attached_player_runtime_actions_impl(actions, "natural playlist completion");
+        }
+        Ok(())
+    }
+
     pub(crate) fn advance_playlist_index_for_attached_player_impl(&mut self) -> Result<(), String> {
         let attached_player_actions = {
             let Some(session) = self.session.as_mut() else {
@@ -117,34 +128,24 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         state: &GuiRuntimeState,
         playlist_control_available: bool,
-        can_auto_advance_to_next_playlist_item: bool,
     ) -> bool {
-        let should_trigger = self.runtime_shared_playlist_enabled(state)
+        // The client runtime consumes the exact selection-scoped completion.
+        // A bool inferred from room position cannot identify an EOF or replay.
+        self.runtime_shared_playlist_enabled(state)
             && playlist_control_available
-            && can_auto_advance_to_next_playlist_item
-            && self.attached_player_observation_is_end_of_file();
-        let trigger = should_trigger && !self.playlist_auto_advance_eof_latched;
-        self.playlist_auto_advance_eof_latched = should_trigger;
-        trigger
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_natural_playback_completion())
     }
 
     pub(in crate::app) fn attached_player_observation_is_end_of_file(&self) -> bool {
-        self.player_paused == Some(true) && self.attached_player_position_is_end_of_file()
-    }
-
-    pub(in crate::app) fn attached_player_position_is_end_of_file(&self) -> bool {
-        self.current_player_file_duration_seconds()
-            .filter(|duration_seconds| {
-                *duration_seconds > PLAYLIST_LOAD_NEXT_FILE_MINIMUM_LENGTH_SECONDS
-            })
-            .zip(
-                self.player_position_seconds
-                    .filter(|position_seconds| position_seconds.is_finite()),
+        self.ordered_player_events.transport.phase
+            == sorotte_player_api::SnapshotField::Known(
+                sorotte_player_api::PlayerTransportPhase::Ended,
             )
-            .is_some_and(|(duration_seconds, position_seconds)| {
-                (position_seconds - duration_seconds).abs()
-                    < PLAYLIST_LOAD_NEXT_FILE_TIME_FROM_END_THRESHOLD_SECONDS
-            })
+            && self.ordered_player_events.transport.eof_reached
+                == sorotte_player_api::SnapshotField::Known(true)
     }
 
     pub(in crate::app::runtime_owner) fn apply_pending_playlist_index_reset_to_attached_player_impl(

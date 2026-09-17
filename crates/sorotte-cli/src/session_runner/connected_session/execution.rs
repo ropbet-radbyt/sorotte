@@ -255,6 +255,7 @@ pub(super) fn planned_local_runtime_action_is_player_bound(
     matches!(
         action,
         PlannedLocalRuntimeAction::UndoSeek
+            | PlannedLocalRuntimeAction::SetUserOffset(_)
             | PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation
             | PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation
             | PlannedLocalRuntimeAction::CancelSeekPreparation

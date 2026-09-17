@@ -602,6 +602,8 @@ where
             MediaLoadIntent::NewPlayback,
             now_seconds,
         );
+        self.playback_coordination
+            .bind_prepared_playlist_selection(self.session);
         if let Some(room) = self.session.room() {
             self.control
                 .retain_protocol_playback_barrier_scope(room, plan.media_generation);
@@ -722,6 +724,7 @@ where
             session,
             player,
             control,
+            local_playback_offset_seconds: 0.0,
             ping_metrics: ClientPingMetrics::default(),
             pending_player_playback_telemetry_updates: EffectOutbox::default(),
             pending_ordered_local_file_updates: EffectOutbox::default(),
@@ -820,6 +823,10 @@ where
             if let ClientRuntimeAction::SetPaused(paused) = action {
                 let cause = self.system_pause_command_cause(*paused);
                 self.execute_causal_pause_command(*paused, cause, unix_wall_clock_time_seconds())?;
+            } else if let ClientRuntimeAction::SetPosition(position) = action {
+                self.player.execute(PlayerCommand::SetPosition(
+                    self.player_position_for_room(*position),
+                ))?;
             } else {
                 ClientSession::dispatch_runtime_actions(
                     std::slice::from_ref(action),
@@ -860,6 +867,10 @@ where
                     pause_cause,
                     unix_wall_clock_time_seconds(),
                 )?;
+            } else if let ClientRuntimeAction::SetPosition(position) = action {
+                self.player.execute(PlayerCommand::SetPosition(
+                    self.player_position_for_room(*position),
+                ))?;
             } else if let (
                 ClientRuntimeAction::SetPlaylistIndex { index },
                 Some((expected_index, expected_epoch)),
@@ -970,9 +981,9 @@ where
                 }
                 result
             }
-            ClientEffect::SetPlayerPosition(position) => {
-                self.player.execute(PlayerCommand::SetPosition(position))
-            }
+            ClientEffect::SetPlayerPosition(position) => self.player.execute(
+                PlayerCommand::SetPosition(self.player_position_for_room(position)),
+            ),
             ClientEffect::SetPlayerPlaybackRate(rate) => {
                 self.player.execute(PlayerCommand::SetPlaybackRate(rate))
             }

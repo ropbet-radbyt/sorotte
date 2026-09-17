@@ -1,6 +1,7 @@
 use super::*;
 
 mod correction_authority;
+mod local_offset;
 
 #[test]
 fn rejected_seek_is_corrected_even_when_canonical_state_names_the_local_user() {

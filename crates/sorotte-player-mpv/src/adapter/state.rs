@@ -271,6 +271,8 @@ impl Default for MpvAdapter {
             transport_phase: PlayerTransportPhase::Empty,
             active_file_loaded: false,
             active_generation_has_restarted: false,
+            retained_completion_playing_attempt: None,
+            retained_eof_candidate: None,
             timeline_kind: PlayerTimelineKind::Unknown,
             ytdl_is_live: false,
             ytdl_is_live_metadata_generation: None,

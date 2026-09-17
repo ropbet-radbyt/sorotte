@@ -149,7 +149,7 @@ fn gui_persisted_config_runtime_owner_auto_advances_shared_playlist_once_at_eof(
             1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
-                .with_position_seconds(1511.0),
+                .with_position_seconds(1510.0),
         ));
     player_state
         .lock()
@@ -580,8 +580,19 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
-                .with_position_seconds(1511.0),
+                .with_position_seconds(1510.0),
         ));
+    player_state
+        .lock()
+        .unwrap()
+        .events
+        .as_mut()
+        .unwrap()
+        .push_event(sorotte_player_api::PlayerEvent::LogicalPlaybackTerminal {
+            attempt_id: sorotte_player_api::LoadAttemptId::new(1),
+            media_generation: sorotte_player_api::PlayerMediaGeneration::new(1),
+            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+        });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 
@@ -741,8 +752,19 @@ fn gui_persisted_config_runtime_owner_auto_loops_single_item_shared_playlist_at_
             1,
             sorotte_player_api::PlayerPlaybackTelemetryUpdate::default()
                 .with_paused(true)
-                .with_position_seconds(1515.0),
+                .with_position_seconds(1510.0),
         ));
+    player_state
+        .lock()
+        .unwrap()
+        .events
+        .as_mut()
+        .unwrap()
+        .push_event(sorotte_player_api::PlayerEvent::LogicalPlaybackTerminal {
+            attempt_id: sorotte_player_api::LoadAttemptId::new(1),
+            media_generation: sorotte_player_api::PlayerMediaGeneration::new(1),
+            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+        });
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
 

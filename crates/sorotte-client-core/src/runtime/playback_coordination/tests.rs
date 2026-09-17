@@ -17,6 +17,7 @@ use std::time::Duration;
 
 mod native_pause_regressions;
 mod playback_status_regressions;
+mod readiness_selection;
 mod seek_echo_tests;
 
 #[test]
@@ -1215,7 +1216,11 @@ fn public_external_epoch_observation_emits_participant_status_transition_immedia
     assert_eq!(reports[0].phase, ParticipantPlaybackPhase::Rebuffering);
 
     runtime
-        .observe_external_player_end_of_file(2.1)
+        .observe_external_player_end_of_file(
+            sorotte_player_api::LocalFileUpdate::new("media"),
+            None,
+            2.1,
+        )
         .expect("external EOF should be reported");
     let reports = reports_in(runtime.deliver_queued_protocol_messages());
     assert_eq!(reports.len(), 1);
@@ -4203,6 +4208,70 @@ fn natural_completion_playlist_runtime(
 }
 
 #[test]
+fn successful_local_offset_seek_cancels_pending_natural_completion() {
+    let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+    runtime
+        .observe_external_player_end_of_file(
+            LocalFileUpdate::new("episode1.mkv").with_duration_seconds(240.0),
+            Some(240.0),
+            1.0,
+        )
+        .unwrap();
+    assert!(runtime.has_pending_natural_playback_completion());
+
+    assert!(
+        runtime
+            .set_local_playback_offset_seconds(-10.0, 1.1)
+            .unwrap()
+    );
+    assert!(
+        runtime
+            .player
+            .commands
+            .contains(&PlayerCommand::SetPosition(0.0))
+    );
+    assert!(
+        !runtime
+            .run_advance_playlist_after_natural_completion()
+            .unwrap(),
+        "a successful local offset seek must cancel an earlier queued EOF"
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist().unwrap().index,
+        Some(0)
+    );
+}
+
+#[test]
+fn rejected_local_offset_seek_retains_pending_natural_completion() {
+    let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
+    runtime
+        .observe_external_player_end_of_file(
+            LocalFileUpdate::new("episode1.mkv").with_duration_seconds(240.0),
+            Some(240.0),
+            1.0,
+        )
+        .unwrap();
+    runtime.player.reject_seek_commands = true;
+
+    assert!(
+        runtime
+            .set_local_playback_offset_seconds(-10.0, 1.1)
+            .is_err()
+    );
+    assert!(runtime.has_pending_natural_playback_completion());
+    assert!(
+        runtime
+            .run_advance_playlist_after_natural_completion()
+            .unwrap()
+    );
+    assert_eq!(
+        runtime.session().current_room_playlist().unwrap().index,
+        Some(1)
+    );
+}
+
+#[test]
 fn natural_completion_advances_once_only_while_completed_file_is_canonical() {
     let mut runtime = natural_completion_playlist_runtime(0, "episode1.mkv");
     let (playlist_revision, playlist_index) = runtime
@@ -4213,6 +4282,7 @@ fn natural_completion_advances_once_only_while_completed_file_is_canonical() {
     let playlist_selection_revision = runtime.session().current_room_playlist_selection_revision();
     let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4274,6 +4344,7 @@ fn natural_completion_retains_legacy_unconditional_index_compatibility_without_e
         None
     );
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4305,65 +4376,70 @@ fn natural_completion_retains_legacy_unconditional_index_compatibility_without_e
 
 #[test]
 fn final_no_loop_natural_completion_publishes_one_bounded_terminal_pause() {
-    let mut runtime = natural_completion_playlist_runtime(2, "episode3.mkv");
-    runtime
+    for offset in [-10.0, 0.0, 10.0] {
+        let mut runtime = natural_completion_playlist_runtime(2, "episode3.mkv");
+        runtime.local_playback_offset_seconds = offset;
+        runtime
         .session_mut()
         .apply_message_json(
             r#"{"State":{"playstate":{"position":239.5,"paused":false,"doSeek":false,"setBy":"bob","sorotteTransportRevision":9}}}"#,
         )
         .expect("canonical playing state should apply");
-    let (playlist_revision, playlist_index) = runtime
-        .session()
-        .current_room_playlist()
-        .map(|playlist| (Some(playlist.revision), playlist.index))
-        .expect("the final selection should exist");
-    let playlist_selection_revision = runtime.session().current_room_playlist_selection_revision();
-    let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
-    runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
-        attempt_id: Some(LoadAttemptId::new(4)),
-        media_generation: Some(PlayerMediaGeneration::new(7)),
-        playlist_revision,
-        playlist_selection_revision,
-        canonical_playlist_epoch,
-        playlist_index,
-        completed_file: Some(LocalFileUpdate::new("episode3.mkv").with_duration_seconds(240.0)),
-    });
-
-    assert!(
-        runtime
-            .run_advance_playlist_after_natural_completion()
-            .expect("the final completion should publish terminal authority")
-    );
-    assert_eq!(
-        runtime
+        let (playlist_revision, playlist_index) = runtime
             .session()
             .current_room_playlist()
-            .and_then(|playlist| playlist.index),
-        Some(2),
-        "a no-loop terminal pause must not mutate playlist selection"
-    );
-    let terminal = runtime
-        .control()
-        .outbound_messages()
-        .iter()
-        .filter_map(|message| match message {
-            ProtocolMessage::State(state) => state.state.playstate.as_ref(),
-            _ => None,
-        })
-        .next()
-        .expect("the final boundary should emit one State.playstate");
-    assert_eq!(terminal.position, Some(240.0));
-    assert_eq!(terminal.paused, Some(true));
-    assert_eq!(terminal.do_seek, Some(false));
-    assert_eq!(terminal.transport_revision().unwrap(), Some(9));
-    assert!(runtime.pending_natural_playback_completion.is_none());
-    assert!(
-        !runtime
-            .run_advance_playlist_after_natural_completion()
-            .expect("the consumed completion should not replay"),
-        "one physical EOF must emit at most one terminal mutation"
-    );
-    assert_eq!(runtime.control().outbound_messages().len(), 1);
+            .map(|playlist| (Some(playlist.revision), playlist.index))
+            .expect("the final selection should exist");
+        let playlist_selection_revision =
+            runtime.session().current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = runtime.session().current_room_playlist_canonical_epoch();
+        runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            terminal_position_seconds: None,
+            attempt_id: Some(LoadAttemptId::new(4)),
+            media_generation: Some(PlayerMediaGeneration::new(7)),
+            playlist_revision,
+            playlist_selection_revision,
+            canonical_playlist_epoch,
+            playlist_index,
+            completed_file: Some(LocalFileUpdate::new("episode3.mkv").with_duration_seconds(240.0)),
+        });
+
+        assert!(
+            runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("the final completion should publish terminal authority")
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .current_room_playlist()
+                .and_then(|playlist| playlist.index),
+            Some(2),
+            "a no-loop terminal pause must not mutate playlist selection"
+        );
+        let terminal = runtime
+            .control()
+            .outbound_messages()
+            .iter()
+            .filter_map(|message| match message {
+                ProtocolMessage::State(state) => state.state.playstate.as_ref(),
+                _ => None,
+            })
+            .next()
+            .expect("the final boundary should emit one State.playstate");
+        assert_eq!(terminal.position, Some(240.0 - offset));
+        assert_eq!(terminal.paused, Some(true));
+        assert_eq!(terminal.do_seek, Some(false));
+        assert_eq!(terminal.transport_revision().unwrap(), Some(9));
+        assert!(runtime.pending_natural_playback_completion.is_none());
+        assert!(
+            !runtime
+                .run_advance_playlist_after_natural_completion()
+                .expect("the consumed completion should not replay"),
+            "one physical EOF must emit at most one terminal mutation"
+        );
+        assert_eq!(runtime.control().outbound_messages().len(), 1);
+    }
 }
 
 #[test]
@@ -4400,6 +4476,7 @@ fn controlled_room_noncontroller_cannot_publish_terminal_pause() {
         .map(|playlist| (Some(playlist.revision), playlist.index))
         .expect("the controlled final selection should exist");
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4456,6 +4533,7 @@ fn natural_completion_uses_verified_path_when_published_name_is_lossy() {
         "the ordinary Next surface must retain its filename-projection guard"
     );
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4498,6 +4576,7 @@ fn late_natural_completion_cannot_skip_a_selection_advanced_by_a_peer() {
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
         .expect("the peer playlist advance should apply");
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4555,6 +4634,7 @@ fn late_natural_completion_cannot_advance_after_same_row_reselection() {
     );
 
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -4619,6 +4699,7 @@ fn late_natural_completion_cannot_skip_a_duplicate_playlist_target() {
         .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
         .expect("peer should select the second duplicate row");
     runtime.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+        terminal_position_seconds: None,
         attempt_id: Some(LoadAttemptId::new(4)),
         media_generation: Some(PlayerMediaGeneration::new(7)),
         playlist_revision,
@@ -7950,7 +8031,7 @@ fn syncplay_server_never_receives_sorotte_barrier_control() {
 }
 
 #[test]
-fn ongoing_buffering_reports_only_transport_state_transitions() {
+fn ongoing_buffering_reports_renew_fresh_evidence_and_deduplicate_cached_samples() {
     let logical_id = "media-sha256:opaque-id";
     let mut session = barrier_session();
     let buffering_policy =
@@ -8003,7 +8084,17 @@ fn ongoing_buffering_reports_only_transport_state_transitions() {
         transport(1, 2.0, PlayerTransportPhase::Rebuffering, 4.0),
         102.0,
     );
-    assert!(runtime.control().outbound_messages().is_empty());
+    let renewed = runtime.deliver_queued_protocol_lines().unwrap();
+    assert!(
+        renewed
+            .iter()
+            .any(|line| line.contains("\"transport\"") && line.contains("\"buffering\":true"))
+    );
+    runtime.reconcile_external_player_playback(102.05);
+    assert!(
+        runtime.control().outbound_messages().is_empty(),
+        "cached evidence must not renew its lease"
+    );
 
     runtime
         .session_mut()

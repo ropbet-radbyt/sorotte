@@ -6,6 +6,7 @@ use participant_status::ParticipantStatusReportingState;
 use participant_status::*;
 mod barrier;
 mod local_intent;
+mod local_offset;
 mod local_seek;
 mod participant_status;
 use super::*;
@@ -192,6 +193,32 @@ struct TechnicalReadinessFingerprint {
     recovery: Option<RecoveryStage>,
 }
 
+#[derive(Clone)]
+struct PreparedPlaylistSelection {
+    room: Option<String>,
+    target: Option<String>,
+    selection_revision: Option<u64>,
+}
+
+impl std::fmt::Debug for PreparedPlaylistSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedPlaylistSelection")
+            .field("room", &self.room)
+            .field("target", &self.target.as_ref().map(|_| "<redacted>"))
+            .field("selection_revision", &self.selection_revision)
+            .finish()
+    }
+}
+
+impl PreparedPlaylistSelection {
+    fn target(session: &ClientSession) -> Option<&str> {
+        let playlist = session.current_room_playlist()?;
+        let index = usize::try_from(playlist.index?).ok()?;
+        playlist.files.get(index).map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CurrentTransportEvidence {
     adapter_generation: u64,
@@ -227,6 +254,7 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_native_pause_authority_fence: Option<PendingNativePlayerAuthorityFence>,
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
+    prepared_playlist_selection: Option<PreparedPlaylistSelection>,
     latest_observation: Option<PlayerTransportObservation>,
     latest_position_observation: Option<LocalPositionObservation>,
     participant_status_evidence_times: ParticipantStatusEvidenceTimes,
@@ -348,6 +376,7 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn retire_media(&mut self) -> Vec<PlaybackCoordinatorAction> {
         let actions = self.coordinator.retire_media();
+        self.prepared_playlist_selection = None;
         self.adapter_generation_bindings.clear();
         self.pending_media_identity = None;
         self.highest_bound_adapter_generation = None;
@@ -460,6 +489,7 @@ impl RuntimePlaybackCoordination {
         self.adapter_generation_bindings
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
+        self.prepared_playlist_selection = None;
         self.latest_observation = None;
         self.latest_position_observation = None;
         self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
@@ -797,6 +827,31 @@ impl RuntimePlaybackCoordination {
             return false;
         };
         logical_media_ids_match(local.as_str(), room_logical_media_id)
+    }
+
+    pub(crate) fn bind_prepared_playlist_selection(&mut self, session: &ClientSession) {
+        self.prepared_playlist_selection = Some(PreparedPlaylistSelection {
+            room: session.room().map(str::to_owned),
+            target: PreparedPlaylistSelection::target(session).map(str::to_owned),
+            selection_revision: session.current_room_playlist_selection_revision(),
+        });
+    }
+
+    fn current_media_matches_playlist_selection(&self, session: &ClientSession) -> bool {
+        let target = PreparedPlaylistSelection::target(session);
+        let Some(prepared) = self.prepared_playlist_selection.as_ref() else {
+            return target.is_none() && !session.has_pending_playlist_index_reset_intent();
+        };
+        // Room readiness generations can arrive while another participant's
+        // source resolver is still working. Keep the physical predecessor's
+        // evidence bound to the selection for which it was prepared. A replay
+        // of the same row also owns a fresh reset; a reorder retaining the
+        // active target without a reset does not invalidate playable media.
+        prepared.room.as_deref() == session.room()
+            && prepared.target.as_deref() == target
+            && (!session.has_pending_playlist_index_reset_intent()
+                || prepared.selection_revision
+                    == session.current_room_playlist_selection_revision())
     }
 
     fn current_logical_media(&self) -> Option<(u64, String)> {
@@ -2337,6 +2392,9 @@ impl RuntimePlaybackCoordination {
         &mut self,
         session: &ClientSession,
     ) -> Option<TechnicalReadinessReport> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         let observation = self.latest_observation.as_ref()?;
         let phase = observation.phase?;
         let local_media_generation = observation.media_generation;
@@ -2474,6 +2532,9 @@ impl RuntimePlaybackCoordination {
         session: &ClientSession,
         external_now_seconds: f64,
     ) -> Option<TechnicalReadinessReport> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         self.coordinator.current_media_generation()?;
         let local_username = session.username()?;
         let canonical = session.canonical_participant_readiness(local_username)?;
@@ -2703,11 +2764,13 @@ where
         actions
     }
 
-    /// Feeds a unsequenced attached-player EOF signal through the same technical
-    /// readiness and causal-classification path as an adapter-reported
-    /// `PlayerTransportPhase::Ended` observation.
+    /// Records natural completion already correlated by an external player
+    /// owner. The owner's physical file identity is required: protocol file
+    /// metadata and a no-op runtime player cannot supply that proof.
     pub fn observe_external_player_end_of_file(
         &mut self,
+        completed_file: sorotte_player_api::LocalFileUpdate,
+        terminal_position_seconds: Option<f64>,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
         self.playback_coordination
@@ -2715,31 +2778,24 @@ where
         self.record_player_playback_projection(
             PlayerPlaybackTelemetryUpdate::default().with_paused(true),
         );
-        if self
-            .playback_coordination
-            .coordinator
-            .current_media_generation()
-            .is_some()
-        {
-            let (playlist_revision, playlist_index) = self
-                .session
-                .current_room_playlist()
-                .map_or((None, None), |playlist| {
-                    (Some(playlist.revision), playlist.index)
-                });
-            let playlist_selection_revision =
-                self.session.current_room_playlist_selection_revision();
-            let canonical_playlist_epoch = self.session.current_room_playlist_canonical_epoch();
-            self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
-                attempt_id: None,
-                media_generation: None,
-                playlist_revision,
-                playlist_selection_revision,
-                canonical_playlist_epoch,
-                playlist_index,
-                completed_file: self.last_local_file_update.clone(),
+        let (playlist_revision, playlist_index) = self
+            .session
+            .current_room_playlist()
+            .map_or((None, None), |playlist| {
+                (Some(playlist.revision), playlist.index)
             });
-        }
+        let playlist_selection_revision = self.session.current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = self.session.current_room_playlist_canonical_epoch();
+        self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: None,
+            media_generation: None,
+            playlist_revision,
+            playlist_selection_revision,
+            canonical_playlist_epoch,
+            playlist_index,
+            completed_file: Some(completed_file),
+            terminal_position_seconds,
+        });
         self.handle_latest_player_readiness_observation()?;
         let _ = self.emit_participant_status_transition(now_seconds)?;
         Ok(())
@@ -2781,10 +2837,20 @@ where
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> Result<MediaLoadPlan, PlayerError> {
+        let previous_selection = self
+            .playback_coordination
+            .prepared_playlist_selection
+            .clone();
         let (plan, actions) = self
             .playback_coordination
             .prepare_media_for_current_file_publication(logical_id, kind, now_seconds);
         let plan = self.finish_prepared_playback_media(plan, now_seconds);
+        if !plan.logical_media_changed && !plan.playback_episode_changed {
+            // Re-publishing the current file can carry its existing physical
+            // observations. It cannot reattribute that predecessor to a
+            // selection whose asynchronous source load is still pending.
+            self.playback_coordination.prepared_playlist_selection = previous_selection;
+        }
         self.execute_playback_coordinator_actions(actions, now_seconds)?;
         Ok(plan)
     }
@@ -2832,6 +2898,8 @@ where
         plan: MediaLoadPlan,
         now_seconds: f64,
     ) -> MediaLoadPlan {
+        self.playback_coordination
+            .bind_prepared_playlist_selection(&self.session);
         if let Some(room) = self.session.room() {
             self.control
                 .retain_protocol_playback_barrier_scope(room, plan.media_generation);
@@ -3244,7 +3312,7 @@ where
             CoordinatorPlayerCommand::SetPaused(paused) => PlayerCommand::SetPaused(paused),
             CoordinatorPlayerCommand::Play(intent) => PlayerCommand::Play(intent),
             CoordinatorPlayerCommand::SetPosition(position_seconds) => {
-                PlayerCommand::SetPosition(position_seconds)
+                PlayerCommand::SetPosition(self.player_position_for_room(position_seconds))
             }
             CoordinatorPlayerCommand::SetPlaybackRate(rate) => PlayerCommand::SetPlaybackRate(rate),
         };

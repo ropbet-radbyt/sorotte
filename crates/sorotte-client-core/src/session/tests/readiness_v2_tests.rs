@@ -80,6 +80,41 @@ fn active_v2_session() -> ClientSession {
     session
 }
 
+#[test]
+fn room_membership_continuity_identity_requires_current_room_and_epoch() {
+    let mut session = active_v2_session();
+    for (room, epoch) in [("previous-room", 41), ("room1", 40)] {
+        session.apply_readiness_v2_extension(ReadinessSetExtension::new().with_membership(
+            sorotte_protocol::ReadinessMembershipIdentity {
+                room: room.to_owned(),
+                membership_epoch: epoch,
+                reconnect_token: "stale-token".into(),
+            },
+        ));
+        assert!(
+            session
+                .readiness_reconnect_token_for_room("room1")
+                .is_none()
+        );
+    }
+    session.apply_readiness_v2_extension(ReadinessSetExtension::new().with_membership(
+        sorotte_protocol::ReadinessMembershipIdentity {
+            room: "room1".to_owned(),
+            membership_epoch: 41,
+            reconnect_token: "current-token".into(),
+        },
+    ));
+    assert_eq!(
+        session.readiness_reconnect_token_for_room("room1"),
+        Some("current-token")
+    );
+    assert!(
+        session
+            .readiness_reconnect_token_for_room("previous-room")
+            .is_none()
+    );
+}
+
 fn install_barrier_phase(
     session: &mut ClientSession,
     logical_media_id: &str,

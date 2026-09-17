@@ -211,6 +211,7 @@ impl ClientSession {
     }
 
     pub(super) fn apply_hello(&mut self, hello: ClientHello) {
+        self.model.reconnect.room_target = None;
         self.reset_playback_barrier();
         self.clear_participant_status_views();
         if self.model.reconnect.in_progress {

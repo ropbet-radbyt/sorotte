@@ -443,6 +443,7 @@ fn pure_duplicate_reorder_undo_restores_row_origins_and_pending_index() {
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
         index: 1,
         entry_id: second_id,
+        selection_entry_id: Some(second_id),
         generation,
         target: "episode.mkv".to_owned(),
         provider_id: GuiMediaSourceProviderId::plex_stream(),
@@ -977,6 +978,7 @@ fn rejected_full_replacement_does_not_advance_scope_or_cancel_pending_row() {
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
         index: 0,
         entry_id,
+        selection_entry_id: Some(entry_id),
         generation,
         target: "current.mkv".to_owned(),
         provider_id: GuiMediaSourceProviderId::plex_stream(),
@@ -1032,6 +1034,7 @@ fn same_session_playlist_revision_invalidates_same_label_origin_scope() {
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
         index: 0,
         entry_id,
+        selection_entry_id: Some(entry_id),
         generation: owner.playlist_resolution.generation,
         target: "episode.mkv".to_owned(),
         provider_id: GuiMediaSourceProviderId::plex_stream(),
@@ -1485,6 +1488,7 @@ fn same_room_detached_to_connected_session_replacement_resets_row_scope() {
     owner.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
         index: 0,
         entry_id: stale_entry_id,
+        selection_entry_id: Some(stale_entry_id),
         generation: owner.playlist_resolution.generation,
         target: "episode.mkv".to_owned(),
         provider_id: GuiMediaSourceProviderId::plex_stream(),

@@ -124,7 +124,9 @@ impl GuiPersistedConfigRuntimeOwner {
         let Some(pending) = self.pending_playlist_source_resolution.clone() else {
             return false;
         };
-        if pending.generation != self.playlist_resolution.generation {
+        if pending.generation != self.playlist_resolution.generation
+            || pending.selection_entry_id != self.current_playlist_source_selection(projected_state)
+        {
             self.pending_playlist_source_resolution = None;
             return false;
         }
@@ -139,6 +141,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
                 index,
                 entry_id: pending.entry_id,
+                selection_entry_id: pending.selection_entry_id,
                 generation: pending.generation,
                 target: pending.target,
                 provider_id: provider_id.clone(),
@@ -182,6 +185,7 @@ impl GuiPersistedConfigRuntimeOwner {
             self.pending_playlist_source_resolution = Some(GuiPendingPlaylistSourceResolution {
                 index,
                 entry_id,
+                selection_entry_id: self.current_playlist_source_selection(state),
                 generation: self.playlist_resolution.generation,
                 target: target.to_owned(),
                 provider_id: provider_id.clone(),
@@ -204,6 +208,15 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             self.pending_playlist_source_resolution = None;
         }
+    }
+
+    fn current_playlist_source_selection(
+        &self,
+        state: &GuiRuntimeState,
+    ) -> Option<GuiPlaylistEntryId> {
+        self.current_shared_playlist_index_and_target(state)
+            .and_then(|(index, _)| state.playlist.main_window.playlist.get(index))
+            .map(|row| row.entry_id)
     }
 
     pub(in crate::app::runtime_owner) fn local_media_search_candidates_for_target(
@@ -352,17 +365,9 @@ impl GuiPersistedConfigRuntimeOwner {
             ));
         }
 
-        let target_file_name = target_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
-        let mut candidate_names = vec![target_candidate];
-        if let Some(file_name) = target_file_name
-            && file_name != target_candidate
-        {
-            candidate_names.push(file_name);
-        }
+        // A relative path carries directory identity. Basename aliases are only
+        // supplied explicitly by providers that support them (for example Plex).
+        let candidate_names = [target_candidate];
 
         if let Some(parent) = current_local_path.and_then(Path::parent) {
             for candidate_name in &candidate_names {

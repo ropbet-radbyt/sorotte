@@ -24,6 +24,7 @@ struct PendingNaturalPlaybackCompletion {
     canonical_playlist_epoch: Option<u64>,
     playlist_index: Option<i64>,
     completed_file: Option<LocalFileUpdate>,
+    terminal_position_seconds: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ pub struct ClientRuntime<P, C> {
     session: ClientSession,
     player: P,
     control: C,
+    local_playback_offset_seconds: f64,
     pub(crate) ping_metrics: ClientPingMetrics,
     pending_player_playback_telemetry_updates: EffectOutbox<PlayerPlaybackTelemetryUpdate>,
     pending_ordered_local_file_updates: EffectOutbox<LocalFileUpdate>,

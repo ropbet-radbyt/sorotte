@@ -2,7 +2,7 @@ use sorotte_client_app::app_boundary::application::{
     ClientApplication, ClientCommand, ClientEvent,
 };
 use sorotte_client_app::app_boundary::commands::{
-    PlannedLocalRuntimeAction, plan_local_runtime_dispatch,
+    PlannedLocalRuntimeAction, plan_local_offset_runtime_dispatch, plan_local_runtime_dispatch,
 };
 use sorotte_player_api::PlayerPlaybackTelemetryUpdate;
 use sorotte_player_mpv::{
@@ -260,14 +260,28 @@ pub(super) fn run_planned_local_runtime_action(
     action: PlannedLocalRuntimeAction,
 ) -> anyhow::Result<bool> {
     let language = current_runtime_language_tag();
-    let dispatch = plan_local_runtime_dispatch(
-        application.session(),
-        *user_offset_seconds,
-        action,
-        language.as_deref(),
-    );
+    let dispatch = match action {
+        PlannedLocalRuntimeAction::SetUserOffset(command) => plan_local_offset_runtime_dispatch(
+            application.local_playback_offset_seconds(),
+            application.local_offset_room_position_at(now_seconds),
+            &command,
+            language.as_deref(),
+        ),
+        action => plan_local_runtime_dispatch(
+            application.session(),
+            application.local_playback_offset_seconds(),
+            action,
+            language.as_deref(),
+        ),
+    };
     if let Some(updated_user_offset_seconds) = dispatch.updated_user_offset_seconds {
+        let changed = application
+            .set_local_playback_offset_seconds(updated_user_offset_seconds, now_seconds)?;
         *user_offset_seconds = updated_user_offset_seconds;
+        if let Some(line_to_emit) = dispatch.line_to_emit {
+            println!("{line_to_emit}");
+        }
+        return Ok(changed);
     }
     if let Some(line_to_emit) = dispatch.line_to_emit {
         println!("{line_to_emit}");
@@ -324,7 +338,9 @@ pub(super) fn run_planned_local_runtime_action(
         Some(PlannedLocalRuntimeAction::Pause) => Some(ClientCommand::SetPaused(true)),
         Some(PlannedLocalRuntimeAction::TogglePause) => {
             let paused = application.player().paused();
-            let position_seconds = application.player().position_seconds();
+            let position_seconds = (application.player().position_seconds()
+                - application.local_playback_offset_seconds())
+            .max(0.0);
             let _ = application.dispatch(ClientCommand::PlayerPlaybackObserved(
                 PlayerPlaybackTelemetryUpdate::default()
                     .with_paused(paused)

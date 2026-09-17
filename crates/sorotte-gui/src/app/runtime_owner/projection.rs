@@ -303,15 +303,12 @@ impl GuiPersistedConfigRuntimeOwner {
         state: &GuiRuntimeState,
     ) {
         let pre_poll_media_index_status = self.projected_media_index_runtime_snapshot();
-        let pre_poll_media_index_revision = self.attached_media_search_index_revision;
-        let media_index_was_pending = self.pending_attached_media_resolution.is_some();
-        let media_index_still_pending = self.poll_attached_media_search_index_build(
+        self.poll_attached_media_search_index_build(
             self.automatic_media_search_retry_interval(state),
         );
-        if media_index_was_pending
-            && !media_index_still_pending
-            && self.attached_media_search_index_revision != pre_poll_media_index_revision
-        {
+        // Resolution callers may already have consumed the worker's reply. Keep
+        // completion until the owner has retried the still-owned source request.
+        if std::mem::take(&mut self.attached_media_search_completion_pending) {
             let mut projected_state = state.clone();
             let _ = self.retry_pending_playlist_source_resolution(handle, &mut projected_state);
             self.sync_active_shared_playlist_media_and_playstate_impl(&projected_state);

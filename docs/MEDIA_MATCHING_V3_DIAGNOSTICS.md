@@ -13,6 +13,15 @@ The fixed sampled-fast policy is:
 
 The supported surface is intentionally narrow: fixed sampled-fast audio matching.
 
+Cached fingerprints are valid for an exact path, modification time, byte length,
+and extraction settings. A changed modification time requires background
+re-extraction even when the byte length is unchanged: timestamp drift alone does
+not prove that the audio changed, but it also cannot prove that it stayed the
+same. The GUI keeps local playback available and withholds the previous wire
+signature until revalidation finishes. Unchanged audio then publishes the same
+audio signature again. This check does not add whole-file hashing to the fixed
+sampled-fast policy.
+
 ## Diagnostic CLI
 
 ```powershell

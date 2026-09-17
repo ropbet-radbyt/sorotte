@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn unacknowledged_room_request_survives_retries_without_old_membership_state() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .unwrap();
+    session.apply_message_json(
+        r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"ready":true,"controller":true}},"playlistChange":{"files":["old-room.mkv"],"user":"alice"}}}"#,
+    ).unwrap();
+    assert!(
+        !session
+            .runtime_actions_for_local_room_switch("room2".to_owned())
+            .is_empty()
+    );
+    assert_eq!(session.room(), Some("room1"));
+    assert_eq!(session.connection_target_room(), Some("room2"));
+    for _ in 0..2 {
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(session.room(), Some("room1"));
+        assert_eq!(session.connection_target_room(), Some("room2"));
+        assert!(session.model.reconnect.ready_restore_snapshot.is_none());
+        assert!(
+            session
+                .model
+                .reconnect
+                .controller_restore_snapshot
+                .is_none()
+        );
+        assert!(session.model.reconnect.playlist_restore_snapshot.is_none());
+        assert!(
+            session
+                .readiness_reconnect_token_for_room("room2")
+                .is_none()
+        );
+    }
+    session.apply_message_json(
+        r#"{"Hello":{"username":"alice","room":{"name":"server-assigned-room"},"version":"1.7.5"}}"#,
+    ).unwrap();
+    assert_eq!(
+        session.connection_target_room(),
+        Some("server-assigned-room")
+    );
+}
+
+#[test]
 fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
     let mut session = ClientSession::default();
     session
