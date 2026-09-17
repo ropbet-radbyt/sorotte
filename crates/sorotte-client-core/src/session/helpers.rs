@@ -406,8 +406,12 @@ impl ClientSession {
             self.reset_playlist_index_transition_tracking();
             self.model.playlist.pending_local_change_echoes.clear();
             self.model.playlist.pending_local_index_echoes.clear();
-            self.model.controller.pending_local_room_switch_target = None;
-        } else if self
+        }
+        // Membership echoes are ordered, but the user can already have sent
+        // a newer room request. Only the matching destination acknowledges
+        // that intent; an intermediate membership must not replace it on the
+        // next connection if the final acknowledgement is lost.
+        if self
             .model
             .controller
             .pending_local_room_switch_target

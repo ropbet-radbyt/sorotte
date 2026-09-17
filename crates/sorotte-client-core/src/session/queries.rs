@@ -334,7 +334,7 @@ impl ClientSession {
             .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
-    pub(crate) fn current_room_playlist_selection_revision(&self) -> Option<u64> {
+    pub fn current_room_playlist_selection_revision(&self) -> Option<u64> {
         self.model
             .room
             .name

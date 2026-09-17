@@ -800,7 +800,7 @@ where
     }
 }
 
-fn local_file_matches_playlist_target(file: &LocalFileUpdate, target: &str) -> bool {
+pub(super) fn local_file_matches_playlist_target(file: &LocalFileUpdate, target: &str) -> bool {
     if file.name == target || file.path.as_deref() == Some(target) {
         return true;
     }

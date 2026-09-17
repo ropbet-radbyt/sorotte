@@ -3335,6 +3335,10 @@ where
         };
         match self.player.execute_tracked(player_command.clone()) {
             Ok(player_command_id) => {
+                if matches!(player_command, PlayerCommand::SetPosition(_)) {
+                    self.ordered_player_events
+                        .record_submitted_completion_seek(player_command_id, &self.session);
+                }
                 let issued_at_seconds = self
                     .playback_coordination
                     .coordinator_now(external_now_seconds);

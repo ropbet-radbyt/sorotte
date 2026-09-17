@@ -774,6 +774,8 @@ where
                 .last_local_file_update()
                 .is_some_and(|file| local_file_matches_playlist_target(file, &selection.target));
         if current_file_matches {
+            self.runtime
+                .confirm_initial_playlist_selection_for_current_player();
             self.pending_canonical_playlist_load = None;
             if !self
                 .canonical_media_resolution_evidence

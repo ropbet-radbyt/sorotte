@@ -106,8 +106,7 @@ where
             ));
         }
         self.interrupt_playback_recovery(now_seconds)?;
-        self.player
-            .execute(PlayerCommand::SetPosition(player_target.max(0.0)))?;
+        self.player_mut().set_position(player_target.max(0.0))?;
         self.invalidate_pending_natural_playback_completion();
         let delta = self.local_playback_offset_seconds - offset_seconds;
         self.local_playback_offset_seconds = offset_seconds;

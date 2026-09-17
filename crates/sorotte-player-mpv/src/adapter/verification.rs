@@ -137,6 +137,34 @@ impl MpvLifecycleVerificationHarness {
         command_id
     }
 
+    pub fn accept_tracked_seek(&mut self, target_seconds: f64) -> PlayerCommandId {
+        let command_id = self.adapter.register_tracked_command(
+            self.adapter.media_generation(),
+            TrackedCommandKind::Seek {
+                target_seconds,
+                seeking_finished: false,
+                position_in_tolerance: false,
+            },
+        );
+        self.adapter.accept_tracked_command(command_id);
+        self.adapter
+            .supersede_tracked_commands(Some(command_id), |kind| {
+                matches!(kind, TrackedCommandKind::Seek { .. })
+            });
+        command_id
+    }
+
+    pub fn fail_tracked_command(
+        &mut self,
+        command_id: PlayerCommandId,
+        failure: PlayerCommandFailureKind,
+    ) {
+        self.adapter.finish_tracked_command(
+            command_id,
+            sorotte_player_api::PlayerCommandResult::Failed(failure),
+        );
+    }
+
     pub fn apply_authoritative_snapshot(
         &mut self,
         entries: impl IntoIterator<Item = LifecycleVerificationPlaylistEntry>,

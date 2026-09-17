@@ -542,6 +542,7 @@ impl GuiPersistedConfigRuntimeOwner {
         candidate: media_resolution::GuiMediaResolutionCandidate,
         started: &StartedMediaLoad,
     ) {
+        let completion_selection = self.current_playback_completion_selection();
         let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
             return;
         };
@@ -559,12 +560,32 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.player_command_id = started.player_command_id;
         attempt.player_media_generation = started.player_media_generation;
         attempt.load_attempt_id = None;
+        attempt.completion_selection = Some(completion_selection);
         attempt.media_confirmation_pending = started.player_command_id.is_some();
         attempt.state = PlaylistResolutionAttemptState::Loading;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
         attempt.missing_reported = false;
         attempt.untrusted_reported = false;
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_owner) fn bind_selected_local_origins_for_test(
+        &mut self,
+        state: &GuiRuntimeState,
+        paths: Vec<String>,
+    ) -> GuiPlaylistLocalOriginBindingOutcome {
+        let dispatch = self
+            .shared_playlist_open_dispatch_for_selected_paths_impl(state, paths)
+            .unwrap();
+        let rows = state
+            .playlist
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| (row.entry_id, row.label.clone()))
+            .collect::<Vec<_>>();
+        self.remember_local_shared_playlist_media_paths(state, &dispatch, &rows)
     }
 
     #[cfg(test)]
@@ -660,6 +681,7 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
         let playlist_generation = attempt.playlist_generation;
+        self.bind_initial_completion_playlist_selection_from_current_player();
         emit_media_resolution_transition(
             "MEDIA-PLAYABLE-001",
             sorotte_lifecycle_evidence::Trigger::PlayerEvent,

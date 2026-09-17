@@ -2,12 +2,17 @@
 
 use serde_json::json;
 use sorotte_client_core::{ClientRuntime, ClientSession, QueuedRuntimeControl};
-use sorotte_player_api::{DisconnectedPlayer, SnapshotField};
+use sorotte_player_api::{
+    PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerError, SnapshotField,
+};
 use sorotte_player_mpv::{LifecycleVerificationPlaylistEntry, MpvLifecycleVerificationHarness};
 
-fn apply_and_ack(
+#[path = "natural_completion/selection_provenance.rs"]
+mod selection_provenance;
+
+fn apply_and_ack<P: sorotte_player_api::PlayerAdapter>(
     harness: &mut MpvLifecycleVerificationHarness,
-    runtime: &mut ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl>,
+    runtime: &mut ClientRuntime<P, QueuedRuntimeControl>,
     now: f64,
 ) {
     let Some(batch) = harness.take_event_batch() else {
@@ -23,9 +28,41 @@ fn apply_and_ack(
     );
 }
 
-type Runtime = ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl>;
+#[derive(Default)]
+struct CompletionTestPlayer {
+    seek_command_id: Option<PlayerCommandId>,
+}
 
-fn loaded_playback(position: f64) -> (MpvLifecycleVerificationHarness, Runtime) {
+impl PlayerAdapter for CompletionTestPlayer {
+    fn name(&self) -> &'static str {
+        "completion-test-player"
+    }
+
+    fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
+        if matches!(command, PlayerCommand::SetPosition(_)) {
+            self.seek_command_id
+                .take()
+                .ok_or(PlayerError::Unsupported("execute_tracked"))
+        } else {
+            Err(PlayerError::Unsupported("execute_tracked"))
+        }
+    }
+}
+
+type Runtime = ClientRuntime<CompletionTestPlayer, QueuedRuntimeControl>;
+
+fn accept_replay_seek(
+    harness: &mut MpvLifecycleVerificationHarness,
+    runtime: &mut Runtime,
+    position: f64,
+) -> PlayerCommandId {
+    let command_id = harness.accept_tracked_seek(position);
+    runtime.with_player_io(|player| player.seek_command_id = Some(command_id));
+    runtime.player_mut().set_position(position).unwrap();
+    command_id
+}
+
+fn selected_session() -> ClientSession {
     let mut session = ClientSession::default();
     session
         .apply_hello_json(
@@ -38,8 +75,28 @@ fn loaded_playback(position: f64) -> (MpvLifecycleVerificationHarness, Runtime) 
             r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":2}}}"#,
         )
         .unwrap();
-    let mut runtime =
-        ClientRuntime::new(session, DisconnectedPlayer, QueuedRuntimeControl::default());
+    session
+}
+
+fn loaded_playback(position: f64) -> (MpvLifecycleVerificationHarness, Runtime) {
+    let (mut harness, mut runtime) = pending_loaded_playback(selected_session(), position);
+    apply_and_ack(&mut harness, &mut runtime, 1.0);
+    assert_eq!(
+        runtime.session().current_room_playlist().unwrap().index,
+        Some(0)
+    );
+    (harness, runtime)
+}
+
+fn pending_loaded_playback(
+    session: ClientSession,
+    position: f64,
+) -> (MpvLifecycleVerificationHarness, Runtime) {
+    let runtime = ClientRuntime::new(
+        session,
+        CompletionTestPlayer::default(),
+        QueuedRuntimeControl::default(),
+    );
     let mut harness = MpvLifecycleVerificationHarness::new();
     harness.accept_tracked_load("episode1.mkv", []);
     harness.apply_authoritative_snapshot(
@@ -66,11 +123,6 @@ fn loaded_playback(position: f64) -> (MpvLifecycleVerificationHarness, Runtime) 
     );
     harness.ingest_decoded_mpv_json(
         json!({"event":"property-change", "name":"time-pos", "data":position}),
-    );
-    apply_and_ack(&mut harness, &mut runtime, 1.0);
-    assert_eq!(
-        runtime.session().current_room_playlist().unwrap().index,
-        Some(0)
     );
     (harness, runtime)
 }
@@ -283,6 +335,7 @@ fn retained_completion_preserves_physical_load_and_accepts_a_later_replay() {
             r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":4}}}"#,
         )
         .unwrap();
+    accept_replay_seek(&mut harness, &mut runtime, 30.0);
     for event in [
         json!({"event":"seek"}),
         json!({"event":"property-change","name":"eof-reached","data":false}),

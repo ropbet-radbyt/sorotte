@@ -523,6 +523,7 @@ impl<'a> ClientSessionUpdate<'a> {
 
 pub struct ClientPlayerIo<'a, P, C> {
     player: &'a mut P,
+    ordered_player_events: &'a mut OrderedPlayerEventConsumer,
     playback_coordination: &'a mut RuntimePlaybackCoordination,
     session: &'a ClientSession,
     control: &'a mut C,
@@ -598,7 +599,9 @@ where
         }
         let command = PlayerCommand::OpenFile(path.to_owned());
         match self.player.execute_tracked(command.clone()) {
-            Ok(_) => {}
+            Ok(command_id) => self
+                .ordered_player_events
+                .record_submitted_completion_selection(command_id, self.session),
             Err(PlayerError::Unsupported("execute_tracked")) => self.player.execute(command)?,
             Err(error) => return Err(error),
         }
@@ -707,8 +710,16 @@ where
     }
 
     pub fn set_position(&mut self, position_seconds: f64) -> Result<(), PlayerError> {
-        self.player
-            .execute(PlayerCommand::SetPosition(position_seconds))
+        let command = PlayerCommand::SetPosition(position_seconds);
+        match self.player.execute_tracked(command.clone()) {
+            Ok(command_id) => {
+                self.ordered_player_events
+                    .record_submitted_completion_seek(command_id, self.session);
+                Ok(())
+            }
+            Err(PlayerError::Unsupported("execute_tracked")) => self.player.execute(command),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn set_playback_rate(&mut self, rate: f64) -> Result<(), PlayerError> {
@@ -830,9 +841,8 @@ where
                 let cause = self.system_pause_command_cause(*paused);
                 self.execute_causal_pause_command(*paused, cause, unix_wall_clock_time_seconds())?;
             } else if let ClientRuntimeAction::SetPosition(position) = action {
-                self.player.execute(PlayerCommand::SetPosition(
-                    self.player_position_for_room(*position),
-                ))?;
+                let position = self.player_position_for_room(*position);
+                self.player_mut().set_position(position)?;
             } else {
                 ClientSession::dispatch_runtime_actions(
                     std::slice::from_ref(action),
@@ -874,9 +884,8 @@ where
                     unix_wall_clock_time_seconds(),
                 )?;
             } else if let ClientRuntimeAction::SetPosition(position) = action {
-                self.player.execute(PlayerCommand::SetPosition(
-                    self.player_position_for_room(*position),
-                ))?;
+                let position = self.player_position_for_room(*position);
+                self.player_mut().set_position(position)?;
             } else if let (
                 ClientRuntimeAction::SetPlaylistIndex { index },
                 Some((expected_index, expected_epoch)),
@@ -987,9 +996,10 @@ where
                 }
                 result
             }
-            ClientEffect::SetPlayerPosition(position) => self.player.execute(
-                PlayerCommand::SetPosition(self.player_position_for_room(position)),
-            ),
+            ClientEffect::SetPlayerPosition(position) => {
+                let position = self.player_position_for_room(position);
+                self.player_mut().set_position(position)
+            }
             ClientEffect::SetPlayerPlaybackRate(rate) => {
                 self.player.execute(PlayerCommand::SetPlaybackRate(rate))
             }
@@ -1071,6 +1081,7 @@ where
     pub fn player_mut(&mut self) -> ClientPlayerIo<'_, P, C> {
         ClientPlayerIo {
             player: &mut self.player,
+            ordered_player_events: &mut self.ordered_player_events,
             playback_coordination: &mut self.playback_coordination,
             session: &self.session,
             control: &mut self.control,

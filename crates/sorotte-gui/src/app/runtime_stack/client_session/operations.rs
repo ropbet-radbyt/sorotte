@@ -70,6 +70,12 @@ impl GuiClientSession {
             .map(|playlist| playlist.revision)
     }
 
+    pub(in crate::app) fn current_room_playlist_selection_revision(&self) -> Option<u64> {
+        self.runtime
+            .session()
+            .current_room_playlist_selection_revision()
+    }
+
     pub(in crate::app) fn current_room_playlist_remote_revision(&self) -> u64 {
         self.runtime
             .session()

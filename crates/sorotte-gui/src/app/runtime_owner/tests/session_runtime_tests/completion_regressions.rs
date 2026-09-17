@@ -9,6 +9,9 @@ struct CompletionPlayer {
     harness: MpvLifecycleVerificationHarness,
     applied_pauses: Vec<bool>,
     applied_positions: Vec<f64>,
+    snapshot_only_next_batch: bool,
+    accepted_seek_commands: Vec<sorotte_player_api::PlayerCommandId>,
+    completed_commands: Vec<sorotte_player_api::PlayerCommandId>,
 }
 
 struct CompletionAdapter(Arc<Mutex<CompletionPlayer>>);
@@ -37,11 +40,34 @@ impl PlayerAdapter for CompletionAdapter {
                 .harness
                 .accept_tracked_load(path, [])
                 .command_id),
+            sorotte_player_api::PlayerCommand::SetPosition(position) => {
+                let mut player = self.0.lock().unwrap();
+                let command_id = player.harness.accept_tracked_seek(position);
+                player.applied_positions.push(position);
+                player.accepted_seek_commands.push(command_id);
+                Ok(command_id)
+            }
             _ => Err(PlayerError::Unsupported("execute_tracked")),
         }
     }
     fn take_player_event_batch(&mut self) -> Option<PlayerEventBatch> {
-        self.0.lock().unwrap().harness.take_event_batch()
+        let mut player = self.0.lock().unwrap();
+        let mut batch = player.harness.take_event_batch()?;
+        for outcome in &batch.semantic_outcomes {
+            if let sorotte_player_api::PlayerSemanticOutcome::Command(command) = outcome.outcome
+                && command.result == sorotte_player_api::PlayerCommandSemanticResult::Completed
+            {
+                player.completed_commands.push(command.command_id);
+            }
+        }
+        if std::mem::take(&mut player.snapshot_only_next_batch) {
+            assert!(batch.authoritative_snapshot.is_some());
+            // The snapshot covers these older events. Exercise the supported
+            // snapshot-only recovery contract without replayed load/file edges.
+            batch.events.clear();
+            batch.semantic_outcomes.clear();
+        }
+        Some(batch)
     }
     fn acknowledge_player_event_batch(
         &mut self,
@@ -60,6 +86,7 @@ struct CompletionResult {
     applied_positions: Vec<f64>,
     projected_position: Option<f64>,
     terminal_positions: Vec<f64>,
+    natural_end_observed: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -72,6 +99,40 @@ enum EndEvidence {
     KeepOpenThenPeerSelection,
     KeepOpenThenSameRowReplay,
     KeepOpenLastRow,
+    KeepOpenAfterPeerDuplicateSelection,
+    KeepOpenAfterPeerReplay,
+    KeepOpenAfterPeerReplaySeek,
+    KeepOpenAfterPeerReplayQueuedSeek,
+    KeepOpenAfterPeerReplayAcceptedSeek,
+    KeepOpenAfterPeerReplaySeekThenFailedSeek,
+    KeepOpenAfterPeerReplayFailedSeek,
+    KeepOpenAfterUnselectedEdit,
+    KeepOpenAfterReorder,
+    KeepOpenFromInitialSnapshot,
+    KeepOpenAfterPeerReplaySnapshot,
+    KeepOpenWithoutPlaylist,
+}
+
+impl EndEvidence {
+    fn is_keep_open(self) -> bool {
+        !matches!(self, Self::None | Self::MatchedEndFile | Self::Stop)
+    }
+}
+
+fn observe_completed_seek(player: &mut CompletionPlayer, physical_position: f64) {
+    for event in [
+        json!({"event":"seek"}),
+        json!({"event":"property-change","name":"seeking","data":true}),
+        json!({"event":"property-change","name":"eof-reached","data":false}),
+        json!({"event":"property-change","name":"time-pos","data":physical_position}),
+        json!({"event":"property-change","name":"seeking","data":false}),
+        json!({"event":"playback-restart"}),
+        json!({"event":"property-change","name":"pause","data":false}),
+        json!({"event":"property-change","name":"core-idle","data":false}),
+        json!({"event":"property-change","name":"time-pos","data":physical_position + 1.0}),
+    ] {
+        player.harness.ingest_decoded_mpv_json(event);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,8 +172,15 @@ fn gui_completion_with_source(
     let mut session = crate::app::GuiClientSession::new("alice", "room1");
     session.deliver_outbound_protocol_lines().unwrap();
     session.apply_message_json(r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"sharedPlaylists":true,"chat":true,"readiness":true,"sorottePlaybackBarrierV1":true,"sorotteReadinessV2":true}}}"#).unwrap();
-    let files = if looping || matches!(end_evidence, EndEvidence::KeepOpenLastRow) {
+    let files = if matches!(end_evidence, EndEvidence::KeepOpenWithoutPlaylist) {
+        json!([])
+    } else if looping || matches!(end_evidence, EndEvidence::KeepOpenLastRow) {
         json!(["episode1.mkv"])
+    } else if matches!(
+        end_evidence,
+        EndEvidence::KeepOpenAfterPeerDuplicateSelection
+    ) {
+        json!(["episode1.mkv", "episode1.mkv", "episode2.mkv"])
     } else {
         json!(["episode1.mkv", "episode2.mkv"])
     };
@@ -121,11 +189,13 @@ fn gui_completion_with_source(
             &json!({"Set":{"playlistChange":{"files":files,"user":"alice","sorottePlaylistEpoch":1}}}).to_string(),
         )
         .unwrap();
-    session
-        .apply_message_json(
-            r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":2}}}"#,
-        )
-        .unwrap();
+    if !files.as_array().unwrap().is_empty() {
+        session
+            .apply_message_json(
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"alice","sorottePlaylistEpoch":2}}}"#,
+            )
+            .unwrap();
+    }
     session
         .apply_message_json(
             r#"{"Set":{"user":{"alice":{"file":{"name":"episode1.mkv","duration":240.0}}}}}"#,
@@ -169,7 +239,31 @@ fn gui_completion_with_source(
     for action in handle.drain_actions() {
         state.apply(action);
     }
-    let physical_target = if matches!(source, CompletionSource::SelectedName) {
+    let origin_root = tempfile::tempdir().unwrap();
+    let first_origin = if matches!(
+        end_evidence,
+        EndEvidence::KeepOpenAfterPeerDuplicateSelection
+    ) {
+        let paths = ["first/episode1.mkv", "second/episode1.mkv", "episode2.mkv"].map(|relative| {
+            let path = origin_root.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, relative.as_bytes()).unwrap();
+            path.to_string_lossy().into_owned()
+        });
+        let runtime_state = runtime_state_for_shell(&state);
+        let outcome = owner.bind_selected_local_origins_for_test(&runtime_state, paths.to_vec());
+        assert_eq!(outcome.bound_row_ids.len(), 3);
+        assert_ne!(
+            paths[0], paths[1],
+            "same labels retain distinct exact origins"
+        );
+        Some(paths[0].clone())
+    } else {
+        None
+    };
+    let physical_target = if let Some(origin) = first_origin.as_deref() {
+        origin
+    } else if matches!(source, CompletionSource::SelectedName) {
         "episode1.mkv"
     } else {
         "episode1-alternate-encode.mkv"
@@ -219,6 +313,18 @@ fn gui_completion_with_source(
         ] {
             harness.ingest_decoded_mpv_json(event);
         }
+        if matches!(end_evidence, EndEvidence::KeepOpenFromInitialSnapshot) {
+            harness.detect_event_gap();
+            harness.apply_authoritative_snapshot(
+                [LifecycleVerificationPlaylistEntry::new(
+                    77,
+                    Some(physical_target.into()),
+                    true,
+                )],
+                Some(physical_target.into()),
+            );
+            player.snapshot_only_next_batch = true;
+        }
     }
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     handle.drain_actions();
@@ -235,10 +341,164 @@ fn gui_completion_with_source(
         .unwrap();
     player.lock().unwrap().applied_positions.clear();
     player.lock().unwrap().applied_pauses.clear();
+    if matches!(
+        end_evidence,
+        EndEvidence::KeepOpenAfterPeerReplayQueuedSeek
+            | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+    ) {
+        let command_id = owner
+            .player
+            .as_mut()
+            .unwrap()
+            .set_position_tracked(30.0 + offset)
+            .unwrap();
+        owner.note_attached_runtime_position_dispatched(command_id, 30.0, 30.0 + offset);
+        observe_completed_seek(&mut player.lock().unwrap(), 30.0 + offset);
+        // Its real command receipt and physical seek are queued under the
+        // predecessor selection, before the peer requests a replay.
+        player.lock().unwrap().applied_positions.clear();
+    }
     if matches!(source, CompletionSource::MediaMatchAlreadyPlaying) {
         assert_eq!(owner.open_media_match_resolution_candidate_for_test(
             &runtime_state_for_shell(&state), physical_target.to_owned(),
         ), crate::app::runtime_owner::player::SelectedPlaylistMediaSyncOutcome::MatchedCurrentTarget);
+    }
+    if matches!(
+        end_evidence,
+        EndEvidence::KeepOpenAfterPeerDuplicateSelection
+            | EndEvidence::KeepOpenAfterPeerReplay
+            | EndEvidence::KeepOpenAfterPeerReplaySeek
+            | EndEvidence::KeepOpenAfterPeerReplayQueuedSeek
+            | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+            | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
+            | EndEvidence::KeepOpenAfterPeerReplayFailedSeek
+            | EndEvidence::KeepOpenAfterUnselectedEdit
+            | EndEvidence::KeepOpenAfterReorder
+            | EndEvidence::KeepOpenAfterPeerReplaySnapshot
+    ) {
+        let (next_files, next_index) = match end_evidence {
+            EndEvidence::KeepOpenAfterPeerDuplicateSelection => (files.clone(), 1),
+            EndEvidence::KeepOpenAfterReorder => (json!(["episode2.mkv", "episode1.mkv"]), 1),
+            EndEvidence::KeepOpenAfterUnselectedEdit => {
+                (json!(["episode1.mkv", "episode3.mkv", "episode2.mkv"]), 0)
+            }
+            _ => (files.clone(), 0),
+        };
+        let session = owner.session.as_mut().unwrap();
+        let mut epoch = 3;
+        if next_files != files {
+            session.apply_message_json(
+                &json!({"Set":{"playlistChange":{"files":next_files,"user":"bob","sorottePlaylistEpoch":epoch}}}).to_string(),
+            ).unwrap();
+            epoch += 1;
+        }
+        session.apply_message_json(
+            &json!({"Set":{"playlistIndex":{"index":next_index,"user":"bob","sorottePlaylistEpoch":epoch}}}).to_string(),
+        ).unwrap();
+        state.apply_shared_playlist_entries(
+            next_files
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|file| file.as_str().unwrap().to_owned())
+                .collect(),
+            Some(next_index as usize),
+            false,
+        );
+        if matches!(
+            end_evidence,
+            EndEvidence::KeepOpenAfterPeerReplaySeek
+                | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+                | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
+                | EndEvidence::KeepOpenAfterPeerReplayFailedSeek
+        ) {
+            owner.apply_pending_playlist_index_reset_to_attached_player_impl(
+                &runtime_state_for_shell(&state),
+                true,
+            );
+            let command_id = {
+                let player = player.lock().unwrap();
+                assert_eq!(
+                    player.applied_positions,
+                    [offset],
+                    "the production replay reset must be accepted"
+                );
+                *player.accepted_seek_commands.last().unwrap()
+            };
+            if matches!(end_evidence, EndEvidence::KeepOpenAfterPeerReplayFailedSeek) {
+                player.lock().unwrap().harness.fail_tracked_command(
+                    command_id,
+                    sorotte_player_api::PlayerCommandFailureKind::Unknown,
+                );
+                owner.refresh_player_state_impl();
+            } else if matches!(
+                end_evidence,
+                EndEvidence::KeepOpenAfterPeerReplaySeek
+                    | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
+            ) {
+                observe_completed_seek(&mut player.lock().unwrap(), offset);
+                if matches!(
+                    end_evidence,
+                    EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
+                ) {
+                    let later_command = owner
+                        .player
+                        .as_mut()
+                        .unwrap()
+                        .set_position_tracked(50.0 + offset)
+                        .unwrap();
+                    owner.note_attached_runtime_position_dispatched(
+                        later_command,
+                        50.0,
+                        50.0 + offset,
+                    );
+                    player.lock().unwrap().harness.fail_tracked_command(
+                        later_command.unwrap(),
+                        sorotte_player_api::PlayerCommandFailureKind::Unknown,
+                    );
+                }
+                owner.refresh_player_state_impl();
+                assert!(
+                    player
+                        .lock()
+                        .unwrap()
+                        .completed_commands
+                        .contains(&command_id),
+                    "fresh replay must have a matching physical completion receipt"
+                );
+            } else {
+                assert!(
+                    !player
+                        .lock()
+                        .unwrap()
+                        .completed_commands
+                        .contains(&command_id),
+                    "reset acceptance is not its completion receipt"
+                );
+            }
+        } else if matches!(end_evidence, EndEvidence::KeepOpenAfterPeerReplaySnapshot) {
+            let mut player = player.lock().unwrap();
+            player.harness.detect_event_gap();
+            player.harness.apply_authoritative_snapshot(
+                [LifecycleVerificationPlaylistEntry::new(
+                    77,
+                    Some(physical_target.into()),
+                    true,
+                )],
+                Some(physical_target.into()),
+            );
+            player.snapshot_only_next_batch = true;
+            drop(player);
+            owner.refresh_player_state_impl();
+        } else if matches!(
+            end_evidence,
+            EndEvidence::KeepOpenAfterPeerDuplicateSelection | EndEvidence::KeepOpenAfterPeerReplay
+        ) {
+            assert!(
+                player.lock().unwrap().applied_positions.is_empty(),
+                "predecessor EOF is queued before any successor physical reset"
+            );
+        }
     }
     if matches!(source, CompletionSource::MediaMatchThenPeerSelection) {
         owner
@@ -278,14 +538,7 @@ fn gui_completion_with_source(
                 .harness
                 .ingest_decoded_mpv_json(json!({"event":"seek"}));
         }
-        if matches!(
-            end_evidence,
-            EndEvidence::KeepOpen
-                | EndEvidence::KeepOpenThenSeekBack
-                | EndEvidence::KeepOpenThenPeerSelection
-                | EndEvidence::KeepOpenThenSameRowReplay
-                | EndEvidence::KeepOpenLastRow
-        ) {
+        if end_evidence.is_keep_open() {
             player.harness.ingest_decoded_mpv_json(
                 json!({"event":"property-change","name":"time-pos","data":position - 0.35}),
             );
@@ -390,7 +643,10 @@ fn gui_completion_with_source(
     let player = player.lock().unwrap();
     assert_eq!(
         owner.player_local_file.as_ref().unwrap().name,
-        physical_target,
+        std::path::Path::new(physical_target)
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
         "completion projection must preserve the published physical filename"
     );
     CompletionResult {
@@ -401,6 +657,7 @@ fn gui_completion_with_source(
         applied_positions: player.applied_positions.clone(),
         projected_position: owner.player_position_seconds,
         terminal_positions,
+        natural_end_observed: owner.attached_player_observation_is_end_of_file(),
     }
 }
 
@@ -461,6 +718,172 @@ fn media_match_natural_completion_does_not_advance_after_peer_selection() {
     assert_eq!(result.advances, 0);
     assert_eq!(result.selected, Some(1));
     assert!(result.requests.is_empty());
+}
+
+#[test]
+fn predecessor_eof_after_peer_duplicate_selection_does_not_skip_the_selected_row() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerDuplicateSelection,
+        0.0,
+        false,
+    );
+    assert_eq!(
+        result.advances, 0,
+        "predecessor completion must not acquire the successor's selection identity"
+    );
+    assert_eq!(result.selected, Some(1));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn predecessor_eof_after_peer_same_row_replay_does_not_skip_the_replay() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplay,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn fresh_eof_after_observed_same_row_replay_seek_advances() {
+    for offset in [0.0, 10.0] {
+        let result = gui_completion(
+            240.0,
+            true,
+            EndEvidence::KeepOpenAfterPeerReplaySeek,
+            offset,
+            false,
+        );
+        assert_eq!(result.advances, 1);
+        assert_eq!(result.selected, Some(1));
+        assert_eq!(result.requests[0]["sorotteExpectedPlaylistEpoch"], 3);
+    }
+}
+
+#[test]
+fn queued_predecessor_seek_cannot_adopt_a_peer_replay() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplayQueuedSeek,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn accepted_replay_command_does_not_authorize_the_queued_predecessor_seek() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn completed_replay_receipt_survives_a_later_failed_seek_before_drain() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 1);
+    assert_eq!(result.selected, Some(1));
+}
+
+#[test]
+fn failed_replay_seek_receipt_cannot_adopt_the_predecessor() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplayFailedSeek,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn first_owned_snapshot_without_load_event_replay_can_complete() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenFromInitialSnapshot,
+        0.0,
+        false,
+    );
+    assert_guarded_advance(&result, 1);
+}
+
+#[test]
+fn direct_file_completion_without_playlist_retains_natural_terminal_state() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenWithoutPlaylist,
+        0.0,
+        false,
+    );
+    assert!(result.natural_end_observed);
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, None);
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn snapshot_of_predecessor_after_same_row_replay_does_not_rebind_completion() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplaySnapshot,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 0);
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
+fn natural_completion_survives_unselected_playlist_edit() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterUnselectedEdit,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 1);
+    assert_eq!(result.selected, Some(1));
+    assert_eq!(result.requests[0]["sorotteExpectedPlaylistEpoch"], 4);
+}
+
+#[test]
+fn natural_completion_survives_reorder_preserving_the_active_row() {
+    let result = gui_completion(240.0, true, EndEvidence::KeepOpenAfterReorder, 0.0, false);
+    assert_eq!(result.advances, 1);
+    assert_eq!(result.selected, Some(1));
+    assert!(result.requests.is_empty());
+    assert_eq!(result.terminal_positions, [240.0]);
 }
 
 #[test]

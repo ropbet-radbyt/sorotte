@@ -114,6 +114,41 @@ pub(super) struct GuiOrderedPlayerEventConsumer {
     acknowledged_semantic_sequence: u64,
     applied_semantic_outcomes: BTreeSet<PlayerEventOrder>,
     applied_unacknowledged_token: Option<PlayerEventAcknowledgementToken>,
+    completion_binding: Option<GuiPlaybackCompletionBinding>,
+    submitted_completion_seeks: BTreeMap<PlayerCommandId, GuiPlaybackCompletionBinding>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct GuiPlaybackCompletionSelection {
+    session_generation: u64,
+    room: Option<String>,
+    playlist_revision: Option<u64>,
+    selection_revision: Option<u64>,
+    row_id: Option<GuiPlaylistEntryId>,
+    target: Option<String>,
+    target_is_unique: bool,
+}
+
+impl std::fmt::Debug for GuiPlaybackCompletionSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GuiPlaybackCompletionSelection")
+            .field("session_generation", &self.session_generation)
+            .field("room_present", &self.room.is_some())
+            .field("playlist_revision", &self.playlist_revision)
+            .field("selection_revision", &self.selection_revision)
+            .field("row_id", &self.row_id)
+            .field("target_present", &self.target.is_some())
+            .field("target_is_unique", &self.target_is_unique)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GuiPlaybackCompletionBinding {
+    attempt_id: LoadAttemptId,
+    media_generation: PlayerMediaGeneration,
+    selection: GuiPlaybackCompletionSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +255,7 @@ pub(super) struct PlaylistResolutionAttempt {
     pub(super) player_command_id: Option<PlayerCommandId>,
     pub(super) player_media_generation: Option<PlayerMediaGeneration>,
     pub(super) load_attempt_id: Option<LoadAttemptId>,
+    pub(super) completion_selection: Option<GuiPlaybackCompletionSelection>,
     pub(super) media_confirmation_pending: bool,
     pub(super) state: PlaylistResolutionAttemptState,
     pub(super) candidate_failures: Vec<PlaylistResolutionCandidateFailure>,
@@ -285,6 +321,7 @@ impl PlaylistResolutionAttempt {
             player_command_id: None,
             player_media_generation: None,
             load_attempt_id: None,
+            completion_selection: None,
             media_confirmation_pending: false,
             state: PlaylistResolutionAttemptState::Resolving,
             candidate_failures: Vec::new(),
