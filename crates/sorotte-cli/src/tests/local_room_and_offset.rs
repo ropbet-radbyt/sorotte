@@ -25,6 +25,20 @@ async fn forward_server_reply(
     .await;
 }
 
+async fn drain_final_room_probe_connection<R: tokio::io::AsyncBufRead + Unpin>(
+    lines: &mut tokio::io::Lines<R>,
+) -> usize {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut drained = 0;
+        while lines.next_line().await.unwrap().is_some() {
+            drained += 1;
+        }
+        drained
+    })
+    .await
+    .expect("room probe timed out waiting for final client closure")
+}
+
 async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<String>, String) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -78,7 +92,7 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
             let mut expected_progress = if connection == 0 {
                 "first post-Hello heartbeat"
             } else {
-                "final client closure"
+                "final post-Hello heartbeat"
             };
             loop {
                 let line = tokio::select! {
@@ -99,15 +113,21 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
                         continue;
                     }
                 };
-                let Some(line) = line else {
-                    break;
-                };
+                let line = line.unwrap_or_else(|| {
+                    panic!("room probe connection closed before {expected_progress}")
+                });
                 let decoded: Value = serde_json::from_str(&line).unwrap();
+                let post_hello_heartbeat =
+                    decoded["State"]["ping"]["clientLatencyCalculation"].is_number();
+                if connection > 0 && post_hello_heartbeat {
+                    // The final Hello has been consumed. Stop producing replies
+                    // before the client's intended runtime-window exit; buffered
+                    // requests can remain readable after it closes its socket.
+                    drain_final_room_probe_connection(&mut lines).await;
+                    break;
+                }
                 forward_server_reply(&mut server, &client, &line, &mut writer).await;
-                if connection == 0
-                    && !user_input_sent
-                    && decoded["State"]["ping"]["clientLatencyCalculation"].is_number()
-                {
+                if connection == 0 && !user_input_sent && post_hello_heartbeat {
                     // A response to a server-generated heartbeat proves the
                     // client consumed Hello before these ordinary user commands.
                     if change_room {
@@ -140,10 +160,8 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
                         server.handle_transport_disconnect_fanout(&client).unwrap();
                         break;
                     }
-                    expected_progress = "final client closure";
-                    progress_deadline
-                        .as_mut()
-                        .reset(tokio::time::Instant::now() + Duration::from_secs(3));
+                    drain_final_room_probe_connection(&mut lines).await;
+                    break;
                 }
             }
         }
@@ -159,6 +177,37 @@ async fn cli_room_reconnect_probe(change_room: bool, reconnect: bool) -> (Vec<St
     let runtime = runtime.expect("normal runtime-window exit after final connection");
     let final_room = runtime.session().room().unwrap().to_owned();
     (hellos, final_room)
+}
+
+#[tokio::test]
+async fn final_room_probe_phase_drains_requests_from_an_already_closed_peer() {
+    let mut server = ServerRuntime::new();
+    server
+        .handle_line(
+            "fixture",
+            r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5"}}"#,
+        )
+        .unwrap();
+    let request = b"{\"List\":null}\n";
+
+    // A duplex transport makes the old fixture's race deterministic: the
+    // request remains readable after the peer has closed both directions.
+    let (mut peer, fixture) = tokio::io::duplex(128);
+    peer.write_all(request).await.unwrap();
+    drop(peer);
+    let (reader, mut writer) = tokio::io::split(fixture);
+    let mut lines = BufReader::new(reader).lines();
+    let pending = lines.next_line().await.unwrap().unwrap();
+    let replies = server.handle_line("fixture", &pending).unwrap();
+    assert!(!replies.is_empty());
+    let old_reply_error = writer.write_all(replies[0].as_bytes()).await.unwrap_err();
+    assert_eq!(old_reply_error.kind(), std::io::ErrorKind::BrokenPipe);
+
+    let (mut peer, fixture) = tokio::io::duplex(128);
+    peer.write_all(request).await.unwrap();
+    drop(peer);
+    let mut lines = BufReader::new(fixture).lines();
+    assert_eq!(drain_final_room_probe_connection(&mut lines).await, 1);
 }
 
 #[tokio::test]
