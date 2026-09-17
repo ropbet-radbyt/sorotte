@@ -1,6 +1,30 @@
 schema_version = 1
 
 [[ignored_test]]
+id = "IGN-GUI-011"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/player_runtime_tests/fingerprint_freshness.rs"
+test = "media_fingerprint_generated_equal_length_audio_replacement"
+source_reason = "requires explicit local SOROTTE_MEDIA_MATCH_FFMPEG and SOROTTE_MEDIA_MATCH_FFPROBE paths"
+tier = "pull-request"
+owner = "gui"
+rationale = "Required generated-media GUI owner regression withholds old audio identity and runs the normal exact-signature background scheduler after an equal-length replacement."
+prerequisites = ["Ubuntu ffmpeg package", "SOROTTE_MEDIA_MATCH_FFMPEG", "SOROTTE_MEDIA_MATCH_FFPROBE"]
+operating_systems = ["linux", "macos", "windows"]
+required_job = "media-match-generated-media"
+
+[[ignored_test]]
+id = "IGN-GUI-012"
+source = "crates/sorotte-gui/src/app/runtime_owner/tests/player_runtime_tests/fingerprint_freshness.rs"
+test = "media_fingerprint_generated_timestamp_drift_revalidates_same_audio"
+source_reason = "requires explicit local SOROTTE_MEDIA_MATCH_FFMPEG and SOROTTE_MEDIA_MATCH_FFPROBE paths"
+tier = "pull-request"
+owner = "gui"
+rationale = "Required generated-media GUI owner regression preserves the selected file and republishes the same audio identity after background revalidation of timestamp-only drift."
+prerequisites = ["Ubuntu ffmpeg package", "SOROTTE_MEDIA_MATCH_FFMPEG", "SOROTTE_MEDIA_MATCH_FFPROBE"]
+operating_systems = ["linux", "macos", "windows"]
+required_job = "media-match-generated-media"
+
+[[ignored_test]]
 id = "IGN-GUI-009"
 source = "crates/sorotte-gui/src/app/runtime_owner/tests/playlist_runtime_tests/current_server/two_players.rs"
 test = "real_mpv_two_plex_clients_resume_loaded_stream"

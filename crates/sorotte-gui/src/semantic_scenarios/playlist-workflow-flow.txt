@@ -1,6 +1,7 @@
 # Runtime-backed playlist workflow flow
 setting	username	smoke-user
 setting	shared-playlist-enabled	true
+setting	chat-input-enabled	true
 setting	plex-selected-server	semantic-machine	https://plex.semantic.invalid:32400	semantic-token
 setting	plex-streaming-enabled	true
 activate	main-window-root
@@ -41,6 +42,15 @@ assert-selected	main-window:playlist:2:source:plex-stream	true
 activate	main-window:playlist:1:remove
 assert-label	main-window:playlist:1	https://example.com/live
 assert-selected	main-window:playlist:1	true
+# The command is handled by the session; project its authoritative undo reply.
+enter-text	main-window:chat-input	true	/undoplaylist
+assert-pending	none
+apply-main-window-runtime	sync-room	true	false	false	true	true	true	true	smoke-user,true,false,false	episode1.mkv|episode2.mkv|https://example.com/live	system>playlist-restored
+assert-label	main-window:playlist:1	episode2.mkv
+assert-label	main-window:playlist:2	https://example.com/live
+assert-label	main-window:playlist:1:source	Plex Stream
+assert-selected	main-window:playlist:1:source:plex-stream	true
+assert-selected	main-window:playlist:2	true
 assert-enabled	main-window:playlist:add-plex	true
 activate	main-window:playlist:add-plex
 assert-enabled	main-window:playlist-plex-search:query	false

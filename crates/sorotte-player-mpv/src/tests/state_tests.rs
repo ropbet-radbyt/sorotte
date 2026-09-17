@@ -20,7 +20,7 @@ fn simulated_unload_delivers_terminal_lifecycle_after_load_acknowledgement() {
     assert!(batch.events.iter().any(|event| matches!(
         event.event,
         sorotte_player_api::PlayerEvent::LoadAttemptTerminal {
-            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Ended,
+            outcome: sorotte_player_api::PlayerPhysicalLoadOutcome::Stopped,
             ..
         }
     )));

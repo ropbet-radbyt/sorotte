@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import io
 import json
 import pathlib
 import socket
@@ -317,6 +318,175 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
                 ),
                 {"follower": 2},
             )
+
+    def test_contained_player_failure_context_never_retains_raw_operation_or_error(self) -> None:
+        for error, expected_kind in (
+            ("player is not connected\n", "not-connected"),
+            ("operation not supported: secret-op", "unsupported"),
+            (
+                "operation failed: mpv command failed for request_id=631: property unavailable\n",
+                "property-unavailable",
+            ),
+            ("operation failed: unknown property unavailable context", "operation-failed"),
+            (r"operation failed: C:\Users\person\movie.mkv token=secret", "operation-failed"),
+            ("unrecognized error with password=secret", "unclassified"),
+        ):
+            with self.subTest(error_kind=expected_kind):
+                self.assertEqual(
+                    system.contained_player_failure_context(
+                        "warning: external player step 'synchronize room pause state' "
+                        f"failed while the Sorotte session remains connected: {error}"
+                    ),
+                    {
+                        "operation": "synchronize-room-pause-state",
+                        "error_kind": expected_kind,
+                    },
+                )
+        # The exact local headless failure retains its known action and error
+        # category, while the mpv request ID stays in the private raw log.
+        self.assertEqual(
+            system.contained_player_failure_context(
+                "warning: external player step 'apply desync correction' failed while "
+                "the Sorotte session remains connected: operation failed: "
+                "mpv command failed for request_id=631: property unavailable"
+            ),
+            {"operation": "apply-desync-correction", "error_kind": "property-unavailable"},
+        )
+        for line in (
+            "warning: external player step 'private-operation password=secret' "
+            "failed while the Sorotte session remains connected: private-error",
+            "warning: external player step 'malformed token=secret",
+        ):
+            self.assertEqual(
+                system.contained_player_failure_context(line),
+                {"operation": "unclassified", "error_kind": "unclassified"},
+            )
+        self.assertIsNone(system.contained_player_failure_context("ordinary warning"))
+
+    def test_failed_client_stderr_context_is_captured_and_staged_without_raw_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            harness = system.PlaybackLifecycleHarness(
+                server_path=root / "server",
+                client_path=root / "client",
+                mpv_path=root / "mpv",
+                ffmpeg_path=root / "ffmpeg",
+                artifact_dir=root / "artifacts",
+                candidate_sha="a" * 40,
+            )
+            harness.ledger = system.TraceLedger(harness.trace_path, harness.correlation_id)
+            harness.server_port = 1234
+            with (
+                mock.patch.object(system, "ProcessCapture") as capture,
+                mock.patch.object(system, "PlayerTraceMonitor"),
+                mock.patch.object(harness, "_ipc_path", return_value=str(root / "player-ipc")),
+            ):
+                harness._start_client("late", root / "first.mkv", root / "second.mkv")
+                callback = capture.call_args.kwargs["stderr_callback"]
+            harness.stage = "pause-authority"
+            raw_log = harness.artifact_dir / "client-late.stderr.log"
+            system.ProcessCapture._drain(
+                io.StringIO(
+                    "warning: ordinary startup notice\n"
+                    "warning: external player step 'synchronize room pause state' "
+                    "failed while the Sorotte session remains connected: "
+                    "operation failed: /home/person/movie.mkv token=secret\n"
+                ),
+                raw_log,
+                callback,
+            )
+            harness.stage = "contained-player-failure-audit"
+            self.assertEqual(system.contained_player_failure_counts({"late": raw_log}), {"late": 1})
+            harness.report_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "kind": system.REPORT_KIND,
+                    "result": "failed",
+                    "candidate_sha": "a" * 40,
+                    "artifacts": {
+                        "causal_trace": "causal-trace.jsonl",
+                        "player_traces": [],
+                        "process_logs": [raw_log.name],
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            output_dir = root / "safe"
+            manifest = system.stage_privacy_safe_evidence(harness.artifact_dir, output_dir)
+            self.assertEqual(manifest["result"], "failed")
+            self.assertEqual(
+                {path.name for path in output_dir.iterdir()},
+                {"report.json", "causal-trace.jsonl", "evidence-manifest.json"},
+            )
+            failures = [
+                record for record in system.read_jsonl(output_dir / "causal-trace.jsonl")
+                if record["event"] == "contained-player-failure"
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["role"], "late")
+            self.assertEqual(failures[0]["operation"], "synchronize-room-pause-state")
+            self.assertEqual(failures[0]["error_kind"], "operation-failed")
+            self.assertEqual(failures[0]["capture_phase"], "pause-authority")
+            self.assertGreaterEqual(failures[0]["elapsed_ms"], 0)
+            staged_text = "\n".join(path.read_text(encoding="utf-8") for path in output_dir.iterdir())
+            for private_text in ("person", "movie.mkv", "secret", directory):
+                self.assertNotIn(private_text, staged_text)
+
+    def test_contained_failure_diagnostics_are_bounded_per_role_without_truncating_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            harness = system.PlaybackLifecycleHarness(
+                server_path=root / "server",
+                client_path=root / "client",
+                mpv_path=root / "mpv",
+                ffmpeg_path=root / "ffmpeg",
+                artifact_dir=root / "artifacts",
+                candidate_sha="a" * 40,
+            )
+            harness.ledger = system.TraceLedger(harness.trace_path, harness.correlation_id)
+            harness.stage = "private-new-phase token=secret"
+            line = (
+                "warning: external player step 'apply local player command' "
+                "failed while the Sorotte session remains connected: player is not connected\n"
+            )
+            total = system.MAX_CONTAINED_PLAYER_FAILURE_DIAGNOSTICS_PER_ROLE + 4
+            raw_log = harness.artifact_dir / "client-late.stderr.log"
+            system.ProcessCapture._drain(
+                io.StringIO(line * total), raw_log,
+                lambda line: harness._record_contained_player_failure("late", line),
+            )
+            harness._record_contained_player_failure("follower", line)
+            records = system.read_jsonl(harness.trace_path)
+            late = [record for record in records if record["role"] == "late"]
+            self.assertEqual(len(late), system.MAX_CONTAINED_PLAYER_FAILURE_DIAGNOSTICS_PER_ROLE + 1)
+            self.assertEqual(late[-1]["event"], "contained-player-failure-detail-truncated")
+            self.assertTrue(all(record["capture_phase"] == "unclassified" for record in late[:-1]))
+            self.assertEqual(records[-1]["role"], "follower")
+            self.assertEqual(records[-1]["event"], "contained-player-failure")
+            self.assertEqual(system.contained_player_failure_counts({"late": raw_log}), {"late": total})
+            self.assertNotIn("secret", harness.trace_path.read_text(encoding="utf-8"))
+
+    def test_contained_failure_trace_requires_closed_categories(self) -> None:
+        safe = {
+            "source": "client-stderr", "role": "late", "event": "contained-player-failure",
+            "operation": "apply-local-player-command", "error_kind": "not-connected",
+            "capture_phase": "client-bounded-shutdown",
+        }
+        system.assert_privacy_safe_trace_record(safe)
+        for change in (
+            {"source": "other"}, {"role": "private-person"},
+            {"operation": "raw-private-operation"}, {"error_kind": "raw-private-error"},
+            {"capture_phase": "raw-private-phase"},
+        ):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "closed categories"):
+                system.assert_privacy_safe_trace_record({**safe, **change})
+        for field in ("operation", "error_kind", "capture_phase"):
+            incomplete = {key: value for key, value in safe.items() if key != field}
+            with self.subTest(missing=field), self.assertRaisesRegex(ValueError, "closed categories"):
+                system.assert_privacy_safe_trace_record(incomplete)
+        with self.assertRaisesRegex(ValueError, "exact event kind"):
+            system.assert_privacy_safe_trace_record({**safe, "event": "other-event"})
 
     def test_terminal_playlist_boundary_accepts_one_canonical_pause_and_bounded_players(self) -> None:
         records = {

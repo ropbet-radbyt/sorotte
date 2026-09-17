@@ -258,7 +258,19 @@ impl ServerRuntime {
             .or_else(|| {
                 self.room_playback_barriers
                     .get(&session.room)
+                    .filter(|barrier| {
+                        matches!(
+                            barrier.phase,
+                            PlaybackBarrierPhase::Preparing | PlaybackBarrierPhase::Committed
+                        )
+                    })
                     .map(|barrier| barrier.prepare.media_generation)
+            })
+            .or_else(|| {
+                self.room_buffering_controls
+                    .get(&session.room)
+                    .filter(|control| !control.retired_for_selection)
+                    .map(|control| control.config.media_generation)
             });
         let restored_revision = restored
             .as_ref()
@@ -394,7 +406,8 @@ impl ServerRuntime {
             None,
         );
         outbound.extend(self.readiness_participant_fanout(&session.room, &session.username, None));
-        outbound.extend(self.readiness_snapshot_fanout(&session.room));
+        outbound
+            .extend(self.readiness_snapshot_fanout_with_membership(&session.room, Some(client_id)));
 
         if active_media_generation.is_some() {
             // A mixed cohort policy change is always reflected in status; the
@@ -610,6 +623,38 @@ impl ServerRuntime {
         room_name: &str,
         media_generation: u64,
     ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        self.replace_readiness_generation(room_name, Some(media_generation), true)
+    }
+
+    pub(crate) fn begin_technical_readiness_generation(
+        &mut self,
+        room_name: &str,
+        media_generation: u64,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        if self
+            .room_readiness
+            .get(room_name)
+            .and_then(|room| room.media_generation)
+            == Some(media_generation)
+        {
+            return Ok(Vec::new());
+        }
+        self.replace_readiness_generation(room_name, Some(media_generation), false)
+    }
+
+    pub(crate) fn retire_readiness_generation(
+        &mut self,
+        room_name: &str,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
+        self.replace_readiness_generation(room_name, None, false)
+    }
+
+    fn replace_readiness_generation(
+        &mut self,
+        room_name: &str,
+        media_generation: Option<u64>,
+        owns_start_pause: bool,
+    ) -> Result<Vec<DirectedProtocolMessage>, ServerRuntimeError> {
         self.pending_user_transport_by_client
             .retain(|_, pending| pending.room_name != room_name);
         if !self.readiness_enabled {
@@ -624,16 +669,26 @@ impl ServerRuntime {
             .map(|(username, participant)| (username.clone(), participant.record.room_ready))
             .collect();
         room.revision = room.revision.saturating_add(1);
-        room.media_generation = Some(media_generation);
-        if !matches!(room.pause_owner, RoomPauseOwner::User { .. }) {
+        room.media_generation = media_generation;
+        if owns_start_pause
+            && let Some(media_generation) = media_generation
+            && !matches!(room.pause_owner, RoomPauseOwner::User { .. })
+        {
             room.pause_owner = RoomPauseOwner::ReadinessStartGate { media_generation };
         }
+        if media_generation.is_none() {
+            let previous = room.start_gate_phase.clone();
+            room.start_gate_phase = RoomStartGatePhase::Inactive;
+            emit_start_gate_phase_change(&previous, &room.start_gate_phase);
+        }
         for participant in room.participants.values_mut() {
-            participant.record.technical_state =
-                TechnicalPlayability::Preparing { media_generation };
+            participant.record.technical_state = media_generation
+                .map_or(TechnicalPlayability::Unknown, |media_generation| {
+                    TechnicalPlayability::Preparing { media_generation }
+                });
             participant.record.terminal_technical_block = None;
             participant.pending_automatic_pause_owner = None;
-            recompute_participant_readiness(&mut participant.record, Some(media_generation));
+            recompute_participant_readiness(&mut participant.record, media_generation);
         }
         self.refresh_readiness_gate_phase(room_name);
 
@@ -1994,18 +2049,34 @@ impl ServerRuntime {
     }
 
     fn readiness_snapshot_fanout(&self, room_name: &str) -> Vec<DirectedProtocolMessage> {
+        self.readiness_snapshot_fanout_with_membership(room_name, None)
+    }
+
+    fn readiness_snapshot_fanout_with_membership(
+        &self,
+        room_name: &str,
+        joining_client: Option<&str>,
+    ) -> Vec<DirectedProtocolMessage> {
         let Some(snapshot) = self.readiness_snapshot(room_name) else {
             return Vec::new();
         };
         self.readiness_v2_clients_in_room(room_name)
             .into_iter()
             .map(|client_id| {
-                DirectedProtocolMessage::new(
-                    client_id,
-                    readiness_set_message(
-                        ReadinessSetExtension::new().with_snapshot(snapshot.clone()),
-                    ),
-                )
+                let mut extension = ReadinessSetExtension::new().with_snapshot(snapshot.clone());
+                if joining_client == Some(client_id.as_str())
+                    && let Some(reconnect_token) =
+                        self.readiness_reconnect_identity_by_client.get(&client_id)
+                    && let Some(session) = self.sessions.get(&client_id)
+                    && let Some(record) = self.readiness_record(room_name, &session.username)
+                {
+                    extension = extension.with_membership(ReadinessMembershipIdentity {
+                        room: room_name.to_owned(),
+                        membership_epoch: record.membership_epoch,
+                        reconnect_token: reconnect_token.clone(),
+                    });
+                }
+                DirectedProtocolMessage::new(client_id, readiness_set_message(extension))
             })
             .collect()
     }

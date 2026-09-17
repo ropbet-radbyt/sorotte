@@ -235,7 +235,7 @@ files = [
     "crates/sorotte-client-app/src/application.rs",
     "crates/sorotte-client-app/src/participant_status_presentation.rs",
 ]
-mutant_filter = "(synchronize_player_availability|record_contained_external_player_failure|run_participant_status_heartbeat|ParticipantStatusReportPresentation::(from_client_view|position_evidence_is_eligible|buffer_evidence_is_eligible|headline_label)|delete field (policy|quorum_percent|maximum_pause_seconds) from struct PlaybackBarrierRoomBufferingConfig expression in ClientApplication<P>::apply_settings)"
+mutant_filter = "(synchronize_player_availability|record_contained_external_player_failure|run_participant_status_heartbeat|set_shared_playlist_sync_enabled|ParticipantStatusReportPresentation::(from_client_view|position_evidence_is_eligible|buffer_evidence_is_eligible|headline_label)|delete field (policy|quorum_percent|maximum_pause_seconds) from struct PlaybackBarrierRoomBufferingConfig expression in ClientApplication<P>::configure_streaming_playback)"
 test_target = "lib"
 test_filter = ""
 jobs = 2

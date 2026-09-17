@@ -250,15 +250,8 @@ impl GuiPersistedConfigRuntimeOwner {
             .session
             .as_ref()
             .is_some_and(|session| session.playlist_control_available());
-        let can_auto_advance_to_next_playlist_item = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.can_auto_advance_to_next_playlist_item());
-        let auto_advance_playlist_at_eof = self.take_playlist_auto_advance_eof_trigger_impl(
-            state,
-            playlist_control_available,
-            can_auto_advance_to_next_playlist_item,
-        );
+        let auto_advance_playlist_at_eof =
+            self.take_playlist_auto_advance_eof_trigger_impl(state, playlist_control_available);
         let player_observation_is_end_of_file = self.attached_player_observation_is_end_of_file();
         let previous_session_paused = {
             let Some(session) = self.session.as_mut() else {
@@ -454,7 +447,7 @@ impl GuiPersistedConfigRuntimeOwner {
             pending_local_attached_pause_override_update
         };
         if auto_advance_playlist_at_eof {
-            self.advance_playlist_index_for_attached_player_impl()?;
+            self.advance_playlist_after_natural_completion_impl()?;
         }
         let (autoplay_enabled, autoplay_threshold) = if self.session_projects_to_shell {
             (

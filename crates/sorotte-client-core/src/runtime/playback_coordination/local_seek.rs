@@ -329,7 +329,7 @@ pub(crate) struct PendingLocalTransportEcho {
     local_media_generation: u64,
     connection_generation: u64,
     pub(super) base_revision: u64,
-    target_position: f64,
+    pub(super) target_position: f64,
     is_seek: bool,
     paused: bool,
     client_counter: u32,

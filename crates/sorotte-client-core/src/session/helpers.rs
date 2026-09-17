@@ -406,8 +406,12 @@ impl ClientSession {
             self.reset_playlist_index_transition_tracking();
             self.model.playlist.pending_local_change_echoes.clear();
             self.model.playlist.pending_local_index_echoes.clear();
-            self.model.controller.pending_local_room_switch_target = None;
-        } else if self
+        }
+        // Membership echoes are ordered, but the user can already have sent
+        // a newer room request. Only the matching destination acknowledges
+        // that intent; an intermediate membership must not replace it on the
+        // next connection if the final acknowledgement is lost.
+        if self
             .model
             .controller
             .pending_local_room_switch_target
@@ -592,9 +596,13 @@ impl ClientSession {
     }
 
     pub(super) fn resolve_room_for_playlist_update(&self, set_by: Option<&str>) -> Option<String> {
-        set_by
-            .and_then(|username| self.user_room(username).map(str::to_owned))
-            .or_else(|| self.model.room.name.clone())
+        // Playlist messages are delivered to members of the canonical room.
+        // Their author is historical attribution and may since have moved.
+        self.model
+            .room
+            .name
+            .clone()
+            .or_else(|| set_by.and_then(|username| self.user_room(username).map(str::to_owned)))
     }
 
     pub(super) fn set_user_room(&mut self, username: &str, room_name: Option<String>) {

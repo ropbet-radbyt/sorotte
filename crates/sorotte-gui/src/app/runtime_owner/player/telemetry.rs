@@ -335,6 +335,8 @@ impl GuiOrderedPlayerEventConsumer {
         self.acknowledged_semantic_sequence = 0;
         self.applied_semantic_outcomes.clear();
         self.applied_unacknowledged_token = None;
+        self.completion_binding = None;
+        self.submitted_completion_seeks.clear();
     }
 
     fn begin_batch(
@@ -870,6 +872,7 @@ impl GuiPersistedConfigRuntimeOwner {
         {
             return;
         }
+        self.record_playback_completion_seek(adapter_player_command_id);
         let dispatch_offset_seconds = self.user_offset_seconds;
         let target_position_seconds = player_target_position_seconds - dispatch_offset_seconds;
         let now = Instant::now();
@@ -1530,6 +1533,37 @@ impl GuiPersistedConfigRuntimeOwner {
                         snapshot_known_copy(&snapshot.transport.observed_at),
                         true,
                     );
+                    if self.ordered_player_events.completion_binding.is_none() {
+                        let captured =
+                            self.playlist_resolution_attempt
+                                .as_ref()
+                                .and_then(|attempt| {
+                                    (attempt.player_command_id.is_some()
+                                        && attempt.player_command_id == active.command_id
+                                        && attempt.player_media_generation.is_none_or(
+                                            |generation| generation == active.media_generation,
+                                        ))
+                                    .then(|| attempt.completion_selection.clone())
+                                    .flatten()
+                                });
+                        let selection = captured.or_else(|| {
+                            (!self.session.as_ref().is_some_and(|session| {
+                                session.has_pending_playlist_index_reset_intent()
+                            }))
+                            .then(|| self.current_playback_completion_selection())
+                        });
+                        if let Some(selection) = selection {
+                            // An initial owned snapshot can establish already-playing
+                            // media. Later snapshots cannot assign an existing physical
+                            // predecessor to a newer selection or replay.
+                            self.ordered_player_events.completion_binding =
+                                Some(GuiPlaybackCompletionBinding {
+                                    attempt_id: active.attempt_id,
+                                    media_generation: active.media_generation,
+                                    selection,
+                                });
+                        }
+                    }
                 } else {
                     self.player_local_file = None;
                     self.player_local_file_placeholder = false;
@@ -1572,6 +1606,14 @@ impl GuiPersistedConfigRuntimeOwner {
         delta: PlayerTransportDelta,
         user_offset_seconds: f64,
     ) {
+        if (delta.seeking == Some(true)
+            || delta.eof_reached == Some(false)
+            || delta.logical_pause == Some(false)
+            || delta.paused_for_cache == Some(true))
+            && let Some(session) = self.session.as_mut()
+        {
+            session.invalidate_pending_natural_playback_completion();
+        }
         self.observe_attached_pause_command_result(delta.logical_pause);
         if let Some(paused_for_cache) = delta.paused_for_cache {
             self.player_paused_for_cache = Some(paused_for_cache);
@@ -1633,6 +1675,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     return Ok(());
                 }
                 self.process_attached_local_file_observation(update, media_generation, None, false);
+                self.bind_playback_completion_to_physical_owner(attempt_id, media_generation);
                 Ok(())
             }
             PlayerEvent::TransportDelta(delta) => {
@@ -1721,6 +1764,9 @@ impl GuiPersistedConfigRuntimeOwner {
                     media_generation,
                     command_id,
                 );
+                if owns_transport {
+                    self.bind_playback_completion_to_physical_owner(attempt_id, media_generation);
+                }
                 Ok(())
             }
             PlayerEvent::LoadAttemptActive {
@@ -1751,6 +1797,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     media_generation,
                     command_id,
                 );
+                self.bind_playback_completion_to_physical_owner(attempt_id, media_generation);
                 Ok(())
             }
             PlayerEvent::LoadAttemptLogicalOwnershipRevoked {
@@ -1774,7 +1821,7 @@ impl GuiPersistedConfigRuntimeOwner {
             PlayerEvent::LogicalPlaybackTerminal {
                 media_generation,
                 attempt_id,
-                ..
+                outcome,
             } => {
                 let transport_owns_attempt =
                     snapshot_known_copy(&self.ordered_player_events.transport.load_attempt_id)
@@ -1788,14 +1835,37 @@ impl GuiPersistedConfigRuntimeOwner {
                     None,
                 ) && transport_owns_attempt
                 {
-                    self.ordered_player_events.transport.phase =
-                        SnapshotField::Known(sorotte_player_api::PlayerTransportPhase::Ended);
+                    let natural = outcome == sorotte_player_api::PlayerPhysicalLoadOutcome::Ended;
+                    if !natural && let Some(session) = self.session.as_mut() {
+                        session.invalidate_pending_natural_playback_completion();
+                    }
+                    self.ordered_player_events.transport.phase = SnapshotField::Known(match outcome {
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Ended => sorotte_player_api::PlayerTransportPhase::Ended,
+                        sorotte_player_api::PlayerPhysicalLoadOutcome::Failed(_) | sorotte_player_api::PlayerPhysicalLoadOutcome::TransportDisconnected => sorotte_player_api::PlayerTransportPhase::Failed,
+                        _ => sorotte_player_api::PlayerTransportPhase::Empty,
+                    });
                     self.ordered_player_events.transport.logical_pause = SnapshotField::Known(true);
-                    self.ordered_player_events.transport.eof_reached = SnapshotField::Known(true);
+                    self.ordered_player_events.transport.eof_reached =
+                        SnapshotField::Known(natural);
                     self.player_paused = Some(true);
-                    if let Some(session) = self.session.as_mut()
-                        && let Err(error) =
-                            session.observe_external_player_end_of_file(system_time_seconds())
+                    let terminal_position_seconds = self
+                        .player_local_file
+                        .as_ref()
+                        .and_then(|file| file.duration_seconds)
+                        .filter(|duration| duration.is_finite() && *duration >= 0.0)
+                        .map(|duration| (duration - user_offset_seconds).max(0.0));
+                    if natural
+                        && let Some(completed_file) = self
+                            .completed_file_for_owned_playlist_terminal(
+                                attempt_id,
+                                media_generation,
+                            )
+                        && let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.observe_external_player_end_of_file(
+                            completed_file,
+                            terminal_position_seconds,
+                            system_time_seconds(),
+                        )
                     {
                         eprintln!(
                             "warning: failed to route ordered attached-player terminal playback to the session runtime: {error}"
@@ -1805,6 +1875,216 @@ impl GuiPersistedConfigRuntimeOwner {
                 Ok(())
             }
         }
+    }
+
+    pub(super) fn current_playback_completion_selection(&self) -> GuiPlaybackCompletionSelection {
+        let session = self.session.as_ref();
+        let playlist = session.and_then(|session| session.projected_current_room_playlist());
+        let index = playlist
+            .as_ref()
+            .and_then(|playlist| playlist.index)
+            .and_then(|index| usize::try_from(index).ok());
+        let target = playlist
+            .as_ref()
+            .and_then(|playlist| index.and_then(|index| playlist.files.get(index)).cloned());
+        GuiPlaybackCompletionSelection {
+            session_generation: self.session_generation,
+            room: session
+                .and_then(|session| session.current_room_name())
+                .map(str::to_owned),
+            playlist_revision: playlist.as_ref().map(|playlist| playlist.revision),
+            selection_revision: session
+                .and_then(|session| session.current_room_playlist_selection_revision()),
+            row_id: playlist.as_ref().and_then(|playlist| {
+                (self.playlist_resolution.playlist_revision == Some(playlist.revision))
+                    .then(|| index.and_then(|index| self.playlist_resolution.row_ids.get(index)))
+                    .flatten()
+                    .copied()
+            }),
+            target_is_unique: target.as_ref().is_some_and(|target| {
+                playlist.as_ref().is_some_and(|playlist| {
+                    playlist.files.iter().filter(|file| *file == target).count() == 1
+                })
+            }),
+            target,
+        }
+    }
+
+    fn bind_playback_completion_to_physical_owner(
+        &mut self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) {
+        if let Some(binding) = self.ordered_player_events.completion_binding.as_mut()
+            && binding.media_generation == media_generation
+        {
+            // Recovery can replace the transport of the same logical media.
+            // Its later events must retain the original selection provenance.
+            binding.attempt_id = attempt_id;
+            return;
+        }
+        let selection = self
+            .playlist_resolution_attempt
+            .as_ref()
+            .filter(|attempt| {
+                attempt.player_media_generation == Some(media_generation)
+                    && attempt.load_attempt_id == Some(attempt_id)
+            })
+            .and_then(|attempt| attempt.completion_selection.clone())
+            .unwrap_or_else(|| self.current_playback_completion_selection());
+        self.ordered_player_events.completion_binding = Some(GuiPlaybackCompletionBinding {
+            attempt_id,
+            media_generation,
+            selection,
+        });
+    }
+
+    fn record_playback_completion_seek(&mut self, command_id: Option<PlayerCommandId>) {
+        let Some(command_id) = command_id else {
+            return;
+        };
+        let current = self.current_playback_completion_selection();
+        let Some(binding) = self.ordered_player_events.completion_binding.as_ref() else {
+            return;
+        };
+        let attempt_id = binding.attempt_id;
+        let media_generation = binding.media_generation;
+        let same_row =
+            binding.selection.row_id.is_some() && binding.selection.row_id == current.row_id;
+        let resolved_current_row =
+            self.playlist_resolution_attempt
+                .as_ref()
+                .is_some_and(|attempt| {
+                    attempt.state == PlaylistResolutionAttemptState::Active
+                        && !attempt.media_confirmation_pending
+                        && Some(attempt.row_id) == current.row_id
+                        && attempt.load_attempt_id == Some(attempt_id)
+                        && attempt.player_media_generation == Some(media_generation)
+                });
+        if self
+            .ordered_player_events
+            .attempt_is_owned(attempt_id, media_generation)
+            && binding.selection.session_generation == current.session_generation
+            && binding.selection.room == current.room
+            && binding.selection.target == current.target
+            && (same_row || resolved_current_row)
+        {
+            self.ordered_player_events
+                .submitted_completion_seeks
+                .insert(
+                    command_id,
+                    GuiPlaybackCompletionBinding {
+                        attempt_id,
+                        media_generation,
+                        selection: current,
+                    },
+                );
+        }
+    }
+
+    fn apply_playback_completion_seek_receipt(&mut self, outcome: PlayerCommandOutcome) {
+        let Some(binding) = self
+            .ordered_player_events
+            .submitted_completion_seeks
+            .remove(&outcome.command_id)
+        else {
+            return;
+        };
+        if outcome.result == PlayerCommandSemanticResult::Completed
+            && outcome.media_generation == Some(binding.media_generation)
+            && self
+                .ordered_player_events
+                .attempt_is_owned(binding.attempt_id, binding.media_generation)
+        {
+            // Raw seeking may belong to a predecessor and remain queued after
+            // replay submission. Only this command's observed completion can
+            // transfer its captured selection to the same physical attempt.
+            self.ordered_player_events.completion_binding = Some(binding);
+        }
+    }
+
+    pub(super) fn bind_initial_completion_playlist_selection_from_current_player(&mut self) {
+        let current = self.current_playback_completion_selection();
+        let Some(binding) = self.ordered_player_events.completion_binding.as_mut() else {
+            return;
+        };
+        if binding.selection.target.is_none()
+            && current.target.is_some()
+            && binding.selection.session_generation == current.session_generation
+            && (binding.selection.room.is_none() || binding.selection.room == current.room)
+            && snapshot_known_copy(&self.ordered_player_events.transport.load_attempt_id)
+                == Some(binding.attempt_id)
+            && snapshot_known_copy(&self.ordered_player_events.transport.media_generation)
+                == Some(binding.media_generation)
+            && !self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_playlist_index_reset_intent())
+        {
+            // A resolver can adopt an already-playing file into the first
+            // canonical selection. This is not permission for EOF itself, a
+            // later replay, or an unrelated snapshot to acquire new authority.
+            binding.selection = current;
+        }
+    }
+
+    fn completed_file_for_owned_playlist_terminal(
+        &self,
+        attempt_id: LoadAttemptId,
+        media_generation: PlayerMediaGeneration,
+    ) -> Option<LocalFileUpdate> {
+        let binding = self.ordered_player_events.completion_binding.as_ref()?;
+        let current = self.current_playback_completion_selection();
+        let same_row =
+            binding.selection.row_id.is_some() && binding.selection.row_id == current.row_id;
+        let harmless_edit = binding.selection.playlist_revision != current.playlist_revision
+            && !self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.has_pending_playlist_index_reset_intent())
+            && (same_row || binding.selection.target_is_unique && current.target_is_unique);
+        if binding.attempt_id != attempt_id
+            || binding.media_generation != media_generation
+            || binding.selection.session_generation != current.session_generation
+            || binding.selection.room != current.room
+            || binding.selection.target != current.target
+            || (binding.selection.selection_revision != current.selection_revision
+                && !harmless_edit)
+        {
+            return None;
+        }
+        let mut file = self.player_local_file.clone()?;
+        let Some(resolution) = self.playlist_resolution_attempt.as_ref() else {
+            return Some(file);
+        };
+        let selection_matches = self.session.as_ref().is_some_and(|session| {
+            session
+                .projected_current_room_playlist()
+                .is_some_and(|playlist| {
+                    let Some(index) = playlist.index.and_then(|index| usize::try_from(index).ok())
+                    else {
+                        return false;
+                    };
+                    self.playlist_resolution.playlist_revision == Some(playlist.revision)
+                        && self.playlist_resolution.row_ids.get(index) == Some(&resolution.row_id)
+                        && playlist.files.get(index) == Some(&resolution.target)
+                })
+        });
+        if resolution.state == PlaylistResolutionAttemptState::Active
+            && !resolution.media_confirmation_pending
+            && resolution.candidate_provider.is_some()
+            && resolution.playlist_generation == self.playlist_resolution.generation
+            && resolution.player_media_generation == Some(media_generation)
+            && resolution.load_attempt_id == Some(attempt_id)
+            && selection_matches
+        {
+            // The selected source resolver, rather than the local basename,
+            // proves which canonical row this physical edition completed.
+            // Preserve physical metadata and project only this completion's
+            // identity; ordinary file publication keeps the actual local name.
+            file.name = resolution.target.clone();
+        }
+        Some(file)
     }
 
     fn apply_ordered_semantic_outcome(
@@ -1818,6 +2098,7 @@ impl GuiPersistedConfigRuntimeOwner {
                         "command outcome belongs to another attachment",
                     ));
                 }
+                self.apply_playback_completion_seek_receipt(command);
                 let result = match command.result {
                     PlayerCommandSemanticResult::Completed => PlayerCommandResult::Completed,
                     PlayerCommandSemanticResult::Superseded => PlayerCommandResult::Superseded,

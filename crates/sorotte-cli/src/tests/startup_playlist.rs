@@ -162,24 +162,30 @@ async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_
     std::fs::write(&playlist_path, "episode1.mkv\nepisode2.mkv\n")
         .expect("playlist file should write");
 
-    let server_task = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.expect("server should accept");
+    let server_future = async move {
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("client connection should not timeout")
+            .expect("server should accept");
         let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
 
-        let hello_line = lines
-            .next_line()
+        let hello_line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
             .await
+            .expect("client Hello should not timeout")
             .expect("hello line read should succeed")
             .expect("hello line should be present");
         assert!(hello_line.contains("\"Hello\""));
-        writer
-                .write_all(
-                    br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.2.255","features":{"sharedPlaylists":true}}}
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            writer.write_all(
+                br#"{"Hello":{"username":"cli-user","room":{"name":"cli-room"},"version":"1.2.255","features":{"sharedPlaylists":true}}}
 "#,
-                )
-                .await
-                .expect("server hello write should succeed");
+            ),
+        )
+        .await
+        .expect("server Hello delivery should not timeout")
+        .expect("server hello write should succeed");
 
         let mut saw_playlist_change = None;
         let mut saw_playlist_index = None;
@@ -211,18 +217,19 @@ async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_
             Some(vec!["episode1.mkv".to_owned(), "episode2.mkv".to_owned()])
         );
         assert_eq!(saw_playlist_index, Some(0));
-    });
+    };
 
     let config = test_client_loop_config_with_addr(addr);
     let mut runtime = create_client_runtime(&config);
-    let stream = TcpStream::connect(addr)
+    let stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(addr))
         .await
+        .expect("client connection should not timeout")
         .expect("client should connect to test listener");
     let mut notification_sink = ignore_autoplay_notification;
     let mut file_difference_sink = ignore_file_difference_notification;
     let mut startup_playlist = Some(playlist_path.to_string_lossy().into_owned());
 
-    let exit = run_connected_client_session_with_startup_overrides(
+    let client_future = run_connected_client_session_with_startup_overrides(
         stream,
         &mut runtime,
         &config,
@@ -231,9 +238,15 @@ async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_
         None,
         &mut notification_sink,
         &mut file_difference_sink,
-    )
+    );
+    // Poll both owners together so a failed protocol phase cancels its peer,
+    // instead of leaving a detached server blocked on a missing greeting.
+    let ((), exit) = tokio::time::timeout(Duration::from_secs(8), async {
+        tokio::join!(server_future, client_future)
+    })
     .await
-    .expect("connected session should run");
+    .expect("startup playlist exchange should finish");
+    let exit = exit.expect("connected session should run");
     assert!(
         matches!(
             exit,
@@ -245,7 +258,6 @@ async fn connected_client_session_sends_startup_playlist_from_legacy_file_after_
         startup_playlist.is_none(),
         "startup playlist flag should be consumed after server hello"
     );
-    server_task.await.expect("server task should join");
 
     let _ = std::fs::remove_file(&playlist_path);
     let _ = std::fs::remove_dir(&temp_dir);

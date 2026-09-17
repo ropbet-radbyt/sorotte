@@ -255,6 +255,7 @@ pub(super) fn planned_local_runtime_action_is_player_bound(
     matches!(
         action,
         PlannedLocalRuntimeAction::UndoSeek
+            | PlannedLocalRuntimeAction::SetUserOffset(_)
             | PlannedLocalRuntimeAction::KeepWaitingForSeekPreparation
             | PlannedLocalRuntimeAction::JoinNearestBufferedSeekPreparation
             | PlannedLocalRuntimeAction::CancelSeekPreparation
@@ -314,6 +315,8 @@ fn run_connected_session_branch_runtime_steps(
     outbound_state_sync_enabled: bool,
     event: ConnectedSessionEvent<'_>,
 ) -> Option<ContainedConnectedSessionPlayerFailure> {
+    let shared_playlists_enabled = shared_playlists_enabled_cli(config);
+    runtime.set_shared_playlist_sync_enabled(shared_playlists_enabled);
     // Maintenance may attach a replacement player. Record that transition before telemetry.
     runtime.with_player_io(|player| player.maintain_runtime_integrations());
     if let Err(error) = synchronize_connected_session_player_availability(runtime, now_seconds) {
@@ -325,7 +328,6 @@ fn run_connected_session_branch_runtime_steps(
         ));
     }
     let inputs = derive_runtime_loop_inputs(runtime, config, now_seconds);
-    let shared_playlists_enabled = shared_playlists_enabled_cli(config);
     let result = (|| -> Result<(), (&'static str, anyhow::Error)> {
         if !matches!(event, ConnectedSessionEvent::LocalInput { .. }) {
             let outcome = if shared_playlists_enabled {
@@ -479,6 +481,7 @@ where
         .dont_slow_down_with_me_override
         .unwrap_or(false);
     let shared_playlists_enabled = shared_playlists_enabled_cli(context.config);
+    runtime.set_shared_playlist_sync_enabled(shared_playlists_enabled);
     let mut trailing_decode_error = None;
     let mut player_failure = None;
     if let ConnectedSessionEvent::InboundMessage(line) = event {
@@ -959,6 +962,184 @@ mod tests {
         assert_eq!(
             message.set.file.and_then(|file| file.name),
             Some("movie.mkv".to_owned()),
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_desync_branch_preserves_predecessor_until_resolution() {
+        for shared_playlists_enabled in [true, false] {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+            let mut session = ClientSession::default();
+            for line in [
+                r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+                r#"{"Set":{"user":{"bob":{"room":{"name":"room"}}}}}"#,
+                r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","plex://machine/123"],"user":"bob"}}}"#,
+                r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#,
+                r#"{"State":{"playstate":{"position":9.8,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            ] {
+                session.apply_message_json_at(line, now).unwrap();
+            }
+            let mut application = ClientApplication::new(session, MpvAdapter::simulated());
+            application.player_mut().open_file("episode-a.mkv").unwrap();
+            application.player_mut().set_position(9.8).unwrap();
+            application.player_mut().set_paused(false).unwrap();
+            application.run_room_pause_sync_if_needed_at(now).unwrap();
+            application
+                .publish_pending_local_file_update(
+                    sorotte_client_core::PrivacyMode::SendRaw,
+                    sorotte_client_core::PrivacyMode::SendRaw,
+                )
+                .unwrap();
+            application
+                .synchronize_canonical_playlist_selection_to_player()
+                .unwrap();
+            for _ in 0..2 {
+                application.player_mut().set_paused(false).unwrap();
+                application.run_room_pause_sync_if_needed_at(now).unwrap();
+            }
+            assert!(
+                !application
+                    .session()
+                    .has_pending_playlist_index_reset_intent()
+            );
+            let predecessor_position = application.player().position_seconds();
+            assert!(predecessor_position >= 9.8);
+            assert!(
+                !application
+                    .playback_coordination_snapshot()
+                    .ordinary_correction_blocked,
+                "the predecessor must have completed startup coordination: {:?}",
+                application.playback_coordination_snapshot(),
+            );
+
+            application
+                .session_mut()
+                .apply_message_json(r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#)
+                .unwrap();
+            application
+                .session_mut()
+                .apply_message_json_at(
+                    &serde_json::json!({"State":{"playstate":{
+                        "position":0.0,
+                        "paused":shared_playlists_enabled,
+                        "doSeek":false,
+                        "setBy":"bob"
+                    }}})
+                    .to_string(),
+                    now + 0.1,
+                )
+                .unwrap();
+            let mut config = crate::tests::test_client_loop_config();
+            config.shared_playlists_enabled_override = Some(shared_playlists_enabled);
+            let mut network_options = CliNetworkOptionsHealthReporter::default();
+            let failure = run_connected_session_branch_runtime_steps(
+                &mut application,
+                &config,
+                &mut network_options,
+                now + 0.2,
+                false,
+                false,
+                ConnectedSessionEvent::InboundMessage(""),
+            );
+            assert!(
+                failure.is_none(),
+                "a pending selected source must not manufacture a player failure"
+            );
+            assert_eq!(application.player().current_path(), Some("episode-a.mkv"));
+            if shared_playlists_enabled {
+                assert_eq!(
+                    application.player().position_seconds(),
+                    predecessor_position,
+                    "the canonical owner must not apply successor state to its predecessor"
+                );
+            } else {
+                assert!(
+                    application.player().position_seconds() < 1.0,
+                    "without a pause change or explicit seek, an opted-out client still corrects ordinary drift: position={}, coordination={:?}",
+                    application.player().position_seconds(),
+                    application.playback_coordination_snapshot(),
+                );
+            }
+            assert!(
+                application
+                    .session()
+                    .has_pending_playlist_index_reset_intent()
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_playlist_sync_does_not_adopt_preloaded_file_for_unresolved_selection() {
+        use sorotte_player_api::{PlayerAdapter, PlayerCommand};
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let mut player = MpvAdapter::simulated();
+        player
+            .execute(PlayerCommand::OpenFile("episode-a.mkv".to_owned()))
+            .unwrap();
+        player.execute(PlayerCommand::SetPosition(9.8)).unwrap();
+        player.execute(PlayerCommand::SetPaused(false)).unwrap();
+        let predecessor_position = player.position_seconds();
+        let mut application = ClientApplication::new(ClientSession::default(), player);
+        for line in [
+            r#"{"Hello":{"username":"alice","room":{"name":"room"},"version":"1.7.5","features":{"sharedPlaylists":true}}}"#,
+            r#"{"Set":{"user":{"bob":{"room":{"name":"room"}}}}}"#,
+            r#"{"Set":{"playlistChange":{"files":["episode-a.mkv","plex://machine/123"],"user":"bob"}}}"#,
+            r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#,
+            r#"{"Set":{"playlistIndex":{"index":1,"user":"bob"}}}"#,
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+        ] {
+            application
+                .session_mut()
+                .apply_message_json_at(line, now)
+                .unwrap();
+        }
+        assert_eq!(
+            application.session().current_room_playlist().unwrap().index,
+            Some(1)
+        );
+        assert!(
+            application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+        let mut config = crate::tests::test_client_loop_config();
+        config.shared_playlists_enabled_override = Some(true);
+        let failure = run_connected_session_branch_runtime_steps(
+            &mut application,
+            &config,
+            &mut CliNetworkOptionsHealthReporter::default(),
+            now,
+            false,
+            false,
+            ConnectedSessionEvent::PlayerCoordinationTick,
+        );
+        assert!(failure.is_none());
+        assert_eq!(application.player().current_path(), Some("episode-a.mkv"));
+        assert_eq!(
+            application.player().position_seconds(),
+            predecessor_position,
+            "publishing the initial old file cannot assign it the unresolved successor's reset"
+        );
+        assert_eq!(
+            application
+                .last_local_file_update()
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("episode-a.mkv"),
+            "the fence must continue consuming and publishing actual player observations"
+        );
+        assert!(
+            application
+                .session()
+                .has_pending_playlist_index_reset_intent()
         );
     }
 

@@ -4,6 +4,24 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
+#[test]
+fn readiness_membership_identity_roundtrips_and_redacts_its_token() {
+    let identity = super::ReadinessMembershipIdentity {
+        room: "room".to_owned(),
+        membership_epoch: 42,
+        reconnect_token: "private-membership-token".into(),
+    };
+    let message = ProtocolMessage::set(
+        SetPayload::new()
+            .with_readiness_v2(ReadinessSetExtension::new().with_membership(identity.clone())),
+    );
+    let encoded = encode_message_line(&message).unwrap();
+    let decoded = decode_message_line(&encoded).unwrap();
+    assert_eq!(decoded, message);
+    assert!(!format!("{identity:?}").contains("private-membership-token"));
+    assert!(!format!("{message:?}").contains("private-membership-token"));
+}
+
 use super::{
     ChatMessagePayload, ChatPayload, ControllerAuthPayload, DirectReadinessSurface, ErrorPayload,
     FilePayload, HelloPayload, IgnoringOnTheFlyPayload, ListPayload, ListUserEntry,

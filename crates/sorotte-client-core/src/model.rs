@@ -804,6 +804,7 @@ impl Default for ReadinessState {
 #[derive(Debug, Default)]
 pub struct ReconnectState {
     pub(crate) policy: ReconnectPolicyConfig,
+    pub(crate) room_target: Option<String>,
     pub(crate) ready_restore_snapshot: Option<bool>,
     pub(crate) ready_restore_intent: Option<bool>,
     pub(crate) file_restore_snapshot: Option<SharedFile>,

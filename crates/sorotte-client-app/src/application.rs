@@ -774,6 +774,8 @@ where
                 .last_local_file_update()
                 .is_some_and(|file| local_file_matches_playlist_target(file, &selection.target));
         if current_file_matches {
+            self.runtime
+                .confirm_initial_playlist_selection_for_current_player();
             self.pending_canonical_playlist_load = None;
             if !self
                 .canonical_media_resolution_evidence
@@ -858,7 +860,8 @@ where
                 player_attachment_revision,
             )
         {
-            self.runtime.player_mut().set_position(0.0)?;
+            let player_position = self.runtime.player_position_for_room(0.0);
+            self.runtime.player_mut().set_position(player_position)?;
             // Always reassert the temporary transition hold after authoritative
             // file evidence. A load can change mpv's pause property even when
             // the preceding command was accepted. `pause_before_sync` remains
@@ -969,24 +972,13 @@ where
         }
     }
 
-    fn apply_settings(&mut self, settings: ClientApplicationSettings) {
-        // Build complete replacement slices before borrowing the session mutably. The
-        // validated application command is infallible, and no adapter or I/O callback
-        // can observe a partially applied configuration.
-        let (mut behavior, mut desync, mut readiness) = {
-            let session = self.runtime.session();
-            (
-                session.behavior_config().clone(),
-                session.desync_config().clone(),
-                session.readiness_autoplay_config().clone(),
-            )
-        };
-        let config = settings.config;
-        self.streaming_playback_config = config.playback.streaming.clone();
-        self.runtime.set_playback_coordinator_config(
-            config.playback.streaming.playback_coordinator_config(),
-        );
-        let start = &config.playback.streaming.start_synchronization;
+    /// Applies validated streaming policies without replacing independently composed
+    /// connection, compatibility, readiness or environment overrides.
+    pub fn configure_streaming_playback(&mut self, config: StreamingPlaybackConfig) {
+        self.streaming_playback_config = config.clone();
+        self.runtime
+            .set_playback_coordinator_config(config.playback_coordinator_config());
+        let start = &config.start_synchronization;
         self.runtime
             .set_playback_barrier_start_config(PlaybackBarrierStartConfig {
                 policy: match start.policy {
@@ -1011,7 +1003,7 @@ where
                     }
                 },
             });
-        let room_buffering = &config.playback.streaming.room_buffering;
+        let room_buffering = &config.room_buffering;
         self.runtime.set_playback_barrier_room_buffering_config(
             PlaybackBarrierRoomBufferingConfig {
                 policy: match room_buffering.policy {
@@ -1031,7 +1023,24 @@ where
                 ..PlaybackBarrierRoomBufferingConfig::default()
             },
         );
+    }
 
+    fn apply_settings(&mut self, settings: ClientApplicationSettings) {
+        // Build complete replacement slices before borrowing the session mutably. The
+        // validated application command is infallible, and no adapter or I/O callback
+        // can observe a partially applied configuration.
+        let (mut behavior, mut desync, mut readiness) = {
+            let session = self.runtime.session();
+            (
+                session.behavior_config().clone(),
+                session.desync_config().clone(),
+                session.readiness_autoplay_config().clone(),
+            )
+        };
+        let config = settings.config;
+        self.runtime
+            .set_shared_playlist_sync_enabled(config.playback.shared_playlist_enabled);
+        self.configure_streaming_playback(config.playback.streaming.clone());
         behavior.show_same_room_osd = config.interface.show_same_room_osd;
         behavior.show_osd_warnings = config.interface.show_osd_warnings;
         behavior.show_noncontroller_osd = config.interface.show_noncontroller_osd;
@@ -1630,6 +1639,15 @@ where
         self.runtime.run_advance_playlist_after_natural_completion()
     }
 
+    pub fn has_pending_natural_playback_completion(&self) -> bool {
+        self.runtime.has_pending_natural_playback_completion()
+    }
+
+    pub fn invalidate_pending_natural_playback_completion(&mut self) {
+        self.runtime
+            .invalidate_pending_natural_playback_completion();
+    }
+
     pub fn run_queue_playlist_item(
         &mut self,
         file_name: impl Into<String>,
@@ -1791,6 +1809,23 @@ where
             return Ok(());
         }
         self.runtime.run_room_pause_sync_if_needed_at(now_seconds)
+    }
+
+    pub fn local_playback_offset_seconds(&self) -> f64 {
+        self.runtime.local_playback_offset_seconds()
+    }
+
+    pub fn local_offset_room_position_at(&self, now_seconds: f64) -> f64 {
+        self.runtime.local_offset_room_position_at(now_seconds)
+    }
+
+    pub fn set_local_playback_offset_seconds(
+        &mut self,
+        offset_seconds: f64,
+        now_seconds: f64,
+    ) -> Result<bool, PlayerError> {
+        self.runtime
+            .set_local_playback_offset_seconds(offset_seconds, now_seconds)
     }
 
     pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
@@ -2110,10 +2145,15 @@ where
 
     pub fn observe_external_player_end_of_file(
         &mut self,
+        completed_file: sorotte_player_api::LocalFileUpdate,
+        terminal_position_seconds: Option<f64>,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.runtime
-            .observe_external_player_end_of_file(now_seconds)
+        self.runtime.observe_external_player_end_of_file(
+            completed_file,
+            terminal_position_seconds,
+            now_seconds,
+        )
     }
 
     pub fn update_autoplay_check(
@@ -2159,6 +2199,13 @@ where
             dont_slow_down_with_me,
             connected,
         )
+    }
+
+    /// Sets whether this player follows canonical playlist load/reset intent.
+    /// CLI overrides use the same policy as application settings so all player
+    /// observation and correction paths retain the selected-media fence.
+    pub fn set_shared_playlist_sync_enabled(&mut self, enabled: bool) {
+        self.runtime.set_shared_playlist_sync_enabled(enabled);
     }
 
     pub fn run_reconnect_state_restore_validation_if_needed(&mut self) -> Result<(), PlayerError> {
@@ -3197,6 +3244,7 @@ mod tests {
         assert!(owner.session().has_pending_playlist_index_reset_intent());
 
         let mut opted_out = application_with_pending_successor_selection();
+        opted_out.set_shared_playlist_sync_enabled(false);
         opted_out
             .run_room_pause_sync_if_needed_at(4.0)
             .expect_err("a non-owner must preserve ordinary Syncplay pause synchronization");
@@ -3205,6 +3253,202 @@ mod tests {
             1,
             "an unsolicited playlist frame must not suspend an opted-out client's room sync"
         );
+    }
+
+    fn loaded_application_for_desync_selection() -> ClientApplication<TestPlayer> {
+        let mut application =
+            ClientApplication::new(ClientSession::default(), TestPlayer::default());
+        apply_active_playlist_protocol(
+            &mut application,
+            &["episode-a.mkv", "episode-b.mkv"],
+            0,
+            "bob",
+        );
+        application.session_mut().apply_message_json_at(
+            r#"{"State":{"playstate":{"position":9.8,"paused":false,"doSeek":false,"setBy":"bob"}}}"#,
+            1.0,
+        ).unwrap();
+        application
+            .synchronize_canonical_playlist_selection_to_player()
+            .unwrap();
+        application
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw)
+            .unwrap();
+        application
+            .synchronize_canonical_playlist_selection_to_player()
+            .unwrap();
+        observe_desync_selection_position(&mut application, 9.8, false, 1.0);
+        application.run_room_pause_sync_if_needed_at(1.0).unwrap();
+        assert!(
+            !application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+        application
+    }
+
+    fn observe_desync_selection_position(
+        application: &mut ClientApplication<TestPlayer>,
+        position: f64,
+        paused: bool,
+        now: f64,
+    ) {
+        application.with_player_io(|player| {
+            use sorotte_player_api::*;
+            let generation = player.media_generation;
+            player
+                .events()
+                .push_event(PlayerEvent::TransportDelta(PlayerTransportDelta {
+                    load_attempt_id: Some(LoadAttemptId::new(generation)),
+                    media_generation: Some(PlayerMediaGeneration::new(generation)),
+                    observed_at: Some(PlayerObservationTimestamp::from_adapter_start(
+                        Duration::from_secs_f64(now),
+                    )),
+                    phase: Some(if paused {
+                        PlayerTransportPhase::ReadyPaused
+                    } else {
+                        PlayerTransportPhase::Playing
+                    }),
+                    position_seconds: Some(position),
+                    playback_rate: Some(1.0),
+                    logical_pause: Some(paused),
+                    paused_for_cache: Some(false),
+                    seeking: Some(false),
+                    ..PlayerTransportDelta::default()
+                }));
+        });
+    }
+
+    fn select_desync_successor(application: &mut ClientApplication<TestPlayer>, index: i64) {
+        application
+            .session_mut()
+            .apply_message_json(
+                &serde_json::json!({"Set":{"playlistIndex":{"index":index,"user":"bob"}}})
+                    .to_string(),
+            )
+            .unwrap();
+        application.session_mut().apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":false,"setBy":"bob"}}}"#,
+            1.1,
+        ).unwrap();
+        assert!(
+            application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_desync_waits_for_successor_load_then_resumes_correction() {
+        let mut application = loaded_application_for_desync_selection();
+        select_desync_successor(&mut application, 1);
+        let before = application.player().position_calls;
+        application
+            .run_desync_correction_if_needed(1.2, false, false, true)
+            .unwrap();
+        assert_eq!(
+            application.player().position_calls,
+            before,
+            "successor state must not seek the retiring physical file"
+        );
+        application
+            .synchronize_canonical_playlist_selection_to_player()
+            .unwrap();
+        assert_eq!(
+            application.player().opened,
+            ["episode-a.mkv", "episode-b.mkv"]
+        );
+        application
+            .run_desync_correction_if_needed(1.3, false, false, true)
+            .unwrap();
+        assert_eq!(
+            application.player().position_calls,
+            before,
+            "accepted load alone must not release the reset fence"
+        );
+        application
+            .publish_pending_local_file_update(PrivacyMode::SendRaw, PrivacyMode::SendRaw)
+            .unwrap();
+        application
+            .synchronize_canonical_playlist_selection_to_player()
+            .unwrap();
+        assert_eq!(application.player().position_seconds, Some(0.0));
+        assert!(
+            !application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+        let after_reset = application.player().position_calls;
+        observe_desync_selection_position(&mut application, 0.0, true, 2.0);
+        application.session_mut().apply_message_json_at(
+            r#"{"State":{"playstate":{"position":5.0,"paused":true,"doSeek":true,"setBy":"bob"}}}"#,
+            2.0,
+        ).unwrap();
+        application
+            .run_desync_correction_if_needed(2.0, false, false, true)
+            .unwrap();
+        assert!(
+            application.player().position_calls > after_reset,
+            "ordinary correction must resume on the observed successor"
+        );
+        assert_eq!(application.player().position_seconds, Some(5.0));
+    }
+
+    #[test]
+    fn canonical_playlist_desync_fence_preserves_same_file_replay_reset() {
+        let mut application = loaded_application_for_desync_selection();
+        select_desync_successor(&mut application, 0);
+        let before = application.player().position_calls;
+        application
+            .run_desync_correction_if_needed(1.2, false, false, true)
+            .unwrap();
+        assert_eq!(application.player().position_calls, before);
+        application
+            .synchronize_canonical_playlist_selection_to_player()
+            .unwrap();
+        assert_eq!(application.player().opened, ["episode-a.mkv"]);
+        assert_eq!(application.player().position_calls, before + 1);
+        assert_eq!(application.player().position_seconds, Some(0.0));
+        assert!(application.player().paused);
+        assert!(
+            !application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_desync_fence_does_not_suspend_opted_out_correction() {
+        let mut application = loaded_application_for_desync_selection();
+        application.set_shared_playlist_sync_enabled(false);
+        select_desync_successor(&mut application, 1);
+        let before = application.player().position_calls;
+        application
+            .run_desync_correction_if_needed(1.2, false, false, true)
+            .unwrap();
+        assert!(application.player().position_calls > before);
+        assert_eq!(application.player().position_seconds, Some(0.0));
+        assert!(
+            application
+                .session()
+                .has_pending_playlist_index_reset_intent()
+        );
+    }
+
+    #[test]
+    fn canonical_playlist_desync_reports_real_failure_after_selection_settles() {
+        let mut application = loaded_application_for_desync_selection();
+        application.with_player_io(|player| {
+            player.position_error = Some("seek rejected while media is active".to_owned())
+        });
+        application.session_mut().apply_message_json_at(
+            r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":true,"setBy":"bob"}}}"#,
+            1.1,
+        ).unwrap();
+        application
+            .run_desync_correction_if_needed(1.2, false, false, true)
+            .unwrap_err();
+        assert!(!application.has_pending_natural_playback_completion());
     }
 
     #[test]

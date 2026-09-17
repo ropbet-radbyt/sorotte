@@ -542,6 +542,7 @@ impl GuiPersistedConfigRuntimeOwner {
         candidate: media_resolution::GuiMediaResolutionCandidate,
         started: &StartedMediaLoad,
     ) {
+        let completion_selection = self.current_playback_completion_selection();
         let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
             return;
         };
@@ -559,12 +560,59 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.player_command_id = started.player_command_id;
         attempt.player_media_generation = started.player_media_generation;
         attempt.load_attempt_id = None;
+        attempt.completion_selection = Some(completion_selection);
         attempt.media_confirmation_pending = started.player_command_id.is_some();
         attempt.state = PlaylistResolutionAttemptState::Loading;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
         attempt.missing_reported = false;
         attempt.untrusted_reported = false;
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_owner) fn bind_selected_local_origins_for_test(
+        &mut self,
+        state: &GuiRuntimeState,
+        paths: Vec<String>,
+    ) -> GuiPlaylistLocalOriginBindingOutcome {
+        let dispatch = self
+            .shared_playlist_open_dispatch_for_selected_paths_impl(state, paths)
+            .unwrap();
+        let rows = state
+            .playlist
+            .main_window
+            .playlist
+            .iter()
+            .map(|row| (row.entry_id, row.label.clone()))
+            .collect::<Vec<_>>();
+        self.remember_local_shared_playlist_media_paths(state, &dispatch, &rows)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app::runtime_owner) fn open_media_match_resolution_candidate_for_test(
+        &mut self,
+        state: &GuiRuntimeState,
+        resolved_path: String,
+    ) -> SelectedPlaylistMediaSyncOutcome {
+        let (index, target) = self
+            .current_shared_playlist_index_and_target(state)
+            .unwrap();
+        self.reconcile_local_shared_playlist_media_paths(state);
+        let row = &state.playlist.main_window.playlist[index];
+        self.ensure_playlist_resolution_attempt(
+            row.entry_id,
+            self.playlist_resolution.generation,
+            &target,
+            row.source_state.policy,
+        );
+        let mut plan = media_resolution::GuiMediaResolutionPlan::new(&target);
+        plan.push_media_match_candidate(resolved_path);
+        self.open_media_resolution_candidate(
+            state,
+            &target,
+            plan.best_candidate().cloned().unwrap(),
+            false,
+        )
     }
 
     #[cfg(test)]
@@ -599,6 +647,14 @@ impl GuiPersistedConfigRuntimeOwner {
         provider_id: GuiMediaSourceProviderId,
     ) {
         let current_file = self.player_local_file.clone();
+        let current_media_generation = match self.ordered_player_events.transport.media_generation {
+            SnapshotField::Known(generation) => Some(generation),
+            _ => None,
+        };
+        let current_load_attempt = match self.ordered_player_events.transport.load_attempt_id {
+            SnapshotField::Known(attempt_id) => Some(attempt_id),
+            _ => None,
+        };
         let Some(attempt) = self.playlist_resolution_attempt.as_mut() else {
             return;
         };
@@ -615,13 +671,17 @@ impl GuiPersistedConfigRuntimeOwner {
         attempt.candidate = None;
         attempt.candidate_plex_operation_context = None;
         attempt.player_command_id = None;
-        attempt.player_media_generation = None;
-        attempt.load_attempt_id = None;
+        // Re-resolving an already loaded alternate confirms this same physical
+        // owner. Preserve that proof for terminal events after the candidate is
+        // compacted; a filename alone cannot identify a Media Match edition.
+        attempt.player_media_generation = current_media_generation;
+        attempt.load_attempt_id = current_load_attempt;
         attempt.media_confirmation_pending = false;
         attempt.state = PlaylistResolutionAttemptState::Active;
         attempt.fallback_pending = false;
         attempt.handoff_pending = false;
         let playlist_generation = attempt.playlist_generation;
+        self.bind_initial_completion_playlist_selection_from_current_player();
         emit_media_resolution_transition(
             "MEDIA-PLAYABLE-001",
             sorotte_lifecycle_evidence::Trigger::PlayerEvent,

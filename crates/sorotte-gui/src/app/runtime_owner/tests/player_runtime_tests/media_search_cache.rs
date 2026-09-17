@@ -3,6 +3,146 @@ use crate::app::runtime_stack::test_support::session_with_peer_files;
 use crate::app::testing::support::pump_worker_state;
 use crate::app::testing::support::runtime_state_for_shell;
 
+#[test]
+fn explicit_relative_target_outweighs_current_player_basename_locality() {
+    let fixture = tempfile::tempdir().expect("media fixture");
+    let library = fixture.path().join("Library");
+    let current_dir = library.join("Season1");
+    let requested_dir = library.join("Season2");
+    std::fs::create_dir_all(&current_dir).unwrap();
+    std::fs::create_dir_all(&requested_dir).unwrap();
+    let current = current_dir.join("episode1.mkv");
+    let wrong = current_dir.join("episode2.mkv");
+    let expected = requested_dir.join("episode2.mkv");
+    for path in [&current, &wrong, &expected] {
+        std::fs::write(path, b"fixture").unwrap();
+    }
+    // The fixture input can contain a Windows short alias; player-facing paths
+    // use the canonical native spelling of that same complete file path.
+    let wrong_player_path = std::fs::canonicalize(&wrong).unwrap();
+    let expected_player_path = std::fs::canonicalize(&expected).unwrap();
+    let state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        media_search_directories: Some(vec![library.to_string_lossy().into_owned()]),
+        ..StoredClientSettings::default()
+    });
+    let runtime = runtime_state_for_shell(&state);
+    let mut owner = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(current.to_string_lossy().into_owned()),
+    );
+    let basename = owner
+        .resolve_main_window_user_media_target_for_automatic_sync(&runtime, "episode2.mkv")
+        .unwrap();
+    assert!(
+        matches!(basename, GuiUserMediaTargetResolution::Resolved { ref path, .. }
+        if std::fs::canonicalize(path).unwrap() == wrong_player_path),
+        "control: basename locality should work"
+    );
+    let absolute = owner
+        .resolve_main_window_user_media_target_for_automatic_sync(
+            &runtime,
+            expected.to_str().unwrap(),
+        )
+        .unwrap();
+    assert!(
+        matches!(absolute, GuiUserMediaTargetResolution::Resolved { ref path, .. }
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
+        "control: absolute target resolves correctly"
+    );
+    let mut fresh = GuiPersistedConfigRuntimeOwner::with_config_path(None);
+    let without_current = fresh
+        .resolve_main_window_user_media_target_for_automatic_sync(&runtime, "Season2/episode2.mkv")
+        .unwrap();
+    assert!(
+        matches!(without_current, GuiUserMediaTargetResolution::Resolved { ref path, .. }
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
+        "control: relative target resolves correctly without current-player locality"
+    );
+    let explicit = owner
+        .resolve_main_window_user_media_target_for_automatic_sync(&runtime, "Season2/episode2.mkv")
+        .unwrap();
+    assert!(
+        matches!(explicit, GuiUserMediaTargetResolution::Resolved { ref path, .. }
+        if std::fs::canonicalize(path).unwrap() == expected_player_path),
+        "an existing exact relative path under the search root must outrank the current directory's basename-only match"
+    );
+    let missing_relative = owner
+        .resolve_main_window_user_media_target_for_automatic_sync(&runtime, "Season3/episode2.mkv")
+        .unwrap();
+    assert!(
+        !matches!(
+            missing_relative,
+            GuiUserMediaTargetResolution::Resolved { .. }
+        ),
+        "a missing relative target must not fall back to another season's basename"
+    );
+}
+
+#[test]
+fn relative_playlist_selection_dispatches_exact_requested_season() {
+    #[derive(Default)]
+    struct RecordingPlayer(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl PlayerAdapter for RecordingPlayer {
+        fn name(&self) -> &'static str {
+            "relative-path-recorder"
+        }
+        fn open_file(&mut self, path: &str) -> Result<(), sorotte_player_api::PlayerError> {
+            self.0.lock().unwrap().push(path.to_owned());
+            Ok(())
+        }
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    let library = fixture.path().join("Library");
+    let current_dir = library.join("Season1");
+    let requested_dir = library.join("Season2");
+    std::fs::create_dir_all(&current_dir).unwrap();
+    std::fs::create_dir_all(&requested_dir).unwrap();
+    let current = current_dir.join("episode1.mkv");
+    let wrong = current_dir.join("episode2.mkv");
+    let expected = requested_dir.join("episode2.mkv");
+    for path in [&current, &wrong, &expected] {
+        std::fs::write(path, b"fixture").unwrap();
+    }
+    let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut owner, transport) = GuiPersistedConfigRuntimeOwner::with_config_path(None)
+        .with_recording_chat_session_runtime("alice", "room1")
+        .unwrap();
+    owner.player = Some(GuiOwnedPlayer::Custom(Box::new(RecordingPlayer(
+        opened.clone(),
+    ))));
+    owner.player_local_file = Some(
+        sorotte_player_api::LocalFileUpdate::new("episode1.mkv")
+            .with_path(current.to_string_lossy().into_owned()),
+    );
+    let handle = GuiQueuedRuntimeBridgeHandle::default();
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        username: Some("alice".to_owned()),
+        room: Some("room1".to_owned()),
+        shared_playlist_enabled: Some(true),
+        media_search_directories: Some(vec![library.to_string_lossy().into_owned()]),
+        ..StoredClientSettings::default()
+    });
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    transport.push_inbound_protocol_lines([
+        r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5","features":{"chat":true,"sharedPlaylists":true}}}"#.to_owned(),
+        r#"{"Set":{"playlistChange":{"files":["Season2/episode2.mkv"],"user":"bob"}}}"#.to_owned(),
+        r#"{"Set":{"playlistIndex":{"index":0,"user":"bob"}}}"#.to_owned(),
+    ]);
+    pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
+    let actual = opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|path| std::fs::canonicalize(path).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![std::fs::canonicalize(&expected).unwrap()],
+        "explicit playlist selection must open the requested relative path"
+    );
+}
+
 fn wait_for_exact_inventory(
     owner: &mut GuiPersistedConfigRuntimeOwner,
     state: &SorotteGuiShellAppState,

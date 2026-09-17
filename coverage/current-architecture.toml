@@ -1,11 +1,11 @@
 schema_version = 1
 
 [release]
-version = "0.2.18"
-base_sha = "b86696ec6075d2b5bf92bec17d4abc02277847eb"
+version = "0.2.19"
+base_sha = "5f25d584eb9a7a18da67b08e4503d73cd40627ce"
 fixing_sha = "pending"
 hosted = "pending"
-note = "The v0.2.18 candidate moves Media Match indexing and lookup off the GUI runtime pump, preserves scoped playlist and index ownership, and protects confirmed native Pause intent from playback correction and same-revision heartbeats. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate."
+note = "The v0.2.19 candidate fixes playback completion and buffering, room membership and stale coordination, exact media identity and asynchronous resolution, and CLI streaming settings, reconnect and local offsets. See docs/audits/v0.2.19-bugfixes.md for the regression inventory. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate."
 
 [[crate]]
 name = "sorotte-secret"

@@ -721,8 +721,8 @@ pub fn load_media_match_v3_record_for_path(
               JOIN media_files_v3 ON media_files_v3.file_id = fingerprints_v3.file_id
               WHERE fingerprints_v3.settings_id = ?1
                 AND media_files_v3.normalized_path = ?2
+                AND media_files_v3.modified_unix_millis = ?3
                 AND media_files_v3.size_bytes = ?4
-              ORDER BY CASE WHEN media_files_v3.modified_unix_millis = ?3 THEN 0 ELSE 1 END
               LIMIT 1",
         )
         .map_err(|error| format!("failed preparing V3 record load: {error}"))?;
@@ -1722,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn load_audio_record_tolerates_modified_time_drift_when_path_and_size_match() {
+    fn load_audio_record_requires_revalidation_after_modified_time_drift() {
         let connection = Connection::open_in_memory().unwrap();
         initialize_media_match_v3_index(&connection).unwrap();
         let record = test_record("mtime-drift.mkv", &[1, 2, 3, 4]);
@@ -1735,11 +1735,25 @@ mod tests {
             record.identity.modified_unix_millis + 39_600_000,
             record.identity.size_bytes,
         )
-        .unwrap()
         .unwrap();
 
-        assert_eq!(loaded.audio_anchors.len(), 4);
-        assert_eq!(loaded.identity, record.identity);
+        // Timestamp drift need not mean different audio, but path and size alone
+        // cannot establish that. A fresh extraction can restore the same anchors.
+        assert!(loaded.is_none());
+        let mut revalidated = record.clone();
+        revalidated.identity.modified_unix_millis += 39_600_000;
+        save_media_match_v3_record(&connection, &revalidated, None).unwrap();
+        let loaded = load_media_match_v3_record_for_path(
+            &connection,
+            &revalidated.identity.normalized_path,
+            &revalidated.extraction_settings,
+            revalidated.identity.modified_unix_millis,
+            revalidated.identity.size_bytes,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded.audio_anchors, record.audio_anchors);
+        assert_eq!(loaded.identity, revalidated.identity);
     }
 
     #[test]

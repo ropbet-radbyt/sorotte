@@ -180,12 +180,48 @@ impl GuiPersistedConfigRuntimeOwner {
     pub(super) fn handle_undo_playlist_change_request(
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
-        _projected_state: &mut GuiRuntimeState,
+        projected_state: &mut GuiRuntimeState,
     ) -> bool {
         if let Some(session) = self.session.as_mut() {
             match session.undo_playlist_change_with_delivery_fence() {
                 Ok(delivery_fence) => {
-                    self.arm_playlist_player_effect_delivery_fence(delivery_fence)
+                    // Chat undo has no preceding shell edit. Restore local row
+                    // provenance only for the playlist the session actually
+                    // accepted, before its generic label projection loses the
+                    // identity of rows that were removed.
+                    let undo_projection = session
+                        .projected_current_room_playlist()
+                        .filter(|playlist| {
+                            projected_state.playlist.undo_snapshot.as_ref() == Some(&playlist.files)
+                        })
+                        .and_then(|playlist| {
+                            let entry_ids = projected_state
+                                .playlist
+                                .entry_id_undo_snapshot
+                                .as_ref()
+                                .filter(|ids| ids.len() == playlist.files.len())?;
+                            let mut snapshot = MainWindowRuntimeSnapshot::from_shell_state(
+                                &projected_state.playlist.main_window,
+                            );
+                            snapshot.playlist = playlist.files.clone();
+                            snapshot.active_playlist_index =
+                                playlist.index.and_then(|index| usize::try_from(index).ok());
+                            snapshot.playlist_entry_ids = entry_ids.clone();
+                            snapshot.playlist_source_states = projected_state
+                                .playlist
+                                .source_undo_snapshot
+                                .clone()
+                                .unwrap_or_default();
+                            Some(snapshot)
+                        });
+                    self.arm_playlist_player_effect_delivery_fence(delivery_fence);
+                    if let Some(snapshot) = undo_projection {
+                        Self::push_actions_and_project(
+                            handle,
+                            projected_state,
+                            vec![GuiShellAction::ApplyMainWindowRuntimeSnapshot(snapshot)],
+                        );
+                    }
                 }
                 Err(error) => {
                     handle.push_action(GuiShellAction::PushTransientNotification {

@@ -441,6 +441,7 @@ pub(super) struct GuiPersistedConfigRuntimeOwner {
     pub(super) attached_media_search_build_state: GuiAttachedMediaSearchBuildState,
     pub(super) attached_media_search_build_roots: Vec<String>,
     pub(super) attached_media_search_index_revision: u64,
+    pub(super) attached_media_search_completion_pending: bool,
     pub(super) unresolved_attached_media_target: Option<String>,
     pub(super) last_attached_media_resolution_trigger: Option<GuiAutomaticMediaResolutionTrigger>,
     pub(super) last_applied_attached_room_playstate: Option<GuiSessionRoomPlaystate>,
@@ -1149,6 +1150,7 @@ impl std::fmt::Debug for GuiPlexStreamResolveWorkerResult {
 pub(super) struct GuiPendingPlaylistSourceResolution {
     pub(super) index: usize,
     pub(super) entry_id: GuiPlaylistEntryId,
+    pub(super) selection_entry_id: Option<GuiPlaylistEntryId>,
     pub(super) generation: u64,
     pub(super) target: String,
     pub(super) provider_id: GuiMediaSourceProviderId,
@@ -1160,6 +1162,7 @@ impl std::fmt::Debug for GuiPendingPlaylistSourceResolution {
             .debug_struct("GuiPendingPlaylistSourceResolution")
             .field("index", &self.index)
             .field("entry_id", &self.entry_id)
+            .field("selection_entry_id", &self.selection_entry_id)
             .field("generation", &self.generation)
             .field("target", &sorotte_secret::REDACTED_SECRET)
             .field("provider_id", &self.provider_id)
@@ -1434,6 +1437,7 @@ mod media_target_debug_tests {
         let pending_playlist = GuiPendingPlaylistSourceResolution {
             index: 2,
             entry_id: GuiPlaylistEntryId::next(),
+            selection_entry_id: None,
             generation: 3,
             target: secret.to_owned(),
             provider_id: GuiMediaSourceProviderId::plex_stream(),

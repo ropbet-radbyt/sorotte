@@ -218,6 +218,15 @@ jobs:
             --artifact-dir target/verification/playback-lifecycle-release \
             --output-dir target/verification/playback-lifecycle-release-safe
 
+      - name: Validate and stage privacy-safe loop release evidence
+        id: playback_lifecycle_loop_evidence
+        if: always()
+        continue-on-error: true
+        run: |
+          python scripts/playback_lifecycle_system.py stage-safe-evidence \
+            --artifact-dir target/verification/playback-lifecycle-loop-release \
+            --output-dir target/verification/playback-lifecycle-loop-release-safe
+
       - name: Require every declared lifecycle gap to be closed
         id: playback_lifecycle_closed
         if: always()
@@ -238,16 +247,31 @@ jobs:
           retention-days: 30
           overwrite: true
 
+      - name: Upload privacy-safe loop lifecycle release evidence
+        id: playback_lifecycle_loop_evidence_upload
+        if: ${{ always() && steps.playback_lifecycle_loop_evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-lifecycle-loop-release-${{ inputs.candidate_sha }}
+          path: target/verification/playback-lifecycle-loop-release-safe
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+
       - name: Enforce exact-candidate lifecycle release gate
         id: ci_enforce_exact_candidate_lifecycle_rele_c57902a6
         if: always()
         env:
           PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME: ${{ steps.playback_lifecycle_system.outcome }}
           PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME: ${{ steps.playback_lifecycle_evidence.outcome }}
+          PLAYBACK_LIFECYCLE_LOOP_OUTCOME: ${{ steps.ci_run_loop_boundary_exact_candidate_life_5c57c55a.outcome }}
+          PLAYBACK_LIFECYCLE_LOOP_EVIDENCE_OUTCOME: ${{ steps.playback_lifecycle_loop_evidence.outcome }}
           PLAYBACK_LIFECYCLE_CLOSED_OUTCOME: ${{ steps.playback_lifecycle_closed.outcome }}
         run: |
           test "$PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME" = success
           test "$PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME" = success
+          test "$PLAYBACK_LIFECYCLE_LOOP_OUTCOME" = success
+          test "$PLAYBACK_LIFECYCLE_LOOP_EVIDENCE_OUTCOME" = success
           test "$PLAYBACK_LIFECYCLE_CLOSED_OUTCOME" = success
 
       - name: Attest exact Linux suite and candidate digests

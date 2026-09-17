@@ -433,7 +433,6 @@ impl ConsumerState {
                 outcome,
                 ..
             } => {
-                self.active_attempt = None;
                 self.logical_terminal = Some((media_generation, outcome));
             }
             PlayerEvent::LocalFileChanged { .. }

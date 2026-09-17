@@ -371,7 +371,13 @@ where
         &mut self,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
-        self.drain_player_transport_coordination(now_seconds)?;
+        self.drain_player_transport_for_room_correction(now_seconds)?;
+        if self
+            .playback_coordination
+            .canonical_playlist_reset_pending(&self.session)
+        {
+            return Ok(());
+        }
 
         // Reconnect validation owns correction immediately after reconnect
         // state restore. Transport telemetry is deliberately drained first so
@@ -491,11 +497,12 @@ where
         dont_slow_down_with_me: bool,
         speed_supported: bool,
     ) -> Result<(), PlayerError> {
-        if let Err(error) = self.drain_player_transport_coordination(now_seconds) {
-            if self.refresh_terminal_playback_after_desync_error(now_seconds) {
-                return Ok(());
-            }
-            return Err(error);
+        self.drain_player_transport_for_room_correction(now_seconds)?;
+        if self
+            .playback_coordination
+            .canonical_playlist_reset_pending(&self.session)
+        {
+            return Ok(());
         }
 
         if self.desync_correction_is_terminally_obsolete() {
@@ -554,7 +561,7 @@ where
             Ok(()) => Ok(()),
             Err(error) => {
                 self.session.restore_local_action_state(session_snapshot);
-                if self.refresh_terminal_playback_after_desync_error(now_seconds) {
+                if self.refresh_terminal_playback_after_sync_error(now_seconds) {
                     Ok(())
                 } else {
                     Err(error)
@@ -563,7 +570,19 @@ where
         }
     }
 
-    fn refresh_terminal_playback_after_desync_error(&mut self, now_seconds: f64) -> bool {
+    fn drain_player_transport_for_room_correction(
+        &mut self,
+        now_seconds: f64,
+    ) -> Result<(), PlayerError> {
+        match self.drain_player_transport_coordination(now_seconds) {
+            Err(error) if !self.refresh_terminal_playback_after_sync_error(now_seconds) => {
+                Err(error)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn refresh_terminal_playback_after_sync_error(&mut self, now_seconds: f64) -> bool {
         // A synchronous player command can lose a race with EOF: the command
         // response fails because the file is already gone while the terminal
         // event is waiting immediately behind it. Refresh once before turning

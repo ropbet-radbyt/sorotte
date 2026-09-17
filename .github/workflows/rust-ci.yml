@@ -1151,7 +1151,7 @@ jobs:
     needs: preflight
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: .
@@ -1175,7 +1175,9 @@ jobs:
         id: ci_install_generated_media_tools_3b763091
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg
+          sudo apt-get install --yes --no-install-recommends \
+            ffmpeg pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev libgl1-mesa-dev
 
       - name: Verify generated-media tools
         id: ci_verify_generated_media_tools_7b98165c
@@ -1190,6 +1192,15 @@ jobs:
         run: |
           cargo test --locked -p sorotte-media-match --test generated_media_v3 \
             v3_manifest_harness_runs_small_synthetic_case \
+            -- --ignored --exact --nocapture
+          SOROTTE_MEDIA_MATCH_FFMPEG="$(command -v ffmpeg)"
+          SOROTTE_MEDIA_MATCH_FFPROBE="$(command -v ffprobe)"
+          export SOROTTE_MEDIA_MATCH_FFMPEG SOROTTE_MEDIA_MATCH_FFPROBE
+          cargo test --locked -p sorotte-gui --lib \
+            app::runtime_owner::tests::player_runtime_tests::fingerprint_freshness::media_fingerprint_generated_equal_length_audio_replacement \
+            -- --ignored --exact --nocapture
+          cargo test --locked -p sorotte-gui --lib \
+            app::runtime_owner::tests::player_runtime_tests::fingerprint_freshness::media_fingerprint_generated_timestamp_drift_revalidates_same_audio \
             -- --ignored --exact --nocapture
 
   mpv-pr-semantics:

@@ -132,6 +132,20 @@ def ignored_test_cargo_command(entry: dict[str, Any]) -> list[str]:
             "--all-features", "--no-tests", "fail", "-E",
             f"test(={entry['parent_test']})",
         ]
+    if len(parts) >= 4 and parts[0] == "crates" and parts[2] == "src" and source.suffix == ".rs":
+        # Library owner contracts need private runtime access. Bind their complete
+        # module path, so a shortened filter cannot silently run a different test.
+        manifest_path = REPO_ROOT / parts[0] / parts[1] / "Cargo.toml"
+        with manifest_path.open("rb") as handle:
+            package = tomllib.load(handle)["package"]["name"]
+        modules = list(parts[3:-1])
+        if source.stem not in {"lib", "mod"}:
+            modules.append(source.stem)
+        qualified_test = "::".join([*modules, entry["test"]])
+        return [
+            "cargo", "test", "--locked", "-p", package, "--lib", qualified_test,
+            "--", "--ignored", "--exact", "--nocapture",
+        ]
     if (
         len(parts) != 4
         or parts[0] != "crates"
@@ -1757,7 +1771,9 @@ class CiPolicyTests(unittest.TestCase):
             "Install generated-media tools",
             """
             sudo apt-get update
-            sudo apt-get install --yes --no-install-recommends ffmpeg
+            sudo apt-get install --yes --no-install-recommends
+            ffmpeg pkg-config libfontconfig1-dev libxkbcommon-dev libwayland-dev
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev libgl1-mesa-dev
             """,
         )
         self.assert_exact_run(
@@ -1778,6 +1794,15 @@ class CiPolicyTests(unittest.TestCase):
             """
             cargo test --locked -p sorotte-media-match --test generated_media_v3
             v3_manifest_harness_runs_small_synthetic_case
+            -- --ignored --exact --nocapture
+            SOROTTE_MEDIA_MATCH_FFMPEG="$(command -v ffmpeg)"
+            SOROTTE_MEDIA_MATCH_FFPROBE="$(command -v ffprobe)"
+            export SOROTTE_MEDIA_MATCH_FFMPEG SOROTTE_MEDIA_MATCH_FFPROBE
+            cargo test --locked -p sorotte-gui --lib
+            app::runtime_owner::tests::player_runtime_tests::fingerprint_freshness::media_fingerprint_generated_equal_length_audio_replacement
+            -- --ignored --exact --nocapture
+            cargo test --locked -p sorotte-gui --lib
+            app::runtime_owner::tests::player_runtime_tests::fingerprint_freshness::media_fingerprint_generated_timestamp_drift_revalidates_same_audio
             -- --ignored --exact --nocapture
             """,
         )
@@ -2801,13 +2826,14 @@ class CiPolicyTests(unittest.TestCase):
                             "(synchronize_player_availability|"
                             "record_contained_external_player_failure|"
                             "run_participant_status_heartbeat|"
+                            "set_shared_playlist_sync_enabled|"
                             "ParticipantStatusReportPresentation::("
                             "from_client_view|position_evidence_is_eligible|"
                             "buffer_evidence_is_eligible|headline_label)|"
                             "delete field (policy|quorum_percent|"
                             "maximum_pause_seconds) from struct "
                             "PlaybackBarrierRoomBufferingConfig expression in "
-                            "ClientApplication<P>::apply_settings)"
+                            "ClientApplication<P>::configure_streaming_playback)"
                         ),
                         "test_target": "lib",
                         "test_filter": "",
@@ -4512,7 +4538,7 @@ class CiPolicyTests(unittest.TestCase):
                 self.assertRegex(function, mutant_filter)
         context = (
             " from struct PlaybackBarrierRoomBufferingConfig expression in "
-            "ClientApplication<P>::apply_settings"
+            "ClientApplication<P>::configure_streaming_playback"
         )
 
         for field in ("policy", "quorum_percent", "maximum_pause_seconds"):
@@ -4523,7 +4549,7 @@ class CiPolicyTests(unittest.TestCase):
             f"delete field grace_seconds{context}",
             (
                 "delete field policy from struct OtherRoomBufferingConfig "
-                "expression in ClientApplication<P>::apply_settings"
+                "expression in ClientApplication<P>::configure_streaming_playback"
             ),
             (
                 "delete field policy from struct PlaybackBarrierRoomBufferingConfig "

@@ -43,6 +43,9 @@ use sorotte_protocol::{
 
 mod frame_capacity_tests;
 mod ping_timing_tests;
+mod playback_correctness_regressions;
+mod room_membership_regressions;
+mod selection_coordination_regressions;
 
 // Projection unit tests install a previously issued challenge as a fixture.
 // Actual issuance, wire roundtrips, replay and reconnect are tested separately

@@ -360,6 +360,11 @@ impl ClientSession {
     }
 
     pub(super) fn apply_readiness_v2_extension(&mut self, extension: ReadinessSetExtension) {
+        if extension.membership.as_ref().is_some_and(|membership| {
+            self.model.room.name.as_deref() != Some(membership.room.as_str())
+        }) {
+            return;
+        }
         let current_revision = self
             .model
             .readiness
@@ -403,6 +408,29 @@ impl ClientSession {
                     .insert(participant.username.clone(), participant);
                 self.model.readiness.canonical_room = self.model.room.name.clone();
             }
+        }
+
+        if let Some(membership) = extension.membership
+            && self.model.room.name.as_deref() == Some(membership.room.as_str())
+            && self.model.readiness.canonical_room.as_deref() == Some(membership.room.as_str())
+            && self
+                .model
+                .connection
+                .username
+                .as_ref()
+                .and_then(|username| {
+                    self.model
+                        .readiness
+                        .canonical_snapshot
+                        .as_ref()?
+                        .participants
+                        .get(username)
+                })
+                .is_some_and(|participant| {
+                    participant.membership_epoch == membership.membership_epoch
+                })
+        {
+            self.model.readiness.reconnect_token = Some(membership.reconnect_token);
         }
 
         let accepted_operation = self

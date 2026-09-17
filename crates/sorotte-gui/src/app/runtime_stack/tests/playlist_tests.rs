@@ -225,7 +225,11 @@ fn gui_client_session_marks_single_item_loop_playlist_as_auto_advanceable() {
         .expect("local file update should apply");
 
     assert!(
-        GuiClientSession::can_auto_advance_to_next_playlist_item(&adapter),
+        !adapter
+            .runtime
+            .session()
+            .runtime_actions_for_local_playlist_next()
+            .is_empty(),
         "single-item loop playlists should be eligible for EOF auto-advance when the local player is on the selected item"
     );
 }

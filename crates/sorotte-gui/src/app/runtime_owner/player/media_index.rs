@@ -742,6 +742,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.attached_media_search_progress_updated_at = None;
                 self.attached_media_search_index_revision =
                     self.attached_media_search_index_revision.wrapping_add(1);
+                self.attached_media_search_completion_pending = true;
                 self.attached_media_search_next_retry_at =
                     refresh_retry_required.then_some(Instant::now() + retry_interval);
                 let next_state = if refresh_retry_required {
@@ -786,6 +787,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 self.attached_media_search_progress_updated_at = None;
                 self.attached_media_search_index_revision =
                     self.attached_media_search_index_revision.wrapping_add(1);
+                self.attached_media_search_completion_pending = true;
                 self.attached_media_search_next_retry_at = Some(Instant::now() + retry_interval);
                 self.set_attached_media_search_build_state(
                     &roots,

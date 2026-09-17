@@ -149,6 +149,7 @@ fn gui_persisted_config_runtime_owner_uses_attached_player_for_media_open_and_se
         attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
         attached_media_search_build_roots: Vec::new(),
         attached_media_search_index_revision: 0,
+        attached_media_search_completion_pending: false,
         unresolved_attached_media_target: None,
         last_attached_media_resolution_trigger: None,
         last_applied_attached_room_playstate: None,

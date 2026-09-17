@@ -105,6 +105,7 @@ impl SorotteGuiShellAppState {
             .active_playlist_index
             .and_then(|active_index| self.main_window.playlist.get(active_index))
             .map(|row| row.entry_id);
+        self.remember_shared_playlist_undo_snapshot();
         let removed_entry_id = self.main_window.playlist[index].entry_id;
         self.main_window.playlist.remove(index);
         self.main_window.active_playlist_index = if active_entry_id == Some(removed_entry_id) {

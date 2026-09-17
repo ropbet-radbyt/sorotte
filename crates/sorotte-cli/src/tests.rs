@@ -102,6 +102,9 @@ static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
 static PANIC_SAFE_ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
+mod local_room_and_offset;
+mod streaming_policy_startup;
+
 #[test]
 fn client_runtime_clock_is_monotonic_and_unix_domain_compatible() {
     let wall_before = SystemTime::now()

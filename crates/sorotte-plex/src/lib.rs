@@ -1838,27 +1838,44 @@ where
         &self,
         uri: &PlexPlaylistUri,
     ) -> PlexResult<(String, String)> {
-        if selected_server_matches_machine_identifier(&self.config, &uri.machine_identifier) {
-            return configured_server_url_and_token(&self.config);
-        }
+        server_url_and_token_for_playlist_uri(&self.config, &self.transport, uri)
+    }
+}
 
-        let user_token = self
-            .config
-            .user_token
-            .as_ref()
-            .filter(|token| !token.is_blank())
-            .ok_or(PlexError::MissingToken)?;
-        let servers = self.transport.discover_servers(user_token)?;
-        servers
-            .into_iter()
-            .find(|server| server.machine_identifier == uri.machine_identifier)
-            .map(|server| (server.uri, server.access_token.into_exposed_secret()))
-            .ok_or_else(|| {
-                PlexError::InvalidResponse(format!(
-                    "Plex playlist URI targets server '{}' but that server was not found in the receiver's accessible Plex servers",
-                    uri.machine_identifier
-                ))
-            })
+fn server_url_and_token_for_playlist_uri<T: PlexServerDiscoveryTransport>(
+    config: &PlexClientConfig,
+    transport: &T,
+    uri: &PlexPlaylistUri,
+) -> PlexResult<(String, String)> {
+    if selected_server_matches_machine_identifier(config, &uri.machine_identifier) {
+        return configured_server_url_and_token(config);
+    }
+    let user_token = config
+        .user_token
+        .as_ref()
+        .filter(|token| !token.is_blank())
+        .ok_or(PlexError::MissingToken)?;
+    transport.discover_servers(user_token)?
+        .into_iter()
+        .find(|server| server.machine_identifier == uri.machine_identifier)
+        .map(|server| (server.uri, server.access_token.into_exposed_secret()))
+        .ok_or_else(|| PlexError::InvalidResponse(format!(
+            "Plex playlist URI targets server '{}' but that server was not found in the receiver's accessible Plex servers",
+            uri.machine_identifier
+        )))
+}
+
+#[derive(Clone)]
+struct PlexWatchServer {
+    url: String,
+    token: SecretValue,
+}
+
+impl fmt::Debug for PlexWatchServer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlexWatchServer")
+            .finish_non_exhaustive()
     }
 }
 
@@ -1871,13 +1888,14 @@ pub struct PlexSyncEngine<T> {
     current_file_key: Option<String>,
     current_file_identity: PlexFileIdentity,
     latest_report: Option<PlexTimelineReport>,
+    report_server: Option<PlexWatchServer>,
     last_report_signature: Option<ReportSignature>,
     unmatched_keys: BTreeMap<String, SystemTime>,
 }
 
 impl<T> PlexSyncEngine<T>
 where
-    T: PlexSyncTransport,
+    T: PlexSyncTransport + PlexMetadataTransport + PlexServerDiscoveryTransport,
 {
     pub fn new(config: PlexClientConfig, transport: T, cache: PlexMatchCache) -> Self {
         let status = if config.enabled {
@@ -1893,6 +1911,7 @@ where
             current_file_key: None,
             current_file_identity: PlexFileIdentity::default(),
             latest_report: None,
+            report_server: None,
             last_report_signature: None,
             unmatched_keys: BTreeMap::new(),
         }
@@ -1907,6 +1926,7 @@ where
             self.current_file_key = None;
             self.current_file_identity = PlexFileIdentity::default();
             self.latest_report = None;
+            self.report_server = None;
             self.last_report_signature = None;
             self.unmatched_keys.clear();
             self.status = if config.enabled {
@@ -1944,23 +1964,14 @@ where
             self.status = PlexSyncStatus::disconnected();
             return Ok(());
         }
-        let Some(server_url) = self.config.selected_server_url.clone() else {
-            self.status = PlexSyncStatus::ready();
-            return Ok(());
-        };
-        let Some(token) = self
-            .config
-            .selected_server_token_or_user_token()
-            .map(ToOwned::to_owned)
-        else {
-            self.status = PlexSyncStatus::ready();
-            return Ok(());
-        };
         let Some(event) = event else {
-            self.report_stop_if_needed(&server_url, &token, now)?;
+            self.report_stop_if_needed(now)?;
             self.status.state = PlexSyncState::Ready;
             return Ok(());
         };
+        let playlist_uri = plex_playlist_uri_for_file(&event.file)
+            .map(parse_plex_playlist_uri)
+            .transpose()?;
         let Some(file_key) = server_scoped_cache_key_for_file(&self.config, &event.file) else {
             self.status = PlexSyncStatus::ready();
             return Ok(());
@@ -1970,7 +1981,7 @@ where
         if self.current_file_key.as_deref() != Some(file_key.as_str())
             || self.current_file_identity.conflicts_with(&identity)
         {
-            self.report_stop_if_needed(&server_url, &token, now)?;
+            self.report_stop_if_needed(now)?;
             self.current_file_key = Some(file_key.clone());
             self.current_file_identity = identity.clone();
             self.unmatched_keys.remove(&file_key);
@@ -1979,7 +1990,37 @@ where
         }
         self.current_file_identity.enrich(&identity);
 
-        let Some(item) = self.resolve_match(&server_url, &token, &event, &file_key, now)? else {
+        if self.report_server.is_none() {
+            let (url, token) = if let Some(uri) = &playlist_uri {
+                server_url_and_token_for_playlist_uri(&self.config, &self.transport, uri)?
+            } else {
+                let Ok(server) = configured_server_url_and_token(&self.config) else {
+                    self.status = PlexSyncStatus::ready();
+                    return Ok(());
+                };
+                server
+            };
+            self.report_server = Some(PlexWatchServer {
+                url,
+                token: token.into(),
+            });
+        }
+        let server = self
+            .report_server
+            .clone()
+            .expect("resolved watch server should remain available");
+        let server_url = server.url.as_str();
+        let token = server.token.expose_secret();
+
+        let Some(item) = self.resolve_match(
+            server_url,
+            token,
+            &event,
+            &file_key,
+            playlist_uri.as_ref(),
+            now,
+        )?
+        else {
             self.status = PlexSyncStatus {
                 state: PlexSyncState::Ready,
                 current_item: None,
@@ -1993,8 +2034,7 @@ where
         self.latest_report = Some(report.clone());
         let signature = ReportSignature::from_report(&report, now);
         if self.should_report(&signature) {
-            self.transport
-                .report_timeline(&server_url, &token, &report)?;
+            self.transport.report_timeline(server_url, token, &report)?;
             self.status = PlexSyncStatus {
                 state: PlexSyncState::Syncing,
                 current_item: Some(item),
@@ -2016,20 +2056,51 @@ where
         token: &str,
         event: &PlexWatchEvent,
         file_key: &str,
+        playlist_uri: Option<&PlexPlaylistUri>,
         now: SystemTime,
     ) -> PlexResult<Option<PlexMatchedItem>> {
-        let resolved = resolve_media_match_for_file(
-            &self.transport,
-            &mut self.cache,
-            &mut self.unmatched_keys,
-            PlexMatchServerRef {
-                url: server_url,
-                token,
-            },
-            &event.file,
-            file_key,
-            now,
-        )?;
+        let resolved = if let Some(uri) = playlist_uri {
+            // A direct URI already identifies the server and item. Filename
+            // and title matching can only weaken that identity.
+            if let Some(cached) = self.cache.match_for_file(file_key, &event.file)
+                && cached.rating_key == uri.rating_key
+                && cached.media_type.is_video_watch_type()
+            {
+                return Ok(Some(cached));
+            }
+            let metadata =
+                self.transport
+                    .metadata_by_rating_key(server_url, token, &uri.rating_key)?;
+            if metadata.rating_key != uri.rating_key || !metadata.media_type.is_video_watch_type() {
+                return Err(PlexError::InvalidResponse(
+                    "direct watch metadata does not identify the requested video item".to_owned(),
+                ));
+            }
+            let item = PlexMatchedItem {
+                rating_key: metadata.rating_key,
+                title: metadata.title,
+                media_type: metadata.media_type,
+                duration_millis: metadata.duration_millis.or(uri.duration_millis),
+            };
+            self.cache.entries.insert(
+                file_key.to_owned(),
+                PlexCachedMatch::for_file(item.clone(), &event.file),
+            );
+            Some(item)
+        } else {
+            resolve_media_match_for_file(
+                &self.transport,
+                &mut self.cache,
+                &mut self.unmatched_keys,
+                PlexMatchServerRef {
+                    url: server_url,
+                    token,
+                },
+                &event.file,
+                file_key,
+                now,
+            )?
+        };
         if let Some(item) = resolved.as_ref() {
             self.status.current_item = Some(item.clone());
         }
@@ -2055,14 +2126,10 @@ where
             .unwrap_or(true)
     }
 
-    fn report_stop_if_needed(
-        &mut self,
-        server_url: &str,
-        token: &str,
-        now: SystemTime,
-    ) -> PlexResult<()> {
+    fn report_stop_if_needed(&mut self, now: SystemTime) -> PlexResult<()> {
         let Some(previous) = self.latest_report.as_ref() else {
             self.current_file_key = None;
+            self.report_server = None;
             self.status.current_item = None;
             return Ok(());
         };
@@ -2072,8 +2139,14 @@ where
             time_millis: previous.time_millis,
             duration_millis: previous.duration_millis,
         };
-        self.transport.report_timeline(server_url, token, &report)?;
+        let server = self
+            .report_server
+            .as_ref()
+            .expect("pending timeline report must retain its server");
+        self.transport
+            .report_timeline(&server.url, server.token.expose_secret(), &report)?;
         self.latest_report = None;
+        self.report_server = None;
         self.last_report_signature = Some(ReportSignature::from_report(&report, now));
         self.status = PlexSyncStatus {
             state: PlexSyncState::Syncing,
@@ -2664,12 +2737,27 @@ pub fn server_scoped_cache_key_for_file(
     config: &PlexClientConfig,
     file: &LocalFileUpdate,
 ) -> Option<String> {
+    if let Some(value) = plex_playlist_uri_for_file(file) {
+        let uri = parse_plex_playlist_uri(value).ok()?;
+        return Some(format!(
+            "plex:{}:metadata:{}",
+            percent_encode_path_segment(&uri.machine_identifier),
+            percent_encode_path_segment(&uri.rating_key)
+        ));
+    }
     cache_key_for_file(file).map(|file_key| {
         format!(
             "server:{}:{file_key}",
             server_cache_scope_for_config(config)
         )
     })
+}
+
+fn plex_playlist_uri_for_file(file: &LocalFileUpdate) -> Option<&str> {
+    file.path
+        .as_deref()
+        .filter(|path| is_plex_playlist_uri(path))
+        .or_else(|| is_plex_playlist_uri(&file.name).then_some(file.name.as_str()))
 }
 
 fn server_cache_scope_for_config(config: &PlexClientConfig) -> String {

@@ -6,6 +6,7 @@ use participant_status::ParticipantStatusReportingState;
 use participant_status::*;
 mod barrier;
 mod local_intent;
+mod local_offset;
 mod local_seek;
 mod participant_status;
 use super::*;
@@ -192,6 +193,32 @@ struct TechnicalReadinessFingerprint {
     recovery: Option<RecoveryStage>,
 }
 
+#[derive(Clone)]
+struct PreparedPlaylistSelection {
+    room: Option<String>,
+    target: Option<String>,
+    selection_revision: Option<u64>,
+}
+
+impl std::fmt::Debug for PreparedPlaylistSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedPlaylistSelection")
+            .field("room", &self.room)
+            .field("target", &self.target.as_ref().map(|_| "<redacted>"))
+            .field("selection_revision", &self.selection_revision)
+            .finish()
+    }
+}
+
+impl PreparedPlaylistSelection {
+    fn target(session: &ClientSession) -> Option<&str> {
+        let playlist = session.current_room_playlist()?;
+        let index = usize::try_from(playlist.index?).ok()?;
+        playlist.files.get(index).map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CurrentTransportEvidence {
     adapter_generation: u64,
@@ -227,6 +254,8 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_native_pause_authority_fence: Option<PendingNativePlayerAuthorityFence>,
     last_technical_readiness_fingerprint: Option<TechnicalReadinessFingerprint>,
     next_technical_readiness_report_sequence: u64,
+    prepared_playlist_selection: Option<PreparedPlaylistSelection>,
+    shared_playlist_sync_disabled: bool,
     latest_observation: Option<PlayerTransportObservation>,
     latest_position_observation: Option<LocalPositionObservation>,
     participant_status_evidence_times: ParticipantStatusEvidenceTimes,
@@ -348,6 +377,7 @@ impl RuntimePlaybackCoordination {
 
     pub(crate) fn retire_media(&mut self) -> Vec<PlaybackCoordinatorAction> {
         let actions = self.coordinator.retire_media();
+        self.prepared_playlist_selection = None;
         self.adapter_generation_bindings.clear();
         self.pending_media_identity = None;
         self.highest_bound_adapter_generation = None;
@@ -460,6 +490,7 @@ impl RuntimePlaybackCoordination {
         self.adapter_generation_bindings
             .retain(|_, binding| binding.logical_generation != plan.media_generation);
         self.pending_media_identity = Some((plan.media_generation, plan.load_attempt));
+        self.prepared_playlist_selection = None;
         self.latest_observation = None;
         self.latest_position_observation = None;
         self.participant_status_evidence_times = ParticipantStatusEvidenceTimes::default();
@@ -797,6 +828,79 @@ impl RuntimePlaybackCoordination {
             return false;
         };
         logical_media_ids_match(local.as_str(), room_logical_media_id)
+    }
+
+    pub(crate) fn bind_prepared_playlist_selection(&mut self, session: &ClientSession) {
+        self.prepared_playlist_selection = Some(PreparedPlaylistSelection {
+            room: session
+                .room()
+                .filter(|_| session.is_active())
+                .map(str::to_owned),
+            target: PreparedPlaylistSelection::target(session).map(str::to_owned),
+            selection_revision: session.current_room_playlist_selection_revision(),
+        });
+    }
+
+    pub(crate) fn bind_initial_prepared_media_room(&mut self, session: &ClientSession) {
+        if session.is_active()
+            && let Some(prepared) = self.prepared_playlist_selection.as_mut()
+            && prepared.room.is_none()
+        {
+            // Startup can prepare a file before Hello establishes membership.
+            // Assign that initially unowned room only after authoritative
+            // Hello; provisional settings are not room authority. Preserve
+            // the captured target and replay revision, and never transfer an
+            // already scoped predecessor through a later room switch.
+            prepared.room = session.room().map(str::to_owned);
+        }
+    }
+
+    fn current_media_matches_playlist_selection(&self, session: &ClientSession) -> bool {
+        let target = PreparedPlaylistSelection::target(session);
+        let Some(prepared) = self.prepared_playlist_selection.as_ref() else {
+            return target.is_none() && !session.has_pending_playlist_index_reset_intent();
+        };
+        // Room readiness generations can arrive while another participant's
+        // source resolver is still working. Keep the physical predecessor's
+        // evidence bound to the selection for which it was prepared. A replay
+        // of the same row also owns a fresh reset; a reorder retaining the
+        // active target without a reset does not invalidate playable media.
+        prepared.room.as_deref() == session.room()
+            && prepared.target.as_deref() == target
+            && (!session.has_pending_playlist_index_reset_intent()
+                || prepared.selection_revision
+                    == session.current_room_playlist_selection_revision())
+    }
+
+    pub(crate) fn canonical_playlist_reset_pending(&self, session: &ClientSession) -> bool {
+        !self.shared_playlist_sync_disabled && session.has_pending_playlist_index_reset_intent()
+    }
+
+    fn playlist_predecessor_is_fenced(&self, session: &ClientSession) -> bool {
+        self.canonical_playlist_reset_pending(session)
+            && !self.current_media_matches_playlist_selection(session)
+    }
+
+    fn fence_playlist_predecessor_actions(
+        &mut self,
+        session: &ClientSession,
+        actions: &mut Vec<PlaybackCoordinatorAction>,
+    ) {
+        if !self.playlist_predecessor_is_fenced(session) {
+            return;
+        }
+        actions.retain(|action| match action {
+            PlaybackCoordinatorAction::Execute { command_id, .. } => {
+                // The planner can produce a retry while draining an old
+                // observation, before the newest room desire is reconciled.
+                // Retire only undispatched work; an accepted physical command
+                // keeps its receipt tracking and never acquires a false result.
+                self.coordinator.supersede_unaccepted_command(*command_id);
+                false
+            }
+            PlaybackCoordinatorAction::RequestRoomPause { .. } => false,
+            _ => true,
+        });
     }
 
     fn current_logical_media(&self) -> Option<(u64, String)> {
@@ -1365,6 +1469,13 @@ impl RuntimePlaybackCoordination {
         external_now_seconds: f64,
         allow_command_replay: bool,
     ) -> Vec<PlaybackCoordinatorAction> {
+        let playlist_selection_transport_hold = self.canonical_playlist_reset_pending(session);
+        if self.playlist_predecessor_is_fenced(session) {
+            // The pending selection may still be resolving while this generation
+            // owns the predecessor. Keep consuming observations, but do not turn
+            // the successor's origin hold into a seek on that retiring file.
+            return Vec::new();
+        }
         let Some(media_generation) = self.coordinator.current_media_generation() else {
             return Vec::new();
         };
@@ -1383,7 +1494,6 @@ impl RuntimePlaybackCoordination {
         else {
             return Vec::new();
         };
-        let playlist_selection_transport_hold = session.has_pending_playlist_index_reset_intent();
         let barrier_state = session
             .playback_barrier_prepare()
             .filter(|prepare| self.current_logical_media_matches(&prepare.logical_media_id))
@@ -2337,6 +2447,9 @@ impl RuntimePlaybackCoordination {
         &mut self,
         session: &ClientSession,
     ) -> Option<TechnicalReadinessReport> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         let observation = self.latest_observation.as_ref()?;
         let phase = observation.phase?;
         let local_media_generation = observation.media_generation;
@@ -2474,6 +2587,9 @@ impl RuntimePlaybackCoordination {
         session: &ClientSession,
         external_now_seconds: f64,
     ) -> Option<TechnicalReadinessReport> {
+        if !self.current_media_matches_playlist_selection(session) {
+            return None;
+        }
         self.coordinator.current_media_generation()?;
         let local_username = session.username()?;
         let canonical = session.canonical_participant_readiness(local_username)?;
@@ -2649,6 +2765,13 @@ where
     P: PlayerAdapter,
     C: ClientEffectSink,
 {
+    /// Controls whether canonical playlist selection owns this player's load
+    /// and reset transaction. Independent players continue ordinary room sync
+    /// even when playlist frames they do not apply are pending.
+    pub fn set_shared_playlist_sync_enabled(&mut self, enabled: bool) {
+        self.playback_coordination.shared_playlist_sync_disabled = !enabled;
+    }
+
     pub fn set_playback_coordinator_config(&mut self, config: PlaybackCoordinatorConfig) {
         self.playback_coordination.set_config(config);
     }
@@ -2694,6 +2817,8 @@ where
             now_seconds,
             adapter_epoch,
         );
+        self.playback_coordination
+            .fence_playlist_predecessor_actions(&self.session, &mut actions);
         let _ = self.handle_latest_player_readiness_observation();
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
@@ -2703,11 +2828,13 @@ where
         actions
     }
 
-    /// Feeds a unsequenced attached-player EOF signal through the same technical
-    /// readiness and causal-classification path as an adapter-reported
-    /// `PlayerTransportPhase::Ended` observation.
+    /// Records natural completion already correlated by an external player
+    /// owner. The owner's physical file identity is required: protocol file
+    /// metadata and a no-op runtime player cannot supply that proof.
     pub fn observe_external_player_end_of_file(
         &mut self,
+        completed_file: sorotte_player_api::LocalFileUpdate,
+        terminal_position_seconds: Option<f64>,
         now_seconds: f64,
     ) -> Result<(), PlayerError> {
         self.playback_coordination
@@ -2715,31 +2842,24 @@ where
         self.record_player_playback_projection(
             PlayerPlaybackTelemetryUpdate::default().with_paused(true),
         );
-        if self
-            .playback_coordination
-            .coordinator
-            .current_media_generation()
-            .is_some()
-        {
-            let (playlist_revision, playlist_index) = self
-                .session
-                .current_room_playlist()
-                .map_or((None, None), |playlist| {
-                    (Some(playlist.revision), playlist.index)
-                });
-            let playlist_selection_revision =
-                self.session.current_room_playlist_selection_revision();
-            let canonical_playlist_epoch = self.session.current_room_playlist_canonical_epoch();
-            self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
-                attempt_id: None,
-                media_generation: None,
-                playlist_revision,
-                playlist_selection_revision,
-                canonical_playlist_epoch,
-                playlist_index,
-                completed_file: self.last_local_file_update.clone(),
+        let (playlist_revision, playlist_index) = self
+            .session
+            .current_room_playlist()
+            .map_or((None, None), |playlist| {
+                (Some(playlist.revision), playlist.index)
             });
-        }
+        let playlist_selection_revision = self.session.current_room_playlist_selection_revision();
+        let canonical_playlist_epoch = self.session.current_room_playlist_canonical_epoch();
+        self.pending_natural_playback_completion = Some(PendingNaturalPlaybackCompletion {
+            attempt_id: None,
+            media_generation: None,
+            playlist_revision,
+            playlist_selection_revision,
+            canonical_playlist_epoch,
+            playlist_index,
+            completed_file: Some(completed_file),
+            terminal_position_seconds,
+        });
         self.handle_latest_player_readiness_observation()?;
         let _ = self.emit_participant_status_transition(now_seconds)?;
         Ok(())
@@ -2781,10 +2901,20 @@ where
         kind: MediaTransportKind,
         now_seconds: f64,
     ) -> Result<MediaLoadPlan, PlayerError> {
+        let previous_selection = self
+            .playback_coordination
+            .prepared_playlist_selection
+            .clone();
         let (plan, actions) = self
             .playback_coordination
             .prepare_media_for_current_file_publication(logical_id, kind, now_seconds);
         let plan = self.finish_prepared_playback_media(plan, now_seconds);
+        if !plan.logical_media_changed && !plan.playback_episode_changed {
+            // Re-publishing the current file can carry its existing physical
+            // observations. It cannot reattribute that predecessor to a
+            // selection whose asynchronous source load is still pending.
+            self.playback_coordination.prepared_playlist_selection = previous_selection;
+        }
         self.execute_playback_coordinator_actions(actions, now_seconds)?;
         Ok(plan)
     }
@@ -2832,6 +2962,8 @@ where
         plan: MediaLoadPlan,
         now_seconds: f64,
     ) -> MediaLoadPlan {
+        self.playback_coordination
+            .bind_prepared_playlist_selection(&self.session);
         if let Some(room) = self.session.room() {
             self.control
                 .retain_protocol_playback_barrier_scope(room, plan.media_generation);
@@ -2920,6 +3052,8 @@ where
         let mut actions = self
             .playback_coordination
             .observe_transport(update, now_seconds);
+        self.playback_coordination
+            .fence_playlist_predecessor_actions(&self.session, &mut actions);
         let _ = self.handle_latest_player_readiness_observation();
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
@@ -2936,6 +3070,8 @@ where
         let mut actions = self
             .playback_coordination
             .update_desired_from_session(&self.session, now_seconds);
+        self.playback_coordination
+            .fence_playlist_predecessor_actions(&self.session, &mut actions);
         let _ = self.promote_pending_native_play_before_pause_correction(&mut actions);
         self.preserve_native_pause_before_unpause_correction(&mut actions, now_seconds);
         let _ = self.report_playback_barrier_observations(&actions);
@@ -3188,9 +3324,11 @@ where
 
     fn execute_playback_coordinator_actions(
         &mut self,
-        actions: Vec<PlaybackCoordinatorAction>,
+        mut actions: Vec<PlaybackCoordinatorAction>,
         external_now_seconds: f64,
     ) -> Result<(), PlayerError> {
+        self.playback_coordination
+            .fence_playlist_predecessor_actions(&self.session, &mut actions);
         let mut first_error = None;
         for action in actions {
             match action {
@@ -3244,12 +3382,16 @@ where
             CoordinatorPlayerCommand::SetPaused(paused) => PlayerCommand::SetPaused(paused),
             CoordinatorPlayerCommand::Play(intent) => PlayerCommand::Play(intent),
             CoordinatorPlayerCommand::SetPosition(position_seconds) => {
-                PlayerCommand::SetPosition(position_seconds)
+                PlayerCommand::SetPosition(self.player_position_for_room(position_seconds))
             }
             CoordinatorPlayerCommand::SetPlaybackRate(rate) => PlayerCommand::SetPlaybackRate(rate),
         };
         match self.player.execute_tracked(player_command.clone()) {
             Ok(player_command_id) => {
+                if matches!(player_command, PlayerCommand::SetPosition(_)) {
+                    self.ordered_player_events
+                        .record_submitted_completion_seek(player_command_id, &self.session);
+                }
                 let issued_at_seconds = self
                     .playback_coordination
                     .coordinator_now(external_now_seconds);

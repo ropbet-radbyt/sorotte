@@ -531,6 +531,12 @@ fn extend_plan_for_runtime_action(
         }
         PlannedLocalRuntimeAction::DeletePlaylistIndex(index) => {
             if let Some(index) = validated_playlist_index(state, index) {
+                // Use the same local edit as row removal so Undo retains the
+                // exact row identity and source before runtime projection.
+                plan.shell_actions.extend([
+                    GuiShellAction::SelectMainWindowPlaylist(index),
+                    GuiShellAction::RemoveSelectedMainWindowPlaylist,
+                ]);
                 plan.runtime_requests
                     .push(GuiRuntimeRequest::DeletePlaylistIndex(index));
             } else {

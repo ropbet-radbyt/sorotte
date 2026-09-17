@@ -1065,7 +1065,11 @@ impl PlayerMediaLoadOutcome {
 /// Terminal state of one physical player load attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerPhysicalLoadOutcome {
+    /// Correlated natural completion of the intended media.
     Ended,
+    /// Playback was stopped, replaced, redirected, or disappeared without
+    /// evidence of natural completion.
+    Stopped,
     Failed(PlayerMediaLoadFailureKind),
     NeverStarted,
     TransportDisconnected,

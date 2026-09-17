@@ -70,6 +70,12 @@ impl GuiClientSession {
             .map(|playlist| playlist.revision)
     }
 
+    pub(in crate::app) fn current_room_playlist_selection_revision(&self) -> Option<u64> {
+        self.runtime
+            .session()
+            .current_room_playlist_selection_revision()
+    }
+
     pub(in crate::app) fn current_room_playlist_remote_revision(&self) -> u64 {
         self.runtime
             .session()
@@ -478,6 +484,30 @@ impl GuiClientSession {
         self.pending_playlist_protocol_delivery_fence()
     }
 
+    pub(in crate::app) fn has_pending_natural_playback_completion(&self) -> bool {
+        self.runtime.has_pending_natural_playback_completion()
+    }
+
+    pub(in crate::app) fn invalidate_pending_natural_playback_completion(&mut self) {
+        self.runtime
+            .invalidate_pending_natural_playback_completion();
+    }
+
+    pub(in crate::app) fn advance_after_natural_completion_with_delivery_fence(
+        &mut self,
+    ) -> Result<Option<GuiPlaylistProtocolDeliveryFence>, String> {
+        let advanced = self
+            .runtime
+            .run_advance_playlist_after_natural_completion()
+            .map_err(|error| format!("Natural playlist completion dispatch failed: {error}"))?;
+        if !advanced {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        self.observe_for_test(SessionObservation::PlaylistAdvance);
+        self.pending_playlist_protocol_delivery_fence().map(Some)
+    }
+
     pub(in crate::app) fn advance_playlist_index_attached_player_actions(
         &mut self,
     ) -> Result<Vec<GuiAttachedPlayerRuntimeAction>, String> {
@@ -777,12 +807,18 @@ impl GuiClientSession {
 
     pub(in crate::app) fn observe_external_player_end_of_file(
         &mut self,
+        completed_file: sorotte_player_api::LocalFileUpdate,
+        terminal_position_seconds: Option<f64>,
         now_seconds: f64,
     ) -> Result<(), String> {
         #[cfg(test)]
         self.observe_for_test(SessionObservation::EndOfFile);
         self.runtime
-            .observe_external_player_end_of_file(now_seconds)
+            .observe_external_player_end_of_file(
+                completed_file,
+                terminal_position_seconds,
+                now_seconds,
+            )
             .map_err(|error| format!("Client-core attached-player EOF observation failed: {error}"))
     }
 
@@ -1179,14 +1215,6 @@ impl GuiClientSession {
         self.runtime
             .session()
             .pending_playlist_index_reset_has_post_selection_playstate()
-    }
-
-    pub(in crate::app) fn can_auto_advance_to_next_playlist_item(&self) -> bool {
-        !self
-            .runtime
-            .session()
-            .runtime_actions_for_local_playlist_next()
-            .is_empty()
     }
 
     pub(in crate::app) fn set_autoplay_enabled(&mut self, enabled: bool) -> Result<(), String> {

@@ -61,6 +61,7 @@ impl GuiPersistedConfigRuntimeOwner {
             attached_media_search_build_state: GuiAttachedMediaSearchBuildState::Idle,
             attached_media_search_build_roots: Vec::new(),
             attached_media_search_index_revision: 0,
+            attached_media_search_completion_pending: false,
             unresolved_attached_media_target: None,
             last_attached_media_resolution_trigger: None,
             last_applied_attached_room_playstate: None,
@@ -276,6 +277,7 @@ impl GuiPersistedConfigRuntimeOwner {
         self.attached_media_search_build_roots.clear();
         self.attached_media_search_index_revision =
             self.attached_media_search_index_revision.wrapping_add(1);
+        self.attached_media_search_completion_pending = false;
         self.unresolved_attached_media_target = None;
         self.last_attached_media_resolution_trigger = None;
         self.clear_media_match_remote_lookup_state();

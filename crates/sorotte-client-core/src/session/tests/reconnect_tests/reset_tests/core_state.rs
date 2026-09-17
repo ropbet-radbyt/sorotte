@@ -1,6 +1,168 @@
 use super::*;
 
 #[test]
+fn latest_room_request_survives_intermediate_membership_echoes() {
+    for intermediate_echo in [
+        r#"{"Set":{"room":{"name":"room2"}}}"#,
+        r#"{"Set":{"user":{"alice":{"room":{"name":"room2"}}}}}"#,
+        r#"{"List":{"room2":{"alice":{}}}}"#,
+    ] {
+        for latest_room in ["room3", "room1"] {
+            for latest_echo_received in [false, true] {
+                let mut session = ClientSession::default();
+                session.apply_message_json(
+                    r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+                ).unwrap();
+                for requested_room in ["room2", latest_room] {
+                    let actions =
+                        session.runtime_actions_for_local_room_switch(requested_room.to_owned());
+                    assert!(actions.iter().any(|action| matches!(
+                        action,
+                        ClientRuntimeAction::SetRoom { room } if room == requested_room
+                    )));
+                }
+
+                session.apply_message_json(intermediate_echo).unwrap();
+                assert_eq!(session.room(), Some("room2"));
+                assert_eq!(
+                    session.connection_target_room(),
+                    Some(latest_room),
+                    "an earlier membership acknowledgement must not erase a later room request"
+                );
+                assert_eq!(
+                    session
+                        .model
+                        .controller
+                        .pending_local_room_switch_target
+                        .as_deref(),
+                    Some(latest_room)
+                );
+                session.apply_message_json(
+                    r#"{"Set":{"user":{"alice":{"room":{"name":"room2"},"isReady":true,"controller":true}},"playlistChange":{"files":["intermediate-room.mkv"],"user":"alice"}}}"#,
+                ).unwrap();
+                assert_eq!(
+                    session
+                        .model
+                        .room
+                        .users
+                        .get("alice")
+                        .and_then(|user| user.ready),
+                    Some(true)
+                );
+                assert!(session.current_room_playlist().is_some());
+
+                if latest_echo_received {
+                    session
+                        .apply_message_json(&format!(
+                            r#"{{"Set":{{"room":{{"name":"{latest_room}"}}}}}}"#,
+                        ))
+                        .unwrap();
+                    assert!(
+                        session
+                            .model
+                            .controller
+                            .pending_local_room_switch_target
+                            .is_none()
+                    );
+                }
+                for _ in 0..2 {
+                    session.reset_sync_state_for_reconnect();
+                    assert_eq!(session.connection_target_room(), Some(latest_room));
+                    if !latest_echo_received {
+                        assert!(session.model.reconnect.ready_restore_snapshot.is_none());
+                        assert!(
+                            session
+                                .model
+                                .reconnect
+                                .controller_restore_snapshot
+                                .is_none()
+                        );
+                        assert!(session.model.reconnect.playlist_restore_snapshot.is_none());
+                    }
+                }
+                session.apply_message_json(&format!(
+                    r#"{{"Hello":{{"username":"alice","room":{{"name":"{latest_room}"}},"version":"1.7.5"}}}}"#,
+                )).unwrap();
+                assert_eq!(session.room(), Some(latest_room));
+                assert_eq!(session.connection_target_room(), Some(latest_room));
+                assert!(session.model.reconnect.room_target.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn authoritative_hello_replaces_an_outstanding_room_request() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .unwrap();
+    session.runtime_actions_for_local_room_switch("requested-room".to_owned());
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"assigned-room"},"version":"1.7.5"}}"#,
+        )
+        .unwrap();
+    assert_eq!(session.room(), Some("assigned-room"));
+    assert_eq!(session.connection_target_room(), Some("assigned-room"));
+    assert!(
+        session
+            .model
+            .controller
+            .pending_local_room_switch_target
+            .is_none()
+    );
+}
+
+#[test]
+fn unacknowledged_room_request_survives_retries_without_old_membership_state() {
+    let mut session = ClientSession::default();
+    session
+        .apply_message_json(
+            r#"{"Hello":{"username":"alice","room":{"name":"room1"},"version":"1.7.5"}}"#,
+        )
+        .unwrap();
+    session.apply_message_json(
+        r#"{"Set":{"user":{"alice":{"room":{"name":"room1"},"ready":true,"controller":true}},"playlistChange":{"files":["old-room.mkv"],"user":"alice"}}}"#,
+    ).unwrap();
+    assert!(
+        !session
+            .runtime_actions_for_local_room_switch("room2".to_owned())
+            .is_empty()
+    );
+    assert_eq!(session.room(), Some("room1"));
+    assert_eq!(session.connection_target_room(), Some("room2"));
+    for _ in 0..2 {
+        session.reset_sync_state_for_reconnect();
+        assert_eq!(session.room(), Some("room1"));
+        assert_eq!(session.connection_target_room(), Some("room2"));
+        assert!(session.model.reconnect.ready_restore_snapshot.is_none());
+        assert!(
+            session
+                .model
+                .reconnect
+                .controller_restore_snapshot
+                .is_none()
+        );
+        assert!(session.model.reconnect.playlist_restore_snapshot.is_none());
+        assert!(
+            session
+                .readiness_reconnect_token_for_room("room2")
+                .is_none()
+        );
+    }
+    session.apply_message_json(
+        r#"{"Hello":{"username":"alice","room":{"name":"server-assigned-room"},"version":"1.7.5"}}"#,
+    ).unwrap();
+    assert_eq!(
+        session.connection_target_room(),
+        Some("server-assigned-room")
+    );
+}
+
+#[test]
 fn reset_sync_state_for_reconnect_clears_sync_runtime_state() {
     let mut session = ClientSession::default();
     session

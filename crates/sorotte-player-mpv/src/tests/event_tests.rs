@@ -652,7 +652,7 @@ fn end_file_error_is_classified_for_the_matching_generation() {
         failed.media_generation.map(|generation| generation.get()),
         Some(1)
     );
-    assert_eq!(failed.eof_reached, Some(true));
+    assert_eq!(failed.eof_reached, Some(false));
     assert_eq!(
         failed.error_kind,
         Some(PlayerMediaLoadFailureKind::FormatUnsupported)

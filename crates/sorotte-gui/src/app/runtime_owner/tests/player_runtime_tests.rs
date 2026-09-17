@@ -63,10 +63,12 @@ fn expected_playlist_source_states_for_entries(
         .collect()
 }
 
+mod async_source_ownership;
 mod attached_media_open_seek;
 mod attached_state_sync;
 mod desync_slowdown;
 mod detached_saved_settings;
+mod fingerprint_freshness;
 mod media_search_cache;
 mod native_seek_telemetry;
 mod offsets_and_recent_rewind;
