@@ -125,6 +125,9 @@ SAFE_TRACE_FIELDS = {
     "server_ignore_counter",
     "check_id",
     "detail",
+    "operation",
+    "error_kind",
+    "capture_phase",
 }
 SAFE_PLAYER_TRACE_FIELDS = {
     "schema_version",
@@ -154,6 +157,55 @@ _INLINE_SECRET = re.compile(
 _WINDOWS_ABSOLUTE_PATH = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\)[^\s\"'<>]+")
 _POSIX_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9_.])/(?:[^/\s\"'<>]+/)*[^/\s\"'<>]+")
 _CONTAINED_PLAYER_FAILURE = "warning: external player step '"
+_CONTAINED_PLAYER_FAILURE_OPERATIONS = {
+    operation: operation.replace(" ", "-")
+    for operation in (
+        "apply initial readiness intent",
+        "send initial chat message",
+        "apply reconnect transition",
+        "reidentify room controller",
+        "publish controller authentication notification",
+        "publish chat notification",
+        "publish user-change notification",
+        "restore player state after reconnect",
+        "restore player playlist after reconnect",
+        "apply local player command",
+        "synchronize player availability",
+        "synchronize room pause state",
+        "apply readiness unpause",
+        "advance autoplay",
+        "apply desync correction",
+        "validate player state after reconnect",
+        "publish local file update",
+        "advance playlist after natural completion",
+        "synchronize canonical playlist selection",
+    )
+}
+_CONTAINED_PLAYER_FAILURE_ERROR_KINDS = {
+    "not-connected", "unsupported", "property-unavailable", "operation-failed", "unclassified"
+}
+_CONTAINED_PLAYER_FAILURE_PHASES = {
+    "initialization", "shared-causal-ledger", "binary-preflight", "fixture-generation",
+    "server-startup", "canonical-seed", "room-switch-rejoin", "canonical-reject",
+    "controller-startup", "follower-startup", "late-startup",
+    "initial-two-client-convergence", "play-authority", "pause-authority", "seek-authority",
+    "scheduled-backpressure", "scheduled-half-close", "scheduled-half-close-convergence",
+    "late-join-catch-up", "participant-status-cadence", "participant-status-single-loss",
+    "participant-status-delay-and-stale", "participant-status-fresh-recovery",
+    "same-index-selected-entry-replacement", "same-index-selected-entry-restore",
+    "untrusted-selection-rejection", "untrusted-selection-restore",
+    "scheduled-write-failure-hold", "scheduled-write-failure-reset",
+    "scheduled-write-failure-convergence", "canonical-empty-playlist",
+    "canonical-playlist-restore", "partition-reconnect-preparation", "partition-follower",
+    "start-while-follower-partitioned", "partitioned-follower-reconnect-catch-up",
+    "post-reconnect-stabilization", "pre-eof-positioning", "resume-authority",
+    "natural-eof-playlist-advance", "final-item-near-tail-seek", "final-item-natural-eof",
+    "loop-final-item-near-tail-seek", "loop-final-item-natural-eof",
+    "client-bounded-shutdown", "contained-player-failure-audit",
+    "loop-successor-through-client-exit", "final-item-terminal-through-client-exit",
+    "participant-status-withdrawal", "server-bounded-shutdown", "unclassified",
+}
+MAX_CONTAINED_PLAYER_FAILURE_DIAGNOSTICS_PER_ROLE = 64
 
 
 def utc_now() -> str:
@@ -174,6 +226,34 @@ def contained_player_failure_counts(
         if count:
             failures[role] = count
     return failures
+
+
+def contained_player_failure_context(line: str) -> dict[str, str] | None:
+    """Project only closed categories; raw operation/error text never escapes."""
+
+    _, marker, tail = line.partition(_CONTAINED_PLAYER_FAILURE)
+    if not marker:
+        return None
+    operation, separator, error = tail.partition(
+        "' failed while the Sorotte session remains connected: "
+    )
+    error_kind = "unclassified"
+    if separator:
+        if error.strip() == "player is not connected":
+            error_kind = "not-connected"
+        elif error.startswith("operation not supported: "):
+            error_kind = "unsupported"
+        elif re.fullmatch(
+            r"operation failed: mpv command failed for request_id=[0-9]+: property unavailable",
+            error.strip(),
+        ):
+            error_kind = "property-unavailable"
+        elif error.startswith("operation failed: "):
+            error_kind = "operation-failed"
+    return {
+        "operation": _CONTAINED_PLAYER_FAILURE_OPERATIONS.get(operation, "unclassified"),
+        "error_kind": error_kind,
+    }
 
 
 def participant_status_authority_withdrawn(
@@ -520,6 +600,19 @@ def assert_privacy_safe_trace_record(record: Mapping[str, Any]) -> None:
     unexpected = set(record) - SAFE_TRACE_FIELDS
     if unexpected:
         raise ValueError(f"trace record contains non-whitelisted fields: {sorted(unexpected)}")
+    diagnostic_fields = {"operation", "error_kind", "capture_phase"}
+    if record.get("event") == "contained-player-failure":
+        if (
+            not diagnostic_fields.issubset(record)
+            or record.get("source") != "client-stderr"
+            or record.get("role") not in {"controller", "follower", "late"}
+            or record.get("operation") not in {*_CONTAINED_PLAYER_FAILURE_OPERATIONS.values(), "unclassified"}
+            or record.get("error_kind") not in _CONTAINED_PLAYER_FAILURE_ERROR_KINDS
+            or record.get("capture_phase") not in _CONTAINED_PLAYER_FAILURE_PHASES
+        ):
+            raise ValueError("contained player diagnostic does not use closed categories")
+    elif diagnostic_fields.intersection(record):
+        raise ValueError("contained player diagnostic fields require their exact event kind")
     for key, value in record.items():
         if _SENSITIVE_KEY.search(key) and key not in {"media_slot"}:
             raise ValueError(f"trace record contains a sensitive field name: {key}")
@@ -2099,6 +2192,7 @@ class PlaybackLifecycleHarness:
         self.proxies: dict[str, ProtocolFaultProxy] = {}
         self._started_process_log_roles: list[str] = []
         self.checks: list[dict[str, Any]] = []
+        self._contained_player_failure_diagnostics: dict[str, int] = {}
         self.prerequisites: dict[str, Any] = {}
         self.fixtures: dict[str, Any] = {}
         self._terminal_boundary_evidence: tuple[
@@ -2125,6 +2219,35 @@ class PlaybackLifecycleHarness:
     def _emit(self, *, source: str = "harness", role: str = "orchestrator", event: str, **fields: Any) -> None:
         if self.ledger is not None:
             self.ledger.emit(source=source, role=role, event=event, **fields)
+
+    def _record_contained_player_failure(self, role: str, line: str) -> None:
+        context = contained_player_failure_context(line)
+        if context is None:
+            return
+        count = self._contained_player_failure_diagnostics.get(role, 0)
+        self._contained_player_failure_diagnostics[role] = count + 1
+        if count < MAX_CONTAINED_PLAYER_FAILURE_DIAGNOSTICS_PER_ROLE:
+            capture_phase = self.stage
+            # This is the phase at stderr capture, not a claimed causal phase
+            # for an earlier asynchronous player command. The lifetime audit
+            # below still counts every raw marker, including truncated detail.
+            self._emit(
+                source="client-stderr",
+                role=role,
+                event="contained-player-failure",
+                capture_phase=(
+                    capture_phase if capture_phase in _CONTAINED_PLAYER_FAILURE_PHASES
+                    else "unclassified"
+                ),
+                **context,
+            )
+        elif count == MAX_CONTAINED_PLAYER_FAILURE_DIAGNOSTICS_PER_ROLE:
+            self._emit(
+                source="client-stderr",
+                role=role,
+                event="contained-player-failure-detail-truncated",
+                detail="further-contained-failure-details-omitted",
+            )
 
     def _lifecycle_product_tails(self) -> tuple[str, ...]:
         tails: list[str] = []
@@ -2811,6 +2934,7 @@ class PlaybackLifecycleHarness:
             ),
             artifact_dir=self.artifact_dir,
             stdin=True,
+            stderr_callback=lambda line: self._record_contained_player_failure(role, line),
         )
         self._started_process_log_roles.append(f"client-{role}")
         monitor = PlayerTraceMonitor(role=role, path=trace_path, ledger=self.ledger)

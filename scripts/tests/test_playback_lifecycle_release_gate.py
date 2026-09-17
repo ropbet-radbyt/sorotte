@@ -165,6 +165,21 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertEqual(upload["with"]["path"], "target/verification/playback-lifecycle-release-safe")
         self.assertNotIn("playback-lifecycle-release\n", upload["with"]["path"])
 
+        loop_stage = named_step(self.linux, "Validate and stage privacy-safe loop release evidence")
+        self.assertEqual(loop_stage["id"], "playback_lifecycle_loop_evidence")
+        self.assertEqual(loop_stage["if"], "always()")
+        self.assertEqual(loop_stage["continue-on-error"], "true")
+        self.assertIn("--artifact-dir target/verification/playback-lifecycle-loop-release", loop_stage["run"])
+        self.assertIn("--output-dir target/verification/playback-lifecycle-loop-release-safe", loop_stage["run"])
+        loop_upload = named_step(self.linux, "Upload privacy-safe loop lifecycle release evidence")
+        self.assertEqual(loop_upload["uses"], ACTION_USES["actions/upload-artifact"])
+        self.assertEqual(loop_upload["if"], "${{ always() && steps.playback_lifecycle_loop_evidence.outcome == 'success' }}")
+        self.assertEqual(loop_upload["with"]["path"], "target/verification/playback-lifecycle-loop-release-safe")
+        self.assertEqual(loop_upload["with"]["name"], "playback-lifecycle-loop-release-${{ inputs.candidate_sha }}")
+        self.assertEqual(loop_upload["with"]["if-no-files-found"], "error")
+        self.assertNotEqual(loop_upload["with"]["name"], upload["with"]["name"])
+        self.assertNotIn("continue-on-error", named_step(self.linux, "Run loop-boundary exact-candidate lifecycle"))
+
         enforce = named_step(self.linux, "Enforce exact-candidate lifecycle release gate")
         self.assertEqual(enforce["if"], "always()")
         self.assertEqual(
@@ -172,10 +187,13 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
             {
                 "PLAYBACK_LIFECYCLE_SYSTEM_OUTCOME": "${{ steps.playback_lifecycle_system.outcome }}",
                 "PLAYBACK_LIFECYCLE_EVIDENCE_OUTCOME": "${{ steps.playback_lifecycle_evidence.outcome }}",
+                "PLAYBACK_LIFECYCLE_LOOP_OUTCOME": "${{ steps.ci_run_loop_boundary_exact_candidate_life_5c57c55a.outcome }}",
+                "PLAYBACK_LIFECYCLE_LOOP_EVIDENCE_OUTCOME": "${{ steps.playback_lifecycle_loop_evidence.outcome }}",
                 "PLAYBACK_LIFECYCLE_CLOSED_OUTCOME": "${{ steps.playback_lifecycle_closed.outcome }}",
             },
         )
-        self.assertEqual(enforce["run"].count("= success"), 3)
+        self.assertEqual(enforce["run"].count("= success"), 5)
+        self.assertLess(self.linux["steps"].index(loop_upload), self.linux["steps"].index(enforce))
 
         attestation = normalized(
             named_step(self.linux, "Attest exact Linux suite and candidate digests")["run"]
