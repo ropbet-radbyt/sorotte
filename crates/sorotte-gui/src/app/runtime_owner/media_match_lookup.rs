@@ -549,22 +549,61 @@ mod tests {
         fs::write(&media, b"first").unwrap();
         let path = media.to_str().unwrap();
         let settings = MediaExtractionSettings::sampled_fast_audio_index_v3();
-        let mut lookup = GuiMediaMatchRecordLookup::default();
+        // Control delivery at the existing worker boundary: this test owns
+        // Pending/Missing and file-identity semantics, not SQLite startup time.
+        let (requests, rx) = mpsc::sync_channel(1);
+        let (tx, replies) = mpsc::channel();
+        let mut lookup = GuiMediaMatchRecordLookup {
+            worker: Some(LookupWorker { requests, replies }),
+            ..Default::default()
+        };
+        let reply_missing = |key| {
+            tx.send(LookupEvent::Read(LookupReply {
+                key,
+                result: FingerprintLookup::Missing,
+                completed_at: Instant::now(),
+            }))
+            .unwrap();
+        };
         assert!(matches!(
             lookup.lookup(root.path(), path, &settings),
             FingerprintLookup::Pending
         ));
+        let LookupRequest::Read(first_key) = rx.try_recv().unwrap() else {
+            panic!("fingerprint read expected");
+        };
+        assert_eq!(first_key.bytes, 5);
         assert!(matches!(
-            lookup.wait_for_test(root.path(), path),
+            lookup.lookup(root.path(), path, &settings),
+            FingerprintLookup::Pending
+        ));
+        reply_missing(first_key);
+        assert!(matches!(
+            lookup.lookup(root.path(), path, &settings),
             FingerprintLookup::Missing
         ));
+        // A slow metadata read may also request an ordinary cache refresh.
+        // Complete it before changing the file, without waiting on real time.
+        if lookup.in_flight {
+            let LookupRequest::Read(refresh_key) = rx.try_recv().unwrap() else {
+                panic!("fingerprint refresh expected");
+            };
+            assert_eq!(refresh_key.bytes, 5);
+            reply_missing(refresh_key);
+            lookup.poll();
+        }
         fs::write(&media, b"different file size").unwrap();
         assert!(matches!(
             lookup.lookup(root.path(), path, &settings),
             FingerprintLookup::Pending
         ));
+        let LookupRequest::Read(changed_key) = rx.try_recv().unwrap() else {
+            panic!("changed-file fingerprint read expected");
+        };
+        assert_eq!(changed_key.bytes, b"different file size".len() as u64);
+        reply_missing(changed_key);
         assert!(matches!(
-            lookup.wait_for_test(root.path(), path),
+            lookup.lookup(root.path(), path, &settings),
             FingerprintLookup::Missing
         ));
     }
