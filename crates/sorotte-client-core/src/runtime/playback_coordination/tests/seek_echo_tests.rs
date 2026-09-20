@@ -509,10 +509,14 @@ impl SeekFixture {
     }
 
     fn queue_observation(&mut self, paused: bool, position: f64) {
+        self.queue_observation_at(paused, position, 1000 + self.sequence * 100);
+    }
+
+    fn queue_observation_at(&mut self, paused: bool, position: f64, observed_at_millis: u64) {
         self.sequence += 1;
         let epoch = PlayerAttachmentEpoch::new(1);
         let observed = PlayerObservationTimestamp::from_adapter_start(Duration::from_millis(
-            900 + self.sequence * 100,
+            observed_at_millis,
         ));
         let mut transport = if paused {
             ordered_paused_transport(self.generation, observed, position)

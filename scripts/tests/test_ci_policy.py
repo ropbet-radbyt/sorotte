@@ -3609,6 +3609,28 @@ class CiPolicyTests(unittest.TestCase):
                         "review_by": "2026-11-30",
                     },
                     {
+                        "id": "client-local-seek-position-let-chain-or",
+                        "shard": "client-local-seek-echo",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::unacknowledged_seek_position_at"
+                        ),
+                        "return_type": "-> f64",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "expected_count": 2,
+                        "reason": (
+                            "The isolated campaign confirms rustc rejects both generated "
+                            "|| connectors in this Rust let-chain; let-chain conditions "
+                            "support only &&. The exact function and two compiler "
+                            "failures bound this acceptance."
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
                         "id": (
                             "client-participant-status-outbox-"
                             "cancel-let-chain-or"

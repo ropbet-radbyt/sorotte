@@ -160,6 +160,61 @@ fn first_delayed_playing_sample_can_confirm_seek_progress() {
 }
 
 #[test]
+fn pending_seek_progress_requires_a_position_newer_than_the_pre_seek_sample() {
+    for (observed_at_millis, position, expected_offset_target) in
+        [(1100, 11.0, 16.0), (1200, 11.1, 16.2)]
+    {
+        let mut fixture = SeekFixture::with_paused(false);
+        fixture.queue_observation_at(false, 11.0, 1100);
+        fixture
+            .runtime
+            .drain_player_transport_coordination(1.1)
+            .unwrap();
+        fixture.emit_seek();
+
+        // A new ordered delivery can still carry the pre-seek capture time.
+        // Even when its position matches the target, it cannot confirm that
+        // the physical seek has landed or authorize projected seek progress.
+        fixture.queue_observation_at(false, position, observed_at_millis);
+        fixture
+            .runtime
+            .drain_player_transport_coordination(1.2)
+            .unwrap();
+        fixture.runtime.player.commands.clear();
+        fixture
+            .runtime
+            .set_local_playback_offset_seconds(5.0, 1.3)
+            .unwrap();
+        let Some(PlayerCommand::SetPosition(target)) = fixture.runtime.player.commands.last()
+        else {
+            panic!("changing the offset must issue a player position command");
+        };
+        assert!(
+            (*target - expected_offset_target).abs() < 0.001,
+            "sample at {observed_at_millis}ms must seek to {expected_offset_target}, got {target}"
+        );
+
+        // The next fresh physical sample confirms progress in the new offset
+        // coordinates. Removing that offset must retain the observed progress.
+        fixture.queue_observation_at(false, 16.3, 1400);
+        fixture
+            .runtime
+            .drain_player_transport_coordination(1.4)
+            .unwrap();
+        fixture.runtime.player.commands.clear();
+        fixture
+            .runtime
+            .set_local_playback_offset_seconds(0.0, 1.5)
+            .unwrap();
+        let Some(PlayerCommand::SetPosition(target)) = fixture.runtime.player.commands.last()
+        else {
+            panic!("removing the offset must issue a player position command");
+        };
+        assert!((*target - 11.4).abs() < 0.001);
+    }
+}
+
+#[test]
 fn predecessor_position_cannot_confirm_a_forward_or_backward_seek() {
     for predecessor_position in [0.0, 100.0] {
         let mut fixture = SeekFixture::with_paused(false);
