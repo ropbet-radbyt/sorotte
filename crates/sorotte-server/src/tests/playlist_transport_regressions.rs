@@ -9,6 +9,10 @@ fn exchange(runtime: &mut ServerRuntime, client: &str, line: &str) -> Vec<Direct
 }
 
 fn playing_playlist(lifecycle: bool) -> ServerRuntime {
+    playing_playlist_entries(lifecycle, &["a.mkv", "b.mkv", "c.mkv"], 1)
+}
+
+fn playing_playlist_entries(lifecycle: bool, files: &[&str], index: usize) -> ServerRuntime {
     let mut runtime = ServerRuntime::default();
     runtime.set_clock_overrides_seconds(Some(100.0), Some(0.0));
     for client in ["alice", "bob"] {
@@ -27,13 +31,16 @@ fn playing_playlist(lifecycle: bool) -> ServerRuntime {
     exchange(
         &mut runtime,
         "alice",
-        r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv","c.mkv"]},"playlistIndex":{"index":1}}}"#,
+        &json!({"Set": {
+            "playlistChange": {"files": files}, "playlistIndex": {"index": index}
+        }})
+        .to_string(),
     );
     for client in ["alice", "bob"] {
         exchange(
             &mut runtime,
             client,
-            r#"{"Set":{"file":{"name":"b.mkv","duration":600.0}}}"#,
+            &json!({"Set": {"file": {"name": files[index], "duration": 600.0}}}).to_string(),
         );
     }
     exchange(
@@ -41,7 +48,10 @@ fn playing_playlist(lifecycle: bool) -> ServerRuntime {
         "alice",
         r#"{"State":{"playstate":{"position":120.0,"paused":false,"doSeek":true}}}"#,
     );
-    assert_eq!(runtime.room_playlist_state("room").index, Some(1));
+    assert_eq!(
+        runtime.room_playlist_state("room").index,
+        Some(index as i64)
+    );
     assert_eq!(runtime.room_playback_state("room").position, 120.0);
     assert!(!runtime.room_playback_state("room").paused);
     runtime
@@ -50,6 +60,10 @@ fn playing_playlist(lifecycle: bool) -> ServerRuntime {
 type ProbeClient = ClientRuntime<DisconnectedPlayer, QueuedRuntimeControl>;
 
 fn playlist_client(lifecycle: bool) -> ProbeClient {
+    playlist_client_entries(lifecycle, &["a.mkv", "b.mkv", "c.mkv"], 1)
+}
+
+fn playlist_client_entries(lifecycle: bool, files: &[&str], index: usize) -> ProbeClient {
     let mut session = ClientSession::default();
     session
         .apply_message_json(
@@ -61,10 +75,10 @@ fn playlist_client(lifecycle: bool) -> ProbeClient {
         )
         .unwrap();
     for line in [
-        r#"{"Set":{"playlistChange":{"files":["a.mkv","b.mkv","c.mkv"],"user":"alice"}}}"#,
-        r#"{"Set":{"playlistIndex":{"index":1,"user":"alice"}}}"#,
+        json!({"Set": {"playlistChange": {"files": files, "user": "alice"}}}).to_string(),
+        json!({"Set": {"playlistIndex": {"index": index, "user": "alice"}}}).to_string(),
     ] {
-        session.apply_message_json(line).unwrap();
+        session.apply_message_json(&line).unwrap();
     }
     ClientRuntime::new(session, DisconnectedPlayer, QueuedRuntimeControl::default())
 }
@@ -265,6 +279,100 @@ fn deleting_the_active_row_resets_to_the_successor() {
         observed.2 > 0,
         "the successor receives reset transport authority"
     );
+    assert_valid_successor_selection(&mut runtime);
+}
+
+#[test]
+fn deleting_the_active_duplicate_resets_transport() {
+    let files = ["episode.mkv", "episode.mkv", "episode.mkv"];
+    for active_index in [0, 1, 2] {
+        let mut runtime = playing_playlist_entries(true, &files, active_index);
+        let mut client = playlist_client_entries(true, &files, active_index);
+        assert!(
+            client
+                .run_delete_playlist_index(active_index as i64)
+                .unwrap()
+        );
+        let observed = edit_lines_and_observe(&mut runtime, queued_client_lines(&mut client));
+        assert_eq!(runtime.room_playlist_state("room").files.len(), 2);
+        assert_eq!(
+            runtime.room_playlist_state("room").index,
+            Some(active_index.min(1) as i64)
+        );
+        assert_eq!((observed.0, observed.1), (0.0, true));
+        assert!(observed.2 > 0, "the new row needs explicit reset authority");
+        assert_valid_successor_selection(&mut runtime);
+    }
+}
+
+#[test]
+fn deleting_an_inactive_duplicate_preserves_transport() {
+    let files = ["episode.mkv", "episode.mkv", "episode.mkv"];
+    for (active_index, delete_index, expected_index) in [(1, 0, 0), (0, 1, 0), (2, 1, 1)] {
+        let mut runtime = playing_playlist_entries(true, &files, active_index);
+        let mut client = playlist_client_entries(true, &files, active_index);
+        assert!(client.run_delete_playlist_index(delete_index).unwrap());
+        let lines = queued_client_lines(&mut client);
+        assert_eq!(
+            lines.len(),
+            1,
+            "the surviving row keeps compound edit semantics"
+        );
+        let observed = edit_lines_and_observe(&mut runtime, lines);
+        assert_eq!(
+            runtime.room_playlist_state("room").index,
+            Some(expected_index)
+        );
+        assert_eq!(observed, (120.0, false, 0));
+        assert_valid_successor_selection(&mut runtime);
+    }
+}
+
+#[test]
+fn reordering_duplicate_rows_preserves_transport() {
+    let files = ["episode.mkv", "middle.mkv", "episode.mkv", "last.mkv"];
+    let mut runtime = playing_playlist_entries(true, &files, 2);
+    let mut client = playlist_client_entries(true, &files, 2);
+    assert!(
+        client
+            .run_replace_playlist(
+                ["last.mkv", "episode.mkv", "middle.mkv", "episode.mkv"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                Some(3),
+            )
+            .unwrap()
+    );
+    let lines = queued_client_lines(&mut client);
+    assert_eq!(lines.len(), 1);
+    let observed = edit_lines_and_observe(&mut runtime, lines);
+    assert_eq!(runtime.room_playlist_state("room").index, Some(3));
+    assert_eq!(observed, (120.0, false, 0));
+    assert_valid_successor_selection(&mut runtime);
+}
+
+#[test]
+fn explicit_duplicate_selection_after_replacement_resets_transport() {
+    let files = ["episode.mkv", "episode.mkv", "last.mkv"];
+    let mut runtime = playing_playlist_entries(true, &files, 1);
+    let mut client = playlist_client_entries(true, &files, 1);
+    assert!(
+        client
+            .run_replace_playlist(
+                ["episode.mkv", "episode.mkv", "replacement.mkv"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                Some(1),
+            )
+            .unwrap()
+    );
+    assert!(client.run_set_playlist_index(0).unwrap());
+    let observed = edit_lines_and_observe(&mut runtime, queued_client_lines(&mut client));
+    assert_eq!(runtime.room_playlist_state("room").index, Some(0));
+    assert_eq!((observed.0, observed.1), (0.0, true));
+    assert!(observed.2 > 0);
     assert_valid_successor_selection(&mut runtime);
 }
 

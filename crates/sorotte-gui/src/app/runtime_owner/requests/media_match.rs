@@ -2704,13 +2704,13 @@ mod tests {
         let loaded_path = loaded_replacement
             .as_ref()
             .and_then(|file| file.path.as_ref())
-            .map(|path| sorotte_media_match::normalize_media_path(std::path::Path::new(path)));
+            .map(|path| std::fs::canonicalize(path).unwrap());
         assert_eq!(
             loaded_path,
             if clear_cache || replace_file {
                 None
             } else {
-                expected_original
+                Some(std::fs::canonicalize(&candidate).unwrap())
             }
         );
         eprintln!(

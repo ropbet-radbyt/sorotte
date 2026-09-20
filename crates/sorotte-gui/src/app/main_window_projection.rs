@@ -134,6 +134,10 @@ impl GuiMainWindowProjection<'_> {
         } else {
             Vec::new()
         };
+        let retain_previous_indices = super::playlist_model::playlist_change_reorders_retained_rows(
+            &previous_playlist,
+            &snapshot.playlist,
+        );
         let mut used_previous_rows = vec![false; previous_playlist.len()];
         let mut normalized_playlist = Vec::with_capacity(snapshot.playlist.len());
         let snapshot_playlist_entry_ids = if playlist_scope_unchanged {
@@ -148,6 +152,7 @@ impl GuiMainWindowProjection<'_> {
             let previous_row = super::playlist_model::reconciled_playlist_row(
                 &previous_playlist,
                 &mut used_previous_rows,
+                retain_previous_indices.then_some(index),
                 &label,
                 snapshot_playlist_entry_ids.get(index).copied(),
             );
@@ -413,6 +418,11 @@ impl GuiMainWindowProjection<'_> {
         if preserve_runtime_playlist {
             self.remember_shared_playlist_undo_snapshot_if_changed(&current_snapshot.playlist);
             let previous_rows = self.main_window.playlist.clone();
+            let retain_previous_indices =
+                super::playlist_model::playlist_change_reorders_retained_rows(
+                    &previous_rows,
+                    &current_snapshot.playlist,
+                );
             let mut used_previous_rows = vec![false; previous_rows.len()];
             self.main_window.playlist = current_snapshot
                 .playlist
@@ -422,6 +432,7 @@ impl GuiMainWindowProjection<'_> {
                     let previous_row = super::playlist_model::reconciled_playlist_row(
                         &previous_rows,
                         &mut used_previous_rows,
+                        retain_previous_indices.then_some(index),
                         label,
                         current_snapshot.playlist_entry_ids.get(index).copied(),
                     );

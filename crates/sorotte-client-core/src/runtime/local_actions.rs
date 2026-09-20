@@ -467,6 +467,7 @@ where
             self.run_local_playlist_action_batch_with_guard(
                 actions,
                 expected_epoch.map(|epoch| (expected_index, epoch)),
+                false,
             )
         };
         if result.is_ok() {
@@ -500,13 +501,14 @@ where
         &mut self,
         actions: Vec<ClientRuntimeAction>,
     ) -> Result<bool, PlayerError> {
-        self.run_local_playlist_action_batch_with_guard(actions, None)
+        self.run_local_playlist_action_batch_with_guard(actions, None, false)
     }
 
     fn run_local_playlist_action_batch_with_guard(
         &mut self,
-        actions: Vec<ClientRuntimeAction>,
+        mut actions: Vec<ClientRuntimeAction>,
         expected_playlist_state: Option<(i64, u64)>,
+        force_selection_reset: bool,
     ) -> Result<bool, PlayerError> {
         if actions.is_empty() {
             return Ok(false);
@@ -521,7 +523,7 @@ where
             .or_else(|| self.session.current_user_file_name().map(str::to_owned));
         let dedicated_index_request = actions.len() == 1
             && matches!(actions[0], ClientRuntimeAction::SetPlaylistIndex { .. });
-        let replay_media = dedicated_index_request
+        let replay_media = (dedicated_index_request || force_selection_reset)
             .then(|| self.v2_replay_media_for_playlist_actions(&actions))
             .flatten();
 
@@ -533,9 +535,20 @@ where
                 || self.session.server_readiness_v2_supported())
             && expected_playlist_state.is_none()
         {
+            let index = *index;
             self.control
-                .emit_playlist_edit(files.clone(), *index)
+                .emit_playlist_edit(files.clone(), index)
                 .map_err(client_effect_player_error)?;
+            if force_selection_reset {
+                // First install the final position atomically so removing the
+                // last active row cannot briefly retire its index. The separate
+                // selection then resets even a same-label successor. Track both
+                // echoes so the intermediate snapshot cannot retire preparation.
+                self.control
+                    .emit(ClientEffect::SetPlaylistIndex(index))
+                    .map_err(client_effect_player_error)?;
+                actions.push(ClientRuntimeAction::SetPlaylistIndex { index });
+            }
         } else {
             self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
                 &actions,
@@ -553,11 +566,14 @@ where
             selected_target_after.is_some() && selected_target_before != selected_target_after;
         // An explicit index request is also a replay request when it selects the
         // already-active row. Compound batches reset only when their optimistic
-        // projection changes the selected media target. A pure playlist reorder
-        // can move the active target to a different numeric index and must not
-        // reopen or rewind that same media.
+        // projection changes the selected media target. An operation that retires
+        // the active row must reset even when its successor has the same label;
+        // keep that selection's index request separate on the wire. A reorder
+        // can move the surviving target without reopening or rewinding it.
         self.finalize_local_playlist_selection_switch_if_needed(
-            selected_target_changed || dedicated_index_request,
+            selected_target_changed
+                || dedicated_index_request
+                || (force_selection_reset && selected_target_after.is_some()),
         )?;
         self.begin_v2_replay_episode(replay_media);
         Ok(true)
@@ -570,16 +586,23 @@ where
         if !self.session.server_readiness_v2_supported() {
             return None;
         }
-        let current_index = self.session.current_room_playlist()?.index?;
-        actions
+        let playlist = self.session.current_room_playlist()?;
+        let current_index = usize::try_from(playlist.index?).ok()?;
+        let current_target = playlist.files.get(current_index)?;
+        let selected_index = actions.iter().find_map(|action| match action {
+            ClientRuntimeAction::SetPlaylistIndex { index } => usize::try_from(*index).ok(),
+            _ => None,
+        })?;
+        let files = actions
             .iter()
-            .any(|action| {
-                matches!(
-                    action,
-                    ClientRuntimeAction::SetPlaylistIndex { index }
-                        if *index == current_index
-                )
+            .find_map(|action| match action {
+                ClientRuntimeAction::SetPlaylist { files } => Some(files),
+                _ => None,
             })
+            .unwrap_or(&playlist.files);
+        // Explicit selection can restart the same logical target at another
+        // numeric index, including after deleting one of two duplicate rows.
+        (files.get(selected_index) == Some(current_target))
             .then(|| self.playback_coordination.current_media_for_replay())
             .flatten()
     }
@@ -611,10 +634,14 @@ where
     }
 
     pub fn run_delete_playlist_index(&mut self, index: i64) -> Result<bool, PlayerError> {
+        let deletes_active_row = self
+            .session
+            .current_room_playlist()
+            .is_some_and(|playlist| playlist.index == Some(index));
         let actions = self
             .session
             .runtime_actions_for_local_playlist_delete(index);
-        self.run_local_playlist_action_batch(actions)
+        self.run_local_playlist_action_batch_with_guard(actions, None, deletes_active_row)
     }
 
     pub fn run_replace_playlist(

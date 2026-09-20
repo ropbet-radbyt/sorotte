@@ -2641,15 +2641,12 @@ class CiPolicyTests(unittest.TestCase):
                             "commit_mapped_transport_observation|"
                             r"RuntimePlaybackCoordination::observe_transport\b|"
                             "reset_sync_state_for_reconnect|"
-                            "delete field logical_pause from struct "
+                            "delete field (phase|logical_pause) from struct "
                             "PlayerTransportDelta expression in "
                             "ClientRuntime<P, C>::apply_ordered_event)"
                         ),
                         "test_target": "lib",
-                        "test_filter": (
-                            "runtime::playback_coordination::tests::"
-                            "participant_status_"
-                        ),
+                        "test_filter": "runtime::playback_coordination::tests::",
                         "jobs": 2,
                         "timeout_seconds": 120,
                         "build_timeout_seconds": 240,
@@ -4398,15 +4395,20 @@ class CiPolicyTests(unittest.TestCase):
             "ClientRuntime<P, C>::apply_ordered_event"
         )
 
-        self.assertRegex(
-            f"delete field logical_pause{context}",
-            mutant_filter,
+        self.assertEqual(
+            shard["test_filter"],
+            "runtime::playback_coordination::tests::",
         )
+        for terminal_field in ("phase", "logical_pause"):
+            with self.subTest(terminal_field=terminal_field):
+                self.assertRegex(
+                    f"delete field {terminal_field}{context}",
+                    mutant_filter,
+                )
 
         for neighbor in (
             f"delete field load_attempt_id{context}",
             f"delete field media_generation{context}",
-            f"delete field phase{context}",
             f"delete field playback_rate{context}",
             (
                 "delete field load_attempt_id from struct PlayerSnapshotDelta "

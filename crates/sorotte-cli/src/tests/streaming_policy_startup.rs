@@ -87,8 +87,7 @@ fn application_settings_apply_saved_start_and_buffering() {
     );
 }
 
-#[test]
-fn saved_streaming_policy_preserves_cli_behavior_overrides() {
+fn runtime_with_saved_streaming_and_explicit_behavior() -> ClientApplication<MpvAdapter> {
     let stored = parse_sorotte_ini_stored_client_settings(
         "[client_settings]\nstreamingStartPolicy = wait-all\npauseOnLeave = true\nrewindThreshold = 4.0\n",
     );
@@ -104,7 +103,29 @@ fn saved_streaming_policy_preserves_cli_behavior_overrides() {
         |_, _| SorotteBridgeHealth::Disabled,
     )
     .unwrap();
+    runtime
+}
+
+#[test]
+fn saved_streaming_policy_preserves_cli_behavior_overrides() {
+    // The real session constructor reads environment behavior overrides after
+    // the loop config. Coordinate with the stored-settings precedence fixtures.
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
+    env.remove_var("SOROTTE_CLIENT_PAUSE_ON_LEAVE");
+    let runtime = runtime_with_saved_streaming_and_explicit_behavior();
     assert!(!runtime.session().behavior_config().pause_on_leave);
+    assert_eq!(
+        runtime.session().desync_config().rewind_threshold_seconds,
+        17.0
+    );
+}
+
+#[test]
+fn saved_streaming_policy_preserves_environment_behavior_overrides() {
+    let env = TestEnvGuard::lock(&STORED_SETTINGS_CONFIG_PATH_ENV_LOCK);
+    env.set_var("SOROTTE_CLIENT_PAUSE_ON_LEAVE", "true");
+    let runtime = runtime_with_saved_streaming_and_explicit_behavior();
+    assert!(runtime.session().behavior_config().pause_on_leave);
     assert_eq!(
         runtime.session().desync_config().rewind_threshold_seconds,
         17.0

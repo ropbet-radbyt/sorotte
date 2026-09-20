@@ -46,8 +46,7 @@ fn imported_first_file(extension: &str, with_bom: bool, first_is_url: bool) -> b
         if first_is_url {
             path == first_target
         } else {
-            sorotte_media_match::normalize_media_path(std::path::Path::new(path))
-                == sorotte_media_match::normalize_media_path(&first)
+            std::fs::canonicalize(path).unwrap() == std::fs::canonicalize(&first).unwrap()
         }
     });
     eprintln!(
@@ -79,8 +78,8 @@ fn imported_first_file(extension: &str, with_bom: bool, first_is_url: bool) -> b
             .player_local_file
             .as_ref()
             .and_then(|file| file.path.as_deref())
-            .map(|path| sorotte_media_match::normalize_media_path(std::path::Path::new(path))),
-        Some(sorotte_media_match::normalize_media_path(&second))
+            .map(|path| std::fs::canonicalize(path).unwrap()),
+        Some(std::fs::canonicalize(&second).unwrap())
     );
     loaded_first
 }

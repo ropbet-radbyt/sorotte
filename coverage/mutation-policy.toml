@@ -118,9 +118,11 @@ files = [
     "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
     "crates/sorotte-client-core/src/runtime/queued_control.rs",
 ]
-mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|RuntimePlaybackCoordination::observe_transport\\b|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
+# cargo-mutants selects all field deletions in the matched terminal delta literal.
+mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|RuntimePlaybackCoordination::observe_transport\\b|reset_sync_state_for_reconnect|delete field (phase|logical_pause) from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
 test_target = "lib"
-test_filter = "runtime::playback_coordination::tests::participant_status_"
+# The terminal phase also owns command-race recovery, covered alongside status.
+test_filter = "runtime::playback_coordination::tests::"
 jobs = 2
 timeout_seconds = 120
 build_timeout_seconds = 240

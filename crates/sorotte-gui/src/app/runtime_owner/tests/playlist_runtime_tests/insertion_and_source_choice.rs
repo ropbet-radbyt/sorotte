@@ -92,6 +92,68 @@ fn distinct_label_insert_controls() {
     }
 }
 
+fn assert_active_removal_resets_physical_successor(duplicate_names: bool) {
+    let mut rig = PlaylistEditingRig::new(true, duplicate_names);
+    let before_ids = rig.row_ids();
+    let successor_path = rig.owner.playlist_resolution.local_origins_by_row[&before_ids[1]].clone();
+    rig.handle
+        .push_request(GuiRuntimeRequest::SeekToPosition(30.0));
+    rig.pump();
+    assert_eq!(rig.owner.player_position_seconds, Some(30.0));
+    assert_eq!(rig.shell.main_window.active_playlist_index, Some(0));
+
+    rig.remove(0);
+    let successor_position = rig.owner.player_position_seconds;
+    let successor_room = rig
+        .owner
+        .session
+        .as_ref()
+        .unwrap()
+        .current_room_playstate()
+        .unwrap();
+    assert_eq!(rig.row_ids(), vec![before_ids[1]]);
+    assert_eq!(rig.shell.main_window.active_playlist_index, Some(0));
+    assert_eq!(
+        rig.owner
+            .player_local_file
+            .as_ref()
+            .and_then(|file| file.path.as_ref())
+            .map(|path| std::fs::canonicalize(path).unwrap()),
+        Some(std::fs::canonicalize(successor_path).unwrap()),
+        "removing the active row loads the surviving row's exact physical file"
+    );
+
+    // An explicit replay remains valid after this compound edit in the same session.
+    rig.activate(0);
+    assert_eq!(rig.owner.player_position_seconds, Some(0.0));
+    let replay_room = rig
+        .owner
+        .session
+        .as_ref()
+        .unwrap()
+        .current_room_playstate()
+        .unwrap();
+    assert_eq!(replay_room.position_seconds, Some(0.0));
+    assert_eq!(replay_room.paused, Some(true));
+    assert_eq!(
+        successor_position,
+        Some(0.0),
+        "deleting the active row must reset its physical successor, even when the labels match"
+    );
+    assert_eq!(successor_room.position_seconds, Some(0.0));
+    assert_eq!(successor_room.paused, Some(true));
+}
+
+#[test]
+fn connected_active_duplicate_removal_resets_physical_successor() {
+    assert_active_removal_resets_physical_successor(true);
+}
+
+#[test]
+fn connected_active_distinct_removal_resets_physical_successor_control() {
+    assert_active_removal_resets_physical_successor(false);
+}
+
 struct RecordingTestPlayer {
     inner: GuiTestPlayerAdapter,
     opens: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -217,10 +279,8 @@ fn assert_source_choice_preserves_playback(connected: bool, source_index: usize,
                 .unwrap()
                 .path
                 .as_deref()
-                .map(|path| sorotte_media_match::normalize_media_path(std::path::Path::new(path))),
-            Some(sorotte_media_match::normalize_media_path(
-                rig._root.path().join("second/second.mkv")
-            ))
+                .map(|path| std::fs::canonicalize(path).unwrap()),
+            Some(std::fs::canonicalize(rig._root.path().join("second/second.mkv")).unwrap())
         );
         assert_eq!(
             opens.lock().unwrap().len(),

@@ -1343,7 +1343,6 @@ where
                     self.ordered_player_events.transport = terminal.clone();
                     let terminal_delta = PlayerTransportDelta {
                         phase: snapshot_known_copy(&terminal.phase),
-                        eof_reached: snapshot_known_copy(&terminal.eof_reached),
                         logical_pause: Some(true),
                         ..PlayerTransportDelta::default()
                     };
