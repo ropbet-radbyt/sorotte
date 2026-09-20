@@ -268,6 +268,8 @@ pub(crate) struct RuntimePlaybackCoordination {
     pending_local_pause_intent: Option<PendingLocalPauseIntent>,
     pending_local_transport_echo: Option<PendingLocalTransportEcho>,
     unacknowledged_local_seek: Option<PendingLocalTransportEcho>,
+    unacknowledged_local_seek_position_confirmed: bool,
+    unacknowledged_local_seek_position: Option<LocalPositionObservation>,
     rejected_local_seek: Option<(PendingLocalTransportEcho, u64)>,
     pending_remote_pause_observation: Option<PlayerCommandRegistration>,
     local_transport_counter_high_watermark: Option<PendingLocalTransportEcho>,
@@ -395,7 +397,7 @@ impl RuntimePlaybackCoordination {
         self.pending_local_pause_intent = None;
         self.pending_local_transport_echo = None;
         self.rejected_local_seek = None;
-        self.unacknowledged_local_seek = None;
+        self.clear_unacknowledged_local_seek();
         self.pending_remote_pause_observation = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.pending_forced_seek_revision = None;
@@ -532,7 +534,7 @@ impl RuntimePlaybackCoordination {
             self.pending_local_pause_intent = None;
             self.pending_local_transport_echo = None;
             self.rejected_local_seek = None;
-            self.unacknowledged_local_seek = None;
+            self.clear_unacknowledged_local_seek();
             self.pending_remote_pause_observation = None;
             self.last_local_pause_intent_stage_accepted = None;
             self.pending_forced_seek_revision = None;
@@ -654,7 +656,7 @@ impl RuntimePlaybackCoordination {
         self.pending_local_pause_intent = None;
         self.pending_local_transport_echo = None;
         self.rejected_local_seek = None;
-        self.unacknowledged_local_seek = None;
+        self.clear_unacknowledged_local_seek();
         self.pending_remote_pause_observation = None;
         self.last_local_pause_intent_stage_accepted = None;
         self.barrier.last_reported_barrier_ready = None;
@@ -923,7 +925,7 @@ impl RuntimePlaybackCoordination {
     pub(crate) fn begin_protocol_connection_generation(&mut self, session: &ClientSession) {
         self.clear_local_transport_echo();
         self.connection_generation = self.connection_generation.saturating_add(1).max(1);
-        self.unacknowledged_local_seek = None;
+        self.clear_unacknowledged_local_seek();
         self.pending_remote_pause_observation = None;
         self.rejected_local_seek = None;
         self.participant_status.next_participant_status_sequence = 0;
@@ -1293,6 +1295,7 @@ impl RuntimePlaybackCoordination {
         } else {
             self.merge_latest_observation(observation);
         }
+        self.observe_unacknowledged_local_seek_position(position_update);
         MappedTransportCommitOutcome::Committed
     }
 

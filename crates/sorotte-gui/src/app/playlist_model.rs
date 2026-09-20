@@ -272,7 +272,6 @@ pub(super) fn normalize_shared_playlist_entries(entries: Vec<String>) -> Vec<Str
 pub(super) fn reconciled_playlist_row(
     previous_rows: &[MainWindowPlaylistRow],
     used_previous_rows: &mut [bool],
-    index: usize,
     label: &str,
     preferred_entry_id: Option<super::shell_state::GuiPlaylistEntryId>,
 ) -> Option<MainWindowPlaylistRow> {
@@ -297,17 +296,8 @@ pub(super) fn reconciled_playlist_row(
         row.source_state.entry_id = row.entry_id;
         return Some(row);
     }
-    if let Some(row) = previous_rows.get(index)
-        && !used_previous_rows.get(index).copied().unwrap_or(false)
-        && row.label == label
-    {
-        if let Some(used) = used_previous_rows.get_mut(index) {
-            *used = true;
-        }
-        let mut row = row.clone();
-        row.source_state.entry_id = row.entry_id;
-        return Some(row);
-    }
+    // Without an explicit identity, equal labels retain their occurrence order.
+    // A numeric slot may belong to another occurrence after insertion/removal.
 
     previous_rows
         .iter()
@@ -359,13 +349,12 @@ pub(super) fn shared_playlist_entries_after_media_open(
     if let Some(insert_slot) = insert_slot {
         let mut playlist_entries = current_entries.to_vec();
         let insert_slot = insert_slot.min(playlist_entries.len());
+        let inserted_count = opened_entries.len();
         playlist_entries.splice(insert_slot..insert_slot, opened_entries);
-        let selection = shared_playlist_target_index_from_changed_entries(
-            current_entries,
-            current_index,
-            &playlist_entries,
-        )
-        .min(playlist_entries.len().saturating_sub(1));
+        let selection = current_index
+            .filter(|index| *index < current_entries.len())
+            .map(|index| index + usize::from(index >= insert_slot) * inserted_count)
+            .unwrap_or(0);
         return (playlist_entries, Some(selection));
     }
     (opened_entries, Some(0))
@@ -383,11 +372,29 @@ pub(super) fn shared_playlist_target_index_from_changed_entries(
         return 0;
     }
 
+    // Labels may repeat; preserve the occurrence when unrelated entries change.
+    let retained_index = |index: usize| {
+        let entry = current_entries.get(index)?;
+        let occurrence = current_entries[..index]
+            .iter()
+            .filter(|candidate| *candidate == entry)
+            .count();
+        next_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| *candidate == entry)
+            .nth(occurrence)
+            .map(|(index, _)| index)
+            .or_else(|| {
+                next_entries
+                    .iter()
+                    .rposition(|candidate| candidate == entry)
+            })
+    };
+
     let mut index = current_index;
     while index <= current_entries.len() {
-        if let Some(entry) = current_entries.get(index)
-            && let Some(valid_index) = next_entries.iter().position(|candidate| candidate == entry)
-        {
+        if let Some(valid_index) = retained_index(index) {
             return valid_index;
         }
         index = index.saturating_add(1);
@@ -395,9 +402,7 @@ pub(super) fn shared_playlist_target_index_from_changed_entries(
 
     let mut index = current_index;
     while index > 0 {
-        if let Some(entry) = current_entries.get(index)
-            && let Some(valid_index) = next_entries.iter().position(|candidate| candidate == entry)
-        {
+        if let Some(valid_index) = retained_index(index) {
             return if valid_index < next_entries.len().saturating_sub(1) {
                 valid_index.saturating_add(1)
             } else {
@@ -439,15 +444,9 @@ pub(super) fn apply_shared_playlist_entries(
     let mut used_previous_rows = vec![false; previous_rows.len()];
     main_window.playlist = entries
         .iter()
-        .enumerate()
-        .map(|(index, label)| {
-            let previous_row = reconciled_playlist_row(
-                &previous_rows,
-                &mut used_previous_rows,
-                index,
-                label,
-                None,
-            );
+        .map(|label| {
+            let previous_row =
+                reconciled_playlist_row(&previous_rows, &mut used_previous_rows, label, None);
             let source_state = previous_row
                 .as_ref()
                 .map(|row| {

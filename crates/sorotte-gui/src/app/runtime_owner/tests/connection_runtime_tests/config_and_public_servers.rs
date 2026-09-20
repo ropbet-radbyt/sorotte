@@ -497,7 +497,10 @@ fn gui_persisted_config_runtime_owner_connect_once_does_not_persist_unrelated_dr
     matching_active_settings.room = Some(room_input.to_owned());
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(matching_active_settings.clone()),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: matching_active_settings.clone(),
+        },
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     for action in handle.drain_actions() {
@@ -1024,7 +1027,10 @@ fn ordinary_save_promotes_media_library_fields_without_unpinning_session_setting
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     let submitted_settings = state.configuration.to_stored_settings();
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(submitted_settings.clone()),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: submitted_settings.clone(),
+        },
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
 

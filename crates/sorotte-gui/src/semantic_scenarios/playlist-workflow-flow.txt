@@ -32,6 +32,11 @@ activate	main-window:playlist:1:source:plex-stream
 assert-label	main-window:playlist:1:source	Plex Stream
 assert-value	main-window:playlist:1:source	resolving
 assert-selected	main-window:playlist:1:source:plex-stream	true
+# A source choice belongs to its row and survives choosing another row's source.
+activate	main-window:playlist:0:source:local
+assert-selected	main-window:playlist:0:source:local	true
+assert-selected	main-window:playlist:1:source:plex-stream	true
+apply-main-window-playlist-selection	1
 activate	main-window:playlist:add-url
 assert-enabled	main-window:playlist-url-edit:text	true
 enter-text	main-window:playlist-url-edit:text	false	https://example.com/live

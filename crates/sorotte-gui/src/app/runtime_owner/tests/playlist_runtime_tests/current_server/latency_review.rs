@@ -75,7 +75,8 @@ impl GuiQueuedRuntimeOwner for ObservedOwner {
                 .owner
                 .media_match_remote_lookup_result
                 .as_ref()
-                .and_then(|result| result.candidate_path.clone()),
+                .and_then(|result| result.candidate.as_ref())
+                .map(|candidate| candidate.normalized_path.clone()),
         };
     }
 }

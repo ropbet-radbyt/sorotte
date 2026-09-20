@@ -104,6 +104,9 @@ enum EndEvidence {
     KeepOpenAfterPeerReplaySeek,
     KeepOpenAfterPeerReplayQueuedSeek,
     KeepOpenAfterPeerReplayAcceptedSeek,
+    // An unrelated edit arrives before the accepted replay is observed.
+    KeepOpenAfterPeerReplayAcceptedSeekAndAppend,
+    KeepOpenAfterPeerReplaySeekAndAppend,
     KeepOpenAfterPeerReplaySeekThenFailedSeek,
     KeepOpenAfterPeerReplayFailedSeek,
     KeepOpenAfterUnselectedEdit,
@@ -345,6 +348,8 @@ fn gui_completion_with_source(
         end_evidence,
         EndEvidence::KeepOpenAfterPeerReplayQueuedSeek
             | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+            | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend
+            | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
     ) {
         let command_id = owner
             .player
@@ -370,6 +375,8 @@ fn gui_completion_with_source(
             | EndEvidence::KeepOpenAfterPeerReplaySeek
             | EndEvidence::KeepOpenAfterPeerReplayQueuedSeek
             | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+            | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend
+            | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
             | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
             | EndEvidence::KeepOpenAfterPeerReplayFailedSeek
             | EndEvidence::KeepOpenAfterUnselectedEdit
@@ -395,6 +402,15 @@ fn gui_completion_with_source(
         session.apply_message_json(
             &json!({"Set":{"playlistIndex":{"index":next_index,"user":"bob","sorottePlaylistEpoch":epoch}}}).to_string(),
         ).unwrap();
+        if matches!(
+            end_evidence,
+            EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend
+                | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
+        ) {
+            session.apply_message_json(
+                r#"{"State":{"playstate":{"position":0.0,"paused":true,"doSeek":true,"setBy":"bob"}}}"#,
+            ).unwrap();
+        }
         state.apply_shared_playlist_entries(
             next_files
                 .as_array()
@@ -409,6 +425,8 @@ fn gui_completion_with_source(
             end_evidence,
             EndEvidence::KeepOpenAfterPeerReplaySeek
                 | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeek
+                | EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend
+                | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
                 | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
                 | EndEvidence::KeepOpenAfterPeerReplayFailedSeek
         ) {
@@ -434,6 +452,7 @@ fn gui_completion_with_source(
             } else if matches!(
                 end_evidence,
                 EndEvidence::KeepOpenAfterPeerReplaySeek
+                    | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
                     | EndEvidence::KeepOpenAfterPeerReplaySeekThenFailedSeek
             ) {
                 observe_completed_seek(&mut player.lock().unwrap(), offset);
@@ -499,6 +518,31 @@ fn gui_completion_with_source(
                 "predecessor EOF is queued before any successor physical reset"
             );
         }
+    }
+    if matches!(
+        end_evidence,
+        EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend
+            | EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend
+    ) {
+        assert!(
+            !owner
+                .session
+                .as_ref()
+                .unwrap()
+                .has_pending_playlist_index_reset_intent()
+        );
+        owner.session.as_mut().unwrap().apply_message_json(
+            r#"{"Set":{"playlistChange":{"files":["episode1.mkv","episode2.mkv","episode3.mkv"],"user":"bob","sorottePlaylistEpoch":4}}}"#,
+        ).unwrap();
+        state.apply_shared_playlist_entries(
+            vec![
+                "episode1.mkv".into(),
+                "episode2.mkv".into(),
+                "episode3.mkv".into(),
+            ],
+            Some(0),
+            false,
+        );
     }
     if matches!(source, CompletionSource::MediaMatchThenPeerSelection) {
         owner
@@ -796,6 +840,23 @@ fn accepted_replay_command_does_not_authorize_the_queued_predecessor_seek() {
 }
 
 #[test]
+fn replay_and_append_rejects_predecessor_eof() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplayAcceptedSeekAndAppend,
+        0.0,
+        false,
+    );
+    assert_eq!(
+        result.advances, 0,
+        "an unrelated edit cannot authorize EOF from before the replay reset"
+    );
+    assert_eq!(result.selected, Some(0));
+    assert!(result.requests.is_empty());
+}
+
+#[test]
 fn completed_replay_receipt_survives_a_later_failed_seek_before_drain() {
     let result = gui_completion(
         240.0,
@@ -1028,4 +1089,18 @@ fn last_row_completion_publishes_a_bounded_room_position_with_offset() {
         assert_eq!(result.selected, Some(0));
         assert_eq!(result.terminal_positions, vec![240.0 - offset]);
     }
+}
+
+#[test]
+fn completed_replay_receipt_allows_completion_after_append() {
+    let result = gui_completion(
+        240.0,
+        true,
+        EndEvidence::KeepOpenAfterPeerReplaySeekAndAppend,
+        0.0,
+        false,
+    );
+    assert_eq!(result.advances, 1);
+    assert_eq!(result.selected, Some(1));
+    assert_eq!(result.requests[0]["sorotteExpectedPlaylistEpoch"], 4);
 }

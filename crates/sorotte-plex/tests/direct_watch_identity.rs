@@ -578,3 +578,6 @@ fn http_direct_known_item_should_report_despite_duplicate_titles() {
 fn http_direct_unique_title_control_reports_progress() {
     http_direct_watch(false);
 }
+
+#[path = "direct_watch_identity/watch_server_recovery.rs"]
+mod watch_server_recovery;

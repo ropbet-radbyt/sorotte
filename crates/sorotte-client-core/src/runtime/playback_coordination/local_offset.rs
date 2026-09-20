@@ -69,7 +69,10 @@ where
                     .local_transport_scope_matches(seek, &self.session)
                     && self.session.current_room_transport_revision() == Some(seek.base_revision)
             })
-            .map(|seek| seek.target_position)
+            .map(|seek| {
+                self.playback_coordination
+                    .unacknowledged_seek_position_at(seek, now_seconds)
+            })
             .or_else(|| {
                 self.session
                     .current_room_playstate_at(now_seconds)

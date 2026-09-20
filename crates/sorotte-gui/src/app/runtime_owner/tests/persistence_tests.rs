@@ -6,6 +6,7 @@ use sorotte_client_app::app_boundary::state::stored_client_settings_runtime_snap
 use sorotte_plex::{PlexServerConnectionKind, discovery::PlexServerConnection};
 
 mod concurrent_writers;
+mod queued_saves;
 
 fn stage_unrelated_plex_draft(state: &mut SorotteGuiShellAppState) {
     assert!(state.apply(GuiShellAction::EditConfigurationText {
@@ -48,7 +49,10 @@ fn gui_persisted_config_runtime_owner_persists_save_and_reload_requests() {
     state.resync_from_settings(saved_settings.clone());
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: saved_settings.clone(),
+        },
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     let save_actions = handle.drain_actions();
@@ -440,7 +444,10 @@ fn gui_configuration_save_invalidates_plex_jobs_against_saved_settings() {
 
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(submitted_settings),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: submitted_settings,
+        },
     ));
     pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1054,7 +1061,10 @@ fn cancelling_staged_secret_after_unrelated_resync_or_patch_restores_saved_basel
             assert!(state.apply(GuiShellAction::BeginConfigurationSave));
             let submitted = state.configuration.to_stored_settings();
             handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::SaveConfiguration(submitted),
+                GuiPendingCompletionRequest::SaveConfiguration {
+                    baseline: Box::new(state.saved_configuration.clone()),
+                    settings: submitted,
+                },
             ));
             pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
 
@@ -1592,6 +1602,7 @@ fn gui_persisted_config_runtime_owner_changes_config_storage_root_and_copies_kno
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ChangeConfigStorageRoot {
             target: GuiConfigStorageChangeTarget::CustomRoot(new_root.display().to_string()),
+            baseline: Box::new(state.saved_configuration.clone()),
             settings: saved_settings.clone(),
         },
     ));
@@ -1734,6 +1745,7 @@ fn config_storage_root_change_restores_target_config_when_locator_commit_fails()
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
         GuiPendingCompletionRequest::ChangeConfigStorageRoot {
             target: GuiConfigStorageChangeTarget::CustomRoot(target_root.display().to_string()),
+            baseline: Box::new(state.saved_configuration.clone()),
             settings: attempted_settings,
         },
     ));

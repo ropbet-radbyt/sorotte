@@ -514,6 +514,8 @@ pub struct PlaylistState {
     pub(crate) pending_remote_revision: u64,
     pub(crate) selection_revisions: BTreeMap<String, u64>,
     pub(crate) pending_selection_revision: u64,
+    // Physical playback episodes outlive the pending reset/State handshake.
+    pub(crate) playback_reset_generation: u64,
     pub(crate) canonical_epochs: BTreeMap<String, u64>,
     pub(crate) pending_canonical_epoch: Option<u64>,
     pub(crate) pending_local_change_echoes: BTreeMap<String, PendingLocalPlaylistEchoTracker>,
@@ -540,6 +542,7 @@ impl std::fmt::Debug for PlaylistState {
             .field("rooms", &self.rooms)
             .field("pending", &self.pending)
             .field("pending_remote_revision", &self.pending_remote_revision)
+            .field("playback_reset_generation", &self.playback_reset_generation)
             .field(
                 "selection_revision_room_count",
                 &self.selection_revisions.len(),

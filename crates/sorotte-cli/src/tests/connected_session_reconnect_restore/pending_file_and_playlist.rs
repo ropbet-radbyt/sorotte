@@ -11,8 +11,9 @@ async fn connected_client_session_publishes_pending_local_file_update() {
 
     let server_task = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("server should accept");
-        let (reader, _writer) = socket.into_split();
+        let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
 
         let hello_line = lines
             .next_line()
@@ -40,6 +41,7 @@ async fn connected_client_session_publishes_pending_local_file_update() {
             .expect("second client line should include file payload");
         assert_eq!(file.name.as_deref(), Some("movie.mkv"));
         assert_eq!(file.size.as_ref().and_then(|value| value.as_u64()), Some(0));
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let config = ClientLoopConfig {

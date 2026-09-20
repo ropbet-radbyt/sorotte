@@ -343,6 +343,7 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
+        baseline: sorotte_client_app::app_boundary::state::StoredClientSettings,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let previous_settings = projected_state.settings.saved.clone();
@@ -362,10 +363,9 @@ impl GuiPersistedConfigRuntimeOwner {
             );
             return true;
         };
-        match merge_sorotte_ini_stored_client_settings_at_path(&path, &previous_settings, &settings)
-        {
+        match merge_sorotte_ini_stored_client_settings_at_path(&path, &baseline, &settings) {
             Ok(settings) => {
-                self.config_path = Some(path);
+                self.adopt_config_path(path);
                 self.promote_on_save_runtime_fields(&settings);
                 if self.apply_saved_player_settings_in_place(&settings) {
                     self.promote_restart_player_runtime_fields(&settings);
@@ -567,6 +567,7 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
         target: GuiConfigStorageChangeTarget,
+        baseline: sorotte_client_app::app_boundary::state::StoredClientSettings,
         settings: sorotte_client_app::app_boundary::state::StoredClientSettings,
     ) -> bool {
         let old_root = self.syncplay_qsettings_root();
@@ -593,7 +594,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let settings = match relocate_sorotte_ini_stored_client_settings_at_path(
             source.as_deref(),
             &paths.config_path,
-            &projected_state.settings.saved,
+            &baseline,
             &settings,
             || persist_sorotte_client_install_locator(&install_root, &paths.storage_root),
         ) {
@@ -610,7 +611,7 @@ impl GuiPersistedConfigRuntimeOwner {
         let copy_warnings =
             Self::copy_known_storage_entries_best_effort(old_root.as_deref(), &paths.storage_root);
         self.invalidate_plex_operation_context(handle, projected_state);
-        self.config_path = Some(paths.config_path.clone());
+        self.adopt_config_path(paths.config_path.clone());
         self.promote_on_save_runtime_fields(&settings);
         if self.apply_saved_player_settings_in_place(&settings) {
             self.promote_restart_player_runtime_fields(&settings);

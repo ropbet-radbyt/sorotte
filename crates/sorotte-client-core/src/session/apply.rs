@@ -911,13 +911,9 @@ impl ClientSession {
             return;
         };
 
-        let room_name = playstate
-            .set_by
-            .as_deref()
-            .and_then(|username| self.user_room(username).map(str::to_owned))
-            .or_else(|| self.model.room.name.clone());
-
-        if let Some(room_name) = room_name {
+        // State is scoped to the receiving connection's current membership.
+        // setBy records the historical author, who may since have changed rooms.
+        if let Some(room_name) = self.model.room.name.clone() {
             self.merge_room_playstate(
                 room_name,
                 playstate,

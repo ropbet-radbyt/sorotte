@@ -562,6 +562,7 @@ enum PendingCommandKind {
     Seek {
         target_position_seconds: f64,
         baseline_restart_sequence: u64,
+        buffered_alternative: bool,
     },
     Rate {
         target_rate: f64,
@@ -1571,6 +1572,7 @@ impl PlaybackCoordinator {
         {
             return false;
         }
+        self.degrade_failed_buffered_alternative(command_id);
         let preparation_failed = self
             .seek_preparation
             .as_ref()
@@ -1590,6 +1592,36 @@ impl PlaybackCoordinator {
         self.failed_command_attempts = self.failed_command_attempts.saturating_add(1);
         self.retry_not_before_seconds = now_seconds + self.config.command_retry_cooldown_seconds;
         true
+    }
+
+    fn degrade_failed_buffered_alternative(&mut self, command_id: CoordinatorCommandId) {
+        let Some(command) = self.pending_commands.iter().find(|command| {
+            command.id == command_id
+                && matches!(
+                    command.kind,
+                    PendingCommandKind::Seek {
+                        buffered_alternative: true,
+                        ..
+                    }
+                )
+        }) else {
+            return;
+        };
+        let revision = command.revision;
+        if let Some(terminal) = self.last_seek_preparation_terminal.as_mut() {
+            terminal.terminal_outcome = Some(SeekPreparationTerminalOutcome::Degraded(
+                SeekPreparationDegradedReason::TransportFailed,
+            ));
+        }
+        self.desired_seek_satisfied_revision = Some(revision);
+        self.required_seek_dispatch_revision = None;
+        self.close_recovery_without_metrics();
+        self.diagnostic = PlaybackDiagnostic::Degraded;
+        self.pending_degraded_reason = Some(DegradedPlaybackReason::TransportFailed);
+    }
+
+    pub(crate) fn position_matches_target(&self, position: f64, target: f64) -> bool {
+        position.is_finite() && (position - target).abs() <= self.config.position_tolerance_seconds
     }
 
     pub(crate) fn take_pending_actions(&mut self) -> Vec<PlaybackCoordinatorAction> {
@@ -1677,6 +1709,10 @@ impl PlaybackCoordinator {
             .map(|command| command.id)
             .collect::<Vec<_>>();
         if !timed_out.is_empty() {
+            for command_id in &timed_out {
+                self.degrade_failed_buffered_alternative(*command_id);
+            }
+            actions.extend(self.take_pending_actions());
             self.pending_commands
                 .retain(|command| !timed_out.contains(&command.id));
             self.metrics.command_timeouts = self
@@ -2069,6 +2105,7 @@ impl PlaybackCoordinator {
             PendingCommandKind::Seek {
                 target_position_seconds: target,
                 baseline_restart_sequence: restart_sequence,
+                buffered_alternative: true,
             },
             CoordinatorPlayerCommand::SetPosition(target),
             &mut actions,
@@ -2648,6 +2685,7 @@ impl PlaybackCoordinator {
             PendingCommandKind::Seek {
                 target_position_seconds,
                 baseline_restart_sequence,
+                ..
             } => {
                 let completed = !observed.seeking
                     && observed.position_seconds.is_some_and(|position| {
@@ -2962,6 +3000,7 @@ impl PlaybackCoordinator {
             PendingCommandKind::Seek {
                 target_position_seconds: target,
                 baseline_restart_sequence: observed.playback_restart_sequence,
+                buffered_alternative: false,
             },
             CoordinatorPlayerCommand::SetPosition(target),
             actions,
@@ -3018,6 +3057,7 @@ impl PlaybackCoordinator {
             PendingCommandKind::Seek {
                 target_position_seconds: target,
                 baseline_restart_sequence: observed.playback_restart_sequence,
+                buffered_alternative: false,
             },
             CoordinatorPlayerCommand::SetPosition(target),
             actions,
@@ -3189,6 +3229,7 @@ impl PlaybackCoordinator {
                             PendingCommandKind::Seek {
                                 target_position_seconds: target,
                                 baseline_restart_sequence: observed.playback_restart_sequence,
+                                buffered_alternative: false,
                             },
                             CoordinatorPlayerCommand::SetPosition(target),
                             actions,

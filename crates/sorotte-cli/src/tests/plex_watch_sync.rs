@@ -235,8 +235,9 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         .expect("Syncplay test listener should have local addr");
     let server_task = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("server should accept");
-        let (reader, _writer) = socket.into_split();
+        let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
         let hello_line = lines
             .next_line()
             .await
@@ -253,6 +254,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
             .await
             .expect("Plex timeline should be served before the fixture deadline")
             .expect("Plex fixture must signal timeline completion");
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let mut config = test_client_loop_config_with_addr(addr);

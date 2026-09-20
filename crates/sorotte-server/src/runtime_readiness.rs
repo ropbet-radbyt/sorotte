@@ -410,10 +410,19 @@ impl ServerRuntime {
             .extend(self.readiness_snapshot_fanout_with_membership(&session.room, Some(client_id)));
 
         if active_media_generation.is_some() {
-            // A mixed cohort policy change is always reflected in status; the
-            // newly attached client also needs the current barrier snapshot
-            // when it supports that extension.
+            // A mixed cohort policy change is always reflected in status.
             outbound.extend(self.playback_barrier_status_fanout(&session.room));
+        }
+        if self
+            .room_playback_barriers
+            .get(&session.room)
+            .is_some_and(|barrier| Some(barrier.prepare.media_generation) == current_generation)
+        {
+            // A late join needs the retained commit revision even after the
+            // start completed: its current-generation technical reports are
+            // fenced to that revision. The snapshot's phase keeps a historical
+            // commit from becoming a new playback command. Retired selections
+            // have no current generation and must not be replayed here.
             outbound.extend(self.playback_barrier_snapshot_for_client(&session.room, client_id));
         }
         outbound.extend(self.maybe_commit_readiness_gate(&session.room)?);

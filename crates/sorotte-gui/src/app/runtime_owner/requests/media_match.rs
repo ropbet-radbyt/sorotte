@@ -19,7 +19,9 @@ use sorotte_media_match::{
     MediaMatchWireSignature, decide_media_match_against_wire_signature,
 };
 
-use crate::app::media_match_support::{media_match_sqlite_index_exists, media_match_tier_label};
+use crate::app::media_match_support::{
+    media_match_file_identity_is_current, media_match_sqlite_index_exists, media_match_tier_label,
+};
 
 use super::super::media_match_lookup::{FingerprintLookup, InventoryLookup};
 use super::super::media_match_worker::{IndexFinalization, IndexJobScope, spawn_index_worker};
@@ -983,7 +985,16 @@ impl GuiPersistedConfigRuntimeOwner {
         self.media_match_remote_lookup_result
             .as_ref()
             .filter(|result| result.trigger_key == trigger_key)
-            .map(|result| result.candidate_path.clone())
+            .and_then(|result| match &result.candidate {
+                None => Some(None),
+                Some(identity) if media_match_file_identity_is_current(identity) => {
+                    Some(Some(identity.normalized_path.clone()))
+                }
+                // A path is only a match while the fingerprinted file still
+                // exists there. Re-enter the worker before publishing a new
+                // result, including when the file changed after completion.
+                Some(_) => None,
+            })
     }
 
     pub(in crate::app::runtime_owner) fn cancel_attached_media_search_after_media_match_resolution(
@@ -1032,10 +1043,10 @@ impl GuiPersistedConfigRuntimeOwner {
                     &settings,
                     &extraction_settings,
                 )
-                .map(|candidate| candidate.path);
+                .map(|candidate| candidate.identity);
                 let _ = tx.send(GuiMediaMatchRemoteLookupResult {
                     trigger_key: worker_trigger_key,
-                    candidate_path: candidate,
+                    candidate,
                 });
             }) {
             Ok(_thread) => {
@@ -1045,7 +1056,7 @@ impl GuiPersistedConfigRuntimeOwner {
             Err(_) => {
                 self.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
                     trigger_key,
-                    candidate_path: None,
+                    candidate: None,
                 });
             }
         }
@@ -1076,7 +1087,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 if let Some(trigger_key) = self.media_match_remote_lookup_trigger_key.take() {
                     self.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
                         trigger_key,
-                        candidate_path: None,
+                        candidate: None,
                     });
                     self.media_match_wire_sync_token = None;
                     self.last_attached_media_resolution_trigger = None;
@@ -2587,6 +2598,189 @@ mod tests {
         panic!("timed out waiting for cached media-match remote lookup completion");
     }
 
+    fn remote_match_after_change(replacement: Option<&[u8]>, clear_cache: bool) -> bool {
+        let replace_file = replacement.is_some();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let media_root = root.join("media");
+        std::fs::create_dir(&media_root).unwrap();
+        let candidate = media_root.join("alternate-episode.mkv");
+        std::fs::write(&candidate, b"matching original").unwrap();
+        let target = "remote-episode.mkv";
+        let mut cache = sorotte_media_match::MediaMatchCache::default();
+        cache.insert(media_match_test_record_for_path(&candidate, 100));
+        crate::app::media_match_support::save_media_match_cache_for_test(root, &cache).unwrap();
+        let wire = sorotte_media_match::media_match_wire_value_from_records(&[
+            remote_media_match_test_record(target, 100),
+        ])
+        .unwrap();
+        let signature = sorotte_media_match::media_match_wire_signature_from_value(&wire).unwrap();
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")))
+                .with_session_runtime(Box::new(session_with_peer_files(vec![
+                    sorotte_client_core::ClientMediaMatchPeerFileState {
+                        username: "bob".into(),
+                        has_file: true,
+                        file_name: Some(target.into()),
+                        file_size: None,
+                        file_duration: None,
+                        media_match_signature: Some(signature.clone()),
+                    },
+                ])));
+        owner.player = Some(GuiOwnedPlayer::Test(GuiTestPlayerAdapter::default()));
+        owner.active_shared_playlist_index = Some(0);
+        let mut state = GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            shared_playlist_enabled: Some(true),
+            media_search_directories: Some(vec![media_root.to_string_lossy().into_owned()]),
+            media_matching_plugin_enabled: Some(true),
+            media_match_fingerprinting_enabled: Some(true),
+            media_match_wire_sharing_enabled: Some(true),
+            media_match_background_warmup_enabled: Some(false),
+            ..Default::default()
+        });
+        state.apply_shared_playlist_entries(vec![target.into()], Some(0), false);
+        state.playlist.main_window.active_playlist_index = Some(0);
+        state.playlist.main_window.playlist[0].source_state =
+            crate::app::GuiPlaylistSourceState::for_provider(
+                GuiMediaSourceProviderId::media_matching(),
+            );
+        assert_eq!(
+            owner.media_match_cached_room_candidate_for_target(&state, target),
+            None
+        );
+        wait_for_media_match_remote_lookup(&mut owner);
+        let expected_original = Some(sorotte_media_match::normalize_media_path(&candidate));
+        assert_eq!(
+            owner.media_match_cached_room_candidate_for_target(&state, target),
+            expected_original
+        );
+
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        if let Some(replacement) = replacement {
+            // Ordinary external replacement after the asynchronous lookup completed.
+            let modified = std::fs::metadata(&candidate).unwrap().modified().unwrap();
+            std::fs::write(&candidate, replacement).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&candidate)
+                .unwrap()
+                .set_modified(modified + std::time::Duration::from_secs(2))
+                .unwrap();
+        }
+        if clear_cache {
+            assert!(owner.handle_clear_media_match_cache_request(&handle, &mut state));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while owner.media_match_runtime_snapshot.cache_status.as_deref() != Some("empty") {
+                owner.pump_media_match_cache_clear(&handle, &mut state);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "cache clear did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        let fresh = media_match_cached_probable_candidate_for_remote_signature(
+            root,
+            std::slice::from_ref(&media_root),
+            None,
+            target,
+            &signature,
+            &state.media_match.model.settings,
+            &media_match_sampled_fast_extraction_settings(),
+        );
+        assert_eq!(
+            fresh.is_some(),
+            !(replace_file || clear_cache),
+            "fresh validation control"
+        );
+        let reused = owner.media_match_cached_room_candidate_for_target(&state, target);
+        assert!(owner.handle_resolve_playlist_source_request(
+            &handle,
+            &mut state,
+            0,
+            GuiMediaSourceProviderId::media_matching(),
+        ));
+        let loaded_replacement = owner.player_local_file.clone();
+        let loaded_path = loaded_replacement
+            .as_ref()
+            .and_then(|file| file.path.as_ref())
+            .map(|path| sorotte_media_match::normalize_media_path(std::path::Path::new(path)));
+        assert_eq!(
+            loaded_path,
+            if clear_cache || replace_file {
+                None
+            } else {
+                expected_original
+            }
+        );
+        eprintln!(
+            "replace_file={replace_file}, clear_cache={clear_cache}, fresh_match={}, cached={reused:?}, explicit active-row source loaded file={loaded_replacement:?}",
+            fresh.is_some()
+        );
+
+        // A following ordinary matching-setting change produces a new lookup key.
+        let runtime_tolerance = state.media_match.model.settings.runtime_tolerance_enabled;
+        assert!(owner.handle_set_media_match_runtime_tolerance_request(
+            &handle,
+            &mut state,
+            !runtime_tolerance
+        ));
+        assert_eq!(
+            owner.media_match_cached_room_candidate_for_target(&state, target),
+            None
+        );
+        wait_for_media_match_remote_lookup(&mut owner);
+        assert_eq!(
+            owner.media_match_cached_room_candidate_for_target(&state, target),
+            fresh.map(|candidate| candidate.path)
+        );
+        reused.is_some()
+    }
+
+    #[test]
+    fn cached_remote_match_rejects_a_replaced_file() {
+        assert!(
+            !remote_match_after_change(
+                Some(b"completely different replacement with a different length"),
+                false
+            ),
+            "a cached media match must be invalidated when its physical file changes"
+        );
+    }
+
+    #[test]
+    fn cached_remote_match_rejects_same_size_replacement_with_changed_timestamp() {
+        assert_eq!(b"different content".len(), b"matching original".len());
+        assert!(!remote_match_after_change(
+            Some(b"different content"),
+            false
+        ));
+    }
+
+    #[test]
+    fn cached_remote_match_clear_cache_control() {
+        assert!(
+            !remote_match_after_change(None, true),
+            "Clear Match Cache must invalidate the retained remote match used by the next active source request"
+        );
+    }
+
+    #[test]
+    fn cached_remote_match_clear_after_replacement_control() {
+        assert!(
+            !remote_match_after_change(
+                Some(b"completely different replacement with a different length"),
+                true
+            ),
+            "clearing matches must prevent a stale fingerprint from opening the replaced file"
+        );
+    }
+
+    #[test]
+    fn cached_remote_match_unchanged_control() {
+        assert!(remote_match_after_change(None, false));
+    }
+
     #[test]
     fn automatic_and_preferred_media_match_wait_for_pending_local_index() {
         let root = test_temp_root("media-match-local-priority");
@@ -2953,7 +3147,11 @@ mod tests {
             owner.media_match_remote_lookup_trigger_key = Some("stale-remote-trigger".to_owned());
             owner.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
                 trigger_key: "stale-remote-trigger".to_owned(),
-                candidate_path: Some("staging-only.mkv".to_owned()),
+                candidate: Some(sorotte_media_match::MediaFileIdentity::new(
+                    "staging-only.mkv",
+                    0,
+                    0,
+                )),
             });
             let (_remote_tx, remote_rx) = mpsc::channel();
             owner.media_match_remote_lookup_rx = Some(remote_rx);

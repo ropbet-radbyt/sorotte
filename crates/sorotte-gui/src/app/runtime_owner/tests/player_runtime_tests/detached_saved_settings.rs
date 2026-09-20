@@ -94,7 +94,10 @@ fn detached_missing_media_search_uses_saved_directories_until_draft_is_saved() {
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     let submitted_settings = state.configuration.to_stored_settings();
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(submitted_settings.clone()),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: submitted_settings.clone(),
+        },
     ));
     GuiQueuedRuntimeOwner::pump(&mut owner, &handle, &state);
     for action in handle.drain_actions() {

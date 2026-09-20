@@ -640,3 +640,6 @@ fn gui_persisted_config_runtime_owner_local_playlist_activation_switches_media_a
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[path = "import_encoding.rs"]
+mod import_encoding;

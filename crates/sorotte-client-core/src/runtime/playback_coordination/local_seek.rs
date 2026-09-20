@@ -4,11 +4,17 @@
 use super::*;
 
 impl RuntimePlaybackCoordination {
+    pub(super) fn clear_unacknowledged_local_seek(&mut self) {
+        self.unacknowledged_local_seek = None;
+        self.unacknowledged_local_seek_position_confirmed = false;
+        self.unacknowledged_local_seek_position = None;
+    }
+
     /// A superseding operation cannot reuse an older command's acknowledgement,
     /// even when refreshing or dispatching the newer command fails.
     pub(crate) fn clear_local_transport_echo(&mut self) {
         self.retire_local_transport_echo();
-        self.unacknowledged_local_seek = None;
+        self.clear_unacknowledged_local_seek();
         self.rejected_local_seek = None;
     }
 
@@ -43,7 +49,7 @@ impl RuntimePlaybackCoordination {
     ) -> Option<LocalSeekCorrectionCandidate> {
         let seek = self.unacknowledged_local_seek.as_ref()?;
         if !self.local_transport_scope_matches(seek, session) {
-            self.unacknowledged_local_seek = None;
+            self.clear_unacknowledged_local_seek();
             return None;
         }
         if inbound
@@ -96,7 +102,7 @@ impl RuntimePlaybackCoordination {
         if !corrected && candidate.revision == candidate.seek.base_revision {
             return;
         }
-        self.unacknowledged_local_seek = None;
+        self.clear_unacknowledged_local_seek();
         if self.pending_local_transport_echo.as_ref() == Some(&candidate.seek) {
             self.retire_local_transport_echo();
         }
@@ -186,6 +192,9 @@ impl RuntimePlaybackCoordination {
             is_seek,
             paused,
             client_counter,
+            position_observation_fence: self
+                .latest_position_observation
+                .map(|position| position.last_actual_position_observed_at_seconds),
         };
         if self.local_transport_scope_matches(&predecessor, session) {
             // The Syncplay counter resets on server acknowledgement and
@@ -209,9 +218,70 @@ impl RuntimePlaybackCoordination {
             self.local_transport_counter_high_watermark = Some(predecessor.clone());
             if predecessor.is_seek {
                 self.unacknowledged_local_seek = Some(predecessor.clone());
+                self.unacknowledged_local_seek_position_confirmed = false;
+                self.unacknowledged_local_seek_position =
+                    self.latest_position_observation.map(|mut position| {
+                        position.position_seconds = target_position;
+                        position
+                    });
             }
             self.pending_local_transport_echo = Some(predecessor);
         }
+    }
+
+    pub(super) fn observe_unacknowledged_local_seek_position(
+        &mut self,
+        observation: &PlayerTransportObservation,
+    ) {
+        let Some(seek) = self.unacknowledged_local_seek.as_ref() else {
+            return;
+        };
+        let expected_position = self
+            .unacknowledged_local_seek_position
+            .and_then(|position| {
+                self.project_position_observation(position, observation.observed_at_seconds)
+            });
+        // Fresh positions must corroborate the requested target or its bounded
+        // playing trajectory. Retain this anchor in room coordinates through
+        // local offset changes, until their physical seek is also observed.
+        if observation.media_generation == seek.local_media_generation
+            && seek
+                .position_observation_fence
+                .is_some_and(|fence| observation.observed_at_seconds > fence)
+            && self
+                .latest_observation
+                .as_ref()
+                .is_some_and(|current| current.seeking != Some(true))
+            && observation.position_seconds.is_some_and(|position| {
+                self.coordinator
+                    .position_matches_target(position, seek.target_position)
+                    || expected_position.is_some_and(|expected| {
+                        self.coordinator
+                            .position_matches_target(position, expected.position_seconds)
+                    })
+            })
+        {
+            self.unacknowledged_local_seek_position_confirmed = true;
+            self.unacknowledged_local_seek_position = self.latest_position_observation;
+        }
+    }
+
+    pub(super) fn unacknowledged_seek_position_at(
+        &self,
+        seek: &PendingLocalTransportEcho,
+        now_seconds: f64,
+    ) -> f64 {
+        if !seek.paused
+            && self.unacknowledged_local_seek_position_confirmed
+            && let Some(position) = self.unacknowledged_local_seek_position
+        {
+            return self
+                .project_position_observation(position, self.coordinator_now(now_seconds))
+                .map_or(position.position_seconds, |projected| {
+                    projected.position_seconds
+                });
+        }
+        seek.target_position
     }
 
     /// Capture wire identity before Session consumes its ignore counters.
@@ -333,6 +403,7 @@ pub(crate) struct PendingLocalTransportEcho {
     is_seek: bool,
     paused: bool,
     client_counter: u32,
+    position_observation_fence: Option<f64>,
 }
 
 #[derive(Debug)]

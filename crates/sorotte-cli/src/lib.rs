@@ -171,7 +171,10 @@ use self::update_check::{
     should_run_headless_automatic_update_check, utc_timestamp_string,
 };
 
-fn persist_explicit_syncplay_client_arg_settings(overrides: &SyncplayClientArgOverrides) {
+fn persist_explicit_syncplay_client_arg_settings(
+    overrides: &SyncplayClientArgOverrides,
+    explicit_player_args: &[String],
+) {
     if let Some(language) = overrides.language.as_deref()
         && !overrides.no_store
         && let Err(error) = persist_sorotte_cli_language_setting(language)
@@ -186,9 +189,9 @@ fn persist_explicit_syncplay_client_arg_settings(overrides: &SyncplayClientArgOv
     }
     if let Some(player_path) = overrides.player_path.as_deref()
         && !overrides.no_store
-        && !overrides.player_args.is_empty()
+        && !explicit_player_args.is_empty()
         && let Err(error) =
-            persist_sorotte_cli_per_player_arguments_setting(player_path, &overrides.player_args)
+            persist_sorotte_cli_per_player_arguments_setting(player_path, explicit_player_args)
     {
         eprintln!("warning: failed to persist per-player arguments setting: {error}");
     }
@@ -196,6 +199,7 @@ fn persist_explicit_syncplay_client_arg_settings(overrides: &SyncplayClientArgOv
 
 pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
     let mut client_arg_overrides = parse_syncplay_client_arg_overrides(std::env::args().skip(1));
+    let explicit_player_args = client_arg_overrides.player_args.clone();
     if client_arg_overrides.show_version {
         println!("sorotte-cli {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -244,7 +248,7 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
     let should_connect =
         env_flag_enabled("SOROTTE_CLIENT_CONNECT") || client_arg_overrides.should_connect_client();
     if !should_connect {
-        persist_explicit_syncplay_client_arg_settings(&client_arg_overrides);
+        persist_explicit_syncplay_client_arg_settings(&client_arg_overrides, &explicit_player_args);
     }
     emit_syncplay_client_arg_compatibility_warnings(&client_arg_overrides);
     if client_arg_overrides.should_halt_for_syncplay_force_gui_prompt_compatibility() {
@@ -286,7 +290,7 @@ pub async fn run_sorotte_cli_from_env() -> anyhow::Result<()> {
         apply_syncplay_client_arg_overrides(&mut config, &client_arg_overrides);
         validate_composed_client_endpoint(&config)
             .map_err(|error| anyhow!("invalid client endpoint: {error}"))?;
-        persist_explicit_syncplay_client_arg_settings(&client_arg_overrides);
+        persist_explicit_syncplay_client_arg_settings(&client_arg_overrides, &explicit_player_args);
         apply_headless_automatic_update_check(&client_arg_overrides, stored_settings.as_ref());
         if !client_arg_overrides.no_store
             && let Err(error) = persist_sorotte_cli_stored_settings(&config)

@@ -525,11 +525,24 @@ where
             .then(|| self.v2_replay_media_for_playlist_actions(&actions))
             .flatten();
 
-        self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
-            &actions,
-            PlayerCommandCause::PlaylistTransition,
-            expected_playlist_state,
-        )?;
+        if let [
+            ClientRuntimeAction::SetPlaylist { files },
+            ClientRuntimeAction::SetPlaylistIndex { index },
+        ] = actions.as_slice()
+            && (self.session.playback_barrier_v1_negotiated()
+                || self.session.server_readiness_v2_supported())
+            && expected_playlist_state.is_none()
+        {
+            self.control
+                .emit_playlist_edit(files.clone(), *index)
+                .map_err(client_effect_player_error)?;
+        } else {
+            self.dispatch_runtime_actions_with_pause_cause_and_playlist_guard(
+                &actions,
+                PlayerCommandCause::PlaylistTransition,
+                expected_playlist_state,
+            )?;
+        }
         self.session.apply_local_playlist_runtime_actions(&actions);
 
         // Do not use the attached-file fallback after applying the batch: an

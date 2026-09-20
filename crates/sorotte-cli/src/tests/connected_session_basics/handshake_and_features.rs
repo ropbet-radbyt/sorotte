@@ -14,6 +14,7 @@ async fn connected_client_session_sends_hello_and_applies_inbound_set_ready() {
         let (socket, _) = listener.accept().await.expect("server should accept");
         let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
 
         let hello_line = lines
             .next_line()
@@ -33,6 +34,7 @@ async fn connected_client_session_sends_hello_and_applies_inbound_set_ready() {
                 .await
                 .expect("server should write ready update");
         writer.flush().await.expect("server flush should succeed");
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let config = ClientLoopConfig {
@@ -590,8 +592,9 @@ async fn connected_client_session_includes_shared_playlists_feature_in_hello_whe
 
     let server_task = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("server should accept");
-        let (reader, _writer) = socket.into_split();
+        let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
 
         let hello_line = lines
             .next_line()
@@ -645,6 +648,7 @@ async fn connected_client_session_includes_shared_playlists_feature_in_hello_whe
                 .and_then(Value::as_bool),
             Some(true)
         );
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let mut config = test_client_loop_config_with_addr(addr);
@@ -784,8 +788,9 @@ async fn connected_client_session_includes_hashed_server_password_in_hello_when_
 
     let server_task = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.expect("server should accept");
-        let (reader, _writer) = socket.into_split();
+        let (reader, mut writer) = socket.into_split();
         let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
 
         let hello_line = lines
             .next_line()
@@ -802,6 +807,7 @@ async fn connected_client_session_includes_hashed_server_password_in_hello_when_
                 "e8e1176287cec19598090813ad01afab".to_owned()
             ))
         );
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let mut config = test_client_loop_config_with_addr(addr);

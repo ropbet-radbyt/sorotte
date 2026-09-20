@@ -6,3 +6,4 @@ mod media_search_and_player_defaults;
 mod persistence_language;
 mod persistence_player_paths_and_cleanup;
 mod session_desync_config;
+mod startup_argument_persistence;

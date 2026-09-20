@@ -10,6 +10,9 @@ use sorotte_player_mpv::{LifecycleVerificationPlaylistEntry, MpvLifecycleVerific
 #[path = "natural_completion/selection_provenance.rs"]
 mod selection_provenance;
 
+#[path = "natural_completion/replay_and_cache_provenance.rs"]
+mod replay_and_cache_provenance;
+
 fn apply_and_ack<P: sorotte_player_api::PlayerAdapter>(
     harness: &mut MpvLifecycleVerificationHarness,
     runtime: &mut ClientRuntime<P, QueuedRuntimeControl>,
@@ -31,6 +34,7 @@ fn apply_and_ack<P: sorotte_player_api::PlayerAdapter>(
 #[derive(Default)]
 struct CompletionTestPlayer {
     seek_command_id: Option<PlayerCommandId>,
+    pause_command_id: Option<PlayerCommandId>,
 }
 
 impl PlayerAdapter for CompletionTestPlayer {
@@ -41,6 +45,10 @@ impl PlayerAdapter for CompletionTestPlayer {
     fn execute_tracked(&mut self, command: PlayerCommand) -> Result<PlayerCommandId, PlayerError> {
         if matches!(command, PlayerCommand::SetPosition(_)) {
             self.seek_command_id
+                .take()
+                .ok_or(PlayerError::Unsupported("execute_tracked"))
+        } else if matches!(command, PlayerCommand::SetPaused(true)) {
+            self.pause_command_id
                 .take()
                 .ok_or(PlayerError::Unsupported("execute_tracked"))
         } else {

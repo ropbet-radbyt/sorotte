@@ -465,6 +465,20 @@ fn playlist_target_index_selection_covers_forward_backward_and_boundary_rules() 
             expected: 0,
         },
         Case {
+            label: "restoring an appended entry preserves the second duplicate",
+            current_files: &["episode", "episode"],
+            current_index: Some(1),
+            new_files: &["episode", "episode", "third"],
+            expected: 1,
+        },
+        Case {
+            label: "inserting before duplicates preserves their selected occurrence",
+            current_files: &["episode", "episode"],
+            current_index: Some(1),
+            new_files: &["third", "episode", "episode"],
+            expected: 2,
+        },
+        Case {
             label: "forward match keeps its exact new index",
             current_files: &["prefix", "selected", "after"],
             current_index: Some(1),

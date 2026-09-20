@@ -93,6 +93,7 @@ struct PlaylistResetProjection {
     pending_remote_revision: u64,
     selection_revisions: BTreeMap<String, u64>,
     pending_selection_revision: u64,
+    playback_reset_generation: u64,
     pending_local_change_echoes: Vec<PlaylistEchoTrackerProjection>,
     pending_local_index_echoes: Vec<PlaylistIndexEchoTrackerProjection>,
     remote_revisions: BTreeMap<String, u64>,
@@ -119,6 +120,7 @@ impl PlaylistResetProjection {
             pending_remote_revision: playlist.pending_remote_revision,
             selection_revisions: playlist.selection_revisions.clone(),
             pending_selection_revision: playlist.pending_selection_revision,
+            playback_reset_generation: playlist.playback_reset_generation,
             pending_local_change_echoes: playlist
                 .pending_local_change_echoes
                 .iter()
@@ -781,6 +783,7 @@ fn seed_playlist_state(session: &mut ClientSession, seed: u64) {
         .selection_revisions
         .insert("room1".to_owned(), 304 + seed);
     playlist.pending_selection_revision = 305 + seed;
+    playlist.playback_reset_generation = 306 + seed;
     playlist
         .pending_local_change_echoes
         .entry("room1".to_owned())
@@ -1018,6 +1021,9 @@ fn fresh_reference_preserving_only_durable_state(source: &ClientSession) -> Clie
     reference.behavior_config = source.behavior_config.clone();
     reference.chat_config = source.chat_config.clone();
     reference.model.playback.desync_config = source.model.playback.desync_config.clone();
+    // A reconnect cannot make an old physical completion match a new reset.
+    reference.model.playlist.playback_reset_generation =
+        source.model.playlist.playback_reset_generation;
 
     reference.model.readiness.config = source.model.readiness.config.clone();
     reference.model.readiness.autoplay_enabled = source.model.readiness.autoplay_enabled;

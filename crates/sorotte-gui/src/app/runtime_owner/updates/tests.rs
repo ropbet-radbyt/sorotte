@@ -10,6 +10,8 @@ use crate::app::{
 };
 use sorotte_client_app::app_boundary::state::StoredClientSettings;
 
+mod storage_root;
+
 #[derive(Default)]
 struct BlockGate {
     entered: Mutex<bool>,

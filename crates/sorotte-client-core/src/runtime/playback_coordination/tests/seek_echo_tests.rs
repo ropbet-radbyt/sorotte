@@ -1,5 +1,7 @@
 use super::*;
 
+mod offset_progress;
+
 mod correction_authority;
 mod local_offset;
 

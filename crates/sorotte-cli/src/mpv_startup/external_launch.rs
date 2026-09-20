@@ -104,11 +104,8 @@ pub(crate) fn spawn_external_player_from_spec(
     spec: &ExternalPlayerLaunchSpec,
 ) -> anyhow::Result<Child> {
     let mut command = Command::new(&spec.program);
-    if let Some(parent) = spec.program.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        command.current_dir(parent);
-    }
+    // Positional media and player options belong to the caller's directory,
+    // including when the executable lives in a different installation folder.
     if !spec.args.is_empty() {
         command.args(&spec.args);
     }

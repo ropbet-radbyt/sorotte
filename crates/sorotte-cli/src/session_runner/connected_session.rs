@@ -854,6 +854,9 @@ where
                     }
                     None => {
                         emit_application_service_events(runtime.shutdown_plex_service().await);
+                        if pending_ready_at_start_on_server_hello.is_some() {
+                            return Err(anyhow!("server connection closed before startup handshake completed"));
+                        }
                         return Ok(ConnectedSessionExit::TransportClosed);
                     }
                 }

@@ -148,7 +148,6 @@ impl GuiMainWindowProjection<'_> {
             let previous_row = super::playlist_model::reconciled_playlist_row(
                 &previous_playlist,
                 &mut used_previous_rows,
-                index,
                 &label,
                 snapshot_playlist_entry_ids.get(index).copied(),
             );
@@ -423,7 +422,6 @@ impl GuiMainWindowProjection<'_> {
                     let previous_row = super::playlist_model::reconciled_playlist_row(
                         &previous_rows,
                         &mut used_previous_rows,
-                        index,
                         label,
                         current_snapshot.playlist_entry_ids.get(index).copied(),
                     );

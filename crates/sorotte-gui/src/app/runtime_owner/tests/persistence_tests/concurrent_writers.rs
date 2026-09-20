@@ -39,7 +39,10 @@ fn gui_stale_full_save_keeps_independent_changes_and_never_restores_cleared_cred
         }));
         assert!(state.apply(GuiShellAction::BeginConfigurationSave));
         handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-            GuiPendingCompletionRequest::SaveConfiguration(desired),
+            GuiPendingCompletionRequest::SaveConfiguration {
+                baseline: Box::new(state.saved_configuration.clone()),
+                settings: desired,
+            },
         ));
         let actions = pump_and_apply_runtime_owner_actions(&mut owner, &handle, &mut state);
         assert!(

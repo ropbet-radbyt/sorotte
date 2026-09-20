@@ -1880,6 +1880,13 @@ impl fmt::Debug for PlexWatchServer {
 }
 
 #[derive(Debug, Clone)]
+struct PlexPendingStop {
+    server: PlexWatchServer,
+    report: PlexTimelineReport,
+    retry_after: SystemTime,
+}
+
+#[derive(Debug, Clone)]
 pub struct PlexSyncEngine<T> {
     config: PlexClientConfig,
     transport: T,
@@ -1889,6 +1896,7 @@ pub struct PlexSyncEngine<T> {
     current_file_identity: PlexFileIdentity,
     latest_report: Option<PlexTimelineReport>,
     report_server: Option<PlexWatchServer>,
+    pending_stops: Vec<PlexPendingStop>,
     last_report_signature: Option<ReportSignature>,
     unmatched_keys: BTreeMap<String, SystemTime>,
 }
@@ -1912,6 +1920,7 @@ where
             current_file_identity: PlexFileIdentity::default(),
             latest_report: None,
             report_server: None,
+            pending_stops: Vec::new(),
             last_report_signature: None,
             unmatched_keys: BTreeMap::new(),
         }
@@ -1927,6 +1936,7 @@ where
             self.current_file_identity = PlexFileIdentity::default();
             self.latest_report = None;
             self.report_server = None;
+            self.pending_stops.clear();
             self.last_report_signature = None;
             self.unmatched_keys.clear();
             self.status = if config.enabled {
@@ -1956,6 +1966,9 @@ where
             self.status =
                 PlexSyncStatus::error(error.to_string(), self.status.current_item.clone());
         }
+        if self.config.enabled {
+            self.retry_pending_stops(now);
+        }
         self.status.clone()
     }
 
@@ -1981,7 +1994,23 @@ where
         if self.current_file_key.as_deref() != Some(file_key.as_str())
             || self.current_file_identity.conflicts_with(&identity)
         {
-            self.report_stop_if_needed(now)?;
+            // Retain a failed terminal for its original server, but allow the
+            // current item to establish its own reporting identity immediately.
+            if self.report_stop_if_needed(now).is_err()
+                && let Some(mut report) = self.latest_report.take()
+                && let Some(server) = self.report_server.take()
+            {
+                report.state = PlexTimelineState::Stopped;
+                self.pending_stops.retain(|pending| {
+                    pending.server.url != server.url
+                        || pending.report.rating_key != report.rating_key
+                });
+                self.pending_stops.push(PlexPendingStop {
+                    server,
+                    report,
+                    retry_after: now + DEFAULT_TIMELINE_INTERVAL,
+                });
+            }
             self.current_file_key = Some(file_key.clone());
             self.current_file_identity = identity.clone();
             self.unmatched_keys.remove(&file_key);
@@ -2124,6 +2153,35 @@ where
             .duration_since(previous.reported_at)
             .map(|elapsed| elapsed >= DEFAULT_TIMELINE_INTERVAL)
             .unwrap_or(true)
+    }
+
+    fn retry_pending_stops(&mut self, now: SystemTime) {
+        let current = self.report_server.as_ref().zip(self.latest_report.as_ref());
+        self.pending_stops.retain_mut(|pending| {
+            // A later observation of the same server/item supersedes its old
+            // final stop. Never stop a resumed item after its new progress.
+            if current.is_some_and(|(server, report)| {
+                server.url == pending.server.url && report.rating_key == pending.report.rating_key
+            }) {
+                return false;
+            }
+            if now < pending.retry_after {
+                return true;
+            }
+            if self
+                .transport
+                .report_timeline(
+                    &pending.server.url,
+                    pending.server.token.expose_secret(),
+                    &pending.report,
+                )
+                .is_ok()
+            {
+                return false;
+            }
+            pending.retry_after = now + DEFAULT_TIMELINE_INTERVAL;
+            true
+        });
     }
 
     fn report_stop_if_needed(&mut self, now: SystemTime) -> PlexResult<()> {

@@ -2278,7 +2278,11 @@ mod tests {
         );
         owner.media_match_remote_lookup_result = Some(GuiMediaMatchRemoteLookupResult {
             trigger_key: "changed-result".to_owned(),
-            candidate_path: Some("C:/media/matched.mkv".to_owned()),
+            candidate: Some(sorotte_media_match::MediaFileIdentity::new(
+                "C:/media/matched.mkv",
+                0,
+                0,
+            )),
         });
         assert!(
             owner.reconcile_failed_playlist_candidates(

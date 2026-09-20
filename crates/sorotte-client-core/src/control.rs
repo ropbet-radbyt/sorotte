@@ -419,6 +419,18 @@ impl ClientEffect {
 pub trait ClientEffectSink {
     fn emit(&mut self, effect: ClientEffect) -> Result<(), ClientEffectError>;
 
+    /// Keeps a playlist edit and its resulting selection in one transaction.
+    /// The wire sink emits both existing Set fields in the same reliable frame,
+    /// so the server can distinguish relocation from a standalone replay.
+    fn emit_playlist_edit(
+        &mut self,
+        files: Vec<String>,
+        index: i64,
+    ) -> Result<(), ClientEffectError> {
+        self.emit(ClientEffect::SetPlaylist(files))?;
+        self.emit(ClientEffect::SetPlaylistIndex(index))
+    }
+
     /// Emits a playlist-index request that is accepted only while the server's
     /// canonical selection still matches the completed item. The production
     /// queued sink enforces that condition; simple effect collectors record
@@ -863,6 +875,19 @@ impl ClientEffectSink for QueuedRuntimeControl {
             }
             ClientEffect::StopReconnect => self.stop_reconnect_calls += 1,
         }
+        Ok(())
+    }
+
+    fn emit_playlist_edit(
+        &mut self,
+        files: Vec<String>,
+        index: i64,
+    ) -> Result<(), ClientEffectError> {
+        let set_payload = SetPayload::new()
+            .with_playlist_change(playlist_change_with_plex_sidecar(files, true))
+            .with_playlist_index(PlaylistIndexPayload::new(index));
+        self.outbound_messages
+            .push_back(ProtocolMessage::set(set_payload));
         Ok(())
     }
 

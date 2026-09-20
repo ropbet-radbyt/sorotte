@@ -121,6 +121,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .map_err(|error| format!("Shared playlist import failed reading '{path}': {error}"))?;
         let playlist_items = if format == SharedPlaylistImportFormat::Text {
             contents
+                .trim_start_matches('\u{feff}')
                 .lines()
                 .filter_map(normalized_editable_text)
                 .map(SharedPlaylistImportItem::RawSharedEntry)

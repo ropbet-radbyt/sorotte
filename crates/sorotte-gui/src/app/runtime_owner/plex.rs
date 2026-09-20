@@ -1070,7 +1070,7 @@ impl GuiPersistedConfigRuntimeOwner {
         }
         self.player_local_file.clone().map(|file| {
             let mut event = PlexWatchEvent::new(file);
-            if let Some(position) = self.player_position_seconds {
+            if let Some(position) = self.ordered_player_events.observed_position_seconds() {
                 event = event.with_position_seconds(position);
             }
             if let Some(paused) = self.player_paused {
@@ -3582,3 +3582,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[cfg(test)]
+#[path = "plex_watch_coordinates.rs"]
+mod watch_coordinates;

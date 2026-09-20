@@ -102,6 +102,7 @@ static RECONNECT_DIAGNOSTICS_ENV_LOCK: Mutex<()> = Mutex::new(());
 static CLIENT_CONNECTION_PHASE_ENV_LOCK: Mutex<()> = Mutex::new(());
 static PANIC_SAFE_ENV_GUARD_LOCK: Mutex<()> = Mutex::new(());
 
+mod connection_retry_regressions;
 mod local_room_and_offset;
 mod streaming_policy_startup;
 
@@ -208,6 +209,32 @@ fn test_env_guard_restores_mutations_and_recovers_after_a_panic() {
         "Drop must restore the original value before releasing a poisoned lock"
     );
     drop(env);
+}
+
+async fn send_test_server_hello(writer: &mut tokio::net::tcp::OwnedWriteHalf) {
+    writer
+        .write_all(b"{\"Hello\":{\"username\":\"cli-user\",\"room\":{\"name\":\"cli-room\"},\"version\":\"1.7.5\"}}\n")
+        .await
+        .expect("fixture should complete the server handshake before closing");
+}
+
+async fn finish_test_server_connection(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    lines: &mut tokio::io::Lines<BufReader<tokio::net::tcp::OwnedReadHalf>>,
+) {
+    writer.shutdown().await.expect("fixture should half-close");
+    // Complete the client's post-Hello writes before dropping the socket. A
+    // close with unread replies causes a reset instead of the intended EOF.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while lines
+            .next_line()
+            .await
+            .expect("drain client replies")
+            .is_some()
+        {}
+    })
+    .await
+    .expect("client should close after observing server EOF");
 }
 
 fn ignore_autoplay_notification(

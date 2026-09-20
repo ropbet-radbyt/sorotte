@@ -59,8 +59,15 @@ impl RuntimePlaybackCoordination {
         &self,
         observed_at_seconds: f64,
     ) -> Option<LocalPositionObservation> {
+        self.project_position_observation(self.latest_position_observation?, observed_at_seconds)
+    }
+
+    pub(super) fn project_position_observation(
+        &self,
+        mut position: LocalPositionObservation,
+        observed_at_seconds: f64,
+    ) -> Option<LocalPositionObservation> {
         let observation = self.latest_observation.as_ref()?;
-        let mut position = self.latest_position_observation?;
         if observation.media_generation != position.media_generation
             || !observed_at_seconds.is_finite()
             || observed_at_seconds < position.observed_at_seconds
