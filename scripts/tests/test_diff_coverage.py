@@ -607,6 +607,73 @@ class DiffCoverageTests(unittest.TestCase):
 
         self.assertEqual(structural, {1, 2, 3, 4, 5, 6})
 
+    def test_multiline_slice_pattern_headers_do_not_hide_runtime_expressions(self) -> None:
+        structural = ["if let [", "else if let [", "} else if let ["]
+        executable = [
+            "if let [first, second] = fetch_actions() {",
+            "} else if let [value] = values() && allowed(value) {",
+            "] = actions.as_slice()",
+            "&& permitted(index)",
+            "if values[index()] {",
+            "let values = [build_action(),",
+            "dispatch(value);",
+        ]
+        for newline in ("\n", "\r\n"):
+            with self.subTest(newline=repr(newline)):
+                lines = newline.join(structural + executable).splitlines()
+                self.assertEqual(
+                    coverage.lexical_non_coverable_lines(lines),
+                    set(range(1, len(structural) + 1)),
+                )
+
+    def slice_pattern_report_fixture(self) -> tuple[str, list[str], dict[int, int]]:
+        lines = [
+            "pub fn apply(actions: &[Action]) -> bool {",
+            "    if let [",
+            "        Action::Replace { value },",
+            "        Action::Select { index },",
+            "    ] = observe(actions)",
+            "        && permitted(index)",
+            "    {",
+            "        dispatch(value);",
+            "        true",
+            "    } else {",
+            "        false",
+            "    }",
+            "}",
+        ]
+        path = "crates/critical/src/slice_pattern.rs"
+        (self.repo / path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path, lines, {1: 1, 3: 1, 4: 1, 5: 1, 6: 1, 8: 1, 9: 1, 11: 1}
+
+    def test_slice_pattern_report_requires_initializer_guard_and_body_mappings(self) -> None:
+        path, lines, mapped = self.slice_pattern_report_fixture()
+        diff = self.new_file_patch(path, lines)
+        passed = self.build(self.coverage_sources(mapped, source=path), diff)
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(passed["summary"]["unmapped_lines"], 0)
+        self.assertEqual(passed["files"][0]["lines"][1]["status"], "non-coverable")
+
+        for executable in (5, 6, 8):
+            with self.subTest(executable=executable):
+                missing = {line: hits for line, hits in mapped.items() if line != executable}
+                failed = self.build(self.coverage_sources(missing, source=path), diff)
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["summary"]["unmapped_lines"], 1)
+                self.assertEqual(
+                    failed["files"][0]["lines"][executable - 1]["status"], "unmapped"
+                )
+
+    def test_slice_pattern_structure_cannot_override_recorded_zero_hits(self) -> None:
+        path, lines, mapped = self.slice_pattern_report_fixture()
+        mapped[2] = 0
+        report = self.build(
+            self.coverage_sources(mapped, source=path), self.new_file_patch(path, lines)
+        )
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["summary"]["uncovered_lines"], 1)
+        self.assertEqual(report["files"][0]["lines"][1]["status"], "uncovered")
+
     def test_multiline_expression_glue_is_structural_without_hiding_complete_calls(self) -> None:
         source_lines = [
             "    invoke(",

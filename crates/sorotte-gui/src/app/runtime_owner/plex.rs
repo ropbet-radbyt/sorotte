@@ -3584,5 +3584,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "plex_watch_coordinates.rs"]
+#[path = "tests/plex_watch_coordinates.rs"]
 mod watch_coordinates;
