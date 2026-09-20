@@ -250,6 +250,30 @@ reference_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         with self.assertRaisesRegex(ci.MutationCiError, "reviewed unviable counts"):
             campaign.verify(self.repo, wrong_plan, self.selected, self.artifacts)
 
+    def test_preparation_rejects_reviewed_counts_that_full_inventory_cannot_supply(self):
+        policy = fixtures.MutationPolicyTests.policy_text(self, accepted=True) + "expected_count = 2\n"
+        (self.repo / "coverage/mutation-policy.toml").write_text(policy)
+        original = copy.deepcopy(self.inventory)
+        for count in (0, 1):
+            with self.subTest(matching_mutants=count):
+                self.inventory = original[:count] + original[2:]
+                self.run_mock.reset_mock()
+                with self.assertRaisesRegex(
+                    ci.MutationCiError, f"expected 2 occurrence.*full inventory contains {count} matching"
+                ):
+                    campaign.prepare(self.repo, self.selected)
+                self.run_mock.assert_not_called()
+
+    def test_inventory_matches_do_not_establish_reviewed_unviability(self):
+        (self.repo / "coverage/mutation-policy.toml").write_text(
+            fixtures.MutationPolicyTests.policy_text(self, accepted=True)
+        )
+        # Both matching mutants compile and are caught. Preparation may proceed,
+        # but only the finalizer can reject the now-unused compiler exception.
+        prepared = self.produce()
+        with self.assertRaisesRegex(ci.MutationCiError, "reviewed unviable counts"):
+            campaign.verify(self.repo, prepared, self.selected, self.artifacts)
+
     def test_unchanged_retry_never_erases_a_completed_failed_mutation_attempt(self):
         prepared = self.produce()
         original = self.reports()[0]

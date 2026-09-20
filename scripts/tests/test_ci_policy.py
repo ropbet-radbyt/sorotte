@@ -3413,29 +3413,6 @@ class CiPolicyTests(unittest.TestCase):
                         ),
                         "review_by": "2026-10-31",
                     },
-                    {
-                        "id": "client-playlist-shuffle-let-chain-or",
-                        "shard": "client-playlist-shuffle",
-                        "file": (
-                            "crates/sorotte-client-core/src/session/playlist/"
-                            "shuffle_helpers.rs"
-                        ),
-                        "function": (
-                            "ClientSession::local_playlist_target_index_from_"
-                            "changed_playlist"
-                        ),
-                        "return_type": "-> usize",
-                        "genre": "BinaryOperator",
-                        "replacement": "||",
-                        "reason": (
-                            "cargo-mutants replaces each of the forward- and "
-                            "backward-search Rust let-chain && sites with ||, "
-                            "but let expressions are only valid in && chains "
-                            "so both generated mutants cannot parse"
-                        ),
-                        "review_by": "2026-10-31",
-                        "expected_count": 2,
-                    },
                     *[
                         {
                             "id": identifier,
