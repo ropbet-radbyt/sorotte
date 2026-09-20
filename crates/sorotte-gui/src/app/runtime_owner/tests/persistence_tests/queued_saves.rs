@@ -141,23 +141,29 @@ fn save_after_plugin_toggle_case(
         persisted.username
     );
 
-    // A subsequent ordinary toggle still works; this is a lost requested
-    // change, not a permanently broken persistence fixture.
-    handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
-        plugin: GuiPluginSelection::Plex,
-        enabled: false,
-    });
-    settle_until(pump.as_mut(), &mut bridge, &mut state, |state| {
-        state.saved_configuration.plex_plugin_enabled == Some(false)
-    });
-    assert_eq!(
-        load_sorotte_ini_stored_client_settings_from_path(&path)
-            .unwrap()
-            .unwrap()
-            .plex_plugin_enabled,
-        Some(false)
-    );
-    assert_eq!(state.saved_configuration.plex_plugin_enabled, Some(false));
+    // Each follow-on toggle changes the acknowledged value, so its wait cannot
+    // finish before that request is processed.
+    for enabled in [true, false] {
+        assert_eq!(
+            state.saved_configuration.plex_plugin_enabled,
+            Some(!enabled)
+        );
+        handle.push_request(GuiRuntimeRequest::SetPluginEnabled {
+            plugin: GuiPluginSelection::Plex,
+            enabled,
+        });
+        settle_until(pump.as_mut(), &mut bridge, &mut state, |state| {
+            state.saved_configuration.plex_plugin_enabled == Some(enabled)
+        });
+        assert_eq!(
+            load_sorotte_ini_stored_client_settings_from_path(&path)
+                .unwrap()
+                .unwrap()
+                .plex_plugin_enabled,
+            Some(enabled)
+        );
+        assert_eq!(state.saved_configuration.plex_plugin_enabled, Some(enabled));
+    }
     pump.shutdown();
     assert_eq!(
         observed_plugin_enabled,

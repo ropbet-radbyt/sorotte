@@ -2598,6 +2598,39 @@ mod tests {
         panic!("timed out waiting for cached media-match remote lookup completion");
     }
 
+    fn wait_for_media_match_cache_clear(
+        owner: &mut GuiPersistedConfigRuntimeOwner,
+        handle: &GuiQueuedRuntimeBridgeHandle,
+        state: &mut GuiRuntimeState,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            // The display can already say "empty" before this request completes.
+            // Apply the owned completion before checking whether clearing retired.
+            owner.pump_media_match_cache_clear(handle, state);
+            if !owner.media_match_record_lookup.is_clearing() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cache clear did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            owner.media_match_runtime_snapshot.cache_status.as_deref(),
+            Some("empty")
+        );
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("idle"),
+            "the runtime must apply a successful clear completion"
+        );
+    }
+
     fn remote_match_after_change(replacement: Option<&[u8]>, clear_cache: bool) -> bool {
         let replace_file = replacement.is_some();
         let fixture = tempfile::tempdir().unwrap();
@@ -2669,15 +2702,7 @@ mod tests {
         }
         if clear_cache {
             assert!(owner.handle_clear_media_match_cache_request(&handle, &mut state));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while owner.media_match_runtime_snapshot.cache_status.as_deref() != Some("empty") {
-                owner.pump_media_match_cache_clear(&handle, &mut state);
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "cache clear did not finish"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            wait_for_media_match_cache_clear(&mut owner, &handle, &mut state);
         }
         let fresh = media_match_cached_probable_candidate_for_remote_signature(
             root,
@@ -2779,6 +2804,69 @@ mod tests {
     #[test]
     fn cached_remote_match_unchanged_control() {
         assert!(remote_match_after_change(None, false));
+    }
+
+    #[test]
+    fn cache_clear_acknowledgement_is_distinct_from_an_empty_display() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let candidate = root.join("episode.mkv");
+        std::fs::write(&candidate, b"matching original").unwrap();
+        let mut cache = sorotte_media_match::MediaMatchCache::default();
+        cache.insert(media_match_test_record_for_path(&candidate, 100));
+        crate::app::media_match_support::save_media_match_cache_for_test(root, &cache).unwrap();
+        let mut owner =
+            GuiPersistedConfigRuntimeOwner::with_config_path(Some(root.join("sorotte.ini")));
+        let mut state = GuiRuntimeState::from_stored_settings(&StoredClientSettings {
+            media_matching_plugin_enabled: Some(true),
+            ..Default::default()
+        });
+        let index_root = root.join("cache/media-match");
+        let activation_lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(index_root.join(".media-index-activation.lock"))
+            .unwrap();
+        activation_lock.lock().unwrap();
+        // Hold the real reader before its first admission. Clear is queued behind
+        // that read, so it cannot complete until this explicit barrier is released.
+        assert!(matches!(
+            owner.media_match_record_lookup.lookup(
+                root,
+                candidate.to_str().unwrap(),
+                &media_match_sampled_fast_extraction_settings(),
+            ),
+            FingerprintLookup::Pending
+        ));
+        let handle = GuiQueuedRuntimeBridgeHandle::default();
+        assert!(owner.handle_clear_media_match_cache_request(&handle, &mut state));
+        assert_eq!(
+            owner.media_match_runtime_snapshot.cache_status.as_deref(),
+            Some("empty"),
+            "the pre-existing display is not a clear acknowledgement"
+        );
+        owner.pump_media_match_cache_clear(&handle, &mut state);
+        assert!(owner.media_match_record_lookup.is_clearing());
+        assert_eq!(
+            owner
+                .media_match_runtime_snapshot
+                .background_status
+                .as_deref(),
+            Some("Clearing the Media Match cache")
+        );
+        assert!(index_root.is_dir());
+
+        activation_lock.unlock().unwrap();
+        drop(activation_lock);
+        wait_for_media_match_cache_clear(&mut owner, &handle, &mut state);
+        assert!(!owner.media_match_record_lookup.is_clearing());
+        assert!(!index_root.exists());
+        assert!(matches!(
+            owner
+                .media_match_record_lookup
+                .wait_for_test(root, candidate.to_str().unwrap()),
+            FingerprintLookup::Missing
+        ));
     }
 
     #[test]
