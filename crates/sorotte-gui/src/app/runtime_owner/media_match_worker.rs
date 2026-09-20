@@ -440,6 +440,7 @@ mod tests {
     fn staged_index_waits_for_runtime_activation_and_abort_cleans_stage() {
         let root = tempfile::tempdir().unwrap();
         let caller_thread = thread::current().id();
+        let (payload_tx, payload_rx) = mpsc::channel();
         let (rx, finish) = spawn_index_worker(
             "test-index-owner",
             root.path().to_owned(),
@@ -447,14 +448,22 @@ mod tests {
             GuiQueuedRuntimeBridgeHandle::default(),
             move |stage, _| {
                 assert_ne!(thread::current().id(), caller_thread);
-                MediaIndexService::new(stage.join("cache/media-match"))
-                    .open()
-                    .unwrap();
+                // Exercise ownership of real staged output without coupling the abort
+                // handshake to cold SQLite schema initialization. The activation and
+                // media_match_index_build_abort tests retain that integration coverage.
+                let payload = stage.join("cache/media-match/partial-index");
+                std::fs::write(&payload, b"uncommitted worker result").unwrap();
+                payload_tx.send(payload).unwrap();
                 Ok(result())
             },
         )
         .unwrap();
         wait_staged(&rx);
+        let payload = payload_rx.try_recv().unwrap();
+        assert_eq!(
+            std::fs::read(&payload).unwrap(),
+            b"uncommitted worker result"
+        );
         assert!(!root.path().join("cache/media-match/current.json").exists());
         finish.send(IndexFinalization::Abort).unwrap();
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -463,6 +472,7 @@ mod tests {
             }
             _ => panic!("abort should finish without activation"),
         }
+        assert!(!payload.exists());
         assert!(
             std::fs::read_dir(root.path().join("cache"))
                 .unwrap()
@@ -479,20 +489,26 @@ mod tests {
     #[test]
     fn dropped_activation_sender_aborts_worker_owned_stage() {
         let root = tempfile::tempdir().unwrap();
+        let (payload_tx, payload_rx) = mpsc::channel();
         let (rx, finish) = spawn_index_worker(
             "test-abandoned-index",
             root.path().to_owned(),
             Arc::new(AtomicBool::new(false)),
             GuiQueuedRuntimeBridgeHandle::default(),
-            |stage, _| {
-                MediaIndexService::new(stage.join("cache/media-match"))
-                    .open()
-                    .unwrap();
+            move |stage, _| {
+                let payload = stage.join("cache/media-match/partial-index");
+                std::fs::write(&payload, b"uncommitted worker result").unwrap();
+                payload_tx.send(payload).unwrap();
                 Ok(result())
             },
         )
         .unwrap();
         wait_staged(&rx);
+        let payload = payload_rx.try_recv().unwrap();
+        assert_eq!(
+            std::fs::read(&payload).unwrap(),
+            b"uncommitted worker result"
+        );
         drop(finish);
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(5)).unwrap(),
@@ -501,6 +517,7 @@ mod tests {
                 ..
             }
         ));
+        assert!(!payload.exists());
         assert!(!root.path().join("cache/media-match/current.json").exists());
     }
 

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 use sorotte_client_app::app_boundary::{
-    persistence::upsert_sorotte_ini_stored_client_settings_at_path,
+    persistence::merge_sorotte_ini_stored_client_settings_at_path,
     state::{
         StoredClientSettings, StoredClientSettingsRuntimeSnapshot,
         stored_client_settings_runtime_snapshot,
@@ -693,10 +693,11 @@ impl GuiPersistedConfigRuntimeOwner {
         &mut self,
         projected_state: &GuiRuntimeState,
         intent: GuiSavedServerConnectIntent,
+        baseline: &StoredClientSettings,
         submitted_settings: &StoredClientSettings,
-    ) -> Result<(), String> {
+    ) -> Result<StoredClientSettings, String> {
         if intent != GuiSavedServerConnectIntent::SaveAndConnect {
-            return Ok(());
+            return Ok(submitted_settings.clone());
         }
 
         let path = self
@@ -704,10 +705,11 @@ impl GuiPersistedConfigRuntimeOwner {
             .ok_or_else(|| {
                 "Configuration save failed: no writable GUI config path is available".to_owned()
             })?;
-        upsert_sorotte_ini_stored_client_settings_at_path(&path, submitted_settings)
-            .map_err(|error| format!("Configuration save failed: {error}"))?;
-        self.config_path = Some(path);
-        Ok(())
+        let settings =
+            merge_sorotte_ini_stored_client_settings_at_path(&path, baseline, submitted_settings)
+                .map_err(|error| format!("Configuration save failed: {error}"))?;
+        self.adopt_config_path(path);
+        Ok(settings)
     }
 
     pub(super) fn complete_saved_server_connect_runtime(
@@ -722,6 +724,7 @@ impl GuiPersistedConfigRuntimeOwner {
             .map(|intent| {
                 (
                     intent,
+                    projected_state.settings.saved.clone(),
                     projected_state.submitted_saved_server_connect_settings(intent),
                 )
             });
@@ -739,13 +742,14 @@ impl GuiPersistedConfigRuntimeOwner {
         projected_state: &mut GuiRuntimeState,
         clear_pending: bool,
         intent: GuiSavedServerConnectIntent,
+        baseline: StoredClientSettings,
         submitted_settings: StoredClientSettings,
     ) {
         self.complete_saved_server_connect_runtime_with_submission(
             handle,
             projected_state,
             clear_pending,
-            Some((intent, submitted_settings)),
+            Some((intent, baseline, submitted_settings)),
         );
     }
 
@@ -754,20 +758,28 @@ impl GuiPersistedConfigRuntimeOwner {
         handle: &GuiQueuedRuntimeBridgeHandle,
         projected_state: &mut GuiRuntimeState,
         clear_pending: bool,
-        submitted: Option<(GuiSavedServerConnectIntent, StoredClientSettings)>,
+        submitted: Option<(
+            GuiSavedServerConnectIntent,
+            StoredClientSettings,
+            StoredClientSettings,
+        )>,
     ) {
-        let (connect_intent, active_settings) = submitted.unwrap_or_else(|| {
+        let (connect_intent, baseline, submitted_settings) = submitted.unwrap_or_else(|| {
             (
                 GuiSavedServerConnectIntent::ConnectOnce,
                 projected_state.settings.saved.clone(),
+                projected_state.settings.saved.clone(),
             )
         });
-        match self.save_configuration_for_connect_runtime(
+        let active_settings = match self.save_configuration_for_connect_runtime(
             projected_state,
             connect_intent,
-            &active_settings,
+            &baseline,
+            &submitted_settings,
         ) {
-            Ok(()) if connect_intent == GuiSavedServerConnectIntent::SaveAndConnect => {
+            Ok(active_settings)
+                if connect_intent == GuiSavedServerConnectIntent::SaveAndConnect =>
+            {
                 self.promote_on_save_runtime_fields(&active_settings);
                 if self.apply_saved_player_settings_in_place(&active_settings) {
                     self.promote_restart_player_runtime_fields(&active_settings);
@@ -787,8 +799,9 @@ impl GuiPersistedConfigRuntimeOwner {
                         pending_requirements,
                     ],
                 );
+                active_settings
             }
-            Ok(()) => {}
+            Ok(active_settings) => active_settings,
             Err(message) => {
                 if clear_pending {
                     self.clear_pending_operation_with_runtime_error(
@@ -801,7 +814,7 @@ impl GuiPersistedConfigRuntimeOwner {
                 }
                 return;
             }
-        }
+        };
         let runtime_settings = stored_client_settings_runtime_snapshot(&active_settings);
         let Some(target) =
             Self::saved_server_connect_target_for_runtime_settings(&runtime_settings)

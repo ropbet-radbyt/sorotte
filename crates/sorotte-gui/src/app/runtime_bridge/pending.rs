@@ -2,16 +2,21 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::app) enum GuiPendingCompletionRequest {
-    SaveConfiguration(StoredClientSettings),
+    SaveConfiguration {
+        baseline: Box<StoredClientSettings>,
+        settings: StoredClientSettings,
+    },
     DiscardConfigurationChanges(StoredClientSettings),
     ReloadConfiguration(StoredClientSettings),
     ClearGuiData,
     ChangeConfigStorageRoot {
         target: GuiConfigStorageChangeTarget,
+        baseline: Box<StoredClientSettings>,
         settings: StoredClientSettings,
     },
     ConnectSavedServer {
         intent: GuiSavedServerConnectIntent,
+        baseline: Box<StoredClientSettings>,
         submitted_settings: StoredClientSettings,
     },
     DisconnectSession,
@@ -30,9 +35,10 @@ impl GuiPendingCompletionRequest {
     pub(in crate::app) fn from_state(state: &SorotteGuiShellAppState) -> Option<Self> {
         let pending = state.pending_operation.as_ref()?;
         Some(match pending.kind {
-            GuiPendingOperationKind::SaveConfiguration => {
-                Self::SaveConfiguration(state.configuration.to_stored_settings())
-            }
+            GuiPendingOperationKind::SaveConfiguration => Self::SaveConfiguration {
+                baseline: Box::new(state.saved_configuration.clone()),
+                settings: state.configuration.to_stored_settings(),
+            },
             GuiPendingOperationKind::DiscardConfigurationChanges => {
                 Self::DiscardConfigurationChanges(state.saved_configuration.clone())
             }
@@ -42,12 +48,14 @@ impl GuiPendingCompletionRequest {
             GuiPendingOperationKind::ClearGuiData => Self::ClearGuiData,
             GuiPendingOperationKind::ChangeConfigStorageRoot => Self::ChangeConfigStorageRoot {
                 target: state.pending_config_storage_target.clone()?,
+                baseline: Box::new(state.saved_configuration.clone()),
                 settings: state.configuration.to_stored_settings(),
             },
             GuiPendingOperationKind::ConnectSavedServer => {
                 let intent = state.pending_saved_server_connect_intent?;
                 Self::ConnectSavedServer {
                     intent,
+                    baseline: Box::new(state.saved_configuration.clone()),
                     submitted_settings: state.submitted_saved_server_connect_settings(intent),
                 }
             }
@@ -81,7 +89,7 @@ impl GuiPendingCompletionRequest {
 
     pub(in crate::app::runtime_bridge) fn into_action(self) -> GuiShellAction {
         match self {
-            Self::SaveConfiguration(settings) => {
+            Self::SaveConfiguration { settings, .. } => {
                 GuiShellAction::CompleteConfigurationSave(settings)
             }
             Self::DiscardConfigurationChanges(settings) => {

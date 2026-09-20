@@ -11,7 +11,10 @@ fn save_current_draft(
     assert!(state.apply(GuiShellAction::BeginConfigurationSave));
     let submitted = state.configuration.to_stored_settings();
     handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(submitted),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(state.saved_configuration.clone()),
+            settings: submitted,
+        },
     ));
     GuiQueuedRuntimeOwner::pump(owner, handle, state);
     let actions = handle.drain_actions();

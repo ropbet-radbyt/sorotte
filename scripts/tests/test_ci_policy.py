@@ -2641,15 +2641,12 @@ class CiPolicyTests(unittest.TestCase):
                             "commit_mapped_transport_observation|"
                             r"RuntimePlaybackCoordination::observe_transport\b|"
                             "reset_sync_state_for_reconnect|"
-                            "delete field logical_pause from struct "
+                            "delete field (phase|logical_pause) from struct "
                             "PlayerTransportDelta expression in "
                             "ClientRuntime<P, C>::apply_ordered_event)"
                         ),
                         "test_target": "lib",
-                        "test_filter": (
-                            "runtime::playback_coordination::tests::"
-                            "participant_status_"
-                        ),
+                        "test_filter": "runtime::playback_coordination::tests::",
                         "jobs": 2,
                         "timeout_seconds": 120,
                         "build_timeout_seconds": 240,
@@ -3416,29 +3413,6 @@ class CiPolicyTests(unittest.TestCase):
                         ),
                         "review_by": "2026-10-31",
                     },
-                    {
-                        "id": "client-playlist-shuffle-let-chain-or",
-                        "shard": "client-playlist-shuffle",
-                        "file": (
-                            "crates/sorotte-client-core/src/session/playlist/"
-                            "shuffle_helpers.rs"
-                        ),
-                        "function": (
-                            "ClientSession::local_playlist_target_index_from_"
-                            "changed_playlist"
-                        ),
-                        "return_type": "-> usize",
-                        "genre": "BinaryOperator",
-                        "replacement": "||",
-                        "reason": (
-                            "cargo-mutants replaces each of the forward- and "
-                            "backward-search Rust let-chain && sites with ||, "
-                            "but let expressions are only valid in && chains "
-                            "so both generated mutants cannot parse"
-                        ),
-                        "review_by": "2026-10-31",
-                        "expected_count": 2,
-                    },
                     *[
                         {
                             "id": identifier,
@@ -3608,6 +3582,28 @@ class CiPolicyTests(unittest.TestCase):
                             "candidate whose emitted command identity and captured "
                             "client counter are required, so the generated replacement "
                             "cannot type-check"
+                        ),
+                        "review_by": "2026-11-30",
+                    },
+                    {
+                        "id": "client-local-seek-position-let-chain-or",
+                        "shard": "client-local-seek-echo",
+                        "file": (
+                            "crates/sorotte-client-core/src/runtime/"
+                            "playback_coordination/local_seek.rs"
+                        ),
+                        "function": (
+                            "RuntimePlaybackCoordination::unacknowledged_seek_position_at"
+                        ),
+                        "return_type": "-> f64",
+                        "genre": "BinaryOperator",
+                        "replacement": "||",
+                        "expected_count": 2,
+                        "reason": (
+                            "The isolated campaign confirms rustc rejects both generated "
+                            "|| connectors in this Rust let-chain; let-chain conditions "
+                            "support only &&. The exact function and two compiler "
+                            "failures bound this acceptance."
                         ),
                         "review_by": "2026-11-30",
                     },
@@ -4398,15 +4394,20 @@ class CiPolicyTests(unittest.TestCase):
             "ClientRuntime<P, C>::apply_ordered_event"
         )
 
-        self.assertRegex(
-            f"delete field logical_pause{context}",
-            mutant_filter,
+        self.assertEqual(
+            shard["test_filter"],
+            "runtime::playback_coordination::tests::",
         )
+        for terminal_field in ("phase", "logical_pause"):
+            with self.subTest(terminal_field=terminal_field):
+                self.assertRegex(
+                    f"delete field {terminal_field}{context}",
+                    mutant_filter,
+                )
 
         for neighbor in (
             f"delete field load_attempt_id{context}",
             f"delete field media_generation{context}",
-            f"delete field phase{context}",
             f"delete field playback_rate{context}",
             (
                 "delete field load_attempt_id from struct PlayerSnapshotDelta "

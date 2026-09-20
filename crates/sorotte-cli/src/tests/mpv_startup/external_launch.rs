@@ -220,8 +220,98 @@ fn external_player_process_fixture_entrypoint() {
             println!("{STDOUT_SENTINEL}");
             eprintln!("{STDERR_SENTINEL}");
         }
+        "media-coordinator" => {
+            let relative_program = PathBuf::from("players").join(format!(
+                "unmanaged-mpvnet-fixture{}",
+                std::env::consts::EXE_SUFFIX
+            ));
+            let program = if root.join("relative-program").exists() {
+                relative_program
+            } else {
+                root.join(relative_program)
+            };
+            env.set_var(PROCESS_FIXTURE_ROLE, "media-leaf");
+            for media in [PathBuf::from("movie.mkv"), root.join("movie.mkv")] {
+                let mut args = vec![
+                    "--no-gui".to_owned(),
+                    "--player-path".to_owned(),
+                    program.to_string_lossy().into_owned(),
+                    media.to_string_lossy().into_owned(),
+                    "--".to_owned(),
+                ];
+                args.extend(exact_fixture_args());
+                let mut overrides = parse_syncplay_client_arg_overrides(args);
+                assert!(overrides.unknown_options.is_empty());
+                apply_stored_media_search_startup_file_fallback_if_missing(&mut overrides, None);
+                let spec = external_player_launch_spec_from_overrides(&overrides).unwrap();
+                let mut child = crate::spawn_external_player_from_spec(&spec).unwrap();
+                assert!(child.wait().unwrap().success());
+                let record: Value =
+                    serde_json::from_slice(&std::fs::read(root.join("media-record.json")).unwrap())
+                        .unwrap();
+                assert_eq!(
+                    record["exists"], true,
+                    "media argument must resolve in the child: {record}"
+                );
+                assert_eq!(
+                    std::fs::canonicalize(record["cwd"].as_str().unwrap()).unwrap(),
+                    std::fs::canonicalize(&root).unwrap(),
+                );
+            }
+        }
+        "media-leaf" => {
+            let media = std::env::args().next_back().unwrap();
+            let record = serde_json::json!({
+                "cwd": std::env::current_dir().unwrap(),
+                "media": media,
+                "exists": Path::new(&media).is_file(),
+            });
+            std::fs::write(root.join("media-record.json"), record.to_string()).unwrap();
+        }
         unexpected => panic!("unknown external process fixture role: {unexpected}"),
     }
+}
+
+fn assert_external_startup_preserves_caller_paths(relative_program: bool) {
+    let fixture = ProcessFixtureDirectory::new("relative-media");
+    std::fs::write(fixture.marker("movie.mkv"), b"owned media marker").unwrap();
+    let players = fixture.marker("players");
+    std::fs::create_dir(&players).unwrap();
+    std::fs::copy(
+        std::env::current_exe().unwrap(),
+        players.join(format!(
+            "unmanaged-mpvnet-fixture{}",
+            std::env::consts::EXE_SUFFIX
+        )),
+    )
+    .unwrap();
+    if relative_program {
+        std::fs::write(fixture.marker("relative-program"), b"relative").unwrap();
+    }
+    // Isolate cwd in an owned coordinator process; never change the test harness cwd.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(exact_fixture_args())
+        .env(PROCESS_FIXTURE_ROLE, "media-coordinator")
+        .env(PROCESS_FIXTURE_ROOT, &fixture.path)
+        .current_dir(&fixture.path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "startup coordinator failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn external_startup_resolves_relative_media_with_an_absolute_player_path() {
+    assert_external_startup_preserves_caller_paths(false);
+}
+
+#[test]
+fn external_startup_resolves_relative_player_and_media_paths() {
+    assert_external_startup_preserves_caller_paths(true);
 }
 
 #[test]

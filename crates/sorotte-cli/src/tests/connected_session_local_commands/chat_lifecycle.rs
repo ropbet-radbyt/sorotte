@@ -1,4 +1,5 @@
 use super::*;
+use sorotte_client_app::app_boundary::application::ClientEvent;
 
 #[tokio::test]
 async fn connected_client_session_drops_local_chat_before_server_hello() {
@@ -147,6 +148,7 @@ async fn connected_client_session_drops_local_chat_queued_between_disconnect_and
                 .expect("first accept should succeed");
             let (reader_1, mut writer_1) = socket_1.into_split();
             let mut first_lines = BufReader::new(reader_1).lines();
+            send_test_server_hello(&mut writer_1).await;
             let first_hello = first_lines
                 .next_line()
                 .await
@@ -160,6 +162,7 @@ async fn connected_client_session_drops_local_chat_queued_between_disconnect_and
                 .shutdown()
                 .await
                 .expect("first writer shutdown should succeed");
+            finish_test_server_connection(&mut writer_1, &mut first_lines).await;
         }
 
         let (socket_2, _) = listener
@@ -232,6 +235,16 @@ async fn connected_client_session_drops_local_chat_queued_between_disconnect_and
     .await
     .expect("first connected session should run");
     assert_eq!(first_exit, ConnectedSessionExit::TransportClosed);
+    // The production outer loop retires the completed membership before its
+    // next connected-session invocation.
+    let events = runtime.dispatch(crate::ClientCommand::Disconnect {
+        now_seconds: client_runtime_now_seconds(),
+    });
+    assert!(
+        events
+            .iter()
+            .all(|event| !matches!(event, ClientEvent::OperationFailed { .. }))
+    );
 
     sender
         .send("chat hello between sessions".to_owned())

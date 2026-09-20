@@ -309,6 +309,11 @@ impl ClientSession {
     }
 
     pub(super) fn queue_playlist_index_reset_intent(&mut self, pause_before_sync: bool) {
+        self.model.playlist.playback_reset_generation = self
+            .model
+            .playlist
+            .playback_reset_generation
+            .wrapping_add(1);
         let room = self.model.room.name.clone();
         let base_transport_revision = room.as_deref().and_then(|room| {
             self.model

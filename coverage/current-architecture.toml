@@ -1,11 +1,11 @@
 schema_version = 1
 
 [release]
-version = "0.2.19"
-base_sha = "5f25d584eb9a7a18da67b08e4503d73cd40627ce"
+version = "0.2.20"
+base_sha = "afee39f5cc091fc555030591cbe21f3dfdd272b9"
 fixing_sha = "pending"
 hosted = "pending"
-note = "The v0.2.19 candidate fixes playback completion and buffering, room membership and stale coordination, exact media identity and asynchronous resolution, and CLI streaming settings, reconnect and local offsets. See docs/audits/v0.2.19-bugfixes.md for the regression inventory. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate."
+note = "The v0.2.20 candidate repairs all 18 findings from three audits of main: playlist transport and source identity, playback completion and seek evidence, readiness membership, CLI startup and retry, queued settings persistence, updater storage, and Plex progress. See docs/audits/v0.2.20-bugfixes.md for the regression inventory and compatibility boundary. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate."
 
 [[crate]]
 name = "sorotte-secret"

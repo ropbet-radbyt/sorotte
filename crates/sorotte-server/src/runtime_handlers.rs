@@ -875,7 +875,8 @@ impl ServerRuntime {
             self.check_projected_playlist_frames(client_id, &projected, &projected_playlists)?;
         }
 
-        for command in commands {
+        let mut commands = commands.into_iter().peekable();
+        while let Some(command) = commands.next() {
             let mut room = None;
             let mut file = None;
             let mut controller_auth = None;
@@ -1321,23 +1322,52 @@ impl ServerRuntime {
                         // playlistChange and playlistIndex semantics.
                         let lifecycle_authority =
                             self.room_uses_playback_lifecycle_authority(&session.room);
+                        // A compound edit carries its final selection in this
+                        // same Set envelope. Apply it before comparing media
+                        // identity: a row relocation is not a replay. Leave
+                        // standalone index requests (including same-row replay)
+                        // and Syncplay-only rooms on their existing paths.
+                        let compound_index = if lifecycle_authority {
+                            commands.peek().and_then(|command| match command {
+                                ServerSetCommand::PlaylistIndex(command)
+                                    if command.precondition
+                                        == ServerPlaylistIndexPrecondition::Unconditional
+                                        && match command.index {
+                                            None => new_files.is_empty(),
+                                            Some(index) => usize::try_from(index)
+                                                .is_ok_and(|index| index < new_files.len()),
+                                        } =>
+                                {
+                                    Some(*command)
+                                }
+                                _ => None,
+                            })
+                        } else {
+                            None
+                        };
+                        if compound_index.is_some() {
+                            commands.next();
+                        }
                         let playlist_changed =
                             self.room_playlist_state(&session.room).files != new_files;
                         let previous_selected_entry = lifecycle_authority.then(|| {
                             self.room_playlist_state(&session.room)
                                 .selected_entry_identity()
-                                .map(|(index, file)| (index, file.to_owned()))
+                                .map(|(_, file)| file.to_owned())
                         });
                         let (playlist_epoch, selection_changed, canonical_index) = {
                             let room_playlist = self.room_playlist_state_mut(&session.room);
                             room_playlist.files = new_files.clone();
+                            if let Some(command) = compound_index {
+                                room_playlist.index = command.index;
+                            }
                             let selection_retired = lifecycle_authority
                                 && room_playlist.retire_invalid_selected_index();
                             let canonical_index = room_playlist.index;
                             let selected_entry = lifecycle_authority.then(|| {
                                 room_playlist
                                     .selected_entry_identity()
-                                    .map(|(index, file)| (index, file.to_owned()))
+                                    .map(|(_, file)| file.to_owned())
                             });
                             (
                                 room_playlist.advance_epoch(),
@@ -1405,7 +1435,7 @@ impl ServerRuntime {
                             );
                             outbound_messages
                                 .push(DirectedProtocolMessage::new(&peer_client, playlist_message));
-                            if selection_changed {
+                            if selection_changed || compound_index.is_some() {
                                 outbound_messages.push(DirectedProtocolMessage::new(
                                     &peer_client,
                                     playlist_snapshot_index_message(
@@ -1414,6 +1444,8 @@ impl ServerRuntime {
                                         playlist_epoch,
                                     ),
                                 ));
+                            }
+                            if selection_changed {
                                 let state_message = self.forced_state_sync_message_for_client(
                                     &peer_client,
                                     0.0,

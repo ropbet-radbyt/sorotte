@@ -417,12 +417,9 @@ impl SorotteGuiShellAppState {
         );
         playlist_entries.extend(entries.iter().cloned());
         let selected_index = Some(
-            Self::shared_playlist_target_index_from_changed_entries(
-                &current_entries,
-                current_index,
-                &playlist_entries,
-            )
-            .min(playlist_entries.len().saturating_sub(1)),
+            current_index
+                .filter(|index| *index < current_entries.len())
+                .unwrap_or(0),
         );
         self.apply_shared_playlist_entries(playlist_entries, selected_index, true);
         let message = if entries.len() == 1 {

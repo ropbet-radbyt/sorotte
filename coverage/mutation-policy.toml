@@ -118,9 +118,11 @@ files = [
     "crates/sorotte-client-core/src/runtime/playback_coordination/local_intent.rs",
     "crates/sorotte-client-core/src/runtime/queued_control.rs",
 ]
-mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|RuntimePlaybackCoordination::observe_transport\\b|reset_sync_state_for_reconnect|delete field logical_pause from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
+# cargo-mutants selects all field deletions in the matched terminal delta literal.
+mutant_filter = "(participant_status|ParticipantStatus|record_observation_outcomes|commit_mapped_transport_observation|RuntimePlaybackCoordination::observe_transport\\b|reset_sync_state_for_reconnect|delete field (phase|logical_pause) from struct PlayerTransportDelta expression in ClientRuntime<P, C>::apply_ordered_event)"
 test_target = "lib"
-test_filter = "runtime::playback_coordination::tests::participant_status_"
+# The terminal phase also owns command-race recovery, covered alongside status.
+test_filter = "runtime::playback_coordination::tests::"
 jobs = 2
 timeout_seconds = 120
 build_timeout_seconds = 240
@@ -644,18 +646,6 @@ reason = "cargo-mutants requests Default for a persistence effect whose required
 review_by = "2026-10-31"
 
 [[accepted_unviable]]
-id = "client-playlist-shuffle-let-chain-or"
-shard = "client-playlist-shuffle"
-file = "crates/sorotte-client-core/src/session/playlist/shuffle_helpers.rs"
-function = "ClientSession::local_playlist_target_index_from_changed_playlist"
-return_type = "-> usize"
-genre = "BinaryOperator"
-replacement = "||"
-reason = "cargo-mutants replaces each of the forward- and backward-search Rust let-chain && sites with ||, but let expressions are only valid in && chains so both generated mutants cannot parse"
-review_by = "2026-10-31"
-expected_count = 2
-
-[[accepted_unviable]]
 id = "participant-status-scope-state-revision-default"
 shard = "participant-status-protocol"
 file = "crates/sorotte-protocol/src/participant_status.rs"
@@ -840,6 +830,18 @@ return_type = "-> Option<LocalTransportEchoCandidate>"
 genre = "FnValue"
 replacement = "Some(Default::default())"
 reason = "cargo-mutants requests Default for a transport acknowledgement candidate whose emitted command identity and captured client counter are required, so the generated replacement cannot type-check"
+review_by = "2026-11-30"
+
+[[accepted_unviable]]
+id = "client-local-seek-position-let-chain-or"
+shard = "client-local-seek-echo"
+file = "crates/sorotte-client-core/src/runtime/playback_coordination/local_seek.rs"
+function = "RuntimePlaybackCoordination::unacknowledged_seek_position_at"
+return_type = "-> f64"
+genre = "BinaryOperator"
+replacement = "||"
+expected_count = 2
+reason = "The isolated campaign confirms rustc rejects both generated || connectors in this Rust let-chain; let-chain conditions support only &&. The exact function and two compiler failures bound this acceptance."
 review_by = "2026-11-30"
 
 [[accepted_unviable]]

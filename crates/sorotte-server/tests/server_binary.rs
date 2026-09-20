@@ -6,7 +6,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::Value;
@@ -183,6 +183,30 @@ fn read_protocol_message(reader: &mut BufReader<TcpStream>) -> ProtocolMessage {
     decode_message_line(line.trim_end()).expect("server response should decode")
 }
 
+fn read_list_response(reader: &mut BufReader<TcpStream>) -> ListPayload {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .expect("server should respond to List request before deadline");
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .expect("remaining List response timeout should be configurable");
+        match read_protocol_message(reader) {
+            ProtocolMessage::List(list_payload) => return list_payload.list,
+            // Periodic room state shares the connection and can already be
+            // queued when the client sends its List request.
+            ProtocolMessage::State(_) => {}
+            unexpected => panic!(
+                "expected List response or periodic State, received {}",
+                unexpected.kind()
+            ),
+        }
+    }
+}
+
 #[test]
 fn sorotte_server_binary_handles_legacy_password_motd_hello_and_list() {
     let port = reserve_local_port();
@@ -247,23 +271,41 @@ fn sorotte_server_binary_handles_legacy_password_motd_hello_and_list() {
     }
     assert!(saw_hello, "server should send a Hello response");
 
-    reader
-        .get_mut()
-        .write_all(br#"{"List":null}"#)
-        .expect("list request should write");
-    reader
-        .get_mut()
-        .write_all(b"\r\n")
-        .expect("list newline should write");
-    reader.get_mut().flush().expect("list request should flush");
+    for queue_periodic_state_before_request in [false, true] {
+        if queue_periodic_state_before_request {
+            // Prefetch without consuming a frame so this second request
+            // deterministically encounters unsolicited state before its reply.
+            reader
+                .get_ref()
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("periodic update timeout should be configurable");
+            assert!(
+                !reader
+                    .fill_buf()
+                    .expect("periodic server update should arrive")
+                    .is_empty(),
+                "server should stay connected after the first List response"
+            );
+        }
+        reader
+            .get_mut()
+            .write_all(br#"{"List":null}"#)
+            .expect("list request should write");
+        reader
+            .get_mut()
+            .write_all(b"\r\n")
+            .expect("list newline should write");
+        reader.get_mut().flush().expect("list request should flush");
 
-    let list_message = read_protocol_message(&mut reader);
-    let ProtocolMessage::List(list_payload) = list_message else {
-        panic!("server should respond to List request");
-    };
-    match list_payload.list {
-        ListPayload::Rooms(rooms) => assert!(rooms.contains_key("room1")),
-        ListPayload::Request(_) => panic!("server should send room snapshot, not request shape"),
+        match read_list_response(&mut reader) {
+            ListPayload::Rooms(rooms) => {
+                assert!(rooms.contains_key("room1"));
+                assert!(rooms["room1"].contains_key("alice"));
+            }
+            ListPayload::Request(_) => {
+                panic!("server should send room snapshot, not request shape")
+            }
+        }
     }
 
     fs::remove_file(motd_file).expect("temporary MOTD file should be removable");

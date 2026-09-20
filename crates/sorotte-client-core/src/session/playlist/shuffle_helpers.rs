@@ -37,11 +37,29 @@ impl ClientSession {
             return 0;
         }
 
+        // Labels may repeat; preserve the occurrence when unrelated entries change.
+        let retained_index = |index: usize| {
+            let file_name = current_files.get(index)?;
+            let occurrence = current_files[..index]
+                .iter()
+                .filter(|candidate| *candidate == file_name)
+                .count();
+            new_files
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| *candidate == file_name)
+                .nth(occurrence)
+                .map(|(index, _)| index)
+                .or_else(|| {
+                    new_files
+                        .iter()
+                        .rposition(|candidate| candidate == file_name)
+                })
+        };
+
         let mut index = current_index;
         while index <= current_files.len() {
-            if let Some(file_name) = current_files.get(index)
-                && let Some(valid_index) = new_files.iter().position(|entry| entry == file_name)
-            {
+            if let Some(valid_index) = retained_index(index) {
                 return valid_index;
             }
             index = index.saturating_add(1);
@@ -49,9 +67,7 @@ impl ClientSession {
 
         let mut index = current_index;
         while index > 0 {
-            if let Some(file_name) = current_files.get(index)
-                && let Some(valid_index) = new_files.iter().position(|entry| entry == file_name)
-            {
+            if let Some(valid_index) = retained_index(index) {
                 return if valid_index < new_files.len().saturating_sub(1) {
                     valid_index.saturating_add(1)
                 } else {

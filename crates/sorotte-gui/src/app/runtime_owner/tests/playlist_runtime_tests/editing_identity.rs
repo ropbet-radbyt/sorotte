@@ -382,3 +382,6 @@ fn connected_no_removal_opens_explicit_second_file_control() {
         Some(std::fs::canonicalize(&second_path).unwrap())
     );
 }
+
+#[path = "insertion_and_source_choice.rs"]
+mod insertion_and_source_choice;

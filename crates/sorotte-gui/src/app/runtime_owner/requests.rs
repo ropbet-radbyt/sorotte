@@ -62,6 +62,12 @@ use super::{
 };
 
 impl GuiPersistedConfigRuntimeOwner {
+    pub(in crate::app) fn adopt_config_path(&mut self, path: PathBuf) {
+        self.update_runtime
+            .set_config_root(path.parent().map(Path::to_path_buf));
+        self.config_path = Some(path);
+    }
+
     pub(in crate::app) fn persisted_settings_config_path_for_request(
         &self,
         projected_state: &GuiRuntimeState,
@@ -90,7 +96,7 @@ impl GuiPersistedConfigRuntimeOwner {
             patch.apply_to(settings);
         })
         .map_err(|error| error.to_string())?;
-        self.config_path = Some(config_path);
+        self.adopt_config_path(config_path);
         self.apply_patch_to_active_session_settings(patch);
         Ok(settings)
     }
@@ -518,6 +524,7 @@ impl GuiPersistedConfigRuntimeOwner {
             GuiRuntimeRequest::CompletePendingOperation(
                 GuiPendingCompletionRequest::ConnectSavedServer {
                     intent,
+                    baseline,
                     submitted_settings,
                 },
             ) => {
@@ -526,6 +533,7 @@ impl GuiPersistedConfigRuntimeOwner {
                     projected_state,
                     true,
                     intent,
+                    *baseline,
                     submitted_settings,
                 );
             }
@@ -571,11 +579,12 @@ impl GuiPersistedConfigRuntimeOwner {
                 );
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::SaveConfiguration(settings),
+                GuiPendingCompletionRequest::SaveConfiguration { baseline, settings },
             ) => {
                 return self.handle_complete_configuration_save_request(
                     handle,
                     projected_state,
+                    *baseline,
                     settings,
                 );
             }
@@ -603,12 +612,17 @@ impl GuiPersistedConfigRuntimeOwner {
                 return self.handle_complete_clear_gui_data_request(handle, projected_state);
             }
             GuiRuntimeRequest::CompletePendingOperation(
-                GuiPendingCompletionRequest::ChangeConfigStorageRoot { target, settings },
+                GuiPendingCompletionRequest::ChangeConfigStorageRoot {
+                    target,
+                    baseline,
+                    settings,
+                },
             ) => {
                 return self.handle_complete_config_storage_root_change_request(
                     handle,
                     projected_state,
                     target,
+                    *baseline,
                     settings,
                 );
             }

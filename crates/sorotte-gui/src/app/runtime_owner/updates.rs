@@ -203,6 +203,12 @@ pub(in crate::app) struct GuiUpdateRuntime {
 }
 
 impl GuiUpdateRuntime {
+    pub(super) fn set_config_root(&mut self, config_root: Option<PathBuf>) {
+        // Existing workers and retained stages keep ownership of their original
+        // paths. Subsequent downloads use the newly selected storage root.
+        self.config_root = config_root;
+    }
+
     pub(super) fn new(config_root: Option<PathBuf>) -> Self {
         Self::with_service(config_root, Arc::new(SystemGuiUpdateService))
     }

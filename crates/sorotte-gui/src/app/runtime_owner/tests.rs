@@ -54,7 +54,7 @@ use sorotte_client_app::app_boundary::storage::{
 };
 use sorotte_player_api::PlayerAdapter;
 
-static CONFIG_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(in crate::app::runtime_owner) static CONFIG_ROOT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct ExternallyDrivenTestSessionTransport;
 

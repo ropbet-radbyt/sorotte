@@ -17,7 +17,10 @@ pub(crate) fn apply_stored_startup_player_defaults_if_arg_absent(
     {
         if overrides.player_args.is_empty() {
             overrides.player_args = args.clone();
-        } else {
+        } else if overrides.player_args != *args {
+            // Repeating the exact persisted argument list must apply it once.
+            // Compare complete argv lists: individual repeated tokens may be
+            // option values, positional arguments, or deliberate repetitions.
             overrides.player_args.extend(args.iter().cloned());
         }
     }

@@ -20,3 +20,14 @@ assert-label	main-window:playlist:2:source	Local
 assert-selected	main-window:playlist:1:source:local	true
 assert-selected	main-window:playlist:2:source:local	true
 assert-selected	main-window:playlist:0	true
+# Adding another entry preserves the selected occurrence of dropped duplicates.
+drop-media-files	window	fixture-media://first/episode.mkv|fixture-media://second/episode.mkv
+apply-main-window-playlist-selection	1
+activate	main-window:playlist:add-url
+enter-text	main-window:playlist-url-edit:text	false	https://media.example.test/third.mp4
+activate	main-window:playlist-url-edit:commit
+assert-label	main-window:playlist:0	episode.mkv
+assert-label	main-window:playlist:1	episode.mkv
+assert-label	main-window:playlist:2	https://media.example.test/third.mp4
+assert-selected	main-window:playlist:1	true
+assert-selected	main-window:playlist:0	false

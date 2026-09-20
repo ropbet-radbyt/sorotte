@@ -102,6 +102,20 @@ def campaign_digest(campaign: dict) -> str:
     return ci.canonical_digest({key: value for key, value in campaign.items() if key != "sha256"})
 
 
+def validate_reviewed_unviable_inventory(identifier: str, inventory: list[dict],
+                                        accepted: tuple[ci.AcceptedUnviable, ...]) -> None:
+    available = collections.Counter(ci.mutant_identity(mutant) for mutant in inventory)
+    for entry in accepted:
+        count = available[entry.identity()]
+        if count < entry.expected_count:
+            raise ci.MutationCiError(
+                f"mutation reviewed unviable inventory is stale: {identifier}: {entry.identifier}: "
+                f"expected {entry.expected_count} occurrence(s), full inventory contains {count} matching mutant(s)"
+            )
+    # Matching inventory entries may still compile. Only raw producer outcomes
+    # establish unviability, and finalization still requires exact reviewed counts.
+
+
 def prepare(root: pathlib.Path, selected: dict) -> dict:
     require_immutable_source(root, selected["head"])
     policy = ci.load_policy(root, root / selection.POLICY)
@@ -111,6 +125,7 @@ def prepare(root: pathlib.Path, selected: dict) -> dict:
     shards = {}
     for identifier in selected["shards"]:
         inventory = list_mutants(root, policy.shard(identifier))
+        validate_reviewed_unviable_inventory(identifier, inventory, policy.accepted_for(identifier))
         chunks = partition(identifier, inventory, execution)
         shards[identifier] = {"inventory": inventory, "chunks": chunks}
         print(f"mutation preparation: {identifier}: {len(inventory)} mutants in {len(chunks)} chunks", file=sys.stderr, flush=True)
@@ -148,6 +163,7 @@ def validate_campaign(root: pathlib.Path, campaign: dict, selected: dict, *, fre
     for identifier, item in campaign["shards"].items():
         ci.require_exact_keys(item, {"inventory", "chunks"}, label=f"campaign shard {identifier}")
         inventory = ci.parse_inventory(item["inventory"], shard=policy.shard(identifier), label="campaign inventory")
+        validate_reviewed_unviable_inventory(identifier, inventory, policy.accepted_for(identifier))
         if item["chunks"] != partition(identifier, inventory, execution):
             raise ci.MutationCiError("mutation chunk partition is incomplete, overlapping or reordered")
         if fresh_inventory and inventory != list_mutants(root, policy.shard(identifier)):

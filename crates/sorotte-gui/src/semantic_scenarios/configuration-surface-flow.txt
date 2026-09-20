@@ -318,6 +318,27 @@ complete-pending
 assert-pending	none
 assert-value	settings.connection.server_password.status	No password is configured.
 assert-value	settings.connection.username	smoke-user-after-clear
+# An immediate plugin change and a later Save retain both user intentions.
+enter-text	settings.connection.username	false	smoke-user-after-plugin
+activate	plugins-root
+activate	plugins:list:plex
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	no
+activate	configuration-root
+activate	config-command:save
+complete-pending
+activate	config-command:reload
+complete-pending
+assert-value	settings.connection.username	smoke-user-after-plugin
+activate	plugins-root
+activate	plugins:list:plex
+assert-value	plugins:plex:enabled	no
+activate	plugins:plex:enabled
+assert-value	plugins:plex:enabled	yes
+activate	configuration-root
+enter-text	settings.connection.username	false	smoke-user-after-clear
+activate	config-command:save
+complete-pending
 # Presets use the same draft and Save transaction as individual controls.
 activate	configuration:tab:playback-search
 assert-value	settings-preset:current	Custom

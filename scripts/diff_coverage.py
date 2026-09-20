@@ -2244,7 +2244,9 @@ def lexical_non_coverable_lines(
         ):
             result.add(number)
             continue
-        if re.fullmatch(r"(?:}\s*)?(?:else\s+)?if\s+let\s*\(", code_stripped):
+        # Tuple and slice pattern delimiters have no independent executable
+        # expression. A scrutinee, guard or body on this line must still map.
+        if re.fullmatch(r"(?:}\s*)?(?:else\s+)?if\s+let\s*(?:\(|\[)", code_stripped):
             result.add(number)
             continue
         if re.fullmatch(

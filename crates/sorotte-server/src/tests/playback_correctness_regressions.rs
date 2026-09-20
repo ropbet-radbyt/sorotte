@@ -399,6 +399,151 @@ fn immediate_same_row_replay_requires_successor_media_preparation() {
     assert_immediate_selection_does_not_relabel_predecessor(0);
 }
 
+fn assert_local_selection_prepares_v2_successor(
+    files: &[&str],
+    active_index: usize,
+    select: impl FnOnce(&mut ProbeClient),
+) {
+    let room = "same-label-local-selection";
+    let mut server = ServerRuntime::default();
+    server.set_clock_overrides_seconds(Some(100.0), Some(0.0));
+    let hello = server
+        .handle_line_fanout(
+            "bob-client",
+            &json!({"Hello": {
+                "username": "bob", "room": {"name": room}, "version": "1.7.5",
+                "features": {"sorottePlaybackBarrierV1": true, "sorotteReadinessV2": true}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+    let mut bob = ClientRuntime::new(
+        ClientSession::default(),
+        DisconnectedPlayer,
+        QueuedRuntimeControl::default(),
+    );
+    deliver_to_bob(&mut bob, &hello, 100.0);
+    let selection = server
+        .handle_line_fanout(
+            "bob-client",
+            &json!({"Set": {
+            "playlistChange": {"files": files},
+                    "playlistIndex": {"index": active_index}
+                }})
+            .to_string(),
+        )
+        .unwrap();
+    deliver_to_bob(&mut bob, &selection, 100.0);
+    bob.prepare_playback_media(
+        LogicalMediaId::new(files[active_index]).unwrap(),
+        MediaTransportKind::LocalFile,
+        100.0,
+    );
+    flush_bob(&mut server, &mut bob, 100.0);
+    bob.observe_external_player_transport(transport(1, false), 101.0);
+    flush_bob(&mut server, &mut bob, 101.0);
+    assert!(matches!(
+        server.room_readiness[room].participants["bob"]
+            .record
+            .technical_state,
+        TechnicalPlayability::Playable { .. }
+    ));
+    let previous_generation = server.room_readiness[room].media_generation.unwrap();
+
+    select(&mut bob);
+    flush_bob(&mut server, &mut bob, 102.0);
+    let playlist = server.room_playlist_state(room);
+    let next_target = playlist.files[playlist.index.unwrap() as usize].clone();
+    if next_target != files[active_index] {
+        assert_eq!(server.room_readiness[room].media_generation, None);
+        bob.observe_external_player_transport(transport(2, false), 102.0);
+        flush_bob(&mut server, &mut bob, 102.0);
+        assert_eq!(server.room_readiness[room].media_generation, None);
+        assert_eq!(
+            server.room_readiness[room].participants["bob"]
+                .record
+                .technical_state,
+            TechnicalPlayability::Unknown,
+            "a different target must await its normal physical-load preparation"
+        );
+        bob.prepare_playback_media(
+            LogicalMediaId::new(next_target).unwrap(),
+            MediaTransportKind::LocalFile,
+            102.0,
+        );
+        flush_bob(&mut server, &mut bob, 102.0);
+    }
+    let successor_generation = server.room_readiness[room].media_generation;
+    assert!(
+        successor_generation.is_some_and(|generation| generation > previous_generation),
+        "selection must prepare a new readiness generation: {successor_generation:?}"
+    );
+    for (second, phase) in [
+        (3, PlayerTransportPhase::Playing),
+        (4, PlayerTransportPhase::Failed),
+    ] {
+        let mut predecessor = transport(second, false);
+        predecessor.phase = Some(phase);
+        bob.observe_external_player_transport(predecessor, 100.0 + second as f64);
+        flush_bob(&mut server, &mut bob, 100.0 + second as f64);
+        assert!(
+            matches!(server.room_readiness[room].participants["bob"].record.technical_state,
+            TechnicalPlayability::Preparing { media_generation } if Some(media_generation) == successor_generation),
+            "predecessor {phase:?} evidence must not be reused for a same-label successor"
+        );
+    }
+    let mut successor = transport(5, false);
+    successor.media_generation = Some(PlayerMediaGeneration::new(2));
+    bob.observe_external_player_transport(successor, 105.0);
+    flush_bob(&mut server, &mut bob, 105.0);
+    assert!(
+        matches!(server.room_readiness[room].participants["bob"].record.technical_state,
+        TechnicalPlayability::Playable { media_generation } if Some(media_generation) == successor_generation)
+    );
+    assert!(bob.run_toggle_ready(true).unwrap());
+    flush_bob(&mut server, &mut bob, 106.0);
+    assert_eq!(
+        server.room_readiness[room].participants["bob"]
+            .record
+            .user_intent,
+        UserReadinessIntent::Ready
+    );
+}
+
+#[test]
+fn active_duplicate_delete_prepares_v2_successor() {
+    for active_index in [0, 1] {
+        assert_local_selection_prepares_v2_successor(
+            &["episode.mkv", "episode.mkv"],
+            active_index,
+            |bob| {
+                assert!(bob.run_delete_playlist_index(active_index as i64).unwrap());
+            },
+        );
+    }
+}
+
+#[test]
+fn explicit_same_row_replay_prepares_v2_successor_control() {
+    assert_local_selection_prepares_v2_successor(&["episode.mkv", "episode.mkv"], 0, |bob| {
+        assert!(bob.run_set_playlist_index(0).unwrap());
+    });
+}
+
+#[test]
+fn explicit_other_duplicate_selection_prepares_v2_successor() {
+    assert_local_selection_prepares_v2_successor(&["episode.mkv", "episode.mkv"], 0, |bob| {
+        assert!(bob.run_set_playlist_index(1).unwrap());
+    });
+}
+
+#[test]
+fn active_distinct_delete_prepares_v2_successor_after_physical_load_control() {
+    assert_local_selection_prepares_v2_successor(&["episode.mkv", "next.mkv"], 0, |bob| {
+        assert!(bob.run_delete_playlist_index(0).unwrap());
+    });
+}
+
 fn assert_immediate_selection_does_not_relabel_predecessor(successor_index: usize) {
     let room = "immediate-selection-readiness";
     let mut server = ServerRuntime::default();

@@ -334,6 +334,13 @@ impl ClientSession {
             .and_then(|room_name| self.model.playlist.rooms.get(room_name))
     }
 
+    /// Identifies actual playback resets, including replay of the same row.
+    /// Retiring the reset handshake or editing other rows cannot restore a
+    /// predecessor's authority to complete this playback episode.
+    pub fn playlist_playback_reset_generation(&self) -> u64 {
+        self.model.playlist.playback_reset_generation
+    }
+
     pub fn current_room_playlist_selection_revision(&self) -> Option<u64> {
         self.model
             .room

@@ -76,6 +76,10 @@ impl GuiClientSession {
             .current_room_playlist_selection_revision()
     }
 
+    pub(in crate::app) fn playlist_playback_reset_generation(&self) -> u64 {
+        self.runtime.session().playlist_playback_reset_generation()
+    }
+
     pub(in crate::app) fn current_room_playlist_remote_revision(&self) -> u64 {
         self.runtime
             .session()

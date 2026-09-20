@@ -41,9 +41,12 @@ use sorotte_protocol::{
     SetPayload, decode_message_line, extract_hello_from_message,
 };
 
+mod buffering_policy_ownership_regressions;
 mod frame_capacity_tests;
 mod ping_timing_tests;
 mod playback_correctness_regressions;
+mod playlist_transport_regressions;
+mod readiness_membership_regressions;
 mod room_membership_regressions;
 mod selection_coordination_regressions;
 

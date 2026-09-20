@@ -2,6 +2,10 @@
 use super::ordered_events::OrderedLoadInstall;
 use super::ordered_events::snapshot_known_copy;
 use super::*;
+
+mod nearest_buffered_failure;
+mod ordered_cache_provenance;
+
 use sorotte_player_api::{
     DisconnectedPlayer, PlayerAdapter, PlayerCommand, PlayerCommandId, PlayerError,
     PlayerMediaGeneration, PlayerObservationTimestamp, PlayerPhysicalLoadOutcome,

@@ -1925,6 +1925,25 @@ impl GuiPersistedConfigRuntimeOwner {
         else {
             return false;
         };
+        if self
+            .shared_playlist_mutation_current_index(projected_state, false)
+            .is_some_and(|active| active != index)
+        {
+            self.publish_playlist_source_state(
+                handle,
+                projected_state,
+                GuiPlaylistSourceStateUpdate {
+                    index,
+                    target: &target,
+                    provider_id,
+                    status: GuiPlaylistSourceStatus::Available,
+                    detail: "Source preference saved for when this playlist item is active."
+                        .to_owned(),
+                    resolution_steps: vec![],
+                },
+            );
+            return true;
+        }
         if self.shared_playlist_open_delivery_fence_pending() {
             self.publish_playlist_source_state(
                 handle,

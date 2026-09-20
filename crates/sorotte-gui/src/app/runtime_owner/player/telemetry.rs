@@ -1895,6 +1895,8 @@ impl GuiPersistedConfigRuntimeOwner {
             playlist_revision: playlist.as_ref().map(|playlist| playlist.revision),
             selection_revision: session
                 .and_then(|session| session.current_room_playlist_selection_revision()),
+            playback_reset_generation: session
+                .map(|session| session.playlist_playback_reset_generation()),
             row_id: playlist.as_ref().and_then(|playlist| {
                 (self.playlist_resolution.playlist_revision == Some(playlist.revision))
                     .then(|| index.and_then(|index| self.playlist_resolution.row_ids.get(index)))
@@ -2048,6 +2050,7 @@ impl GuiPersistedConfigRuntimeOwner {
             || binding.selection.session_generation != current.session_generation
             || binding.selection.room != current.room
             || binding.selection.target != current.target
+            || binding.selection.playback_reset_generation != current.playback_reset_generation
             || (binding.selection.selection_revision != current.selection_revision
                 && !harmless_edit)
         {

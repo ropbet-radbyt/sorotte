@@ -13,6 +13,7 @@ struct OrderedCompletionSelection {
     target: Option<String>,
     playlist_revision: Option<u64>,
     selection_revision: Option<u64>,
+    playback_reset_generation: u64,
     index: Option<i64>,
     target_is_unique: bool,
 }
@@ -25,6 +26,7 @@ impl std::fmt::Debug for OrderedCompletionSelection {
             .field("target", &self.target.as_ref().map(|_| "<redacted>"))
             .field("playlist_revision", &self.playlist_revision)
             .field("selection_revision", &self.selection_revision)
+            .field("playback_reset_generation", &self.playback_reset_generation)
             .field("index", &self.index)
             .finish()
     }
@@ -44,6 +46,7 @@ impl OrderedCompletionSelection {
             target: target.cloned(),
             playlist_revision: playlist.map(|playlist| playlist.revision),
             selection_revision: session.current_room_playlist_selection_revision(),
+            playback_reset_generation: session.playlist_playback_reset_generation(),
             index,
             target_is_unique: target.zip(playlist).is_some_and(|(target, playlist)| {
                 playlist.files.iter().filter(|file| *file == target).count() == 1
@@ -55,6 +58,7 @@ impl OrderedCompletionSelection {
         let current = Self::capture(session);
         self.room == current.room
             && self.target == current.target
+            && self.playback_reset_generation == current.playback_reset_generation
             && ((self.selection_revision == current.selection_revision
                 && self.index == current.index)
                 // A compound edit can move the currently playing entry. Core
@@ -822,7 +826,7 @@ impl RuntimePlaybackCoordination {
         ))
     }
 
-    pub(super) fn position_update_from_ordered_delta(
+    pub(super) fn observation_from_ordered_delta(
         delta: &PlayerTransportDelta,
         mapped_observation: &PlayerTransportObservation,
     ) -> PlayerTransportObservation {
@@ -835,13 +839,13 @@ impl RuntimePlaybackCoordination {
             logical_pause: delta.logical_pause,
             paused_for_cache: delta.paused_for_cache,
             seeking: delta.seeking,
-            seekable: None,
-            timeline_kind: None,
-            seekable_ranges: None,
-            known_live_seekable_window: None,
+            seekable: delta.seekable,
+            timeline_kind: delta.timeline_kind,
+            seekable_ranges: delta.seekable_ranges.clone(),
+            known_live_seekable_window: delta.known_live_seekable_window,
             core_idle: delta.core_idle,
-            playback_restart_sequence: None,
-            // Only fields present in this delta acquire a fresh participant-status clock.
+            playback_restart_sequence: delta.playback_restart_sequence,
+            // Only fields present in this delta are fresh physical evidence.
             cache_buffering_percent: delta.cache_percentage,
             buffered_ahead_seconds: delta.buffered_duration_seconds,
             input_rate_bytes_per_second: delta.input_rate_bytes_per_second,
@@ -921,7 +925,7 @@ impl RuntimePlaybackCoordination {
         else {
             return Vec::new();
         };
-        let position_update = Self::position_update_from_ordered_delta(delta, &observation);
+        let position_update = Self::observation_from_ordered_delta(delta, &observation);
         if self.commit_mapped_transport_observation(
             observation.clone(),
             &position_update,
@@ -934,7 +938,10 @@ impl RuntimePlaybackCoordination {
         {
             return Vec::new();
         }
-        let actions = self.coordinator.observe(observation);
+        // The retained transport snapshot is a projection, not a fresh sample.
+        // In particular, seek invalidation must not re-label old cache metrics
+        // as headroom observed at the new target.
+        let actions = self.coordinator.observe(position_update);
         self.record_observation_outcomes(&actions);
         actions
     }
@@ -1335,6 +1342,7 @@ where
                     terminal.logical_pause = SnapshotField::Known(true);
                     self.ordered_player_events.transport = terminal.clone();
                     let terminal_delta = PlayerTransportDelta {
+                        phase: snapshot_known_copy(&terminal.phase),
                         logical_pause: Some(true),
                         ..PlayerTransportDelta::default()
                     };

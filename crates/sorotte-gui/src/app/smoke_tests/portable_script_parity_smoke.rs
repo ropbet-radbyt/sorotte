@@ -80,7 +80,10 @@ fn gui_portable_smoke_regression_covers_nontransport_script_parity() {
     persisted_state.resync_from_settings(saved_settings.clone());
     assert!(persisted_state.apply(GuiShellAction::BeginConfigurationSave));
     persisted_handle.push_request(GuiRuntimeRequest::CompletePendingOperation(
-        GuiPendingCompletionRequest::SaveConfiguration(saved_settings.clone()),
+        GuiPendingCompletionRequest::SaveConfiguration {
+            baseline: Box::new(persisted_state.saved_configuration.clone()),
+            settings: saved_settings.clone(),
+        },
     ));
     GuiQueuedRuntimeOwner::pump(&mut persisted_owner, &persisted_handle, &persisted_state);
     let save_actions = persisted_handle.drain_actions();

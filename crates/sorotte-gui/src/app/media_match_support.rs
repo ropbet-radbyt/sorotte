@@ -15,12 +15,12 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sorotte_media_match::{
-    MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFingerprintError,
-    MediaFingerprintRecord, MediaIndexBuildTransaction, MediaIndexCommitError,
-    MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService, MediaIndexSession,
-    MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision, MediaMatchSettings,
-    MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats, decide_media_match,
-    fingerprint_media_file_with_report, map_query_position_to_candidate_ms,
+    MEDIA_MATCH_ALGORITHM_VERSION, MediaExtractionSettings, MediaFileIdentity,
+    MediaFingerprintError, MediaFingerprintRecord, MediaIndexBuildTransaction,
+    MediaIndexCommitError, MediaIndexCommitOutcome, MediaIndexInventoryEntry, MediaIndexService,
+    MediaIndexSession, MediaMatchCache, MediaMatchCandidateDecision, MediaMatchDecision,
+    MediaMatchSettings, MediaMatchTier, MediaMatchToolPaths, MediaMatchV3RetrievalStats,
+    decide_media_match, fingerprint_media_file_with_report, map_query_position_to_candidate_ms,
     media_extraction_settings_hash, normalize_media_path, rank_media_match_candidates,
     summarize_record_v3_diagnostics,
 };
@@ -100,6 +100,7 @@ pub(super) struct MediaMatchRemoteCandidateRebuildRequest<'a> {
 #[derive(Debug, Clone)]
 pub(super) struct MediaMatchRemoteCandidateMatch {
     pub(super) path: String,
+    pub(super) identity: MediaFileIdentity,
     pub(super) decision: MediaMatchDecision,
 }
 
@@ -1174,6 +1175,7 @@ where
                 {
                     best_match = Some(MediaMatchRemoteCandidateMatch {
                         path: record.identity.normalized_path.clone(),
+                        identity: record.identity.clone(),
                         decision,
                     });
                 }
@@ -2390,6 +2392,24 @@ fn media_match_extraction_worker_count(extraction_settings: &MediaExtractionSett
     cores.clamp(1, 8)
 }
 
+pub(super) fn media_match_file_identity_is_current(identity: &MediaFileIdentity) -> bool {
+    let Ok(metadata) = fs::metadata(&identity.normalized_path) else {
+        return false;
+    };
+    let modified_unix_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    metadata.is_file()
+        && identity.valid_for(
+            &identity.normalized_path,
+            modified_unix_millis,
+            metadata.len(),
+        )
+}
+
 fn media_match_cache_has_valid_record(
     existing_cache: &MediaMatchCache,
     path: &Path,
@@ -2571,6 +2591,7 @@ fn best_remote_candidate_match(
             );
             Some(MediaMatchRemoteCandidateMatch {
                 path: record.identity.normalized_path.clone(),
+                identity: record.identity.clone(),
                 decision,
             })
         })

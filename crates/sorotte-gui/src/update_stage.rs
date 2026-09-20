@@ -14,7 +14,16 @@ const HANDOFF: &str = ".handoff.json";
 #[derive(Debug)]
 struct LeaseInner {
     path: PathBuf,
-    _file: fs::File,
+    file: fs::File,
+}
+
+impl Drop for LeaseInner {
+    fn drop(&mut self) {
+        // An unrelated child can inherit this open file description until exec.
+        // Release this owner's lock when its final Arc drops, even if that child
+        // still has a descriptor. Separately acquired owners keep their locks.
+        let _ = self.file.unlock();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +111,7 @@ impl StageLease {
         file.lock_shared().map_err(|error| error.to_string())?;
         Ok(Self(Arc::new(LeaseInner {
             path: stage.to_path_buf(),
-            _file: file,
+            file,
         })))
     }
 
@@ -120,7 +129,7 @@ impl StageLease {
         file.try_lock_shared().map_err(|error| error.to_string())?;
         Ok(Self(Arc::new(LeaseInner {
             path: stage.to_path_buf(),
-            _file: file,
+            file,
         })))
     }
 
@@ -266,6 +275,61 @@ mod tests {
         assert!(stage_is_live(&stage).unwrap());
         drop(clone);
         assert!(!stage_is_live(&stage).unwrap());
+    }
+
+    #[test]
+    fn unowned_file_duplicate_does_not_extend_stage_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let lease = StageLease::create(&stage).unwrap();
+        let clone = lease.clone();
+        // On Unix, fork temporarily inherits this same open file description.
+        // Keeping a duplicate open makes that ownership boundary deterministic.
+        let inherited_descriptor = lease.0.file.try_clone().unwrap();
+        drop(lease);
+        assert!(stage_is_live(&stage).unwrap());
+        drop(clone);
+        assert!(!stage_is_live(&stage).unwrap());
+
+        let next_owner = StageLease::acquire(&stage).unwrap();
+        assert!(stage_is_live(&stage).unwrap());
+        drop(inherited_descriptor);
+        assert!(stage_is_live(&stage).unwrap());
+        drop(next_owner);
+        assert!(!stage_is_live(&stage).unwrap());
+    }
+
+    #[test]
+    fn independent_updater_lease_outlasts_gui_owner_and_its_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let gui_owner = StageLease::create(&stage).unwrap();
+        let gui_clone = gui_owner.clone();
+        let inherited_descriptor = gui_owner.0.file.try_clone().unwrap();
+        let updater_owner = StageLease::acquire(&stage).unwrap();
+        drop(gui_owner);
+        drop(gui_clone);
+        assert!(stage_is_live(&stage).unwrap());
+        drop(updater_owner);
+        assert!(!stage_is_live(&stage).unwrap());
+        drop(inherited_descriptor);
+    }
+
+    #[test]
+    fn handoff_reservation_outlasts_gui_owner_and_its_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("stage");
+        fs::create_dir(&stage).unwrap();
+        let lease = StageLease::create(&stage).unwrap();
+        let inherited_descriptor = lease.0.file.try_clone().unwrap();
+        lease.begin_handoff().unwrap();
+        drop(lease);
+        assert!(stage_is_live(&stage).unwrap());
+        fs::write(stage.join(HANDOFF), br#"{"nonce":"1","expires":0}"#).unwrap();
+        assert!(!stage_is_live(&stage).unwrap());
+        drop(inherited_descriptor);
     }
 
     #[test]

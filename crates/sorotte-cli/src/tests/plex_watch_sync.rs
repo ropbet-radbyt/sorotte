@@ -234,12 +234,18 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
         .local_addr()
         .expect("Syncplay test listener should have local addr");
     let server_task = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.expect("server should accept");
-        let (reader, _writer) = socket.into_split();
-        let mut lines = BufReader::new(reader).lines();
-        let hello_line = lines
-            .next_line()
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
             .await
+            .expect("client should connect before the fixture deadline")
+            .expect("server should accept");
+        let (reader, mut writer) = socket.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        send_test_server_hello(&mut writer).await;
+        // Missing handshake writes must fail promptly so this fixture cannot
+        // retain the process-wide settings lock while other tests wait.
+        let hello_line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+            .await
+            .expect("hello line read should not timeout")
             .expect("hello line read should succeed")
             .expect("hello line should be present");
         assert!(hello_line.contains("\"Hello\""));
@@ -253,6 +259,7 @@ async fn connected_session_reports_plex_timeline_from_player_telemetry() {
             .await
             .expect("Plex timeline should be served before the fixture deadline")
             .expect("Plex fixture must signal timeline completion");
+        finish_test_server_connection(&mut writer, &mut lines).await;
     });
 
     let mut config = test_client_loop_config_with_addr(addr);

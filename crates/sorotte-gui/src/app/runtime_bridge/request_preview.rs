@@ -266,6 +266,7 @@ impl GuiRuntimeRequest {
             Self::CompletePendingOperation(GuiPendingCompletionRequest::ConnectSavedServer {
                 intent: GuiSavedServerConnectIntent::SaveAndConnect,
                 submitted_settings,
+                ..
             }) => {
                 vec![
                     GuiShellAction::ApplyGuiSavedConfigurationRuntimeSnapshot(

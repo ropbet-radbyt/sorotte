@@ -269,10 +269,39 @@ pub(super) fn normalize_shared_playlist_entries(entries: Vec<String>) -> Vec<Str
         .collect()
 }
 
+pub(super) fn playlist_change_reorders_retained_rows(
+    previous_rows: &[MainWindowPlaylistRow],
+    entries: &[String],
+) -> bool {
+    fn is_subsequence<'a>(
+        mut shorter: impl Iterator<Item = &'a str>,
+        longer: impl Iterator<Item = &'a str>,
+    ) -> bool {
+        let mut next = shorter.next();
+        for label in longer {
+            if next == Some(label) {
+                next = shorter.next();
+            }
+        }
+        next.is_none()
+    }
+
+    let previous = previous_rows.iter().map(|row| row.label.as_str());
+    let incoming = entries.iter().map(|entry| entry.trim());
+    // Insertion/removal preserves the relative order of surviving occurrences.
+    // Other projections may retain a duplicate in its old slot while moving
+    // another occurrence around it, so keep those slot anchors when available.
+    if previous_rows.len() <= entries.len() {
+        !is_subsequence(previous, incoming)
+    } else {
+        !is_subsequence(incoming, previous)
+    }
+}
+
 pub(super) fn reconciled_playlist_row(
     previous_rows: &[MainWindowPlaylistRow],
     used_previous_rows: &mut [bool],
-    index: usize,
+    retained_index: Option<usize>,
     label: &str,
     preferred_entry_id: Option<super::shell_state::GuiPlaylistEntryId>,
 ) -> Option<MainWindowPlaylistRow> {
@@ -297,13 +326,11 @@ pub(super) fn reconciled_playlist_row(
         row.source_state.entry_id = row.entry_id;
         return Some(row);
     }
-    if let Some(row) = previous_rows.get(index)
+    if let Some(index) = retained_index
         && !used_previous_rows.get(index).copied().unwrap_or(false)
-        && row.label == label
+        && let Some(row) = previous_rows.get(index).filter(|row| row.label == label)
     {
-        if let Some(used) = used_previous_rows.get_mut(index) {
-            *used = true;
-        }
+        used_previous_rows[index] = true;
         let mut row = row.clone();
         row.source_state.entry_id = row.entry_id;
         return Some(row);
@@ -359,13 +386,12 @@ pub(super) fn shared_playlist_entries_after_media_open(
     if let Some(insert_slot) = insert_slot {
         let mut playlist_entries = current_entries.to_vec();
         let insert_slot = insert_slot.min(playlist_entries.len());
+        let inserted_count = opened_entries.len();
         playlist_entries.splice(insert_slot..insert_slot, opened_entries);
-        let selection = shared_playlist_target_index_from_changed_entries(
-            current_entries,
-            current_index,
-            &playlist_entries,
-        )
-        .min(playlist_entries.len().saturating_sub(1));
+        let selection = current_index
+            .filter(|index| *index < current_entries.len())
+            .map(|index| index + usize::from(index >= insert_slot) * inserted_count)
+            .unwrap_or(0);
         return (playlist_entries, Some(selection));
     }
     (opened_entries, Some(0))
@@ -383,11 +409,29 @@ pub(super) fn shared_playlist_target_index_from_changed_entries(
         return 0;
     }
 
+    // Labels may repeat; preserve the occurrence when unrelated entries change.
+    let retained_index = |index: usize| {
+        let entry = current_entries.get(index)?;
+        let occurrence = current_entries[..index]
+            .iter()
+            .filter(|candidate| *candidate == entry)
+            .count();
+        next_entries
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| *candidate == entry)
+            .nth(occurrence)
+            .map(|(index, _)| index)
+            .or_else(|| {
+                next_entries
+                    .iter()
+                    .rposition(|candidate| candidate == entry)
+            })
+    };
+
     let mut index = current_index;
     while index <= current_entries.len() {
-        if let Some(entry) = current_entries.get(index)
-            && let Some(valid_index) = next_entries.iter().position(|candidate| candidate == entry)
-        {
+        if let Some(valid_index) = retained_index(index) {
             return valid_index;
         }
         index = index.saturating_add(1);
@@ -395,9 +439,7 @@ pub(super) fn shared_playlist_target_index_from_changed_entries(
 
     let mut index = current_index;
     while index > 0 {
-        if let Some(entry) = current_entries.get(index)
-            && let Some(valid_index) = next_entries.iter().position(|candidate| candidate == entry)
-        {
+        if let Some(valid_index) = retained_index(index) {
             return if valid_index < next_entries.len().saturating_sub(1) {
                 valid_index.saturating_add(1)
             } else {
@@ -436,6 +478,7 @@ pub(super) fn apply_shared_playlist_entries(
             .min(entries.len().saturating_sub(1))
         });
     let previous_rows = main_window.playlist.clone();
+    let retain_previous_indices = playlist_change_reorders_retained_rows(&previous_rows, &entries);
     let mut used_previous_rows = vec![false; previous_rows.len()];
     main_window.playlist = entries
         .iter()
@@ -444,7 +487,7 @@ pub(super) fn apply_shared_playlist_entries(
             let previous_row = reconciled_playlist_row(
                 &previous_rows,
                 &mut used_previous_rows,
-                index,
+                retain_previous_indices.then_some(index),
                 label,
                 None,
             );

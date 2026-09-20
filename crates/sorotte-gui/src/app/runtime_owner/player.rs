@@ -118,12 +118,22 @@ pub(super) struct GuiOrderedPlayerEventConsumer {
     submitted_completion_seeks: BTreeMap<PlayerCommandId, GuiPlaybackCompletionBinding>,
 }
 
+impl GuiOrderedPlayerEventConsumer {
+    pub(super) fn observed_position_seconds(&self) -> Option<f64> {
+        match self.transport.position_seconds {
+            SnapshotField::Known(position) => Some(position),
+            SnapshotField::KnownAbsent | SnapshotField::Unavailable => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiPlaybackCompletionSelection {
     session_generation: u64,
     room: Option<String>,
     playlist_revision: Option<u64>,
     selection_revision: Option<u64>,
+    playback_reset_generation: Option<u64>,
     row_id: Option<GuiPlaylistEntryId>,
     target: Option<String>,
     target_is_unique: bool,
@@ -137,6 +147,7 @@ impl std::fmt::Debug for GuiPlaybackCompletionSelection {
             .field("room_present", &self.room.is_some())
             .field("playlist_revision", &self.playlist_revision)
             .field("selection_revision", &self.selection_revision)
+            .field("playback_reset_generation", &self.playback_reset_generation)
             .field("row_id", &self.row_id)
             .field("target_present", &self.target.is_some())
             .field("target_is_unique", &self.target_is_unique)

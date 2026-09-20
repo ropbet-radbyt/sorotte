@@ -1177,10 +1177,14 @@ impl ServerRuntime {
         };
         let old_policy_owned_pause = self
             .room_buffering_controls
-            .remove(&room_name)
+            .get(&room_name)
             .is_some_and(|control| control.paused_by_policy);
         let mut outbound = readiness_clear;
         if old_policy_owned_pause {
+            // Retain the old identity through its release. The resume checks
+            // that exact pause owner and clears it before publishing State;
+            // removing the control first would leave a retired policy owning
+            // the now-playing room's public readiness snapshot.
             outbound.extend(self.apply_room_buffering_transition(
                 &room_name,
                 RoomBufferingTransition::Resume,

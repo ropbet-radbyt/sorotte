@@ -1183,7 +1183,7 @@ pub(super) enum GuiMediaMatchToolWorkerEvent {
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct GuiMediaMatchRemoteLookupResult {
     pub(super) trigger_key: String,
-    pub(super) candidate_path: Option<String>,
+    pub(super) candidate: Option<sorotte_media_match::MediaFileIdentity>,
 }
 
 impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
@@ -1194,7 +1194,7 @@ impl std::fmt::Debug for GuiMediaMatchRemoteLookupResult {
             .field(
                 "candidate_path",
                 &self
-                    .candidate_path
+                    .candidate
                     .as_ref()
                     .map(|_| sorotte_secret::REDACTED_SECRET),
             )
@@ -1448,7 +1448,7 @@ mod media_target_debug_tests {
         };
         let remote_lookup = GuiMediaMatchRemoteLookupResult {
             trigger_key: secret.to_owned(),
-            candidate_path: Some(secret.to_owned()),
+            candidate: Some(sorotte_media_match::MediaFileIdentity::new(secret, 0, 0)),
         };
         let plex_worker = GuiPlexStreamResolveWorkerResult {
             operation_context: GuiPlexOperationContext {
