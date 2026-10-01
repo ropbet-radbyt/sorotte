@@ -79,7 +79,7 @@ jobs:
       - name: Install pinned cargo-mutants
         id: ci_install_pinned_cargo_mutants_9618263d
         if: ${{ needs.selection.outputs.shards != '[]' }}
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-mutants@27.1.0
           fallback: none
@@ -141,7 +141,7 @@ jobs:
           python-version: "3.11"
       - name: Install pinned cargo-mutants
         id: ci_install_pinned_cargo_mutants_9813c6fc
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-mutants@27.1.0
           fallback: none
@@ -195,7 +195,7 @@ jobs:
       - name: Install independent pinned inventory authority
         id: ci_install_independent_pinned_inventory_a_1935043d
         if: ${{ needs.selection.outputs.shards != '[]' }}
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-mutants@27.1.0
           fallback: none

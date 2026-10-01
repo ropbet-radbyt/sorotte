@@ -135,7 +135,7 @@ jobs:
 
       - name: Install pinned cargo-nextest
         id: ci_install_pinned_cargo_nextest_45b95333
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-nextest@0.9.143
           fallback: none
@@ -536,7 +536,7 @@ jobs:
 
       - name: Install pinned cargo-nextest
         id: ci_install_pinned_cargo_nextest_5e3279cd
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-nextest@0.9.143
           fallback: none
@@ -716,7 +716,7 @@ jobs:
 
       - name: Install pinned cargo-llvm-cov for Windows process coverage
         id: ci_install_pinned_cargo_llvm_cov_for_wind_cb5b68bd
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -875,7 +875,7 @@ jobs:
 
       - name: Install pinned cargo-llvm-cov
         id: ci_install_pinned_cargo_llvm_cov_37f9d2b9
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -1707,7 +1707,7 @@ jobs:
           components: llvm-tools-preview
       - name: Install pinned coverage tool
         id: ci_install_pinned_coverage_tool_1066d362
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-llvm-cov@0.9.1
           fallback: none
