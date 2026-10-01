@@ -229,11 +229,11 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertIn("Explorer shell", preflight)
         self.assertEqual(
             self.media_tools["MPV_ARCHIVE_SHA256"],
-            "6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879",
+            "18e574683a3e6891beb78d16ee943434e1bf523f2180b0b8595239f7773da7c8",
         )
         self.assertEqual(
             self.media_tools["MPV_BINARY_SHA256"],
-            "547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe",
+            "7c175b130f8d8663ef3d57e30cfaa8f08de83a3f964013cdd97756c821e210ef",
         )
         tools = normalized(
             named_step(self.windows_suite, "Download and verify pinned supported Windows media tools")["run"]
