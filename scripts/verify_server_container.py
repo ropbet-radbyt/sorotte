@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 
-PINNED_SYFT_VERSION = "1.51.1"
+PINNED_SYFT_VERSION = "1.54.0"
 SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_NAME_RE = re.compile(

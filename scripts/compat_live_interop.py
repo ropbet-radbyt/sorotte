@@ -34,7 +34,7 @@ PINNED_LEGACY_SYNCPLAY_REPOSITORY = "Syncplay/syncplay"
 SUPPORTED_PYTHON_MINIMUM = (3, 11)
 SUPPORTED_PYTHON_MAXIMUM_EXCLUSIVE = (3, 14)
 PINNED_PACKAGES = {
-    "cryptography": ("cryptography", "50.0.1"),
+    "cryptography": ("cryptography", "50.0.2"),
     "pyopenssl": ("pyopenssl", "26.4.0"),
     "service-identity": ("service_identity", "26.1.0"),
     "twisted": ("twisted", "26.4.0"),

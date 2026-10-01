@@ -37,7 +37,7 @@ jobs:
         id: ci_setup_rust_for_dependency_inventory_e8eb8a28
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
       - name: Setup Python
         id: ci_setup_python_2d5b0efc
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

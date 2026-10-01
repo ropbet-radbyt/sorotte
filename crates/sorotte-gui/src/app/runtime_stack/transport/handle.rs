@@ -119,7 +119,7 @@ impl GuiQueuedSessionTransportHandle {
     pub(super) fn begin_worker_generation(&self) -> Self {
         let previous_generation = self
             .active_worker_generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
             })
             .expect("GUI transport worker generation exhausted");

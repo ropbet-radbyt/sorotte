@@ -175,7 +175,7 @@ impl PersistenceEventReporter {
 
     fn recover_if_needed(&self) {
         if self.worker_degraded.swap(false, Ordering::AcqRel) {
-            let _ = self.degraded_worker_count.fetch_update(
+            let _ = self.degraded_worker_count.try_update(
                 Ordering::AcqRel,
                 Ordering::Acquire,
                 |count| Some(count.saturating_sub(1)),

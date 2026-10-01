@@ -123,9 +123,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_3716b49a
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Cargo fmt
@@ -135,9 +135,9 @@ jobs:
 
       - name: Install pinned cargo-nextest
         id: ci_install_pinned_cargo_nextest_45b95333
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.146
           fallback: none
 
 
@@ -152,7 +152,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry/cache
-          key: cargo-downloads-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+          key: cargo-downloads-${{ runner.os }}-1.99.0-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
       - name: Verify cached archives and reconstruct corrupt inputs
         id: ci_verify_cached_archives_and_reconstruct_01570f70
         run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
@@ -326,9 +326,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_0c0f6add
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -426,9 +426,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_53ae2e1b
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -529,16 +529,16 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_a4bd0f12
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Install pinned cargo-nextest
         id: ci_install_pinned_cargo_nextest_5e3279cd
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.146
           fallback: none
 
       - name: Setup Python
@@ -552,7 +552,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry/cache
-          key: cargo-downloads-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+          key: cargo-downloads-${{ runner.os }}-1.99.0-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
       - name: Verify cached archives and reconstruct corrupt inputs
         id: ci_verify_cached_archives_and_reconstruct_ec66cc47
         run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
@@ -637,9 +637,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_5f716fa8
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Locked release-profile GUI and updater build
@@ -692,9 +692,9 @@ jobs:
 
       - name: Setup Rust coverage toolchain
         id: ci_setup_rust_coverage_toolchain_c9fc4241
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
@@ -708,7 +708,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry/cache
-          key: cargo-downloads-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+          key: cargo-downloads-${{ runner.os }}-1.99.0-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
       - name: Verify cached archives and reconstruct corrupt inputs
         id: ci_verify_cached_archives_and_reconstruct_23f4a250
         run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
@@ -716,7 +716,7 @@ jobs:
 
       - name: Install pinned cargo-llvm-cov for Windows process coverage
         id: ci_install_pinned_cargo_llvm_cov_for_wind_cb5b68bd
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -845,9 +845,9 @@ jobs:
 
       - name: Setup Rust coverage toolchain
         id: ci_setup_rust_coverage_toolchain_4700e040
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy, llvm-tools-preview
 
       - name: Setup Python
@@ -861,7 +861,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry/cache
-          key: cargo-downloads-${{ runner.os }}-1.98.1-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
+          key: cargo-downloads-${{ runner.os }}-1.99.0-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'coverage/verification-tools.toml') }}
       - name: Verify cached archives and reconstruct corrupt inputs
         id: ci_verify_cached_archives_and_reconstruct_a4d2be46
         run: python scripts/cargo_input_cache.py --lock Cargo.lock --lock fuzz/Cargo.lock --output target/verification/cargo-cache.json
@@ -875,7 +875,7 @@ jobs:
 
       - name: Install pinned cargo-llvm-cov
         id: ci_install_pinned_cargo_llvm_cov_37f9d2b9
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -1100,9 +1100,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_031f75ce
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -1166,9 +1166,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_82ca280f
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Install generated-media tools
@@ -1234,9 +1234,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_4e3863e3
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Install supported mpv build dependencies
@@ -1509,9 +1509,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_e998340b
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -1612,9 +1612,9 @@ jobs:
 
       - name: Setup Rust
         id: ci_setup_rust_268ae967
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: rustfmt, clippy
 
       - name: Setup Python
@@ -1701,13 +1701,13 @@ jobs:
           python-version: '3.11'
       - name: Setup pinned coverage Rust
         id: ci_setup_pinned_coverage_rust_d381279c
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-09-08
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
         with:
-          toolchain: 1.98.1
+          toolchain: 1.99.0
           components: llvm-tools-preview
       - name: Install pinned coverage tool
         id: ci_install_pinned_coverage_tool_1066d362
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@0.9.1
           fallback: none

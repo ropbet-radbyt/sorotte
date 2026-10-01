@@ -21,7 +21,7 @@ resolver = "2"
 version = "0.2.20"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.98.1"
+rust-version = "1.99.0"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
@@ -44,9 +44,9 @@ serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 semver = "1.0.28"
 sha1 = "0.11.0"
 sha2 = "0.11.0"
-thiserror = "2.0.20"
+thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = "0.26.5"
+tokio-rustls = "0.26.6"
 url = "2.5.8"
 webpki-roots = "1.0.9"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }

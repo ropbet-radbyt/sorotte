@@ -208,16 +208,16 @@ class PlaybackLifecycleReleaseGateTests(unittest.TestCase):
         self.assertEqual(
             self.media_tools["FFMPEG_ARCHIVE_URL"],
             "https://github.com/GyanD/codexffmpeg/releases/download/"
-            "9.0.1/"
-            "ffmpeg-9.0.1-full_build.7z",
+            "9.0.2/"
+            "ffmpeg-9.0.2-full_build.7z",
         )
         self.assertEqual(
             self.media_tools["FFMPEG_ARCHIVE_SHA256"],
-            "4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96",
+            "f0e46253c70dfe902bac915dfb4224f0cf1b7c6eeab9da2ccc9a5581f9a71b13",
         )
         self.assertEqual(
             self.media_tools["FFMPEG_BINARY_SHA256"],
-            "57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a",
+            "589e50b766d251afdf181dd664d40bd94407e200b019989fd7468c7d118a28d0",
         )
 
     def test_windows_gate_pins_tools_and_consumes_exact_gui_status_candidate(self) -> None:

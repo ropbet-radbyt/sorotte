@@ -49,9 +49,9 @@ runs:
         MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-08-30-e8673660ab/mpv-x86_64-20260830-git-e8673660ab.7z
         MPV_ARCHIVE_SHA256: 6abdd47422bba77f21072660b460f9cceef5cbd89f35b07903fff07451db7879
         MPV_BINARY_SHA256: 547aaba0dec693894a271e26e83e413f00bc4063b4a00dc8a11d1ee88c6eaefe
-        FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-full_build.7z
-        FFMPEG_ARCHIVE_SHA256: 4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96
-        FFMPEG_BINARY_SHA256: 57c56e369d5b4873b4d93fc1a1d833cb7cd8bc9325c14b05c34ce60b22842d8a
+        FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.7z
+        FFMPEG_ARCHIVE_SHA256: f0e46253c70dfe902bac915dfb4224f0cf1b7c6eeab9da2ccc9a5581f9a71b13
+        FFMPEG_BINARY_SHA256: 589e50b766d251afdf181dd664d40bd94407e200b019989fd7468c7d118a28d0
       run: |
         Set-StrictMode -Version Latest
         $ErrorActionPreference = "Stop"

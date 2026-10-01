@@ -36,7 +36,7 @@ impl ServerOutboundBackpressureMetrics {
         let _ =
             self.inner
                 .peak_queue_depth
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |peak| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |peak| {
                     (depth > peak).then_some(depth)
                 });
     }
@@ -45,7 +45,7 @@ impl ServerOutboundBackpressureMetrics {
         let _ = self
             .inner
             .queue_depth
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
                 Some(depth.saturating_sub(1))
             });
     }
@@ -60,7 +60,7 @@ impl ServerOutboundBackpressureMetrics {
         let _ = self
             .inner
             .queue_depth
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
                 Some(depth.saturating_sub(count))
             });
     }

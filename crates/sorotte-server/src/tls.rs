@@ -454,7 +454,7 @@ impl TlsCertificateBundleMetadataClock {
 
     pub(crate) fn advance(&self) {
         self.revision
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
                 revision.checked_add(1)
             })
             .expect("TLS certificate bundle test revision should not overflow");
