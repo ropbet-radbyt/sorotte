@@ -332,7 +332,7 @@ application behaves correctly. Once a defect is fixed, its characterizations
 must become positive regressions and the corresponding registry entry must be
 removed.
 
-Required workspace execution uses pinned cargo-nextest 0.9.143 through
+Required workspace execution uses pinned cargo-nextest 0.9.146 through
 `scripts/nextest_ci.py`. The checked profile allows one diagnostic retry but
 fails the gate when a failed or leaked first attempt later passes. An inherited
 subprocess handle still open after 500 ms is a failed result. The wrapper

@@ -1,17 +1,17 @@
-# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
 FROM rust:1.98.0-trixie@sha256:620dbcd124499c59e2406d3741574b5c5838cf9eb9656f0c3a03948f79b02959 AS builder
 
 # The base image and its digest are reviewed separately. Install the compiler
 # selected by verification-tools.toml, matching the workspace and CI.
-RUN rustup toolchain install 1.98.1 --profile minimal && rustup default 1.98.1
+RUN rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
 
 WORKDIR /src
 COPY . .
 
 RUN cargo build --release --locked -p sorotte-server --bin sorotte-server
 
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS runtime
 
 ARG BUILD_DATE
 ARG VCS_REF

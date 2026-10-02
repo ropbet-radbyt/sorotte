@@ -104,7 +104,7 @@ class PinProjectionTests(unittest.TestCase):
             tools.validate_pin_projections(self.root)
 
     def test_certificate_selftest_dependency_cannot_be_removed_from_bootstrap(self) -> None:
-        self.replace("requirements/ci-policy.txt", "cryptography==50.0.1\n", "")
+        self.replace("requirements/ci-policy.txt", "cryptography==50.0.2\n", "")
         with self.assertRaisesRegex(ValueError, "ci-policy.txt"):
             tools.validate_pin_projections(self.root)
 

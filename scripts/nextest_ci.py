@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import Any, TextIO
 
 
-PINNED_NEXTEST_VERSION = "0.9.143"
+PINNED_NEXTEST_VERSION = "0.9.146"
 CI_PROFILE = "ci"
 RETRY_COUNT = 1
 NEXTEST_COMMAND = (

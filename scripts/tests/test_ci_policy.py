@@ -2300,7 +2300,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             requirement_lines(CI_REQUIREMENTS),
-            ["-c verification-constraints.txt", "PyYAML==6.0.3", "cryptography==50.0.1"],
+            ["-c verification-constraints.txt", "PyYAML==6.0.3", "cryptography==50.0.2"],
         )
         self.assertEqual(
             requirement_lines(LEGACY_REQUIREMENTS),
@@ -2308,7 +2308,7 @@ class CiPolicyTests(unittest.TestCase):
                 "-c verification-constraints.txt",
                 "twisted==26.4.0",
                 "pyopenssl==26.4.0",
-                "cryptography==50.0.1",
+                "cryptography==50.0.2",
                 "service_identity==26.1.0",
             ],
         )

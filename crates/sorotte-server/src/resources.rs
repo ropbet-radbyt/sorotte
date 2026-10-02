@@ -223,7 +223,7 @@ pub(crate) struct PeerByteBudget {
 
 fn reserve(counter: &AtomicUsize, amount: usize, limit: usize) -> Option<usize> {
     counter
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
             value.checked_add(amount).filter(|next| *next <= limit)
         })
         .ok()

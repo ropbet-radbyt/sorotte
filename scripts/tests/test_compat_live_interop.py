@@ -193,7 +193,7 @@ class RequirementPolicyTests(unittest.TestCase):
         parsed = interop.parse_pinned_requirements(
             b"twisted==26.4.0\n"
             b"# compatibility comment\n"
-            b"cryptography==50.0.1\n"
+            b"cryptography==50.0.2\n"
             b"pyopenssl==26.4.0\n"
             b"service_identity==26.1.0\n"
         )
@@ -219,7 +219,7 @@ class RequirementPolicyTests(unittest.TestCase):
             requirements = root / "requirements"
             requirements.mkdir()
             requirements.joinpath("legacy-python-interop.txt").write_text(
-                "cryptography==50.0.1\n"
+                "cryptography==50.0.2\n"
                 "twisted==26.4.0\n"
                 "pyopenssl==26.4.0\n"
                 "service_identity==26.1.0\n",
@@ -230,7 +230,7 @@ class RequirementPolicyTests(unittest.TestCase):
                 "implementation": "CPython",
                 "packages": {
                     "pyopenssl": "26.4.0",
-                    "cryptography": "50.0.1",
+                    "cryptography": "50.0.2",
                     "service-identity": "26.1.0",
                     "twisted": "26.4.0",
                 },
@@ -251,7 +251,7 @@ class RequirementPolicyTests(unittest.TestCase):
             self.assertEqual(python["version"], "3.13.5")
             self.assertEqual(
                 [package["observed_version"] for package in python["packages"]],
-                ["50.0.1", "26.4.0", "26.1.0", "26.4.0"],
+                ["50.0.2", "26.4.0", "26.1.0", "26.4.0"],
             )
             self.assertRegex(pinned["sha256"], r"^[0-9a-f]{64}$")
 
