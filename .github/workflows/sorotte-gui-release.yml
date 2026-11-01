@@ -170,7 +170,7 @@ jobs:
       - name: Upload GUI artifact verification report
         id: ci_upload_gui_artifact_verification_repor_f47159a5
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-gui-artifact-verification
           path: target/gui-release/artifact-verification.json
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload GUI package artifact
         id: ci_upload_gui_package_artifact_c62cee5c
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-gui-windows-x86_64
           path: target/gui-release/artifacts/*
@@ -253,7 +253,7 @@ jobs:
       - name: Upload publication verification report
         id: ci_upload_publication_verification_report_227777e0
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-gui-publication-verification
           path: target/gui-release/publication-verification.json
@@ -278,7 +278,7 @@ jobs:
       - name: Retain public GUI verification
         id: ci_retain_public_gui_verification_607ecd28
         if: ${{ always() && inputs.publish }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-publication-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/gui-release/publication-public.json

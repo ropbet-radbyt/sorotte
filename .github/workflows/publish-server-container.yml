@@ -279,7 +279,7 @@ jobs:
       - name: Retain all container verification evidence
         id: ci_retain_all_container_verification_evid_99c9a382
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-container-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_DIR }}
@@ -375,7 +375,7 @@ jobs:
       - name: Retain exact promotion and public verification evidence
         id: ci_retain_exact_promotion_and_public_veri_5013a126
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-container-promotion-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/container-promotion

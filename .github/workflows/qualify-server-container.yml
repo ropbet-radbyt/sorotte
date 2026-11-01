@@ -167,7 +167,7 @@ jobs:
           --bundle-dir target/qualified-container --report "$EVIDENCE_DIR/restoration-report.json"
       - name: Retain the exact tested container image
         id: retain_image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-container-${{ github.sha }}
           path: target/qualified-container/*
@@ -176,7 +176,7 @@ jobs:
       - name: Retain all container qualification evidence
         id: retain_evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-container-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_DIR }}

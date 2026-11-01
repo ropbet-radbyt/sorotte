@@ -83,7 +83,7 @@ jobs:
       - name: Preserve preflight receipt
         id: ci_preserve_preflight_receipt_6e315338
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preflight-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -177,7 +177,7 @@ jobs:
       - name: Preserve default-feature workspace evidence
         id: workspace_default_evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workspace-default-linux-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/workspace-default-linux-${{ github.run_id }}-${{ github.run_attempt }}
@@ -232,7 +232,7 @@ jobs:
       - name: Upload minimized lifecycle model failures
         id: ci_upload_minimized_lifecycle_model_failu_bad90c2c
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-model-failures
           path: target/verification/playback-lifecycle-model-failures
@@ -283,7 +283,7 @@ jobs:
       - name: Upload Linux nextest attempt evidence
         id: ci_upload_linux_nextest_attempt_evidence_419fdb81
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextest-attempts-linux-${{ github.run_attempt }}
           path: target/nextest/ci
@@ -375,7 +375,7 @@ jobs:
       - name: Upload lifecycle evidence
         id: ci_upload_lifecycle_evidence_17bb7f16
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-lifecycle-contract
           path: target/verification/evidence.lifecycle-contract.json
@@ -483,7 +483,7 @@ jobs:
       - name: Upload semantic evidence
         id: ci_upload_semantic_evidence_de4e304b
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-gui-semantic
           path: evidence-source/target/verification/evidence.gui-semantic.json
@@ -577,7 +577,7 @@ jobs:
       - name: Preserve default-feature workspace evidence
         id: workspace_default_evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workspace-default-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/workspace-default-windows-${{ github.run_id }}-${{ github.run_attempt }}
@@ -599,7 +599,7 @@ jobs:
       - name: Upload Windows nextest attempt evidence
         id: ci_upload_windows_nextest_attempt_evidenc_3a3e4ff8
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextest-attempts-windows-${{ github.run_attempt }}
           path: target/nextest/ci
@@ -768,7 +768,7 @@ jobs:
       - name: Upload Windows process coverage evidence
         id: ci_upload_windows_process_coverage_eviden_b72bef08
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-windows-process-coverage
           path: |
@@ -919,7 +919,7 @@ jobs:
       - name: Upload Linux merged coverage evidence
         id: ci_upload_linux_merged_coverage_evidence_d1b2b381
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-linux-merged-coverage
           path: |
@@ -1052,7 +1052,7 @@ jobs:
       - name: Upload changed-line coverage evidence
         id: ci_upload_changed_line_coverage_evidence_08a4e026
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-coverage-diff
           path: |
@@ -1136,7 +1136,7 @@ jobs:
       - name: Upload live compatibility evidence
         id: ci_upload_live_compatibility_evidence_d18a80d5
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-compat-live-interop
           path: |
@@ -1342,7 +1342,7 @@ jobs:
       - name: Upload privacy-safe packaged lifecycle evidence
         id: ci_upload_privacy_safe_packaged_lifecycle_c146affa
         if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-system-${{ matrix.mpv_identity }}
           path: target/verification/playback-lifecycle-safe-evidence
@@ -1469,7 +1469,7 @@ jobs:
       - name: Upload aggregate evidence
         id: ci_upload_aggregate_evidence_4732e4c7
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-aggregate
           path: target/verification/evidence.aggregate.json
@@ -1547,7 +1547,7 @@ jobs:
       - name: Upload nightly minimized lifecycle model failures
         id: ci_upload_nightly_minimized_lifecycle_mod_4c3b6544
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-model-failures-${{ matrix.runner }}
           path: target/verification/playback-lifecycle-model-failures
@@ -1580,7 +1580,7 @@ jobs:
       - name: Upload nightly live compatibility evidence
         id: ci_upload_nightly_live_compatibility_evid_ed7c76bb
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verification-compat-live-interop-${{ matrix.runner }}
           path: |
@@ -1669,7 +1669,7 @@ jobs:
       - name: Preserve required result
         id: ci_preserve_required_result_16c01f0f
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: merge-required-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/merge-required.json
@@ -1717,7 +1717,7 @@ jobs:
       - name: Preserve real producer evidence
         id: ci_preserve_real_producer_evidence_a0731aac
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-tool-canary-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

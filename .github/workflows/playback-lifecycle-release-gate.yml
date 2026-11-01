@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload immutable Linux release bundle
         id: ci_upload_immutable_linux_release_bundle_6b60403e
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle-linux-x86_64-${{ inputs.candidate_sha }}
           path: ${{ env.CANDIDATE_DIR }}
@@ -169,7 +169,7 @@ jobs:
 
       - name: Upload Linux approved build input record
         id: ci_upload_linux_approved_build_input_reco_c92cdacd
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-input-record-linux-x86_64-${{ inputs.candidate_sha }}
           path: ${{ env.CANDIDATE_DIR }}/candidate-manifest.json
@@ -239,7 +239,7 @@ jobs:
       - name: Upload privacy-safe lifecycle release evidence
         id: ci_upload_privacy_safe_lifecycle_release__ed6cebb6
         if: ${{ always() && steps.playback_lifecycle_evidence.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-release-${{ inputs.candidate_sha }}
           path: target/verification/playback-lifecycle-release-safe
@@ -250,7 +250,7 @@ jobs:
       - name: Upload privacy-safe loop lifecycle release evidence
         id: playback_lifecycle_loop_evidence_upload
         if: ${{ always() && steps.playback_lifecycle_loop_evidence.outcome == 'success' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-loop-release-${{ inputs.candidate_sha }}
           path: target/verification/playback-lifecycle-loop-release-safe
@@ -288,7 +288,7 @@ jobs:
 
       - name: Upload Linux platform lifecycle attestation
         id: ci_upload_linux_platform_lifecycle_attest_184b37f1
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-platform-linux-${{ inputs.candidate_sha }}
           path: target/verification/playback-lifecycle-release-safe/platform-gate.json
@@ -400,7 +400,7 @@ jobs:
       - name: Retain safe Windows failure evidence
         id: ci_retain_safe_windows_failure_evidence_5d4b3f3b
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-diagnostic-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
@@ -458,7 +458,7 @@ jobs:
 
       - name: Upload complete lifecycle attestation
         id: ci_upload_complete_lifecycle_attestation_38dd1580
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-lifecycle-complete-${{ inputs.candidate_sha }}
           path: target/verification/complete-gate/platform-complete.json
@@ -482,7 +482,7 @@ jobs:
 
       - name: Retain compact source and build qualification record
         id: ci_retain_compact_source_and_build_qualif_0e237c9c
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-qualification-record-${{ inputs.candidate_sha }}
           path: target/verification/complete-gate

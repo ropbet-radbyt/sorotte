@@ -50,7 +50,7 @@ jobs:
         run: python scripts/verify.py selected --plan target/verification/plan.json --lane fuzz ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Preserve immutable plan
         id: ci_preserve_immutable_plan_ae04ffdd
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/plan.json
@@ -124,7 +124,7 @@ jobs:
       - name: Preserve real fuzz tooling and regression evidence
         id: ci_preserve_real_fuzz_tooling_and_regress_4753cd80
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-tool-canary-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -147,7 +147,7 @@ jobs:
       - name: Upload protocol fuzz evidence
         id: ci_upload_protocol_fuzz_evidence_194683a2
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-protocol-fuzz-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/fuzz-ci/protocol-line
@@ -218,7 +218,7 @@ jobs:
       - name: Upload framed-session fuzz evidence
         id: ci_upload_framed_session_fuzz_evidence_05534c83
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-framed-session-fuzz-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/fuzz-ci/framed-session
@@ -289,7 +289,7 @@ jobs:
       - name: Upload mpv framed-transcript fuzz evidence
         id: ci_upload_mpv_framed_transcript_fuzz_evid_edd85772
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-mpv-framed-transcript-fuzz-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/fuzz-ci/mpv-framed-transcript
@@ -345,7 +345,7 @@ jobs:
       - name: Preserve required receipt
         id: ci_preserve_required_receipt_2006f306
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-required-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/fuzz-required.json

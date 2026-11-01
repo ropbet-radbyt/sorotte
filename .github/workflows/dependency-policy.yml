@@ -50,7 +50,7 @@ jobs:
         run: python scripts/verify.py selected --plan target/verification/plan.json --lane dependencies ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Preserve immutable plan
         id: ci_preserve_immutable_plan_cb5b1c9d
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependencies-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/plan.json
@@ -92,7 +92,7 @@ jobs:
       - name: Preserve dependency evidence including failed or unavailable scans
         id: ci_preserve_dependency_evidence_including_62130861
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-rust-${{ github.sha }}
           path: |
@@ -130,7 +130,7 @@ jobs:
       - name: Preserve Python database responses and resolved versions
         id: ci_preserve_python_database_responses_and_a2397cb1
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-python-${{ github.sha }}
           path: target/dependencies/python/
@@ -184,7 +184,7 @@ jobs:
       - name: Preserve required receipt
         id: ci_preserve_required_receipt_77b662e1
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-required-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/dependency-required.json
