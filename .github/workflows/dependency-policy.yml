@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_44396736
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Validate selection prerequisites
@@ -77,7 +77,7 @@ jobs:
           toolchain: 1.99.0
       - name: Setup Python
         id: ci_setup_python_96caa407
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Install pinned cargo-deny
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_39289186
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Install pinned verification scanner
@@ -153,7 +153,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_89687896
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Require selection authority

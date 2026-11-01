@@ -41,7 +41,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_63e0b3e6
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Install reviewed policy prerequisites
@@ -143,7 +143,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_5070f49f
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -333,7 +333,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_e2be83f8
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -433,7 +433,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_d47dc5c6
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -543,7 +543,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_a95e0bb1
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -699,7 +699,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_eadf1fed
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -852,7 +852,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_ebd91995
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -980,7 +980,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_aa276a4b
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -1107,7 +1107,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_e12eb386
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -1416,7 +1416,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_7ac3a0a3
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -1516,7 +1516,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_4a126615
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -1619,7 +1619,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_00b7c64c
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -1650,7 +1650,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_ac5b74fe
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Enforce complete CI producer graph
@@ -1696,7 +1696,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_5524d797
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Setup pinned coverage Rust

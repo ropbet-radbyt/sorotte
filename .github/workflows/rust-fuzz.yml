@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_37490e7b
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Validate selection prerequisites
@@ -81,7 +81,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_c04ca57c
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -178,7 +178,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_2eba7f68
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -249,7 +249,7 @@ jobs:
 
       - name: Setup Python
         id: ci_setup_python_9efd75f7
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -312,7 +312,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_40fde241
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Require selection authority
