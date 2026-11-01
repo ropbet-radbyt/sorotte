@@ -46,7 +46,7 @@ jobs:
       - name: Retain immutable selection inputs
         id: ci_retain_immutable_selection_inputs_3c9f9913
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-selected-mutation-plan-${{ github.run_attempt }}
           path: target/verification/mutation-*.json
@@ -98,7 +98,7 @@ jobs:
       - name: Preserve prepared inventory including empty selections
         id: ci_preserve_prepared_inventory_including__3ff37ca7
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-mutation-campaign-${{ github.run_attempt }}
           path: target/verification/mutation-campaign.json
@@ -108,7 +108,7 @@ jobs:
       - name: Preserve pinned tool canary evidence
         id: ci_preserve_pinned_tool_canary_evidence_ca72c97e
         if: ${{ always() && needs.selection.outputs.shards != '[]' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-mutant-tool-canary-${{ github.run_attempt }}
           path: target/mutation-tool-canary
@@ -163,7 +163,7 @@ jobs:
       - name: Preserve all mutation attempt evidence
         id: ci_preserve_all_mutation_attempt_evidence_b91d8848
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-mutation-chunk-${{ matrix.chunk }}-${{ github.run_attempt }}
           path: target/mutation-attempts/${{ matrix.chunk }}/attempt-${{ github.run_attempt }}
@@ -230,7 +230,7 @@ jobs:
       - name: Retain required aggregate verdict
         id: ci_retain_required_aggregate_verdict_3fc3b1d9
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-mutation-required-${{ github.run_attempt }}
           path: target/verification/mutation-required.json

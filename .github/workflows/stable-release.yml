@@ -52,7 +52,7 @@ jobs:
           --pull-request "$PR_NUMBER" --output target/pr-candidate-authorization.json
       - name: Retain pre-merge source authorization
         id: retain_source
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-candidate-authorization-${{ github.sha }}
           path: target/pr-candidate-authorization.json
@@ -106,13 +106,13 @@ jobs:
         id: ci_qualify_server_behavior_with_the_exact_1def2da5
         shell: pwsh
         run: ./scripts/server-release-verify.ps1 -Stage Behavior -WorkspaceReceipt target/release-workspace.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-workspace-${{ matrix.platform }}-${{ github.sha }}
           path: target/release-workspace.json
           if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: release-server-behavior-${{ matrix.platform }}-${{ github.sha }}
@@ -172,7 +172,7 @@ jobs:
           --evidence-dir target/durable-qualification --output-dir target/qualification-archives --authorization-kind pr-candidate-authorization
       - name: Retain qualified evidence archive
         id: retain_archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: durable-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/qualification-archives/*
@@ -189,7 +189,7 @@ jobs:
       - name: Retain handoff and cold image restoration evidence
         id: retain_handoff
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: candidate-handoff-${{ github.sha }}-${{ github.run_attempt }}
           path: target/candidate-handoff/handoff.json
@@ -205,7 +205,7 @@ jobs:
           --output target/qualified-release-candidate/candidate.json
       - name: Retain the pre-merge qualification decision
         id: retain_candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-release-candidate-${{ github.sha }}
           path: target/qualified-release-candidate/candidate.json
@@ -254,7 +254,7 @@ jobs:
           --output target/publication-authorization/authorization.json --github-output "$GITHUB_OUTPUT"
       - name: Retain publication authorization separately from candidate execution
         id: retain_authority
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-authorization-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/publication-authorization/**

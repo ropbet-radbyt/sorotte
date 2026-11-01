@@ -82,7 +82,7 @@ jobs:
       - name: Upload archive-consumption receipt
         id: ci_upload_archive_consumption_receipt_8b91621c
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-release-report-${{ matrix.runner }}
           path: target/server-release/artifact-verification.json
@@ -90,7 +90,7 @@ jobs:
           retention-days: 90
       - name: Upload server package
         id: ci_upload_server_package_4c003b37
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-server-${{ matrix.runner }}
           path: target/server-release/artifacts/*

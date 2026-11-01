@@ -45,7 +45,7 @@ jobs:
         run: python scripts/verify.py selected --plan target/verification/package-plan.json --lane release ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Retain immutable package plan
         id: plan_upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/package-plan.json
@@ -118,7 +118,7 @@ jobs:
       - name: Retain exact package-consumption evidence
         id: ci_retain_exact_package_consumption_evide_f7469f39
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-${{ matrix.package }}-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -175,7 +175,7 @@ jobs:
       - name: Retain required package decision
         id: required_receipt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-required-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/package-required.json
