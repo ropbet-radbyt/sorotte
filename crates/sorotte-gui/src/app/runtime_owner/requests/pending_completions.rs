@@ -15,10 +15,9 @@ fn config_storage_metadata_is_reparse_or_symlink(metadata: &std::fs::Metadata) -
         use std::os::windows::fs::MetadataExt;
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return true;
-        }
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
+    #[cfg(not(windows))]
     metadata.file_type().is_symlink()
 }
 

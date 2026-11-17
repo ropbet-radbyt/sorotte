@@ -1520,9 +1520,7 @@ fn extract_zip_file_safe(
         let entry = archive
             .by_index(index)
             .map_err(|error| format!("failed reading update entry: {error}"))?;
-        let name = entry
-            .name()
-            .map_err(|error| format!("failed reading update entry name: {error}"))?;
+        let name = update_limits::update_entry_name(&entry)?;
         let relative = safe_zip_relative_path(&name)
             .ok_or_else(|| "Update archive contains an unsafe path.".to_owned())?;
         let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();

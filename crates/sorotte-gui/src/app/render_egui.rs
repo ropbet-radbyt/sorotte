@@ -308,11 +308,23 @@ impl GuiWidgetEguiRenderer {
         }
         self.dropped_files_request = None;
         if let Some(root) = self.root.take() {
-            self.show_menu_bar(ui, &root, state);
+            let open_menu_panel = self.show_menu_bar(ui, &root, state);
             self.show_modal_window(&ctx, state);
             self.show_status_bar(ui, &root, show_manual_pending_controls);
             self.show_navigation_panel(ui, &root, state);
             self.show_active_surface(ui, &root, state);
+            if let Some(panel) = open_menu_panel {
+                // AccessKit hit-tests siblings from last to first. The popup belongs to
+                // its menu button, so its panel must be above the overlapping body panels.
+                ctx.accesskit_node_builder(ui.unique_id(), |parent| {
+                    let mut children = parent.children().to_vec();
+                    if let Some(index) = children.iter().position(|id| *id == panel.accesskit_id())
+                    {
+                        children[index..].rotate_left(1);
+                        parent.set_children(children);
+                    }
+                });
+            }
             self.root = Some(root);
         } else {
             egui::CentralPanel::default().show(ui, |ui| {
@@ -336,10 +348,9 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         state: &SorotteGuiShellAppState,
-    ) {
-        let Some(menus) = root.find("menus-root") else {
-            return;
-        };
+    ) -> Option<egui::Id> {
+        let menus = root.find("menus-root")?;
+        let mut open_menu_panel = None;
         egui::Panel::top("sorotte-native-menu-bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 for section in &menus.children {
@@ -350,6 +361,13 @@ impl GuiWidgetEguiRenderer {
                             })
                         })
                         .inner;
+                    if response.inner.is_some() {
+                        open_menu_panel = ui
+                            .stack()
+                            .iter()
+                            .find(|ancestor| ancestor.kind() == Some(egui::UiKind::TopPanel))
+                            .map(|panel| panel.unique_id);
+                    }
                     Self::register_automation_id(ui, &response.response, section);
                     response.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
@@ -361,6 +379,7 @@ impl GuiWidgetEguiRenderer {
                 }
             });
         });
+        open_menu_panel
     }
 
     fn show_modal_window(&mut self, ctx: &egui::Context, state: &SorotteGuiShellAppState) {

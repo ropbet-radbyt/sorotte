@@ -896,3 +896,130 @@ fn gui_widget_egui_renderer_consumes_global_shortcuts_as_typed_menu_actions() {
         );
     }
 }
+
+#[test]
+fn playlist_editors_and_plugin_controls_expose_accessible_roles_and_labels() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings {
+        shared_playlist_enabled: Some(true),
+        ..StoredClientSettings::default()
+    });
+    state.main_window.playlist.clear();
+    state.main_window.playback.can_manage_playlist = true;
+    assert!(state.apply(GuiShellAction::BeginSharedPlaylistTextEdit));
+    assert!(state.apply(GuiShellAction::BeginSharedPlaylistUrlEdit));
+    state.apply(GuiShellAction::SelectPlugin(
+        GuiPluginSelection::MediaMatching,
+    ));
+    let tree = state.main_window_widget_tree();
+    let plugins = state.plugins_widget_tree();
+
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut renderer = GuiWidgetEguiRenderer::new(state.shell_widget_tree());
+    let mut output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1440.0, 2400.0),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            renderer.render_playlist_list(ui, tree.find("main-window:playlist").unwrap(), &state);
+            for id in ["main-window:playlist-edit", "main-window:playlist-url-edit"] {
+                renderer.render_inline_editor_panel(ui, tree.find(id).unwrap(), &state);
+            }
+            renderer.render_plugins_surface(ui, &plugins, &state);
+        },
+    );
+    output.textures_delta.clear();
+    let update = output.platform_output.accesskit_update.unwrap();
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.role() == egui::Role::Label
+                && node.value() == Some("Playlist is empty."))
+    );
+    for (widget, role) in [
+        (
+            tree.find("main-window:playlist-edit:close").unwrap(),
+            egui::Role::Button,
+        ),
+        (
+            tree.find("main-window:playlist-url-edit:text").unwrap(),
+            egui::Role::TextInput,
+        ),
+        (
+            tree.find("main-window:playlist-url-edit:close").unwrap(),
+            egui::Role::Button,
+        ),
+        (
+            plugins.find("plugins:list:plex").unwrap(),
+            egui::Role::Button,
+        ),
+    ] {
+        assert!(update.nodes.iter().any(|(_, node)| node.role() == role && node.label() == Some(widget.label.as_str())),
+            "expected {role:?} labeled {}", widget.label);
+    }
+}
+
+#[test]
+fn accessibility_hit_test_reaches_the_open_file_menu() {
+    let mut state = SorotteGuiShellAppState::from_stored_settings(&StoredClientSettings::default());
+    state.active_view = GuiShellView::Room;
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut renderer = GuiWidgetEguiRenderer::new(state.shell_widget_tree());
+    let mut frame = |events| {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024.0, 768.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                renderer.show(ui, &state, false);
+            },
+        );
+        output.textures_delta.clear();
+        output.platform_output.accesskit_update.unwrap()
+    };
+    let initial = frame(vec![]);
+    let center = |update: &egui::accesskit::TreeUpdate, name| {
+        let rect = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.author_id() == Some(name))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        egui::accesskit::Point::new((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0)
+    };
+    let file = center(&initial, "menu.section.file");
+    let pos = egui::pos2(file.x as f32, file.y as f32);
+    for pressed in [true, false] {
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ]);
+    }
+    let update = frame(vec![]);
+    let exit = center(&update, "menu.exit");
+    let tree = accesskit_consumer::Tree::new(update, true);
+    let hit = tree
+        .state()
+        .root()
+        .node_at_point(exit, &accesskit_consumer::common_filter)
+        .unwrap();
+    assert_eq!(hit.data().author_id(), Some("menu.exit"));
+}

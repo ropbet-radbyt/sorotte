@@ -1,6 +1,7 @@
 //! Resource limits shared by update ingress and the independent installed updater.
 
 use std::{
+    borrow::Cow,
     io::{Read, Seek, SeekFrom, Write},
     sync::{
         Arc,
@@ -16,6 +17,14 @@ const ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const EXTRACTED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ARCHIVE_ENTRIES: usize = 4096;
 const DIRECTORY_BYTES: u64 = 8 * 1024 * 1024;
+
+pub(super) fn update_entry_name<'a, R: Read>(
+    entry: &'a zip::read::ZipFile<'_, R>,
+) -> Result<Cow<'a, str>, String> {
+    entry
+        .name()
+        .map_err(|error| format!("failed reading update entry name: {error}"))
+}
 
 pub(super) fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
     if cancelled.load(Ordering::Acquire) {

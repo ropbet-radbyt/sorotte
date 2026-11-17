@@ -3770,6 +3770,7 @@ dependencies = [
 name = "sorotte-gui"
 version = "0.2.21"
 dependencies = [
+ "accesskit_consumer",
  "eframe",
  "egui",
  "embed-resource",
