@@ -40,7 +40,7 @@ counted as kills. Any later source change requires fresh candidate evidence.
 ## Dependency gates and release inventory
 
 `deny.toml` checks the locked Rust graph, including build dependencies and all
-features, with cargo-deny **0.20.2**. Only crates.io registry sources are allowed;
+features, with cargo-deny **0.21.0**. Only crates.io registry sources are allowed;
 unapproved registries and Git sources fail. Each scan requires an online
 RustSec fetch, then scans offline against the recorded clean database commit.
 The report records checker version and executable digest, database URL,
@@ -52,7 +52,9 @@ Python verification requirements are resolved transitively and scanned with
 pip-audit **2.10.1**. The PyPI vulnerability service has no exposed immutable
 database revision; reports therefore record that limitation, query time,
 resolved versions, and exact response digests. They do not claim RustSec-style
-database identity. `coverage/dependency-policy.toml` contains no exceptions.
+database identity. The three maintenance notices for the Linux AccessKit D-Bus
+stack expire on 18 December 2026 in `coverage/dependency-policy.toml`.
+Review them when AccessKit and AT-SPI adopt zbus 6.
 Any future exception must have an exact advisory identity, rationale, owner,
 and expiry; expired entries fail before scanning. Dependabot proposes small
 weekly Cargo/Python patch groups and monthly action updates, with no automatic

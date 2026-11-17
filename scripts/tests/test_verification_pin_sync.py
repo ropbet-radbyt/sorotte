@@ -80,7 +80,7 @@ class PinUpdateTests(unittest.TestCase):
         self.assertEqual(profile["rust_toolchain"], "9.8.7")
         container = (self.root / "Dockerfile.server").read_text()
         self.assertIn("install 9.8.7 --profile minimal && rustup default 9.8.7", container)
-        self.assertIn("FROM rust:1.98.0-trixie@sha256:", container)
+        self.assertIn("FROM rust:1.100.0-trixie@sha256:", container)
         workflow = (self.root / ".github/workflows/rust-ci.yml").read_text()
         self.assertIn("toolchain: 9.8.7", workflow)
         self.assertIn("dtolnay/rust-toolchain@" + "b" * 40, workflow)

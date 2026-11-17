@@ -28,29 +28,29 @@ jobs:
           persist-credentials: false
       - name: Setup Rust for dependency inventory
         id: ci_setup_rust_for_dependency_inventory_e8eb8a28
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
       - name: Setup Python
         id: ci_setup_python_2d5b0efc
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Download qualified platform bytes
         id: ci_download_qualified_platform_bytes_12aabead
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle-${{ matrix.platform }}-${{ github.sha }}
           path: target/qualified-bundle
       - name: Download complete qualification receipt
         id: ci_download_complete_qualification_receip_d8623cb7
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: playback-lifecycle-complete-${{ github.sha }}
           path: target/qualified-receipt
       - name: Download independent server behavior receipt
         id: ci_download_independent_server_behavior_r_46c83117
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-server-behavior-${{ matrix.platform }}-${{ github.sha }}
           path: target/qualified-server-behavior
@@ -82,7 +82,7 @@ jobs:
       - name: Upload archive-consumption receipt
         id: ci_upload_archive_consumption_receipt_8b91621c
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-release-report-${{ matrix.runner }}
           path: target/server-release/artifact-verification.json
@@ -90,7 +90,7 @@ jobs:
           retention-days: 90
       - name: Upload server package
         id: ci_upload_server_package_4c003b37
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sorotte-server-${{ matrix.runner }}
           path: target/server-release/artifacts/*

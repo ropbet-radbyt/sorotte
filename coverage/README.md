@@ -332,7 +332,7 @@ application behaves correctly. Once a defect is fixed, its characterizations
 must become positive regressions and the corresponding registry entry must be
 removed.
 
-Required workspace execution uses pinned cargo-nextest 0.9.146 through
+Required workspace execution uses pinned cargo-nextest 0.9.152 through
 `scripts/nextest_ci.py`. The checked profile allows one diagnostic retry but
 fails the gate when a failed or leaked first attempt later passes. An inherited
 subprocess handle still open after 500 ms is a failed result. The wrapper
@@ -534,7 +534,7 @@ target for every public raw, diagnostic, aggregate, singular, typed, and
 encoding protocol-line boundary. An independent serde `MapAccess` visitor
 checks source order and duplicate-key surviving values. The runner pins
 `cargo-fuzz 0.13.2`, `libfuzzer-sys 0.4.13`, and
-`nightly-2026-07-29`; caps input at 65,536 bytes, each input at 5 seconds,
+`nightly-2026-11-17`; caps input at 65,536 bytes, each input at 5 seconds,
 RSS at 2,048 MiB, and campaigns at 900 seconds; rejects stale output; and
 attests the exact source, seed, command, tools, corpus, artifacts, statistics,
 and before/after stability.
@@ -1100,15 +1100,15 @@ is retained in
 [`native-gui-real-mpv-stalled-http-recovery-20260731.md`](../docs/evidence/test-coverage/native-gui-real-mpv-stalled-http-recovery-20260731.md).
 
 The required Linux `mpv-pr-semantics` lane is separate from those four Windows
-native GUI modes. Pull-request and push runs retain the peeled mpv `v0.41.0`
+native GUI modes. Pull-request and push runs retain the peeled mpv `v0.42.0`
 minimum. Scheduled and manually dispatched runs expand the same fail-closed
 job to both that minimum and reviewed post-release snapshot
-`d12f2ce19c918875981e00ed276f153bdf40a2ac`, 330 official commits ahead. Both
+`f92afa75cdb06e077a9ecd9a9ec2eb36b16327c2`. Both
 sources are immutable and verified after checkout; a floating `master`, a
 missing or collapsed endpoint, and matrix fail-fast are policy failures. Each
 selected endpoint executes pause/seek/resume, cache-cap drain, premature HTTP
-disconnect recovery, and the full stalled-HTTP recovery harness. The
-implementation and committed-source newest-snapshot campaigns both passed
+disconnect recovery, and the full stalled-HTTP recovery harness. The historical
+0.41.0 implementation and newest-snapshot campaigns both passed
 4/4. A standalone validator accepts bounded release/development version forms
 while retaining exact source and minimum-version checks; exact correction-head
 run `30673650173` passed both endpoint jobs and all eight selected executions.

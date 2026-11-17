@@ -10,9 +10,6 @@ use crate::app::{
 use super::*;
 
 fn config_storage_metadata_is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -21,7 +18,7 @@ fn config_storage_metadata_is_reparse_or_symlink(metadata: &std::fs::Metadata) -
         metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
-    false
+    metadata.file_type().is_symlink()
 }
 
 impl GuiPersistedConfigRuntimeOwner {

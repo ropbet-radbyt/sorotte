@@ -27,7 +27,7 @@ jobs:
 
       - name: Setup pinned Python
         id: ci_setup_pinned_python_97c5ab5c
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -37,14 +37,14 @@ jobs:
 
       - name: Download shared qualified Linux product bundle
         id: ci_download_shared_qualified_linux_produc_173d6011
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle-linux-x86_64-${{ github.sha }}
           path: target/qualified-bundle
 
       - name: Download complete shared lifecycle qualification
         id: ci_download_complete_shared_lifecycle_qua_165f9d73
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: playback-lifecycle-complete-${{ github.sha }}
           path: target/qualified-receipt
@@ -134,7 +134,7 @@ jobs:
 
       - name: Generate SPDX SBOM from the tested local image
         id: ci_generate_spdx_sbom_from_the_tested_loc_49ffd6e4
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ env.TEST_IMAGE }}
           format: spdx-json
@@ -143,7 +143,7 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
           dependency-snapshot: false
-          syft-version: v1.54.0
+          syft-version: v1.57.2
 
       - name: Bind SBOM bytes to the tested local image ID
         id: ci_bind_sbom_bytes_to_the_tested_local_im_e9888757
@@ -167,7 +167,7 @@ jobs:
           --bundle-dir target/qualified-container --report "$EVIDENCE_DIR/restoration-report.json"
       - name: Retain the exact tested container image
         id: retain_image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-container-${{ github.sha }}
           path: target/qualified-container/*
@@ -176,7 +176,7 @@ jobs:
       - name: Retain all container qualification evidence
         id: retain_evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-container-verification-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_DIR }}

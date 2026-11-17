@@ -281,8 +281,8 @@ def build_valid_fixture(root: pathlib.Path) -> tuple[dict[str, Any], dict[str, A
         "gui": identity(gui),
         "mpv": {
             **identity(mpv),
-            "version": "mpv v0.41.0-fixture",
-            "minimum_supported_version": "0.41.0",
+            "version": "mpv v0.42.0-fixture",
+            "minimum_supported_version": "0.42.0",
             "pid": mpv_pid,
             "parent_pid": gui_pid,
             "process_image_path": str(mpv),

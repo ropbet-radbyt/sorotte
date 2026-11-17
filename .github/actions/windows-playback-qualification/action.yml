@@ -46,9 +46,9 @@ runs:
       id: ci_download_and_verify_pinned_supported_w_e01a4873
       shell: pwsh
       env:
-        MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-10-01-3186d369f9/mpv-x86_64-20261001-git-3186d369f9.7z
-        MPV_ARCHIVE_SHA256: 18e574683a3e6891beb78d16ee943434e1bf523f2180b0b8595239f7773da7c8
-        MPV_BINARY_SHA256: 7c175b130f8d8663ef3d57e30cfaa8f08de83a3f964013cdd97756c821e210ef
+        MPV_ARCHIVE_URL: https://github.com/zhongfly/mpv-winbuild/releases/download/2026-11-17-f92afa75cd/mpv-x86_64-20261117-git-f92afa75cd.7z
+        MPV_ARCHIVE_SHA256: 4a9e2787d1913ffd923f2c96b474b80c8e804e9d1980c32f5ba8096d75251fb2
+        MPV_BINARY_SHA256: aa20ccb68c01b3464b3d1fc635167a176c111b71ad91144607e9136b25dfd5ad
         FFMPEG_ARCHIVE_URL: https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.7z
         FFMPEG_ARCHIVE_SHA256: f0e46253c70dfe902bac915dfb4224f0cf1b7c6eeab9da2ccc9a5581f9a71b13
         FFMPEG_BINARY_SHA256: 589e50b766d251afdf181dd664d40bd94407e200b019989fd7468c7d118a28d0
@@ -139,7 +139,7 @@ runs:
 
     - name: Upload immutable Windows release bundle
       id: ci_upload_immutable_windows_release_bundl_9a557991
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-bundle-windows-x86_64-${{ inputs.candidate_sha }}
         path: ${{ env.CANDIDATE_DIR }}
@@ -149,7 +149,7 @@ runs:
 
     - name: Upload Windows approved build input record
       id: ci_upload_windows_approved_build_input_re_9b15bdce
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: release-input-record-windows-x86_64-${{ inputs.candidate_sha }}
         path: ${{ env.CANDIDATE_DIR }}/candidate-manifest.json
@@ -242,7 +242,7 @@ runs:
 
     - name: Upload Windows platform lifecycle attestation
       id: ci_upload_windows_platform_lifecycle_atte_09ec89b8
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: playback-lifecycle-platform-windows-${{ inputs.candidate_sha }}
         path: target/verification/playback-status-release/platform-gate.json

@@ -642,11 +642,11 @@ fn run_room_worker(
     commands: Receiver<PersistenceWorkerCommand>,
     reporter: PersistenceEventReporter,
     store: RoomPersistenceStore,
-    connection: Connection,
+    mut connection: Connection,
     desired_effects: DesiredRoomEffects,
     hooks: RoomPersistenceWorkerHooks,
 ) {
-    if shutdown::install_busy_handler(&connection, reporter.control.clone()).is_err() {
+    if shutdown::install_busy_handler(&mut connection, reporter.control.clone()).is_err() {
         return;
     }
     while let Ok(command) = commands.recv() {
@@ -830,7 +830,7 @@ fn run_stats_worker(
     store: StatsPersistenceStore,
     mut connection: Connection,
 ) {
-    if shutdown::install_busy_handler(&connection, reporter.control.clone()).is_err() {
+    if shutdown::install_busy_handler(&mut connection, reporter.control.clone()).is_err() {
         return;
     }
     while let Ok(command) = commands.recv() {

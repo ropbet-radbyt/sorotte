@@ -89,7 +89,7 @@ Explicit room pause, explicit room seek, and source replacement remain authorita
 
 ### Preparing a seek outside the local cache
 
-A room-driven seek on network VOD may be valid even when its target is not in mpv's currently cached ranges. Sorotte therefore treats the ranges as a confidence signal, not as permission to clamp an ordinary VOD seek. The client normalizes, orders, and merges overlapping ranges, then classifies the requested target as cached, requiring a fetch, unknown because range telemetry is absent, outside a live window, or non-seekable. An absent range report is never interpreted as proof that the target is cached. For extractor-backed sources opened conservatively as VOD, the mpv adapter promotes only the current load to live/sliding on positive yt-dlp `is_live` evidence; finite-duration remote media is VOD, while a durationless remote source without positive evidence remains explicitly unknown. Supported mpv releases (0.41.0 or newer) expose that evidence as `ytdl_is_live` metadata. Absent, false, or temporarily unavailable live metadata leaves a durationless timeline unknown rather than guessing from duration or cache shape. Cache ranges remain local-cache evidence, not a claim about the source's complete DVR window. Live/sliding media is different from VOD: a target outside a known interval is clamped or rejected explicitly rather than sent as an unbounded seek, and Sorotte waits boundedly instead of guessing when no safe interval is known.
+A room-driven seek on network VOD may be valid even when its target is not in mpv's currently cached ranges. Sorotte therefore treats the ranges as a confidence signal, not as permission to clamp an ordinary VOD seek. The client normalizes, orders, and merges overlapping ranges, then classifies the requested target as cached, requiring a fetch, unknown because range telemetry is absent, outside a live window, or non-seekable. An absent range report is never interpreted as proof that the target is cached. For extractor-backed sources opened conservatively as VOD, the mpv adapter promotes only the current load to live/sliding on positive yt-dlp `is_live` evidence; finite-duration remote media is VOD, while a durationless remote source without positive evidence remains explicitly unknown. Supported mpv releases (0.42.0 or newer) expose that evidence as `ytdl_is_live` metadata. Absent, false, or temporarily unavailable live metadata leaves a durationless timeline unknown rather than guessing from duration or cache shape. Cache ranges remain local-cache evidence, not a claim about the source's complete DVR window. Live/sliding media is different from VOD: a target outside a known interval is clamped or rejected explicitly rather than sent as an unbounded seek, and Sorotte waits boundedly instead of guessing when no safe interval is known.
 
 When a network target may need data, the client creates one generation-scoped seek-preparation episode. It freezes the requested target and the room anchor, sends at most one primary seek, and retains newer room state without chasing its advancing timestamp. Only a newer explicit room seek, media replacement, or cancellation supersedes that target. Preparation latches local pause even when the room intends to play, preventing frames from the wrong position while timeline classification, seeking, or refill is unresolved; playback is released only after observation-backed alignment. Local-file seeks bypass this lifecycle and continue to use normal player behavior.
 
@@ -248,7 +248,7 @@ cargo test -p sorotte-sim
 powershell -ExecutionPolicy Bypass -File scripts/gui-semantic-suite.ps1 -Json
 ```
 
-Required Linux PR CI builds the minimum supported mpv 0.41.0 release and runs deterministic real-player checks: paused load/seek/resume semantics, coordinator prepare/start followed by an ordinary aligned pause, one bounded local-HTTP rebuffer episode, a byte-cap idle/drain/input-resume sequence, and the longer HTTP-stall recovery harness:
+Required Linux PR CI builds the minimum supported mpv 0.42.0 release and runs deterministic real-player checks: paused load/seek/resume semantics, coordinator prepare/start followed by an ordinary aligned pause, one bounded local-HTTP rebuffer episode, a byte-cap idle/drain/input-resume sequence, and the longer HTTP-stall recovery harness:
 
 ```powershell
 cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_pause_seek_resume_semantics -- --ignored --exact --nocapture
@@ -260,7 +260,7 @@ The byte-cap regression uses a high time limit and a small packet cap so it comp
 cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_cache_cap_drains_and_input_resumes -- --ignored --exact --nocapture
 ```
 
-The same required mpv 0.41.0 CI job also runs the longer local-HTTP fault and bounded-recovery harness:
+The same required mpv 0.42.0 CI job also runs the longer local-HTTP fault and bounded-recovery harness:
 
 ```powershell
 cargo test -p sorotte-sim --test mpv_rebuffer_harness real_mpv_clients_keep_seek_recovery_bounded_during_an_http_stall -- --ignored --exact --nocapture

@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python for applicability
         id: ci_setup_python_for_applicability_30d60e1b
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Bind requested source before native queueing
@@ -279,14 +279,14 @@ jobs:
       - name: Setup pinned Rust
         id: rust
         if: steps.source_binding.outcome == 'success'
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable resolved 2026-11-18
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
 
       - name: Setup pinned Python
         id: python
         if: steps.rust.outcome == 'success'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12.10"
 
@@ -505,7 +505,7 @@ jobs:
       - name: Upload all native interactive evidence
         id: evidence_upload
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-interactive-${{ inputs.source_sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}\native-safe-${{ github.run_id }}-${{ github.run_attempt }}

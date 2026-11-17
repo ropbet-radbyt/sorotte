@@ -5,8 +5,8 @@ import unittest
 from scripts import mpv_version_matrix
 
 
-MINIMUM_SHA = "41f6a645068483470267271e1d09966ca3b9f413"
-NEWEST_SHA = "d12f2ce19c918875981e00ed276f153bdf40a2ac"
+MINIMUM_SHA = "b0841e8c4d156b8403dc1876c4cbd9011eb583f3"
+NEWEST_SHA = "f92afa75cdb06e077a9ecd9a9ec2eb36b16327c2"
 
 
 class MpvVersionMatrixTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class MpvVersionMatrixTests(unittest.TestCase):
             source_sha=source_sha,
             minimum_source_sha=MINIMUM_SHA,
             newest_source_sha=NEWEST_SHA,
-            minimum_version="0.41.0",
+            minimum_version="0.42.0",
             first_line=first_line,
         )
 
@@ -24,24 +24,24 @@ class MpvVersionMatrixTests(unittest.TestCase):
         minimum = self.validate(
             identity="minimum",
             source_sha=MINIMUM_SHA,
-            first_line="mpv v0.41.0 Copyright mpv project",
+            first_line="mpv v0.42.0 Copyright mpv project",
         )
         newest = self.validate(
             identity="newest",
             source_sha=NEWEST_SHA,
-            first_line="mpv v0.41.0-dev-gd12f2ce19 Copyright mpv project",
+            first_line="mpv v0.42.0-dev-gf92afa75c Copyright mpv project",
         )
         unprefixed = mpv_version_matrix.parse_mpv_version("mpv 0.42.1")
 
-        self.assertEqual(minimum["version"], "0.41.0")
-        self.assertEqual(newest["version"], "0.41.0")
+        self.assertEqual(minimum["version"], "0.42.0")
+        self.assertEqual(newest["version"], "0.42.0")
         self.assertEqual(unprefixed, (0, 42, 1))
 
     def test_version_parser_rejects_partial_embedded_and_malformed_values(self) -> None:
         for value in (
             "mpv v0.41",
-            "mpv xv0.41.0",
-            "mpv v0.41.0x",
+            "mpv xv0.42.0",
+            "mpv v0.42.0x",
             "mpv version unknown",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -52,7 +52,7 @@ class MpvVersionMatrixTests(unittest.TestCase):
             self.validate(
                 identity="minimum",
                 source_sha=MINIMUM_SHA,
-                first_line="mpv v0.42.0",
+                first_line="mpv v0.43.0",
             )
         with self.assertRaisesRegex(ValueError, "or newer"):
             self.validate(
@@ -93,7 +93,7 @@ class MpvVersionMatrixTests(unittest.TestCase):
                 mpv_version_matrix.validate_source_identity(**case)
 
     def test_minimum_version_requires_exact_three_component_tuple(self) -> None:
-        for value in ("0.41", "v0.41.0", "0.41.0-dev", ""):
+        for value in ("0.41", "v0.42.0", "0.42.0-dev", ""):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 mpv_version_matrix.parse_version_tuple(value, label="minimum")
 

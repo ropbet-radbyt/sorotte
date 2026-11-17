@@ -165,19 +165,15 @@ action upgrade.
 
 ## Real mpv Checks
 
-The required `mpv-pr-semantics` job builds the peeled mpv `v0.41.0` commit and
+The required `mpv-pr-semantics` job builds the peeled mpv `v0.42.0` commit and
 runs the four ignored real-player contracts explicitly. Scheduled and manually
 dispatched CI expands that same fail-closed job to a second, immutable reviewed
 post-release snapshot. The two endpoints run in parallel, and matrix fail-fast
 is disabled so one failure cannot erase the other endpoint's result.
 
-Do not replace either source SHA with a floating tag or branch. The newest
-snapshot is the final reviewed mpv revision that builds against Ubuntu 24.04's
-native libplacebo dependency; rolling it forward requires reviewing the mpv
-and runner dependency boundary together. See
-[`mpv-version-matrix-20260801.md`](evidence/test-coverage/mpv-version-matrix-20260801.md)
-for the exact identities, local campaign, version-parser regression, and
-exact-head minimum/newest result.
+Both jobs build the pinned libplacebo 7.387.0 source as an mpv subproject on
+Ubuntu 24.04. The source identities for the release and post-release mpv builds
+are recorded in `coverage/verification-tools.toml`.
 
 ## GUI Checks
 
@@ -378,7 +374,7 @@ causally delivered player effect.
 
 ## Coding Rules
 
-- Use Rust `1.99.0` and edition `2024`.
+- Use Rust `1.100.0` and edition `2024`.
 - Keep public API surfaces narrow. Add shared CLI/GUI behavior to `sorotte-client-app::app_boundary` where a cross-crate API is needed.
 - Prefer small, test-backed vertical slices over broad refactors.
 - Do not add non-`mpv` player backend work unless product scope is explicitly changed.

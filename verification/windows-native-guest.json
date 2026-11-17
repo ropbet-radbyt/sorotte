@@ -7,19 +7,19 @@
   "max_jobs": 1,
   "memory_mb": 16384,
   "minimum_physical_display": [1800, 1200],
-  "rust_toolchain": "1.99.0",
+  "rust_toolchain": "1.100.0",
   "python_version": "3.12.10",
   "msvc_version": "14.29.30133",
   "sdk_version": "10.0.19041.0",
-  "runner_version": "2.337.0",
+  "runner_version": "2.338.2",
   "downloads": {
     "runner.zip": {
-      "url": "https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-win-x64-2.337.0.zip",
-      "sha256": "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
+      "url": "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-win-x64-2.338.2.zip",
+      "sha256": "a1f17aa987fc8158bc7521d284912267a0d01b7c2c4684b33c86783b5e8221cc"
     },
     "rustup-init.exe": {
-      "url": "https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-pc-windows-msvc/rustup-init.exe",
-      "sha256": "6f4bef66261261fcb43131be8720bab817d403a09edec7455c371974b90bdb7e"
+      "url": "https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-pc-windows-msvc/rustup-init.exe",
+      "sha256": "38027d51d69a5d05493627a0634dbea52d6cd793c8f072d2373d3f4163eec7db"
     }
   },
   "tool_directories": ["7zip", "git", "powershell", "msvc", "sdk", "cmake", "ninja", "python312"],

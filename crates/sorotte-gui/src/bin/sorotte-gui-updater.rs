@@ -1148,11 +1148,9 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("failed reading update package entry {index}: {error}"))?;
-        let Some(relative) = safe_relative_path(entry.name()) else {
-            return Err(format!(
-                "update package contains unsafe path {:?}",
-                entry.name()
-            ));
+        let name = update_limits::update_entry_name(&entry)?;
+        let Some(relative) = safe_relative_path(&name) else {
+            return Err(format!("update package contains unsafe path {name:?}"));
         };
         let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
         if !seen.insert(normalized) {
@@ -1163,8 +1161,7 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
             return Err(format!(
-                "update package contains a symbolic-link entry {:?}",
-                entry.name()
+                "update package contains a symbolic-link entry {name:?}"
             ));
         }
         let output = destination.join(&relative);
@@ -2295,9 +2292,6 @@ fn ensure_directory_is_not_reparse_point(path: &Path) -> Result<(), String> {
 }
 
 fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -2306,7 +2300,7 @@ fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
         metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
@@ -4351,6 +4345,49 @@ mod tests {
         let error = ensure_directory_is_not_reparse_point(&link)
             .expect_err("directory links and reparse points must be rejected");
         assert!(error.contains("reparse-point"));
+    }
+
+    #[test]
+    fn update_package_extraction_preserves_unicode_and_rejects_empty_relative_names() {
+        let destination = tempfile::tempdir().unwrap();
+        for (name, valid) in [("media/caf\u{e9}.txt", true), (".", false)] {
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"release data").unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
+            let result = extract_zip_bytes_safe(&bytes, destination.path());
+            if valid {
+                result.unwrap();
+                assert_eq!(
+                    fs::read(destination.path().join(name)).unwrap(),
+                    b"release data"
+                );
+            } else {
+                assert!(result.unwrap_err().contains("unsafe path"));
+            }
+        }
+    }
+
+    #[test]
+    fn update_package_rejects_a_symbolic_link_with_its_decoded_name() {
+        let destination = tempfile::tempdir().unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let name = "caf\u{e9}.txt";
+        writer
+            .add_symlink(
+                name,
+                "release.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let error = extract_zip_bytes_safe(&bytes, destination.path()).unwrap_err();
+        assert_eq!(
+            error,
+            format!("update package contains a symbolic-link entry {name:?}")
+        );
     }
 
     #[test]

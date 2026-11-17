@@ -40,10 +40,10 @@ import artifact_input
 SCHEMA_VERSION = 1
 REPORT_KIND = "sorotte-windows-process-coverage-lanes"
 PINNED_CARGO_LLVM_COV_VERSION = "0.9.1"
-PINNED_RUST_RELEASE = "1.99.0"
-PINNED_RUST_COMMIT = "b940084d7eb6a299eb4bfeb8e34901bc051e7ac4"
+PINNED_RUST_RELEASE = "1.100.0"
+PINNED_RUST_COMMIT = "0ef1bc386059596dada8fb65b50425aab2ea637a"
 PINNED_RUST_HOST = "x86_64-pc-windows-msvc"
-PINNED_LLVM_VERSION = "23.1.1"
+PINNED_LLVM_VERSION = "23.1.5"
 TARGET_DIR = "target/llvm-cov-windows-process/llvm-cov-target"
 COMPATIBILITY_DOMAIN = "windows-x86_64-msvc"
 NATIVE_EXCLUSION_REASON = (
@@ -351,6 +351,8 @@ REQUIRED_TESTS = {
         "tests::target_update_lock_serializes_live_updaters_for_the_same_install",
         "tests::tc_updater_002_parent_directory_sync_failure_retains_authenticated_recovery",
         "tests::uncommitted_rollback_processes_entries_in_reverse_order",
+        "tests::update_package_extraction_preserves_unicode_and_rejects_empty_relative_names",
+        "tests::update_package_rejects_a_symbolic_link_with_its_decoded_name",
         "tests::verified_package_snapshot_rejects_substitution_and_is_used_immutably",
         "tests::windows_junction_fixture_reports_an_occupied_path_without_replacing_it",
         "tests::windows_link_fixture_replaces_an_input_while_its_original_handle_is_open",

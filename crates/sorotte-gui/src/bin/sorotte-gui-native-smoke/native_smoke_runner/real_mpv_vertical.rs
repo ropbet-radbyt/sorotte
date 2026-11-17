@@ -5867,8 +5867,8 @@ mod tests {
     #[test]
     fn mpv_version_parser_accepts_supported_snapshot_suffixes() {
         assert_eq!(
-            parse_mpv_version_core("mpv v0.41.0-877-ge5486b96d Copyright"),
-            Ok((0, 41, 0))
+            parse_mpv_version_core("mpv v0.42.0-877-ge5486b96d Copyright"),
+            Ok((0, 42, 0))
         );
         assert_eq!(
             parse_mpv_version_core("mpv v1.2.3 Copyright"),

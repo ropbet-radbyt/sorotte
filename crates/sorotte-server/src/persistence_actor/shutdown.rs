@@ -104,7 +104,7 @@ thread_local! {
 }
 
 pub(super) fn install_busy_handler(
-    connection: &rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
     control: Arc<WorkerControl>,
 ) -> rusqlite::Result<()> {
     BUSY_CONTEXT.with(|context| *context.borrow_mut() = Some((control, Instant::now())));

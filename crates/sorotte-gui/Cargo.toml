@@ -48,9 +48,10 @@ windows-sys = { workspace = true, features = ["Win32_Graphics_Dwm", "Win32_Graph
 windows.workspace = true
 
 [build-dependencies]
-embed-resource = "3.0.11"
+embed-resource = "3.0.12"
 
 [dev-dependencies]
+accesskit_consumer = "0.39.2"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 sorotte-server = { path = "../sorotte-server" }

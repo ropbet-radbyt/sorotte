@@ -14,7 +14,6 @@ fuzz-support = ["test-support"]
 test-support = ["sorotte-player-api/test-support"]
 
 [dependencies]
-anyhow.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,7 +27,7 @@ url.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_JobObjects", "Win32_Security_Authorization"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.189"
+libc = "0.2.191"
 
 [dev-dependencies]
 mlua.workspace = true

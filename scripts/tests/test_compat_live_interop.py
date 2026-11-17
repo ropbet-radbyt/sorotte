@@ -191,7 +191,7 @@ def valid_report() -> dict[str, object]:
 class RequirementPolicyTests(unittest.TestCase):
     def test_exact_requirement_pins_are_accepted(self) -> None:
         parsed = interop.parse_pinned_requirements(
-            b"twisted==26.4.0\n"
+            b"twisted==26.10.0\n"
             b"# compatibility comment\n"
             b"cryptography==50.0.2\n"
             b"pyopenssl==26.4.0\n"
@@ -201,9 +201,9 @@ class RequirementPolicyTests(unittest.TestCase):
 
     def test_ranges_duplicates_and_inventory_drift_are_rejected(self) -> None:
         mutations = (
-            b"twisted>=26.4.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
-            b"twisted==26.4.0\nTwisted==26.4.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
-            b"twisted==26.4.0\npyopenssl==26.4.0\n",
+            b"twisted>=26.10.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
+            b"twisted==26.10.0\nTwisted==26.10.0\npyopenssl==26.4.0\nservice_identity==26.1.0\n",
+            b"twisted==26.10.0\npyopenssl==26.4.0\n",
         )
         for mutation in mutations:
             with self.subTest(mutation=mutation), self.assertRaises(
@@ -220,7 +220,7 @@ class RequirementPolicyTests(unittest.TestCase):
             requirements.mkdir()
             requirements.joinpath("legacy-python-interop.txt").write_text(
                 "cryptography==50.0.2\n"
-                "twisted==26.4.0\n"
+                "twisted==26.10.0\n"
                 "pyopenssl==26.4.0\n"
                 "service_identity==26.1.0\n",
                 encoding="utf-8",
@@ -232,7 +232,7 @@ class RequirementPolicyTests(unittest.TestCase):
                     "pyopenssl": "26.4.0",
                     "cryptography": "50.0.2",
                     "service-identity": "26.1.0",
-                    "twisted": "26.4.0",
+                    "twisted": "26.10.0",
                 },
                 "version": "3.13.5",
                 "version_info": [3, 13, 5],
@@ -251,7 +251,7 @@ class RequirementPolicyTests(unittest.TestCase):
             self.assertEqual(python["version"], "3.13.5")
             self.assertEqual(
                 [package["observed_version"] for package in python["packages"]],
-                ["50.0.2", "26.4.0", "26.1.0", "26.4.0"],
+                ["50.0.2", "26.4.0", "26.1.0", "26.10.0"],
             )
             self.assertRegex(pinned["sha256"], r"^[0-9a-f]{64}$")
 

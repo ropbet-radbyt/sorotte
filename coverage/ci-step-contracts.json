@@ -466,6 +466,12 @@
     {
       "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
       "job_id": "linux-candidate",
+      "step_id": "checkout_libplacebo",
+      "display_name": "Checkout libplacebo 7.387.0 for the headless mpv build"
+    },
+    {
+      "workflow": ".github/workflows/playback-lifecycle-release-gate.yml",
+      "job_id": "linux-candidate",
       "step_id": "ci_verify_supported_mpv_source_revision_bd0cb841",
       "display_name": "Verify supported mpv source revision"
     },
@@ -1632,6 +1638,12 @@
       "job_id": "mpv-pr-semantics",
       "step_id": "ci_checkout_pinned_official_mpv_source_565036bb",
       "display_name": "Checkout pinned official mpv source"
+    },
+    {
+      "workflow": ".github/workflows/rust-ci.yml",
+      "job_id": "mpv-pr-semantics",
+      "step_id": "checkout_libplacebo",
+      "display_name": "Checkout libplacebo 7.387.0 for the headless mpv build"
     },
     {
       "workflow": ".github/workflows/rust-ci.yml",

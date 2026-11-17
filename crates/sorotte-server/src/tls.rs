@@ -96,9 +96,6 @@ fn unstable_tls_bundle(message: impl Into<String>) -> io::Error {
 }
 
 fn metadata_is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt as _;
@@ -107,7 +104,7 @@ fn metadata_is_link_or_reparse_point(metadata: &fs::Metadata) -> bool {
             return true;
         }
     }
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn require_plain_directory(path: &Path, role: &str) -> io::Result<()> {

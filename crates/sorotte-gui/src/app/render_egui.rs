@@ -308,11 +308,23 @@ impl GuiWidgetEguiRenderer {
         }
         self.dropped_files_request = None;
         if let Some(root) = self.root.take() {
-            self.show_menu_bar(ui, &root, state);
+            let open_menu_panel = self.show_menu_bar(ui, &root, state);
             self.show_modal_window(&ctx, state);
             self.show_status_bar(ui, &root, show_manual_pending_controls);
             self.show_navigation_panel(ui, &root, state);
             self.show_active_surface(ui, &root, state);
+            if let Some(panel) = open_menu_panel {
+                // AccessKit hit-tests siblings from last to first. The popup belongs to
+                // its menu button, so its panel must be above the overlapping body panels.
+                ctx.accesskit_node_builder(ui.unique_id(), |parent| {
+                    let mut children = parent.children().to_vec();
+                    if let Some(index) = children.iter().position(|id| *id == panel.accesskit_id())
+                    {
+                        children[index..].rotate_left(1);
+                        parent.set_children(children);
+                    }
+                });
+            }
             self.root = Some(root);
         } else {
             egui::CentralPanel::default().show(ui, |ui| {
@@ -336,10 +348,9 @@ impl GuiWidgetEguiRenderer {
         ui: &mut egui::Ui,
         root: &GuiWidgetNode,
         state: &SorotteGuiShellAppState,
-    ) {
-        let Some(menus) = root.find("menus-root") else {
-            return;
-        };
+    ) -> Option<egui::Id> {
+        let menus = root.find("menus-root")?;
+        let mut open_menu_panel = None;
         egui::Panel::top("sorotte-native-menu-bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 for section in &menus.children {
@@ -350,10 +361,17 @@ impl GuiWidgetEguiRenderer {
                             })
                         })
                         .inner;
+                    if response.inner.is_some() {
+                        open_menu_panel = ui
+                            .stack()
+                            .iter()
+                            .find(|ancestor| ancestor.kind() == Some(egui::UiKind::TopPanel))
+                            .map(|panel| panel.unique_id);
+                    }
                     Self::register_automation_id(ui, &response.response, section);
                     response.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             response.response.enabled(),
                             &section.label,
                         )
@@ -361,6 +379,7 @@ impl GuiWidgetEguiRenderer {
                 }
             });
         });
+        open_menu_panel
     }
 
     fn show_modal_window(&mut self, ctx: &egui::Context, state: &SorotteGuiShellAppState) {
@@ -535,7 +554,7 @@ impl GuiWidgetEguiRenderer {
         let marker_label = label.into();
         let (_, response) = ui.allocate_exact_size(egui::vec2(1.0, 1.0), egui::Sense::hover());
         response.widget_info(move || {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, marker_label.clone())
+            egui::WidgetInfo::labeled(egui::Role::Label, true, marker_label.clone())
         });
     }
 
@@ -653,7 +672,7 @@ impl GuiWidgetEguiRenderer {
         let desired_size = egui::vec2(ui.available_width().max(88.0), 52.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         Self::register_automation_id(ui, &response, node);
 
@@ -725,9 +744,7 @@ impl GuiWidgetEguiRenderer {
         };
         let (rect, response) = ui.allocate_exact_size(desired_size, sense);
         let response = response.on_hover_text(format!("{title}\n{detail}"));
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, node.enabled, title)
-        });
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, node.enabled, title));
 
         let visuals = ui.style().interact(&response);
         let fill = if response.hovered() && node.enabled {
@@ -1164,7 +1181,7 @@ impl GuiWidgetEguiRenderer {
                         );
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 response.enabled(),
                                 &close_button.label,
                             )
@@ -1218,7 +1235,7 @@ impl GuiWidgetEguiRenderer {
                             );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     response.enabled(),
                                     &close_button.label,
                                 )
@@ -1244,7 +1261,7 @@ impl GuiWidgetEguiRenderer {
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::TextEdit,
+                            egui::Role::TextInput,
                             response.enabled(),
                             text_node.label.clone(),
                         )
@@ -1518,7 +1535,7 @@ impl GuiWidgetEguiRenderer {
                 .corner_radius(18),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         let response = Self::attach_hover_text(response, node.label.clone());
         Self::paint_panel_close_button(ui, &response);

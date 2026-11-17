@@ -1,7 +1,25 @@
 schema_version = 1
-cargo_deny_version = "0.20.2"
+cargo_deny_version = "0.21.0"
 pip_audit_version = "2.10.1"
 advisory_database = "https://github.com/RustSec/advisory-db"
-# No policy exceptions have been accepted. Any addition requires an exact
-# advisory ID, rationale, owner and YYYY-MM-DD expiry, reviewed in the PR.
-exception = []
+
+[[exception]]
+id = "RUSTSEC-2026-0370"
+ecosystem = "rust"
+rationale = "AccessKit 0.24 and AT-SPI still require the standalone zvariant wire types for Linux accessibility. Remove when the accessibility stack migrates to zbus 6."
+owner = "sorotte-gui"
+expires = "2026-12-18"
+
+[[exception]]
+id = "RUSTSEC-2026-0371"
+ecosystem = "rust"
+rationale = "AT-SPI and zbus 5 still require standalone zbus_names for Linux accessibility. Remove when the accessibility stack migrates to zbus 6."
+owner = "sorotte-gui"
+expires = "2026-12-18"
+
+[[exception]]
+id = "RUSTSEC-2026-0372"
+ecosystem = "rust"
+rationale = "The zvariant 5 types required for Linux accessibility use the standalone zvariant_derive macros. Remove when the accessibility stack migrates to zbus 6."
+owner = "sorotte-gui"
+expires = "2026-12-18"
