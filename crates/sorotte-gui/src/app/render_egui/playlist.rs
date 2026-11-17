@@ -113,7 +113,7 @@ impl GuiWidgetEguiRenderer {
                                 let response = ui.add_enabled(add_button.enabled, button);
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
+                                        egui::Role::Button,
                                         response.enabled(),
                                         Self::display_text(add_button),
                                     )
@@ -289,7 +289,7 @@ impl GuiWidgetEguiRenderer {
         let size = size.max(24.0);
         let (_, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, response.enabled(), label)
+            egui::WidgetInfo::labeled(egui::Role::Label, response.enabled(), label)
         });
         let response = Self::attach_node_tooltip(response, node);
         let rect = response.rect.shrink2(egui::vec2(0.5, 0.5));
@@ -391,7 +391,7 @@ impl GuiWidgetEguiRenderer {
         );
         response.response.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::Label,
+                egui::Role::Label,
                 response.response.enabled(),
                 node.label.clone(),
             )
@@ -428,11 +428,7 @@ impl GuiWidgetEguiRenderer {
             egui::Sense::hover(),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::Label,
-                response.enabled(),
-                "Playlist is empty.",
-            )
+            egui::WidgetInfo::labeled(egui::Role::Label, response.enabled(), "Playlist is empty.")
         });
 
         let visuals = ui.visuals();
@@ -524,12 +520,12 @@ impl GuiWidgetEguiRenderer {
                     );
                     let response = ui.interact(
                         row_rect,
-                        ui.id().with("row"),
+                        ui.scope_id().with("row"),
                         Self::playlist_row_sense(can_drag_reorder),
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             response.enabled(),
                             text.clone(),
                         )
@@ -578,11 +574,14 @@ impl GuiWidgetEguiRenderer {
                         Self::paint_playlist_source_button(ui, &source_response, source_button);
                     }
                     let remove_clicked = remove_button.is_some_and(|button| {
-                        let remove_response =
-                            ui.interact(remove_rect, ui.id().with("remove"), egui::Sense::click());
+                        let remove_response = ui.interact(
+                            remove_rect,
+                            ui.scope_id().with("remove"),
+                            egui::Sense::click(),
+                        );
                         remove_response.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 remove_response.enabled(),
                                 button.label.clone(),
                             )
@@ -730,7 +729,7 @@ impl GuiWidgetEguiRenderer {
     }
 
     fn playlist_focus_id() -> egui::Id {
-        egui::Id::new("main-window:playlist:keyboard")
+        egui::Id::unique("main-window:playlist:keyboard")
     }
 
     pub(super) fn playlist_focus_sense() -> egui::Sense {

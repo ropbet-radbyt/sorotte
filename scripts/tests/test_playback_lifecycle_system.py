@@ -244,10 +244,10 @@ class PlaybackLifecycleSystemTests(unittest.TestCase):
         )
 
     def test_mpv_version_parser_accepts_reviewed_shapes_and_rejects_noise(self) -> None:
-        self.assertEqual(system.parse_mpv_version("mpv 0.41.0 Copyright"), (0, 41, 0))
+        self.assertEqual(system.parse_mpv_version("mpv 0.42.0 Copyright"), (0, 42, 0))
         self.assertEqual(system.parse_mpv_version("mpv v1.2.3-45-gabc"), (1, 2, 3))
         with self.assertRaisesRegex(ValueError, "semantic version"):
-            system.parse_mpv_version("unrelated player 0.41.0")
+            system.parse_mpv_version("unrelated player 0.42.0")
 
     def test_av_fixture_generation_requests_bitexact_video_and_audio(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

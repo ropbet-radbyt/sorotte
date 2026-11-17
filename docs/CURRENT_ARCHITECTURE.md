@@ -2,7 +2,7 @@
 
 Generated from [coverage/current-architecture.toml](../coverage/current-architecture.toml). Update that catalog, then run `python scripts/architecture_index.py --write`.
 
-Release 0.2.20; landed base `afee39f5cc091fc555030591cbe21f3dfdd272b9`; fixing commit **pending**; hosted evidence **pending**. The v0.2.20 candidate repairs all 18 findings from three audits of main: playlist transport and source identity, playback completion and seek evidence, readiness membership, CLI startup and retry, queued settings persistence, updater storage, and Plex progress. See docs/audits/v0.2.20-bugfixes.md for the regression inventory and compatibility boundary. Exact-source hosted and native qualification remains pending; historical boundary evidence below does not qualify this candidate.
+Release 0.2.21; landed base `760f0b0dff974b0914c22abe96c4adc51c95790b`; fixing commit **pending**; hosted evidence **pending**. The v0.2.21 candidate upgrades Rust and its dependencies and requires mpv 0.42.0 or newer.
 
 ## Authority flow
 
@@ -227,7 +227,7 @@ Pinned scans record exact advisory evidence or fail unavailable; archive invento
 - Normative: [docs/design/verification-policy.md](../docs/design/verification-policy.md).
 - Proof: [test_known_advisory_fixture_fails_even_with_valid_scanner_summary](../scripts/tests/test_dependency_policy.py); `python -m unittest scripts.tests.test_dependency_policy`.
 - Proof: [test_unapproved_source_and_duplicate_package_are_detected](../scripts/tests/test_dependency_policy.py); `python -m unittest scripts.tests.test_dependency_policy`.
-- Environment: Online RustSec and PyPI metadata; Pinned cargo-deny 0.20.2 and pip-audit 2.10.1; Windows/Linux package target.
+- Environment: Online RustSec and PyPI metadata; Pinned cargo-deny 0.21.0 and pip-audit 2.10.1; Windows/Linux package target.
 - Capability: **implemented**. Local evidence: Live Rust and Python scans passed without exceptions; target/verification/dependencies-resumed/report.json retains advisory/scanner inputs. Actual local GUI/server development archives passed independent payload inventory and runtime verification.
 - Remaining proof: Refresh advisories when releasing; committed provenance, public assets, signing, and container publication are outside this local continuation. External native tools retain separate identities.
 

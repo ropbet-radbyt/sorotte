@@ -18,40 +18,40 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.20"
+version = "0.2.21"
 edition = "2024"
 license = "Apache-2.0"
-rust-version = "1.99.0"
+rust-version = "1.100.0"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
-egui = "0.36.2"
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "inspection", "wayland", "web_screen_reader", "x11"] }
+egui = "0.37.0"
 getrandom = "0.4.3"
 md-5 = "0.11.0"
-mlua = { version = "0.12.1", features = ["lua54", "serde", "vendored"] }
-proptest = "1.11.0"
+mlua = { version = "0.12.2", features = ["lua54", "serde", "vendored"] }
+proptest = "1.12.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "query", "rustls-no-provider"] }
-rfd = "0.17.2"
-rustls = "0.23.45"
-rustls-pki-types = { version = "1.15.1", features = ["std"] }
-rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
+rfd = "0.18.0"
+rustls = "0.23.46"
+rustls-pki-types = { version = "1.16.0", features = ["std"] }
+rusqlite = { version = "0.43.0", features = ["backup", "bundled"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 semver = "1.0.28"
 sha1 = "0.11.0"
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 thiserror = "2.0.21"
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26.6"
 url = "2.5.8"
-webpki-roots = "1.0.9"
+webpki-roots = "1.0.12"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Accessibility"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.6.1", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

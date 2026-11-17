@@ -116,10 +116,10 @@ class SandboxBundleTests(unittest.TestCase):
         requirements = repo / "requirements"
         requirements.mkdir(parents=True)
         (requirements / "legacy-python-interop.txt").write_text(
-            "-c verification-constraints.txt\ntwisted==26.4.0\n", encoding="utf-8"
+            "-c verification-constraints.txt\ntwisted==26.10.0\n", encoding="utf-8"
         )
         constraint = requirements / "verification-constraints.txt"
-        constraint.write_text("twisted==26.4.0\n", encoding="utf-8")
+        constraint.write_text("twisted==26.10.0\n", encoding="utf-8")
         paths = b"requirements/legacy-python-interop.txt\0requirements/verification-constraints.txt\0"
         with mock.patch.object(bundle, "git", side_effect=[paths, b"a" * 40, paths, b"a" * 40]):
             original_source = bundle.source_state(repo)

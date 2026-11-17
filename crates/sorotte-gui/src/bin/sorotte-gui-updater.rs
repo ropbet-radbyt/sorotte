@@ -1148,11 +1148,11 @@ fn extract_zip_bytes_safe(bytes: &[u8], destination: &Path) -> Result<(), String
         let mut entry = archive
             .by_index(index)
             .map_err(|error| format!("failed reading update package entry {index}: {error}"))?;
-        let Some(relative) = safe_relative_path(entry.name()) else {
-            return Err(format!(
-                "update package contains unsafe path {:?}",
-                entry.name()
-            ));
+        let name = entry
+            .name()
+            .map_err(|error| format!("failed reading update entry name: {error}"))?;
+        let Some(relative) = safe_relative_path(&name) else {
+            return Err(format!("update package contains unsafe path {name:?}"));
         };
         let normalized = relative.to_string_lossy().replace('\\', "/").to_lowercase();
         if !seen.insert(normalized) {

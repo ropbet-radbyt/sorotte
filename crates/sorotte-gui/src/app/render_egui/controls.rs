@@ -326,7 +326,7 @@ impl GuiWidgetEguiRenderer {
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::TextEdit,
+                        egui::Role::TextInput,
                         response.enabled(),
                         node.label.clone(),
                     )
@@ -358,7 +358,7 @@ impl GuiWidgetEguiRenderer {
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::TextEdit,
+                        egui::Role::TextInput,
                         response.enabled(),
                         node.label.clone(),
                     )
@@ -479,14 +479,14 @@ impl GuiWidgetEguiRenderer {
         response.widget_info(|| {
             if is_checkable_menu_action {
                 egui::WidgetInfo::selected(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     response.enabled(),
                     node.selected,
                     Self::display_text(node),
                 )
             } else {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     response.enabled(),
                     Self::display_text(node),
                 )
@@ -560,7 +560,7 @@ impl GuiWidgetEguiRenderer {
         Self::register_automation_id(ui, &response, node);
         let label = Self::display_text(node).to_owned();
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label.clone())
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label.clone())
         });
         let response = Self::attach_hover_text(response, label.clone());
         Self::paint_compact_action_button(ui, &response, node, &label);

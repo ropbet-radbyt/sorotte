@@ -37,7 +37,7 @@ impl GuiWidgetEguiRenderer {
                 Self::register_automation_id(ui, &response, node);
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         response.enabled(),
                         node.label.clone(),
                     )
@@ -86,11 +86,7 @@ impl GuiWidgetEguiRenderer {
                     );
                     Self::register_automation_id(ui, &response, node);
                     response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            response.enabled(),
-                            label,
-                        )
+                        egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), label)
                     });
                     let response = Self::attach_hover_text(response, hover_text);
                     Self::paint_playback_ready_button(ui, &response, label, is_ready, pending);

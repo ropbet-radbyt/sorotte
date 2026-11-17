@@ -353,7 +353,7 @@ impl GuiWidgetEguiRenderer {
                     Self::register_automation_id(ui, &response.response, section);
                     response.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             response.response.enabled(),
                             &section.label,
                         )
@@ -535,7 +535,7 @@ impl GuiWidgetEguiRenderer {
         let marker_label = label.into();
         let (_, response) = ui.allocate_exact_size(egui::vec2(1.0, 1.0), egui::Sense::hover());
         response.widget_info(move || {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, marker_label.clone())
+            egui::WidgetInfo::labeled(egui::Role::Label, true, marker_label.clone())
         });
     }
 
@@ -653,7 +653,7 @@ impl GuiWidgetEguiRenderer {
         let desired_size = egui::vec2(ui.available_width().max(88.0), 52.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         Self::register_automation_id(ui, &response, node);
 
@@ -725,9 +725,7 @@ impl GuiWidgetEguiRenderer {
         };
         let (rect, response) = ui.allocate_exact_size(desired_size, sense);
         let response = response.on_hover_text(format!("{title}\n{detail}"));
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, node.enabled, title)
-        });
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, node.enabled, title));
 
         let visuals = ui.style().interact(&response);
         let fill = if response.hovered() && node.enabled {
@@ -1164,7 +1162,7 @@ impl GuiWidgetEguiRenderer {
                         );
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
+                                egui::Role::Button,
                                 response.enabled(),
                                 &close_button.label,
                             )
@@ -1218,7 +1216,7 @@ impl GuiWidgetEguiRenderer {
                             );
                             response.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     response.enabled(),
                                     &close_button.label,
                                 )
@@ -1244,7 +1242,7 @@ impl GuiWidgetEguiRenderer {
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::TextEdit,
+                            egui::Role::TextInput,
                             response.enabled(),
                             text_node.label.clone(),
                         )
@@ -1518,7 +1516,7 @@ impl GuiWidgetEguiRenderer {
                 .corner_radius(18),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         let response = Self::attach_hover_text(response, node.label.clone());
         Self::paint_panel_close_button(ui, &response);

@@ -66,7 +66,7 @@ MPV_FRAMED_TRANSCRIPT_CORPUS_FILE_COUNT = CORPUS_COUNTS["mpv_framed_transcript"]
 MPV_FRAMED_TRANSCRIPT_CORPUS_DIRECTORY = (
     REPO_ROOT / MPV_FRAMED_TRANSCRIPT_CORPUS_PATH
 )
-FUZZ_TOOLCHAIN = "nightly-2026-07-29"
+FUZZ_TOOLCHAIN = "nightly-2026-11-17"
 CARGO_FUZZ_INSTALL_COMMAND = [
     "cargo",
     f"+{FUZZ_TOOLCHAIN}",
@@ -374,7 +374,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 "libfuzzer-sys": "=0.4.13",
                 "serde": "=1.0.229",
                 "serde_json": {
-                    "version": "=1.0.151",
+                    "version": "=1.0.154",
                     "features": ["float_roundtrip"],
                 },
                 "sorotte-cli": {
@@ -393,7 +393,7 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
                 },
                 "sorotte-protocol": {"path": "../crates/sorotte-protocol"},
                 "tokio": {
-                    "version": "=1.53.1",
+                    "version": "=1.54.1",
                     "features": ["io-util", "rt", "sync"],
                 },
             },
@@ -432,8 +432,8 @@ class ProtocolFuzzPolicyTests(unittest.TestCase):
         self.assertIn(("anyhow", "1.0.104"), locked_versions)
         self.assertIn(("libfuzzer-sys", "0.4.13"), locked_versions)
         self.assertIn(("serde", "1.0.229"), locked_versions)
-        self.assertIn(("serde_json", "1.0.151"), locked_versions)
-        self.assertIn(("tokio", "1.53.1"), locked_versions)
+        self.assertIn(("serde_json", "1.0.154"), locked_versions)
+        self.assertIn(("tokio", "1.54.1"), locked_versions)
 
     def test_target_exercises_every_public_decode_boundary_and_oracle(self) -> None:
         target = FUZZ_TARGET_PATH.read_text(encoding="utf-8")

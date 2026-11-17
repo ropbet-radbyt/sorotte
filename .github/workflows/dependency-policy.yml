@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_44396736
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Validate selection prerequisites
@@ -50,7 +50,7 @@ jobs:
         run: python scripts/verify.py selected --plan target/verification/plan.json --lane dependencies ${FORCE:+"$FORCE"} --github-output "$GITHUB_OUTPUT"
       - name: Preserve immutable plan
         id: ci_preserve_immutable_plan_cb5b1c9d
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependencies-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/plan.json
@@ -72,19 +72,19 @@ jobs:
           persist-credentials: false
       - name: Setup Rust
         id: ci_setup_rust_da6cfe4d
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable resolved 2026-11-18
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
       - name: Setup Python
         id: ci_setup_python_96caa407
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Install pinned cargo-deny
         id: ci_install_pinned_cargo_deny_747abda6
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.21.0
           fallback: none
       - name: Check locked graph and record database identity
         id: ci_check_locked_graph_and_record_database_1c886f53
@@ -92,7 +92,7 @@ jobs:
       - name: Preserve dependency evidence including failed or unavailable scans
         id: ci_preserve_dependency_evidence_including_62130861
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-rust-${{ github.sha }}
           path: |
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_39289186
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Install pinned verification scanner
@@ -130,7 +130,7 @@ jobs:
       - name: Preserve Python database responses and resolved versions
         id: ci_preserve_python_database_responses_and_a2397cb1
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-python-${{ github.sha }}
           path: target/dependencies/python/
@@ -153,7 +153,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: ci_setup_python_89687896
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Require selection authority
@@ -163,7 +163,7 @@ jobs:
         run: test "$SELECTION_RESULT" = success
       - name: Retrieve immutable plan
         id: ci_retrieve_immutable_plan_3c4e3dba
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dependencies-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification
@@ -184,7 +184,7 @@ jobs:
       - name: Preserve required receipt
         id: ci_preserve_required_receipt_77b662e1
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-required-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/verification/dependency-required.json

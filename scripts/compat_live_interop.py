@@ -37,7 +37,7 @@ PINNED_PACKAGES = {
     "cryptography": ("cryptography", "50.0.2"),
     "pyopenssl": ("pyopenssl", "26.4.0"),
     "service-identity": ("service_identity", "26.1.0"),
-    "twisted": ("twisted", "26.4.0"),
+    "twisted": ("twisted", "26.10.0"),
 }
 FIXTURE_ROOT_COUNTS = {
     "fixtures/protocol": 24,

@@ -69,7 +69,12 @@ fn operation_failure_message(result: Result<(), PlayerError>) -> String {
 
 #[test]
 fn json_ipc_initialization_accepts_minimum_and_newer_mpv_versions() {
-    for reported in ["0.41.0", "mpv 0.41.1-UNKNOWN", "1.0.0"] {
+    for reported in [
+        "0.42.0",
+        "mpv v0.42.0-12-gf92afa75cd",
+        "mpv 0.42.1-UNKNOWN",
+        "1.0.0",
+    ] {
         let response = format!(r#"{{"request_id":1,"error":"success","data":"{reported}"}}"#);
         let (adapter, result) = initialize_with_version_response(&response);
 
@@ -153,7 +158,7 @@ fn explicit_json_ipc_retry_is_disabled_for_simulation_and_live_connections() {
     assert_eq!(simulated.ipc_reconnect_not_before, None);
 
     let (mut connected, result) =
-        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.41.0"}"#);
+        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.42.0"}"#);
     result.expect("the supported attachment should connect");
     connected.ipc_reconnect_not_before = Some(now);
     let mut connected_attempts = 0;
@@ -231,7 +236,7 @@ fn explicit_json_ipc_retry_waits_a_full_interval_after_slow_version_failure() {
 #[test]
 fn rejected_replacement_preserves_the_existing_supported_attachment() {
     let (mut adapter, result) =
-        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.41.0"}"#);
+        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.42.0"}"#);
     result.expect("the initial supported attachment should succeed");
     let replacement = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new(
         r#"{"request_id":1,"error":"success","data":"0.40.0"}"#,
@@ -249,7 +254,7 @@ fn rejected_replacement_preserves_the_existing_supported_attachment() {
 #[test]
 fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() {
     let (mut adapter, result) =
-        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.41.0"}"#);
+        initialize_with_version_response(r#"{"request_id":1,"error":"success","data":"0.42.0"}"#);
     result.expect("the initial supported attachment should succeed");
     let old_attachment = adapter.lifecycle_epoch();
     let old_generation = adapter.allocate_media_generation();
@@ -280,7 +285,7 @@ fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() 
     adapter.accept_tracked_command(old_command);
 
     let replacement = MpvJsonIpcClient::new(Box::new(VersionResponseTransport::new_many(&[
-        r#"{"request_id":1,"error":"success","data":"0.41.1"}"#,
+        r#"{"request_id":1,"error":"success","data":"0.42.1"}"#,
         r#"{"request_id":2,"error":"success","data":[{"id":1,"filename":"C:/new-core.mkv","current":true,"playing":true}]}"#,
         r#"{"request_id":3,"error":"success","data":"C:/new-core.mkv"}"#,
         r#"{"request_id":4,"error":"success","data":false}"#,
@@ -329,13 +334,13 @@ fn supported_replacement_fences_old_commands_and_reuses_no_playlist_ownership() 
 }
 
 #[test]
-fn json_ipc_initialization_rejects_mpv_older_than_0_41_0() {
-    for reported in ["0.34.1", "0.40.99"] {
+fn json_ipc_initialization_rejects_mpv_older_than_0_42_0() {
+    for reported in ["0.41.0", "0.41.99"] {
         let response = format!(r#"{{"request_id":1,"error":"success","data":"{reported}"}}"#);
         let (adapter, result) = initialize_with_version_response(&response);
         let message = operation_failure_message(result);
 
-        assert!(message.contains("requires mpv 0.41.0 or newer"));
+        assert!(message.contains("requires mpv 0.42.0 or newer"));
         assert!(message.contains(&format!("reports mpv {reported}")));
         assert!(message.contains("upgrade mpv"));
         assert!(adapter.ipc_client.is_none());
@@ -368,7 +373,7 @@ fn json_ipc_initialization_rejects_missing_or_unrecognized_versions() {
         let (adapter, result) = initialize_with_version_response(response);
         let message = operation_failure_message(result);
 
-        assert!(message.contains("requires mpv 0.41.0 or newer"));
+        assert!(message.contains("requires mpv 0.42.0 or newer"));
         assert!(
             message.contains(expected_reason),
             "unexpected error: {message}"
@@ -383,7 +388,7 @@ fn unsupported_version_predicate_does_not_match_unrelated_operation_failures() {
     assert!(!crate::is_unsupported_mpv_version_error(
         &PlayerError::OperationFailed("mpv IPC connection timed out".to_owned())
     ));
-    assert_eq!(crate::MINIMUM_SUPPORTED_MPV_VERSION, "0.41.0");
+    assert_eq!(crate::MINIMUM_SUPPORTED_MPV_VERSION, "0.42.0");
 }
 
 #[test]

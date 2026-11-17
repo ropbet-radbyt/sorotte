@@ -5,7 +5,7 @@
 - `sorotte-gui`: desktop client for normal interactive use
 - `sorotte-cli`: headless client for terminal, script, and automation workflows
 
-Both clients currently target `mpv` 0.41.0 or newer. Older mpv releases are outside the supported compatibility floor.
+Both clients currently target `mpv` 0.42.0 or newer. Older mpv releases are outside the supported compatibility floor.
 
 ## GUI Workflow
 
@@ -89,7 +89,7 @@ Each deadline failure enters the normal reconnect policy; after retries are exha
 
 ## mpv Setup
 
-The GUI and CLI can use a discovered `mpv` binary at version 0.41.0 or newer, a configured player path, or an explicit path supplied by environment/config.
+The GUI and CLI can use a discovered `mpv` binary at version 0.42.0 or newer, a configured player path, or an explicit path supplied by environment/config.
 
 Recommended Windows layout for local development:
 
@@ -246,4 +246,4 @@ powershell -ExecutionPolicy Bypass -File scripts/watch-sorotte-memory.ps1
 
 ## Player Scope
 
-`mpv` 0.41.0 or newer is the supported player backend in this Rust implementation. Older mpv releases and non-`mpv` players are intentionally outside the current supported client scope.
+`mpv` 0.42.0 or newer is the supported player backend in this Rust implementation. Older mpv releases and non-`mpv` players are intentionally outside the current supported client scope.

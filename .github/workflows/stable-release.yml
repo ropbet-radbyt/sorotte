@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Authorize only the open up-to-date PR head without publication credentials
@@ -52,7 +52,7 @@ jobs:
           --pull-request "$PR_NUMBER" --output target/pr-candidate-authorization.json
       - name: Retain pre-merge source authorization
         id: retain_source
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-candidate-authorization-${{ github.sha }}
           path: target/pr-candidate-authorization.json
@@ -82,11 +82,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
           components: rustfmt, clippy
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Prepare immutable server qualification prerequisites
@@ -106,13 +106,13 @@ jobs:
         id: ci_qualify_server_behavior_with_the_exact_1def2da5
         shell: pwsh
         run: ./scripts/server-release-verify.ps1 -Stage Behavior -WorkspaceReceipt target/release-workspace.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-workspace-${{ matrix.platform }}-${{ github.sha }}
           path: target/release-workspace.json
           if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: release-server-behavior-${{ matrix.platform }}-${{ github.sha }}
@@ -144,24 +144,24 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Download complete build and lifecycle authority
         id: ci_download_complete_build_and_lifecycle__eb431787
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-qualification-record-${{ github.sha }}
           path: target/durable-qualification/lifecycle
       - name: Download original protected-source authority
         id: ci_download_original_protected_source_aut_25176c30
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pr-candidate-authorization-${{ github.sha }}
           path: target/durable-qualification/authorization
       - name: Download exact default workspace receipts
         id: ci_download_exact_default_workspace_recei_1bc59cb3
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-workspace-*-${{ github.sha }}
           path: target/durable-qualification/workspace
@@ -172,7 +172,7 @@ jobs:
           --evidence-dir target/durable-qualification --output-dir target/qualification-archives --authorization-kind pr-candidate-authorization
       - name: Retain qualified evidence archive
         id: retain_archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: durable-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/qualification-archives/*
@@ -189,7 +189,7 @@ jobs:
       - name: Retain handoff and cold image restoration evidence
         id: retain_handoff
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: candidate-handoff-${{ github.sha }}-${{ github.run_attempt }}
           path: target/candidate-handoff/handoff.json
@@ -205,7 +205,7 @@ jobs:
           --output target/qualified-release-candidate/candidate.json
       - name: Retain the pre-merge qualification decision
         id: retain_candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qualified-release-candidate-${{ github.sha }}
           path: target/qualified-release-candidate/candidate.json
@@ -228,7 +228,7 @@ jobs:
           persist-credentials: false
       - name: Setup Python
         id: python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.11'
       - name: Require a version tag for publication
@@ -237,7 +237,7 @@ jobs:
           case "$GITHUB_REF" in refs/tags/v*|refs/tags/server-v*) ;; *) exit 1 ;; esac
       - name: Mint repository-scoped protection reader
         id: protection-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.SOROTTE_PROTECTION_APP_ID }}
           private-key: ${{ secrets.SOROTTE_PROTECTION_APP_PRIVATE_KEY }}
@@ -254,7 +254,7 @@ jobs:
           --output target/publication-authorization/authorization.json --github-output "$GITHUB_OUTPUT"
       - name: Retain publication authorization separately from candidate execution
         id: retain_authority
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: publication-authorization-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/publication-authorization/**

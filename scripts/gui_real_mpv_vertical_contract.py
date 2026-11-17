@@ -1602,7 +1602,7 @@ def validate_report(
     mpv = report.get("mpv")
     validate_binary_identity(mpv, expected_mpv, expected_mpv_sha256, "mpv binary")
     require(isinstance(mpv, dict), "mpv identity must be an object")
-    require(mpv.get("minimum_supported_version") == "0.41.0", "minimum mpv drift")
+    require(mpv.get("minimum_supported_version") == "0.42.0", "minimum mpv drift")
     require(
         isinstance(mpv.get("version"), str) and mpv["version"].startswith("mpv v"),
         "mpv version identity missing",
@@ -1626,7 +1626,7 @@ def validate_report(
         )
         require(isinstance(recovered_mpv, dict), "recovered mpv identity must be an object")
         require(
-            recovered_mpv.get("minimum_supported_version") == "0.41.0",
+            recovered_mpv.get("minimum_supported_version") == "0.42.0",
             "recovered minimum mpv drift",
         )
         require(

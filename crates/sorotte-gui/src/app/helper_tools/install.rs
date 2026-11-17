@@ -220,7 +220,10 @@ pub(in crate::app) fn extract_executable(
     for index in 0..zip.len() {
         check_cancelled(cancel)?;
         let entry = zip.by_index(index).map_err(|error| error.to_string())?;
-        let normalized = entry.name().replace('\\', "/");
+        let normalized = entry
+            .name()
+            .map_err(|error| error.to_string())?
+            .replace('\\', "/");
         if normalized.rsplit('/').next() != Some(file_name) {
             continue;
         }

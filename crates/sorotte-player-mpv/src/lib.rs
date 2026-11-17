@@ -21,7 +21,7 @@ pub mod fuzz_support {
 use sorotte_player_api::PlayerError;
 
 /// Oldest mpv release supported by Sorotte's JSON IPC adapter.
-pub const MINIMUM_SUPPORTED_MPV_VERSION: &str = "0.41.0";
+pub const MINIMUM_SUPPORTED_MPV_VERSION: &str = "0.42.0";
 pub(crate) const UNSUPPORTED_MPV_VERSION_ERROR_PREFIX: &str = "Sorotte requires mpv ";
 
 /// Returns whether an adapter error specifically rejects an unsupported or unverifiable mpv

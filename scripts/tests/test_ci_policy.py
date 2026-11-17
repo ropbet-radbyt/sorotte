@@ -33,8 +33,8 @@ PACKAGE_PATH_BOUNDARY_TEST_PATH = REPO_ROOT / "scripts" / "package-path-boundary
 CI_REQUIREMENTS = REPO_ROOT / "requirements" / "ci-policy.txt"
 LEGACY_REQUIREMENTS = REPO_ROOT / "requirements" / "legacy-python-interop.txt"
 LEGACY_SYNCPLAY_SHA = "d1c5f85af377c960c5a940707c4d01bc84fd9c3f"
-MPV_MINIMUM_SHA = "41f6a645068483470267271e1d09966ca3b9f413"
-MPV_NEWEST_SHA = "d12f2ce19c918875981e00ed276f153bdf40a2ac"
+MPV_MINIMUM_SHA = "b0841e8c4d156b8403dc1876c4cbd9011eb583f3"
+MPV_NEWEST_SHA = "f92afa75cdb06e077a9ecd9a9ec2eb36b16327c2"
 MPV_MATRIX_EXPRESSION = (
     "${{ fromJSON((github.event_name == 'schedule' || "
     "github.event_name == 'workflow_dispatch') && "
@@ -524,7 +524,7 @@ class CiPolicyTests(unittest.TestCase):
                 "MPV_SOURCE_SHA": MPV_SOURCE_EXPRESSION,
                 "MPV_MINIMUM_SOURCE_SHA": MPV_MINIMUM_SHA,
                 "MPV_NEWEST_SOURCE_SHA": MPV_NEWEST_SHA,
-                "MPV_MINIMUM_VERSION": "0.41.0",
+                "MPV_MINIMUM_VERSION": "0.42.0",
             },
         )
 
@@ -875,7 +875,7 @@ class CiPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             actionlint_setup.get("with"),
-            {"go-version": "1.27.1", "cache": "false"},
+            {"go-version": "1.27.4", "cache": "false"},
         )
         self.assert_exact_run(
             self.jobs,
@@ -2306,7 +2306,7 @@ class CiPolicyTests(unittest.TestCase):
             requirement_lines(LEGACY_REQUIREMENTS),
             [
                 "-c verification-constraints.txt",
-                "twisted==26.4.0",
+                "twisted==26.10.0",
                 "pyopenssl==26.4.0",
                 "cryptography==50.0.2",
                 "service_identity==26.1.0",
@@ -3053,7 +3053,7 @@ class CiPolicyTests(unittest.TestCase):
                         "genre": "BinaryOperator",
                         "replacement": "||",
                         "reason": "cargo-mutants replaces && with || in six let-chain conditions; Rust rejects || in a let chain, confirmed by compiling all six generated replacements",
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-seek-correction-candidate-default",
@@ -3084,7 +3084,7 @@ class CiPolicyTests(unittest.TestCase):
                                 "LifecycleWriteBarrier has no Default; its readiness "
                                 "and release paths require explicit evidence ownership"
                             ),
-                            "review_by": "2026-10-31",
+                            "review_by": "2027-02-17",
                         }
                         for identifier, function in (
                             ("cli-barrier-parse-default", "parse_lifecycle_write_barrier"),
@@ -3104,7 +3104,7 @@ class CiPolicyTests(unittest.TestCase):
                             "tokio::time::Instant cannot be multiplied by "
                             "std::time::Duration when calculating the deadline"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "const-default-is-not-const",
@@ -3119,7 +3119,7 @@ class CiPolicyTests(unittest.TestCase):
                             "call into a const fn, so Rust rejects the mutant "
                             "before tests can run"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-error-source-dyn-default",
@@ -3141,7 +3141,7 @@ class CiPolicyTests(unittest.TestCase):
                             "for the dynamic Error trait object required by "
                             "this source return type"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-error-from-default",
@@ -3159,7 +3159,7 @@ class CiPolicyTests(unittest.TestCase):
                             "implementation, so the generated replacement "
                             "cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-command-order-default",
@@ -3178,7 +3178,7 @@ class CiPolicyTests(unittest.TestCase):
                             "Default variant, so the generated successful "
                             "replacement cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-message-lines-default-element",
@@ -3195,7 +3195,7 @@ class CiPolicyTests(unittest.TestCase):
                             "Default variant, so the generated vector element "
                             "cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-line-items-default-element",
@@ -3213,7 +3213,7 @@ class CiPolicyTests(unittest.TestCase):
                             "value, so the generated vector element cannot "
                             "type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-message-line-default",
@@ -3230,7 +3230,7 @@ class CiPolicyTests(unittest.TestCase):
                             "Default variant, so the generated successful "
                             "replacement cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-hello-value-default",
@@ -3247,7 +3247,7 @@ class CiPolicyTests(unittest.TestCase):
                             "Default implementation, so the generated "
                             "successful replacement cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "protocol-hello-message-default",
@@ -3264,7 +3264,7 @@ class CiPolicyTests(unittest.TestCase):
                             "Default implementation, so the generated "
                             "successful replacement cannot type-check"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-reconnect-ping-let-chain-or",
@@ -3284,7 +3284,7 @@ class CiPolicyTests(unittest.TestCase):
                             "with ||, but let expressions are only valid in "
                             "&& chains so the generated mutant cannot parse"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-reconnect-state-let-chain-or",
@@ -3304,7 +3304,7 @@ class CiPolicyTests(unittest.TestCase):
                             "with ||, but let expressions are only valid in "
                             "&& chains so the generated mutant cannot parse"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-runtime-config-host-let-chain-or",
@@ -3325,7 +3325,7 @@ class CiPolicyTests(unittest.TestCase):
                             "with ||, but let expressions are only valid in "
                             "&& chains so both generated sites fail to parse"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-runtime-config-room-let-chain-or",
@@ -3346,7 +3346,7 @@ class CiPolicyTests(unittest.TestCase):
                             "with ||, but let expressions are only valid in "
                             "&& chains so both generated sites fail to parse"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": "client-runtime-config-fallback-let-chain-or",
@@ -3369,7 +3369,7 @@ class CiPolicyTests(unittest.TestCase):
                             "&& chains so the generated fallback mutant "
                             "cannot parse"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": (
@@ -3389,7 +3389,7 @@ class CiPolicyTests(unittest.TestCase):
                             "three-way disposition enum that intentionally "
                             "has no safe default"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     {
                         "id": (
@@ -3411,7 +3411,7 @@ class CiPolicyTests(unittest.TestCase):
                             "effect whose required room or snapshot identity "
                             "has no valid default"
                         ),
-                        "review_by": "2026-10-31",
+                        "review_by": "2027-02-17",
                     },
                     *[
                         {

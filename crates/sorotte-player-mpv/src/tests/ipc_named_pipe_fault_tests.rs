@@ -847,7 +847,7 @@ fn windows_named_pipe_disconnected_adapter_retries_an_explicit_endpoint_when_it_
             Some(&json!(["get_property", "mpv-version"]))
         );
         peer.write_lines(
-            &[success_response(request_id(&request), json!("0.41.0"))],
+            &[success_response(request_id(&request), json!("0.42.0"))],
             DeliveryMode::OneCoalescedWrite,
         );
     });

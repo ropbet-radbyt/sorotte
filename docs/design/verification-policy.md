@@ -40,7 +40,7 @@ counted as kills. Any later source change requires fresh candidate evidence.
 ## Dependency gates and release inventory
 
 `deny.toml` checks the locked Rust graph, including build dependencies and all
-features, with cargo-deny **0.20.2**. Only crates.io registry sources are allowed;
+features, with cargo-deny **0.21.0**. Only crates.io registry sources are allowed;
 unapproved registries and Git sources fail. Each scan requires an online
 RustSec fetch, then scans offline against the recorded clean database commit.
 The report records checker version and executable digest, database URL,

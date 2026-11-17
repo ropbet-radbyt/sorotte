@@ -140,7 +140,7 @@ impl GuiWidgetEguiRenderer {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(row_width, row_height), egui::Sense::click());
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         if response.clicked()
             && let Some(action) = Self::action_for_list_item_node(node)
@@ -765,7 +765,7 @@ impl GuiWidgetEguiRenderer {
             egui::Sense::click(),
         );
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         let response = Self::attach_node_tooltip(response, node);
         if node.enabled && response.clicked() {
@@ -931,7 +931,7 @@ impl GuiWidgetEguiRenderer {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(card_width, card_height), egui::Sense::click());
         response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), &node.label)
+            egui::WidgetInfo::labeled(egui::Role::Button, response.enabled(), &node.label)
         });
         let response = Self::attach_node_tooltip(response, node);
         if response.clicked() {

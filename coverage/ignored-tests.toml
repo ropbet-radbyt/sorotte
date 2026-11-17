@@ -109,7 +109,7 @@ rationale = "The unchanged strict raw-reader assertion reproduced OS2 on NTFS wi
 prerequisites = ["Windows NTFS filesystem", "concurrent raw filesystem readers"]
 operating_systems = ["windows"]
 tracking = "https://github.com/microsoft/STL/issues/5501; docs/evidence/testing/windows-settings-publication-2026-09-06.md"
-review_by = "2026-10-06"
+review_by = "2027-02-17"
 
 [[ignored_test]]
 id = "IGN-CLI-010"
