@@ -6,7 +6,6 @@ all-features = true
 [advisories]
 db-path = "$SOROTTE_ADVISORY_DB"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-git-fetch-with-cli = true
 maximum-db-staleness = "P2D"
 unmaintained = "all"
 unsound = "all"

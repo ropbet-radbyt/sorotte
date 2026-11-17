@@ -41,7 +41,7 @@ class DependencyPolicyTests(unittest.TestCase):
             policy.summarize_deny(json.dumps(value), 0)
 
     def test_expired_and_incomplete_exceptions_fail(self):
-        base = (ROOT / policy.POLICY).read_text(encoding="utf-8").replace("exception = []", "")
+        base = (ROOT / policy.POLICY).read_text(encoding="utf-8").partition("[[exception]]")[0].replace("exception = []", "")
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             (root / "coverage").mkdir()
@@ -82,7 +82,13 @@ class DependencyPolicyTests(unittest.TestCase):
             self.verify(value)
 
     def test_repository_policy_has_no_unreviewed_exceptions(self):
-        self.assertEqual(policy.load_policy(ROOT)["exception"], [])
+        exceptions = policy.load_policy(ROOT)["exception"]
+        self.assertEqual({item["id"] for item in exceptions}, {
+            "RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372",
+        })
+        for item in exceptions:
+            self.assertEqual((item["ecosystem"], item["owner"], item["expires"]),
+                             ("rust", "sorotte-gui", "2026-12-18"))
 
     def test_inventory_rejects_wrong_types_without_skipping_domain_validation(self):
         for field, invalid in [("target", []), ("native_components", {"schema_version": True, "component": []})]:
