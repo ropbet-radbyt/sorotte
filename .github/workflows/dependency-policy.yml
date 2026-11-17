@@ -82,10 +82,13 @@ jobs:
           python-version: "3.11"
       - name: Install pinned cargo-deny
         id: ci_install_pinned_cargo_deny_747abda6
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
-        with:
-          tool: cargo-deny@0.21.0
-          fallback: none
+        run: |
+          archive=cargo-deny-0.21.0-x86_64-unknown-linux-musl
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$archive.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.21.0/$archive.tar.gz"
+          echo "a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903  $RUNNER_TEMP/$archive.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$RUNNER_TEMP" "$archive/cargo-deny"
+          install -m 755 "$RUNNER_TEMP/$archive/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
       - name: Check locked graph and record database identity
         id: ci_check_locked_graph_and_record_database_1c886f53
         run: python scripts/dependency_policy.py scan --ecosystem rust --output target/dependencies/rust/report.json

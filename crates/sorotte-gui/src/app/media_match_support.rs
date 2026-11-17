@@ -1618,18 +1618,16 @@ fn check_media_match_discovery_canceled(cancel_flag: Option<&AtomicBool>) -> Res
 }
 
 fn metadata_is_directory_link(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
     }
-    #[cfg(not(windows))]
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn media_match_directory_visit_key(path: &Path) -> String {

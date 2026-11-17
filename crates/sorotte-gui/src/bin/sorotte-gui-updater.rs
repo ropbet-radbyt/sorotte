@@ -2295,18 +2295,16 @@ fn ensure_directory_is_not_reparse_point(path: &Path) -> Result<(), String> {
 }
 
 fn metadata_is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
 
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
     }
-    #[cfg(not(windows))]
-    false
+    metadata.file_type().is_symlink()
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {

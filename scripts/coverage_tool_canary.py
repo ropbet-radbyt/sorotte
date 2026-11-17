@@ -38,9 +38,10 @@ pub fn multiline(flag: bool) -> u8 {
 fn multiline_test() { assert_eq!(multiline(true), 44); }
 fn tuple_pattern(first: Option<u8>, second: Option<u8>) -> u8 {
     let (Some(first), Some(second)) = (
-        first, // PATTERN_TUPLE_FIRST_INPUT
-        second, // PATTERN_TUPLE_SECOND_INPUT
-    ) else { // STRUCTURAL_TUPLE_LET_ELSE
+        first.map(|value| value + 1), // PATTERN_TUPLE_FIRST_INPUT
+        second.map(|value| value + 1), // PATTERN_TUPLE_SECOND_INPUT
+    )
+    else { // STRUCTURAL_TUPLE_LET_ELSE
         return 0; // PATTERN_TUPLE_REJECT
     };
     first + second // PATTERN_TUPLE_ACCEPT
@@ -49,7 +50,7 @@ struct Payload { value: u8 }
 fn nested_pattern(candidate: Option<Payload>) -> u8 {
     let Some(Payload { // STRUCTURAL_NESTED_PATTERN
         value,
-    }) = candidate // PATTERN_NESTED_INPUT
+    }) = std::hint::black_box(candidate) // PATTERN_NESTED_INPUT
     else {
         return 0; // PATTERN_NESTED_REJECT
     };
@@ -57,7 +58,7 @@ fn nested_pattern(candidate: Option<Payload>) -> u8 {
 }
 #[test]
 fn pattern_acceptance_and_rejection() {
-    assert_eq!(tuple_pattern(Some(3), Some(4)), 7);
+    assert_eq!(tuple_pattern(Some(3), Some(4)), 9);
     assert_eq!(tuple_pattern(None, Some(4)), 0);
     assert_eq!(tuple_pattern(Some(3), None), 0);
     assert_eq!(nested_pattern(Some(Payload { value: 9 })), 9);
